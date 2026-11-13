@@ -700,6 +700,8 @@ pub(crate) struct Machine {
     pub(crate) icells: Box<[crate::ImageCell]>,
     /// `TierFrame::cells`: their address as a number, 0 while there are none.
     pub(crate) icells_at: usize,
+    /// `TierFrame::pmemo`: the memo's directory for compiled code (`pmemo::State::dir_addr`).
+    pub(crate) pmemo_at: usize,
     /// Argument cells of the call being made (`call_with`).
     cells: Vec<u64>,
     /// The staging buffer of `Copy` and `Fill` (`take_bytes`), reused.
@@ -1361,6 +1363,7 @@ impl Machine {
             plans: Vec::new(),
             icells: Box::default(),
             icells_at: 0,
+            pmemo_at: 0,
             cells: Vec::new(),
             bytes: Vec::new(),
             released: false,
@@ -9753,6 +9756,7 @@ impl Machine {
         tf.drivers = m.drivers.as_ptr();
         tf.ndrivers = m.drivers.len() as u64;
         tf.cells = std::ptr::without_provenance(m.icells_at);
+        tf.pmemo = m.pmemo_at as u64;
         // A process that is `hot` has no shared state (`sh`), which the call paths of a serial
         // process do not promise: its epoch and flags come from the heap and the frame alone.
         m.tier_heaps(tf);
@@ -12048,6 +12052,9 @@ impl crate::TierHost for Host<'_, '_, '_> {
         tf.drivers = m.drivers.as_ptr();
         tf.ndrivers = m.drivers.len() as u64;
         tf.cells = std::ptr::without_provenance(m.icells_at);
+        // The memo where the host's probe would answer (`Machine::memo_probe`).
+        let memo = self.ctx.is_some() && m.pkg_init.is_none() && !m.has_debugger();
+        tf.pmemo = if memo { m.pmemo_at as u64 } else { 0 };
         let Some(c) = self.ctx.as_deref_mut() else {
             tf.sigtab_len = 0;
             tf.known = u64::MAX;
@@ -13030,6 +13037,10 @@ impl crate::TierHost for Host<'_, '_, '_> {
     ) -> crate::MemoLook {
         use crate::MemoLook::No;
         let (m, prog, rt) = (&mut *self.m, self.prog, self.rt);
+        // A function went off for all: compiled code asks here until the directory is redone.
+        if let Some(st) = m.pm.as_mut() {
+            st.recheck_off();
+        }
         let (Some(sig), Some(c)) = (prog.memo_sig(func), prog.func(func)) else {
             return No;
         };
@@ -13059,10 +13070,15 @@ impl crate::TierHost for Host<'_, '_, '_> {
         if depth.is_some() {
             *slots = m.nwin.take();
         }
-        // Only the temporary area can have moved or grown.
+        // Only the temporary area can have moved or grown, and the memo shown to compiled code.
         tf.temp = m.temp.as_mut_ptr();
         tf.temp_len = m.temp.len() as u64;
         tf.temp_cap = m.temp.capacity().min(u32::MAX as usize) as u64;
+        tf.pmemo = if self.ctx.is_some() && m.pkg_init.is_none() && !m.has_debugger() {
+            m.pmemo_at as u64
+        } else {
+            0
+        };
         match r {
             Ok(crate::pmemo::Probe::Hit(v)) => crate::MemoLook::Hit(v),
             Ok(crate::pmemo::Probe::Miss(n)) => crate::MemoLook::Miss(n),
@@ -13073,6 +13089,31 @@ impl crate::TierHost for Host<'_, '_, '_> {
                 No
             }
         }
+    }
+
+    fn memo_holds(
+        &mut self,
+        _tf: &mut crate::TierFrame,
+        func: FuncId,
+        cells: &[u64],
+        depth: Option<u64>,
+        slots: &mut Option<Box<dyn crate::NativeSlots>>,
+        v: u64,
+    ) -> bool {
+        let (m, prog) = (&mut *self.m, self.prog);
+        let Some(sig) = prog.memo_sig(func) else {
+            return false;
+        };
+        let top = m.frames.len();
+        if let Some(d) = depth {
+            m.nwin = slots.take();
+            (m.nwin_from, m.nwin_to) = (top, (d as usize).max(top));
+        }
+        let ok = m.memo_holds(func, sig, cells, v);
+        if depth.is_some() {
+            *slots = m.nwin.take();
+        }
+        ok
     }
 
     fn memo_keep(

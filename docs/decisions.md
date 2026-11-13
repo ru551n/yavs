@@ -15840,3 +15840,47 @@ Written by Claude. User ruling, 2026-11-12: try `lto = "fat"` with `codegen-unit
 - **On the GitHub runners** (release workflow dispatched as a dry run on this branch, old profile one commit before; 2026-11-12, one run each): the profile-guided build step of each archive took, old profile then new, 14.2 and 14.7 min (Linux x86_64 x86-64-v3), 14.3 and 16.5 (`-compat`), 9.5 and 18.6 (aarch64), 25.7 and 38.8 (Windows x86-64-v3), 24.2 and 35.8 (Windows `-compat`); the longest build job 48 min of its 240. Training ran in every job, each final build found every function in the profile. Peak memory above the start: 4.5 to 4.7 GB on Linux x86_64, 8.5 GB on aarch64 (one compiler process at 8.8 GB, of the runner's 16 GB), 4.3 to 4.5 GB on Windows, against 2.3 to 3.0 GB before. The Linux binaries are 20 to 23 percent smaller, the Windows ones 1 to 2 percent. The zig-linked Linux binaries keep the same 34 exported `vhpi_*` functions. The release builds of the `corpus` and `sweep` jobs of `ci.yml` took 5.3 and 7.7 min against 2.9 and 4.6. Every archive passed its smoke test (on Linux also at glibc 2.17) and `tests/corpus` in five candidates on its own binary; the VHPI regressions of the conformance and Windows workflows passed on release builds of this profile.
 - **Comparability.** Every bench number, pin and baseline recorded before this change is of the old profile: a comparison across the change compares profiles, not code. The cold-cap pin is rebuilt from the same source with the new profile.
 - **Not covered by this entry:** whether CI jobs that only test (the `corpus` and `sweep` jobs, the conformance and cocotb workflows) should keep the shorter old profile, which would test a different build than the one that ships.
+
+## Memo of pure calls: the probe in compiled code (yavs-clift `Gen::memo_inline`, yavs-interp `pmemo.rs`, perf/b4-memoinline, 2026-11-12)
+
+Written by Claude. A hit of the memo from compiled code cost about 890 instructions after the leaner probe (a loop over
+`bit_reverse` of 64 elements: 1652 instructions an iteration with the call against 762 without it), almost all of it the
+host's way in and out (`yavs_rt_memo`: the view sync, the unwind guard, `memo_key`, `State::look`, `memo_flat`).
+
+- **Change** (agent). A compiled call of a probed function whose arguments are scalars and flat logic arrays of one
+  dimension and whose result is one of those (`MemoShape`) looks the call up by itself first (`Gen::memo_inline`): the
+  process's directory (`TierFrame::pmemo`, `MemoDir`: 256 entries by function number) gives the function's table, the key
+  is built as `Machine::memo_key` builds it (a scalar's word; a vector of 1 to 64 elements as its three descriptor words
+  and its one plane block, read through `Gen::host`), hashed as `pmemo::hash`, and the slot's hash, key length, result
+  length and every key word compared, as `State::look` does; a scalar result is the slot's word, a flat one is copied
+  into temporary memory with its bounds in `ret_bounds`, as `memo_flat` does. Anything else goes to `yavs_rt_memo` before
+  any effect, so a hit there is exactly a hit of the host: the tables are the interpreter's own (`Slot` is `repr(C)`),
+  written by the host only.
+- **Admission unchanged.** A function's table is shown to compiled code only after its first `WARM` (64) calls in the
+  process and only while it is on (`State::show`); the hits compiled code makes by itself are not counted for the
+  judgement, which was made before. A function that goes off for all processes moves `OFF`; compiled code compares it
+  with the directory's `off_seen` and goes to the host, which empties the directory (`State::recheck_off`); the functions
+  still on are shown again at their next host probe. Calls `NEST` deep, a debugger, package initialisation, no kernel
+  context: no directory in the view. `pmemo_hits` and `pmemo_runs` are equal to the base on forced Microwatt and GRLIB
+  (19 140 489 / 492 376 and 2 815 460 / 155 226); `pmemo_inline_hits` counts the part compiled code answered (93 percent on
+  Microwatt, 99.9 on GRLIB), per directory, summed over live directories when the counters print.
+- **Checked.** Debug builds call `yavs_rt_memo_holds` after every inline hit (`TierHost::memo_holds`: the host's table,
+  looked up without counting, must hold that result, else a panic); a mutated result load fails `tests/pmemo.rs` with it.
+- **Tried, not kept.** The hash and compare in a Rust helper (`yavs_rt_memo_find`) to shrink the code at each site: the
+  forced small tests did not get cheaper to compile and a hit cost 89 instructions more. Separate branches per test (the
+  usual `brif_split`): the same run time, more blocks to compile (forced `hdlm_fifo_sync` +0.12 against +0.07 percent).
+  A site is about 90 Cranelift instructions.
+- **Measured** (agent, plain bench builds of the old release profile on both sides, all-thread instructions, untimed;
+  outputs and exit status equal to the base in every run). Forced `--tier=clift --no-cache --threads=1`, one run (a byte
+  copy of the base within 0.01 percent): Microwatt 0.9877, GRLIB 0.9959, `sc5_fifo_repack` 0.9938; compile cost of the
+  inline sites on the others: `hdlm_fifo_sync` +0.11, `neorv32_single_cache` +0.13, `olo_axi_master_full` +0.08,
+  `hdlm_lfsr` +0.03, `vunit_logging` 0.00 percent. Default tier, runs 1 to 3 from a pristine world, two reps (two more of
+  the form with a branch per test: 0.983, 0.988, 0.985): Microwatt 0.984, 0.991, 0.983 (byte copy 0.996 to 1.002), main thread alone 0.991, 0.984, 0.982; GRLIB runs 2
+  and 3 0.988 and 0.988 (main thread 0.989, 0.987), run 1 inside the byte copy's range (both bimodal, 213 to 218 G). The
+  small designs and the cold-cap set inside the copy's range by median, `hdlm_lfsr` run 1 +0.28 percent (copy +0.07, ranges
+  overlap), `neorv32_dual_full` run 2 +1.3 percent with its compile decisions varying run to run on both sides (68 to 78
+  functions compiled).
+- **Open for the maintainer.** The cheap/dear split (`MemoSig::dear`, above) was priced against a probe of about 890
+  instructions. With the probe at about 180, probing the cheap functions again (a lab switch, inline where the shape
+  allows) gives GRLIB default runs 1 to 3 0.989, 0.981, 0.980 instead of 1.006, 0.988, 0.988, Microwatt the same (0.986),
+  forced GRLIB 0.9928, but a forced compile cost of +0.08 to +0.34 percent on the small designs. Not changed here.

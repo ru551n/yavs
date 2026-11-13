@@ -3,7 +3,10 @@
 -- recursive function, a function that reports (every call must report), the same bits under
 -- `to` and `downto` descriptors, slices, reversed ranges, real and integer-array arguments,
 -- string and unsigned results, a package constant read in the body, and memoised functions called
--- from a function that is not memoised itself (calls between compiled functions).
+-- from a function that is not memoised itself (calls between compiled functions). Compiled code
+-- answers repeats of one-block vectors and scalars from the memo by itself: around it, a
+-- 65-element and a null vector (the host's probe), keys that share slots, and a function whose
+-- calls never repeat (given up).
 library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
 package ppmemo_cases_pkg is
   constant K : integer := 7;
@@ -17,6 +20,7 @@ package ppmemo_cases_pkg is
   function rep(n : integer; a : unsigned) return unsigned;
   function pw(a : unsigned; n : natural) return unsigned;
   function bigsum(a : int_vec) return integer;
+  function once(n : integer) return integer;
 end package;
 package body ppmemo_cases_pkg is
   function fib(n : natural) return natural is
@@ -82,6 +86,13 @@ package body ppmemo_cases_pkg is
     for i in a'range loop t := t + a(i) mod 7; end loop;
     return t;
   end function;
+  -- Called with a new argument every time: its memo is given up.
+  function once(n : integer) return integer is
+    variable t : integer := 0;
+  begin
+    for i in 0 to n mod 5 loop t := t + n * i; end loop;
+    return t;
+  end function;
 end package body;
 
 library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all; use work.ppmemo_cases_pkg.all;
@@ -117,6 +128,7 @@ begin
     variable r : real := 0.0;
     variable u : unsigned(7 downto 0) := x"05";
     variable big : int_vec(0 to 299) := (others => 3);
+    variable wide : std_logic_vector(64 downto 0) := (others => '0');
   begin
     for c in 1 to 150 loop
       wait until rising_edge(clk);
@@ -134,6 +146,9 @@ begin
       acc := acc + peek(c mod 4);
       big(c mod 300) := c;
       acc := acc + bigsum(big);
+      wide(c mod 65) := not wide(c mod 65);
+      acc := acc + lo(wide) + lo(wide(c mod 3 downto 1)) + lo(v(c mod 5 downto c mod 4));
+      acc := acc + lo(std_logic_vector(to_unsigned(c mod 41, 8))) + once(c);
     end loop;
     report "acc=" & integer'image(acc) & " r=" & real'image(r);
     done <= true;

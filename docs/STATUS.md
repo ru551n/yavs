@@ -49,6 +49,10 @@ Runs of one top level with other generics in one work library keep stage entries
 
 A process that names a protected object or shared variable anywhere (a serial process: in testbenches nearly every process) ran every activation through the general path `InterpProcess::exec`. It now takes the path of the other processes (`InterpProcess::run_serial`: compiled code entered directly, else `run_quick`) with the shared state lent out of its lock for the activation, and skips the shared-root scan when it can hold no root (debug and `gc-stress` builds scan anyway and fail on a root). Order, effects and the roots every collection sees are unchanged. Per activation of a waiter that never takes its protected call, 1239 to 1026 instructions interpreted and 1652 to 1066 compiled; processes that are not serial are level. Under `--tier=auto` a serial activation now feeds the count rule as a `hot` process's does (a tier decision, never a result). Counters `serial_execs`, `shared_publishes` (perf design `serial_wake`); corpus test `protected/serial_tickets`. yavs-interp `AGENTS.md` section 3.
 
+### `--tier=auto` on Windows: a CPU clock and 1 ms naps (2026-11-13)
+
+The policy times its looks and trials on Windows x86_64 by the simulation thread's processor cycles (`QueryThreadCycleTime`, turned into time by the time-stamp counter's rate) instead of the wall clock, and the sampler's nap sleeps in 1 ms slices (a timed park waited 14 ms there). With a CPU clock the run-to-run profile is written on Windows too (it needs the simulation CPU of the run). Linux is unchanged. decisions.md "`--tier=auto` on Windows: a CPU clock and 1 ms naps".
+
 ### A lone byte register entry committed with a store (2026-11-13)
 
 The kernel's batch loop hands the one direct byte entry of an integer or enumeration register process on with a push instead of a slice copy (a `memmove` call): 7 to 9 instructions fewer per activation of such a process, nothing for logic registers. Counter `byte_moves` (moves of more than one entry), bounded at 0 on the perf design `byte_store`.

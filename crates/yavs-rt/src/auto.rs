@@ -558,6 +558,13 @@ fn decide(compiled: &[f64], interp: &[f64], rule: &Rule) -> Option<Verdict> {
     }
 }
 
+/// A thread's CPU clock that another thread can read (`own_cpu_clock`, `sim_cpu`): a clock id on
+/// Linux, a thread handle on Windows; 0 where there is none.
+#[cfg(not(windows))]
+type Clock = i32;
+#[cfg(windows)]
+type Clock = isize;
+
 /// CPU time of a clock (`clock_gettime`); `None` where it cannot be read.
 #[cfg(target_os = "linux")]
 fn cpu_read(clock: i32) -> Option<Duration> {
@@ -579,7 +586,9 @@ fn cpu_read(clock: i32) -> Option<Duration> {
 fn cpu_thread() -> Option<Duration> {
     #[cfg(target_os = "linux")]
     return cpu_read(CPU_THREAD);
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    return win_clock::cpu(win_clock::current());
+    #[cfg(not(any(target_os = "linux", all(windows, target_arch = "x86_64"))))]
     None
 }
 
@@ -592,18 +601,27 @@ const CPU_THREAD: i32 = 3;
 // ponytail: a pooled batch's wait past the join spin sleeps uncounted; count the workers' busy
 // time if long pooled batches must weigh in full.
 #[cfg(target_os = "linux")]
-fn sim_cpu(clock: i32) -> Option<Duration> {
+fn sim_cpu(clock: Clock) -> Option<Duration> {
     if clock == 0 { None } else { cpu_read(clock) }
 }
 
-#[cfg(not(target_os = "linux"))]
-fn sim_cpu(_: i32) -> Option<Duration> {
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn sim_cpu(clock: Clock) -> Option<Duration> {
+    if clock == 0 {
+        None
+    } else {
+        win_clock::cpu(clock)
+    }
+}
+
+#[cfg(not(any(target_os = "linux", all(windows, target_arch = "x86_64"))))]
+fn sim_cpu(_: Clock) -> Option<Duration> {
     None
 }
 
 /// The CPU clock of the calling thread, for another thread to read (0 where there is none).
 #[cfg(target_os = "linux")]
-fn own_cpu_clock() -> i32 {
+fn own_cpu_clock() -> Clock {
     unsafe extern "C" {
         fn pthread_self() -> usize;
         fn pthread_getcpuclockid(thread: usize, clock: *mut i32) -> i32;
@@ -614,9 +632,113 @@ fn own_cpu_clock() -> i32 {
     if rc == 0 { clock } else { 0 }
 }
 
-#[cfg(not(target_os = "linux"))]
-fn own_cpu_clock() -> i32 {
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn own_cpu_clock() -> Clock {
+    win_clock::own()
+}
+
+#[cfg(not(any(target_os = "linux", all(windows, target_arch = "x86_64"))))]
+fn own_cpu_clock() -> Clock {
     0
+}
+
+/// The CPU clock of a thread on Windows: the processor cycles it ran (`QueryThreadCycleTime`, exact,
+/// unlike `GetThreadTimes`, which moves in 15.6 ms ticks), counted in time-stamp counter ticks and
+/// turned into time by the counter's rate, measured against the wall clock since the first use.
+#[cfg(all(windows, target_arch = "x86_64"))]
+mod win_clock {
+    use std::sync::OnceLock;
+    use std::time::{Duration, Instant};
+
+    type Handle = *mut std::ffi::c_void;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentThread() -> Handle;
+        fn GetCurrentProcess() -> Handle;
+        fn DuplicateHandle(
+            from: Handle,
+            handle: Handle,
+            to: Handle,
+            out: *mut Handle,
+            access: u32,
+            inherit: i32,
+            options: u32,
+        ) -> i32;
+        fn QueryThreadCycleTime(thread: Handle, cycles: *mut u64) -> i32;
+    }
+
+    const THREAD_QUERY_LIMITED_INFORMATION: u32 = 0x0800;
+
+    /// The pseudo handle of the calling thread (good on that thread only).
+    pub(super) fn current() -> isize {
+        // SAFETY: no arguments; the pseudo handle needs no closing.
+        unsafe { GetCurrentThread() as isize }
+    }
+
+    /// A handle of the calling thread that other threads can read (0 if none).
+    // ponytail: one handle per tier, never closed; close it with the tier if tiers become many.
+    pub(super) fn own() -> isize {
+        origin();
+        let mut h: Handle = std::ptr::null_mut();
+        // SAFETY: duplicates the calling thread's pseudo handle into a real one of this process.
+        let ok = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                GetCurrentThread(),
+                GetCurrentProcess(),
+                &mut h,
+                THREAD_QUERY_LIMITED_INFORMATION,
+                0,
+                0,
+            )
+        };
+        if ok != 0 { h as isize } else { 0 }
+    }
+
+    /// The time-stamp counter and the wall clock at the first use.
+    fn origin() -> (u64, Instant) {
+        static AT: OnceLock<(u64, Instant)> = OnceLock::new();
+        *AT.get_or_init(|| (tsc(), Instant::now()))
+    }
+
+    fn tsc() -> u64 {
+        // SAFETY: reads the time-stamp counter, which every x86_64 processor has.
+        #[allow(unused_unsafe)]
+        unsafe {
+            std::arch::x86_64::_rdtsc()
+        }
+    }
+
+    /// Counter ticks per second: measured over the time since `origin`, kept once that is 50 ms
+    /// (its error is then far below a microsecond per look). A read in the first millisecond waits
+    /// for it (the sampler starts after `START_AFTER`: only a run that ends at once can).
+    fn rate() -> Option<f64> {
+        static KEPT: OnceLock<f64> = OnceLock::new();
+        if let Some(r) = KEPT.get() {
+            return Some(*r);
+        }
+        let (c0, t0) = origin();
+        let min = Duration::from_millis(1);
+        std::thread::sleep(min.saturating_sub(t0.elapsed()));
+        let dt = t0.elapsed();
+        let r = tsc().wrapping_sub(c0) as f64 / dt.as_secs_f64();
+        if dt >= Duration::from_millis(50) {
+            let _ = KEPT.set(r);
+        }
+        (r > 0.0).then_some(r)
+    }
+
+    /// The CPU time `thread` ran so far.
+    pub(super) fn cpu(thread: isize) -> Option<Duration> {
+        let mut cycles = 0;
+        // SAFETY: `thread` is a thread handle with query access (or the pseudo handle of the
+        // calling thread); `cycles` is the out value.
+        if unsafe { QueryThreadCycleTime(thread as Handle, &mut cycles) } == 0 {
+            return None;
+        }
+        Some(Duration::from_secs_f64(cycles as f64 / rate()?))
+    }
 }
 
 /// The wall clock and the pause between two reads of a trial's windows: the real ones, or a test's
@@ -908,9 +1030,9 @@ struct Shared {
     busy: AtomicBool,
     /// A trial is running: its swaps would show as the code running, so the sampler sends no looks.
     trial: AtomicBool,
-    /// The CPU clock of the kernel thread, the one that made the tier (`pthread_getcpuclockid`;
-    /// 0: none), whose CPU time is the simulation CPU (`sim_cpu`).
-    sim_clock: i32,
+    /// The CPU clock of the kernel thread, the one that made the tier (`own_cpu_clock`; 0: none),
+    /// whose CPU time is the simulation CPU (`sim_cpu`).
+    sim_clock: Clock,
     /// Why the sampler counts CPU time and not instructions (`work::activate`), once it started;
     /// `None` while the work clock counts.
     clock_off: Mutex<Option<String>>,
@@ -1409,7 +1531,7 @@ struct Worker {
     count: u32,
     gate_cpu: u64,
     /// `Shared::sim_clock`: the clock of the trials' windows.
-    sim_clock: i32,
+    sim_clock: Clock,
     /// `Worker::guard`: the work at its last look, per function the frames it left by then and whether
     /// it was published then, the functions under trial, the ones found to gain, and its numbers
     /// (0: no guard).
@@ -3845,9 +3967,18 @@ fn nap(sh: &Shared, d: Duration) {
         if left.is_zero() {
             return;
         }
+        // Windows: a timed park waits for the next 15.6 ms tick of the system timer (14 ms for 1 ms
+        // asked); `sleep` takes a high-resolution timer. In slices, so a stop waits out at most one.
+        #[cfg(windows)]
+        std::thread::sleep(left.min(NAP_SLICE));
+        #[cfg(not(windows))]
         std::thread::park_timeout(left);
     }
 }
+
+/// The longest sleep of a `nap` on Windows, where it cannot be unparked.
+#[cfg(windows)]
+const NAP_SLICE: Duration = Duration::from_millis(1);
 
 /// The sampler thread (#670): at every look it reads which function each simulation thread runs and
 /// the work it did since the last look, and sends the looks to the compile thread in batches of
@@ -4827,7 +4958,7 @@ mod policy_tests;
 mod tests {
     /// The simulation CPU is the kernel thread's: a pool worker that spins while the kernel
     /// thread waits does not make the run look dearer to the policy.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", all(windows, target_arch = "x86_64")))]
     #[test]
     fn the_simulation_cpu_leaves_out_other_threads() {
         use std::time::Duration;
@@ -4841,6 +4972,24 @@ mod tests {
         .unwrap();
         let spent = super::sim_cpu(clock).unwrap() - c0;
         assert!(spent < Duration::from_millis(30), "{spent:?}");
+    }
+
+    /// The simulation CPU moves with the work of its thread (no tick of a system timer: a few
+    /// milliseconds of work show), read from this thread and from another one.
+    #[cfg(any(target_os = "linux", all(windows, target_arch = "x86_64")))]
+    #[test]
+    fn the_simulation_cpu_counts_its_own_work() {
+        use std::time::Duration;
+        let clock = super::own_cpu_clock();
+        let c0 = super::sim_cpu(clock).unwrap();
+        let t0 = super::cpu_thread().unwrap();
+        while super::cpu_thread().unwrap() - t0 < Duration::from_millis(3) {}
+        let c1 = super::sim_cpu(clock).unwrap();
+        assert!(c1 - c0 >= Duration::from_millis(3), "{:?}", c1 - c0);
+        let other = std::thread::spawn(move || super::sim_cpu(clock).unwrap())
+            .join()
+            .unwrap();
+        assert!(other >= c1, "{other:?} {c1:?}");
     }
 
     /// A worker of the count rule: no generator, so nothing compiles; the rule's decisions only.

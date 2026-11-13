@@ -16186,3 +16186,29 @@ Amends "Stage entries of a design that loads units late" (#671).
   collection or recycling due, a stale value, a cell inside the freed object) steps the instruction as before. The
   host function reads no register, so frame mode's deferred register stores need nothing more than the slow path's
   snapshot, which the step had too.
+
+## `--tier=auto` on Windows: a CPU clock and 1 ms naps (yavs-rt `auto.rs` `win_clock`, `nap`, user, 2026-11-13)
+
+- **Finding** (agent, Windows runners). The policy had no CPU clock on Windows: no perf counters and no thread CPU
+  clock, so the sampler timed its looks and the trials their windows by the wall clock (time the process waited for a
+  CPU counted as work), and its nap, a timed park, waited for the next 15.6 ms tick of the system timer (14 ms for
+  1 ms asked). A short test made 0 to 188 compiles between identical runs.
+- **Decision**: on Windows x86_64 the simulation CPU is the kernel thread's processor cycles
+  (`QueryThreadCycleTime` on a handle duplicated at the tier's start), counted in time-stamp counter ticks and turned
+  into time by the counter's rate measured against the wall clock since the tier started (kept after 50 ms; a read in
+  the first millisecond waits for it). `GetThreadTimes` was not taken: it moves in 15.6 ms ticks. The policy's unit stays
+  CPU time, as on a Linux host without perf counters. `nap` sleeps in slices of at most 1 ms on Windows (`sleep` has a
+  high-resolution timer; a stop waits out at most one slice); `timeBeginPeriod` is not used (it raises the timer rate
+  of the whole system). Linux code is unchanged.
+- **Tests**: `the_simulation_cpu_leaves_out_other_threads`, `the_simulation_cpu_counts_its_own_work` (Linux and Windows).
+- **Measured**: Windows runner (EPYC 9V45), the clock against the wall clock on a busy thread: 0.98 to 1.00 over
+  1 to 200 ms (`GetThreadTimes`: 0 ms at 10 ms). With this and "Fewer file operations per cache entry" together,
+  compile counts of 8 identical warm runs of a short test: before 0, 0, 3, 5, 0, 4, 6, 6; after 2, 14, 12, 11, 12, 14,
+  14, 15 (the counts grow over the first runs as on Linux, 0 to 8 there, through the run-to-run profile, which Windows
+  did not write before: `write_profile` needs the simulation CPU), simulation phase 0.33 to 0.45 s before, 0.28 to
+  0.32 s after. With real-time antivirus scanning the spread stays wide (before 4 to 22, after 22 to 45). The clock
+  alone, scanning on: warm suite `-p 1` 54.0 to 46.9 s, `-p 16` 31.0 to 26.2 s; with the runner's exclusions within
+  run-to-run noise.
+- **Known gap**: after its first runs Windows settles at more compiles per run than Linux (11 to 51 against 2 to 8 for
+  the same test). Not established why; the cycle clock counts kernel-mode time, which Windows runs spend more of in the
+  heap and in page faults, so functions may look hotter there. No trace of the policy on Windows was taken.

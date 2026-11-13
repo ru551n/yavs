@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:inout_port_user_resolution:u:rd	leaf p=0
+diag	note	0	0	:inout_port_user_resolution:rd	top s=0
+diag	note	0	1	:inout_port_user_resolution:rd	top s=37
+diag	note	0	1	:inout_port_user_resolution:u:rd	leaf p=37
+diag	note	2000000	0	:inout_port_user_resolution:rd	top s=45
+diag	note	2000000	0	:inout_port_user_resolution:u:rd	leaf p=45
+diag	note	3000000	0	:inout_port_user_resolution:check	done

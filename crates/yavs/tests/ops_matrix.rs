@@ -49,8 +49,9 @@ const WIDTHS: [u32; 3] = [1, 64, 2048];
 
 /// The steps of the operator plan that have landed: 1 array ordering, 2 compiled code without
 /// host steps for `**` and `time * real`, 3 the `yavs.implicit` array natives on planes, 4 the
-/// missing natives.
-const LANDED: u8 = 3;
+/// missing natives; 5 (not started) the fixed costs of the word-wise operations (a temporary and
+/// a copy per operation, a native callback per call from compiled code) and the general paths.
+const LANDED: u8 = 4;
 
 /// Designs run at once (each a `yavs` process).
 const JOBS: usize = 4;
@@ -126,6 +127,10 @@ struct Row {
     asym_ok: &'static [(&'static str, &'static str)],
     /// Why an `ieee` native of the row may run its general path at W=2048.
     general_ok: Option<&'static str>,
+    /// Use clauses after `ieee.std_logic_1164.all` (another `ieee` package).
+    uses: &'static str,
+    /// Only with a static `W` (locally static choices of `case?`).
+    static_only: bool,
     /// The operation is a native call in compiled code at every width (at most one `cb_native` per
     /// operation, also at 64 elements or less).
     native: bool,
@@ -220,7 +225,7 @@ fn cell(f: Family, c: TypeClass) -> Vec<Item> {
         // Strings (LRM 5.7).
         (ToString, scalars!()) => vec![Pending("the std image natives; no row yet")],
         (ToString, LogicArray | BitArray) => vec![Later(
-            4,
+            5,
             "`to_string` of a vector: through `read_arr`, about 85 instructions per element",
         )],
         (ToString, ByteArray) => vec![Pending(
@@ -288,10 +293,7 @@ fn cell(f: Family, c: TypeClass) -> Vec<Item> {
         ),
         (And | Or | Nand | Nor | Xor | Xnor, LogicArray) => {
             let mut v = rows(logic_rows(f, c));
-            v.push(Later(
-                4,
-                "the array-scalar forms: the std_logic_1164 body, element by element",
-            ));
+            v.extend(rows(slv_scalar_rows(f)));
             v.push(Pending(
                 "the reductions: the ieee `Reduce` native, guarded by `ieee_paths`",
             ));
@@ -314,7 +316,7 @@ fn cell(f: Family, c: TypeClass) -> Vec<Item> {
         (MEq | MNeq, LogicArray) => vec![
             Pending("std_ulogic_vector: the ieee `MatchEq` native, guarded by `ieee_paths`"),
             Later(
-                4,
+                5,
                 "numeric_std `?=` above 1024 elements: the general path on the heap",
             ),
         ],
@@ -322,7 +324,7 @@ fn cell(f: Family, c: TypeClass) -> Vec<Item> {
             vec![Pending("a scalar native (a fixed cost); no row yet")]
         }
         (MLt | MLe | MGt | MGe, LogicArray) => vec![Later(
-            4,
+            5,
             "numeric_std `?<` and the like above 1024 elements: the general path on the heap",
         )],
         (MEq | MNeq, Boolean | Int | Real | Phys | Enum | Char | Access | File)
@@ -355,7 +357,7 @@ fn cell(f: Family, c: TypeClass) -> Vec<Item> {
         ) => vec![Na],
         // Concatenation (LRM 9.2.5).
         (Cat, LogicArray | BitArray | BooleanArray | ByteArray) => vec![Later(
-            4,
+            5,
             "a temporary and a copy into the target per operation (a fixed cost of 1-2 k \
              instructions)",
         )],
@@ -420,25 +422,24 @@ fn cell(f: Family, c: TypeClass) -> Vec<Item> {
 /// Operations no implicit family names: `ieee` subprograms and statements.
 fn constructs() -> Vec<Item> {
     use Item::{Later, Pending};
-    vec![
-        Later(
-            4,
-            "std_logic_1164 `to_stdulogicvector` of bit_vector: the body, element by element",
+    let mut v: Vec<Item> = [tosulv_row(), caseq_row()]
+        .into_iter()
+        .chain(nbit_rows())
+        .map(|r| Item::Row(Box::new(r)))
+        .collect();
+    v.extend([
+        Pending(
+            "numeric_bit reductions: the body calls the predefined reduction of bit_vector, a \
+             native on planes; no row of its own",
         ),
         Later(
-            4,
-            "numeric_bit `minimum`, `maximum`, `abs`, unary `-` and the reductions: the bodies",
-        ),
-        Later(
-            4,
-            "`case?`: every element of every choice, no early exit (`array_match`)",
-        ),
-        Later(
-            4,
-            "`ieee` natives of 65 to 1024 elements from compiled code: a native callback each",
+            5,
+            "`ieee` natives of 65 to 1024 elements from compiled code: a native callback each \
+             (about 200 instructions more than the interpreter's call)",
         ),
         Pending("textio `read`/`write` of std_ulogic_vector: the bodies, per character"),
-    ]
+    ]);
+    v
 }
 
 const ALL_FAMILIES: &[Family] = {
@@ -646,6 +647,8 @@ fn array_row(name: &str, group: &str, c: TypeClass, ops: &str, n_ops: u64) -> Ro
         asym_ok: &[],
         general_ok: None,
         native: false,
+        uses: "",
+        static_only: false,
         step_ok: None,
         decls: t.decls,
         vars: format!(
@@ -749,7 +752,7 @@ fn logic_rows(f: Family, c: TypeClass) -> Vec<Row> {
     (r.ops1, r.ops0) = (ops1, ops0);
     if c == TypeClass::LogicArray {
         r.step_ok = Some((
-            4,
+            5,
             "with a static W of 2048 the native is a `LogicOp` into an `Alloc` of 1024 bytes, \
              a host step of compiled code at every operation (above the temporary area's reserve)",
         ));
@@ -944,6 +947,149 @@ fn radix_rows(f: Family) -> Vec<Row> {
     vec![r]
 }
 
+/// The std_logic_1164 gates of a std_ulogic_vector and a std_ulogic, both sides ('0'/'1' data:
+/// a metavalue sends the natives to their general path), against element loops.
+fn slv_scalar_rows(f: Family) -> Vec<Row> {
+    let op = f.as_str();
+    let name = format!("{op}_scalar");
+    let (mut r, t) = native_row(&name, &name, TypeClass::LogicArray);
+    r.setup = r
+        .setup
+        .replace(t.elem, "'1' when i mod 3 = 0 else '0'")
+        .replace(&t.toggle.replace("{x}", "b1(b1'right)"), "not b1(b1'right)");
+    r.general_ok = Some(
+        "above 64 elements the vector-scalar gates take their general path, word by word on a \
+         `LogicVec`",
+    );
+    r.vars += &format!(
+        "\n    variable s0, s1 : std_ulogic;\n    variable q0, q1, q2, q3 : {};",
+        full(&t)
+    );
+    r.setup += &format!(
+        "
+    s0 := '0'; s1 := '1';
+    for i in a'range loop
+      q0(i) := a(i) {op} s1; q1(i) := s0 {op} a(i); q2(i) := a(i) {op} s0; q3(i) := s1 {op} a(i);
+    end loop;"
+    );
+    r.ops1 = format!("check((a {op} s1) = q0, true); check((s0 {op} a) = q1, true);");
+    r.ops0 = format!("check((a {op} s0) = q2, true); check((s1 {op} a) = q3, true);");
+    vec![r]
+}
+
+/// `to_stdulogicvector` of a bit_vector (the same codes), against an element loop.
+fn tosulv_row() -> Row {
+    let (mut r, _) = native_row("to_stdulogicvector", "", TypeClass::BitArray);
+    r.vars += "\n    variable u0, u1 : std_ulogic_vector(W - 1 downto 0);";
+    r.setup += "
+    for i in a'range loop
+      u0(i) := '1' when a(i) = '1' else '0'; u1(i) := '1' when b1(i) = '1' else '0';
+    end loop;";
+    r.ops1 = "check(to_stdulogicvector(b1) = u1, true); check(to_stdulogicvector(a) = u0, true);"
+        .to_string();
+    r.ops0 = "check(to_stdulogicvector(b0) = u0, true); check(to_stdulogicvector(a) = u0, true);"
+        .to_string();
+    r
+}
+
+/// `case?` on a std_ulogic_vector with two locally static choices ('-' in one), against a
+/// reference made of scalar `?=` (static `W` only: the choices must be locally static).
+fn caseq_row() -> Row {
+    let (mut r, t) = native_row("case_match", "", TypeClass::LogicArray);
+    r.native = false;
+    r.static_only = true;
+    r.general_ok =
+        Some("above 1024 elements `?=` takes its general path, word by word on a `LogicVec`");
+    r.setup = r
+        .setup
+        .replace(t.elem, "'1' when i mod 3 = 0 else '0'")
+        .replace(&t.toggle.replace("{x}", "b1(b1'right)"), "not b1(b1'right)");
+    r.vars += "
+    constant C0 : std_ulogic_vector(W - 1 downto 0) := (0 => '1', others => '-');
+    constant C1 : std_ulogic_vector(W - 1 downto 0) := (others => '0');
+    variable kc, ka, kb : integer;
+    function ci(x : std_ulogic_vector) return integer is
+      variable m0, m1 : boolean := true;
+    begin
+      for i in x'range loop
+        m0 := m0 and (x(i) ?= C0(i)) = '1';
+        m1 := m1 and (x(i) ?= C1(i)) = '1';
+      end loop;
+      if m0 then return 0; elsif m1 then return 1; end if;
+      return 2;
+    end function;";
+    r.setup += "\n    ka := ci(a); kb := ci(b1);";
+    let case = |x: &str, want: &str| {
+        format!(
+            "case? {x} is when C0 => kc := 0; when C1 => kc := 1; when others => kc := 2; end case?;
+        check(kc = {want}, true);"
+        )
+    };
+    r.ops1 = format!("{}\n        {}", case("b1", "kb"), case("a", "ka"));
+    r.ops0 = format!("{}\n        {}", case("b0", "ka"), case("a", "ka"));
+    r
+}
+
+/// numeric_bit unary `-` and `abs` of a signed and `minimum` of two unsigned, against element
+/// loops and the numeric_bit `<`.
+fn nbit_rows() -> Vec<Row> {
+    let one = |name: &str, ty: &str, vars: &str, setup: &str, ops1: &str, ops0: &str| {
+        let (mut r, _) = native_row(name, "", TypeClass::BitArray);
+        r.native = false;
+        r.uses = "use ieee.numeric_bit.all;";
+        r.general_ok = Some(
+            "above 1024 elements the numeric natives take their general path, word by word on a \
+             `LogicVec`",
+        );
+        r.vars = r.vars.replace("bit_vector(", &format!("{ty}("));
+        r.vars = r.vars.replace("x, y : bit_vector", &format!("x, y : {ty}"));
+        r.vars += vars;
+        r.setup += setup;
+        (r.ops1, r.ops0) = (ops1.to_string(), ops0.to_string());
+        r
+    };
+    let neg = "
+    variable na, nb : signed(W - 1 downto 0);
+    function ng(x : signed) return signed is
+      variable r : signed(x'length - 1 downto 0);
+      alias v : signed(x'length - 1 downto 0) is x;
+      variable c : bit := '1';
+    begin
+      for i in 0 to x'length - 1 loop r(i) := not v(i) xor c; c := c and not v(i); end loop;
+      return r;
+    end function;";
+    vec![
+        one(
+            "nbit_neg",
+            "signed",
+            neg,
+            "\n    na := ng(a); nb := ng(b1);",
+            "check(bit_vector(-b1) = bit_vector(nb), true); check(bit_vector(-a) = bit_vector(na), true);",
+            "check(bit_vector(-b0) = bit_vector(na), true); check(bit_vector(-a) = bit_vector(na), true);",
+        ),
+        one(
+            "nbit_abs",
+            "signed",
+            neg,
+            "
+    -- (The sign bit set: abs negates.)
+    a(a'left) := '1'; b0 := a; b1(b1'left) := '1';
+    if a(a'left) = '1' then na := ng(a); else na := a; end if;
+    if b1(b1'left) = '1' then nb := ng(b1); else nb := b1; end if;",
+            "check(bit_vector(abs b1) = bit_vector(nb), true); check(bit_vector(abs a) = bit_vector(na), true);",
+            "check(bit_vector(abs b0) = bit_vector(na), true); check(bit_vector(abs a) = bit_vector(na), true);",
+        ),
+        one(
+            "nbit_minimum",
+            "unsigned",
+            "\n    variable m1 : unsigned(W - 1 downto 0);",
+            "\n    if a < b1 then m1 := a; else m1 := b1; end if;",
+            "check(bit_vector(minimum(a, b1)) = bit_vector(m1), true); check(bit_vector(minimum(b1, a)) = bit_vector(m1), true);",
+            "check(bit_vector(minimum(a, b0)) = bit_vector(a), true); check(bit_vector(minimum(b0, a)) = bit_vector(a), true);",
+        ),
+    ]
+}
+
 /// A scalar row: variables, their setup and the checks of odd and even iterations.
 fn scalar(name: &str, class: TypeClass, vars: &str, setup: &str, ops1: &str, ops0: &str) -> Row {
     Row {
@@ -954,6 +1100,8 @@ fn scalar(name: &str, class: TypeClass, vars: &str, setup: &str, ops1: &str, ops
         asym_ok: &[],
         general_ok: None,
         native: false,
+        uses: "",
+        static_only: false,
         step_ok: None,
         decls: "",
         vars: vars.to_string(),
@@ -1049,7 +1197,7 @@ package p is
   {decls}
 end package;
 
-library ieee; use ieee.std_logic_1164.all;
+library ieee; use ieee.std_logic_1164.all; {uses}
 use work.p.all;
 entity top is generic ({generics}); end entity;
 architecture a of top is
@@ -1077,6 +1225,7 @@ begin
 end architecture;
 ",
         decls = row.decls,
+        uses = row.uses,
         vars = row.vars,
         setup = row.setup,
         ops1 = row.ops1,
@@ -1168,7 +1317,9 @@ fn measure<'a>(rows: &'a [Row], tier: &str) -> Measured<'a> {
     let jobs: Vec<(&Row, bool)> = rows
         .iter()
         .flat_map(|r| {
-            let s: &[bool] = if r.cost == Cost::Word {
+            let s: &[bool] = if r.static_only {
+                &[true]
+            } else if r.cost == Cost::Word {
                 &[false, true]
             } else {
                 &[false]

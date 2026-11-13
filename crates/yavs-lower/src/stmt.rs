@@ -603,14 +603,41 @@ impl Fx<'_, '_> {
         t: yavs_sem::TypeId,
         span: Span,
     ) -> R<Reg> {
-        let (ad, ap) = self.arr(a, span)?;
-        let (bd, bp) = self.arr(b, span)?;
         let tid = self.ty(t, span)?;
-        if yavs_ir::Ty::logic_leaf(self.fb.program().types(), tid).is_none() {
+        let leaf = yavs_ir::Ty::logic_leaf(self.fb.program().types(), tid);
+        if leaf.is_none() {
             return Err(self.cx.unsupported(
                 span,
                 "matching case over arrays other than BIT and STD_ULOGIC vectors",
             ));
+        }
+        // BIT has no metavalue: a choice matches when it is equal (LRM 9.2.3, 10.9).
+        if leaf == Some(yavs_ir::LogicKind::Bit) {
+            return self.array_cmp(CmpOp::Eq, a, b, t, span);
+        }
+        let (ad, ap) = self.arr(a, span)?;
+        let (bd, bp) = self.arr(b, span)?;
+        // A choice matches when `?=` gives '1' (LRM 10.9): one call of the native of the predefined
+        // `?=` of std_ulogic vectors (word by word, its metavalue and '-' rules) instead of a loop
+        // over the elements. The lengths are equal (`case_length_check`).
+        let elem = ty::array_of(self.db, t).map(|(e, _)| e);
+        if !self.cx.opts.no_native_ieee
+            && leaf == Some(yavs_ir::LogicKind::StdULogic)
+            && let Some(elem) = elem
+        {
+            let sym = yavs_ir::ieee::implicit_native(
+                "yavs.implicit.meq.ieee.std_logic_1164.std_ulogic_vector",
+            )
+            .ok_or_else(|| self.cx.ice(span, "no native of `?=` of std_ulogic_vector"))?;
+            let (l1, r1, d1) = self.dope_bounds(ap);
+            let (l2, r2, d2) = self.dope_bounds(bp);
+            let cells = [ad, l1, r1, d1, bd, l2, r2, d2];
+            let Some(crate::expr::V::S(m)) = self.native(&sym, None, &cells, Some(elem), span)?
+            else {
+                return Err(self.cx.ice(span, "`?=` of std_ulogic_vector is no scalar"));
+            };
+            let one = self.int(3);
+            return Ok(self.cmp(CmpOp::Eq, m, one));
         }
         let la = self.dope_len(ap);
         let lb = self.dope_len(bp);

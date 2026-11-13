@@ -458,6 +458,73 @@ fn vec_gate<const G: u8>(m: &mut Machine, ctx: Cx<'_, '_, '_>, _: Option<TyId>, 
     put(m, &Vh::up1(v))
 }
 
+/// The std_logic_1164 gate of a vector and a scalar (`LEFT`: the scalar is the left operand; the
+/// tables are symmetric, so only the cells differ): every element with the scalar, `(1 to n)`.
+fn vs_gate<const G: u8, const LEFT: bool>(
+    m: &mut Machine,
+    _: Cx<'_, '_, '_>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> Ret {
+    if let Some(r) = fast_vs_gate::<G, LEFT>(m, a) {
+        return Ok(Some(r));
+    }
+    general(m);
+    let (vi, si) = if LEFT { (1, 0) } else { (0, A1) };
+    let l = vh(m, a, vi)?;
+    let r = LogicVec::new(l.v.len(), sul(a, si)?);
+    let v = match GATES[G as usize] {
+        Gate::And => l.v.and(&r),
+        Gate::Nand => l.v.nand(&r),
+        Gate::Or => l.v.or(&r),
+        Gate::Nor => l.v.nor(&r),
+        Gate::Xor => l.v.xor(&r),
+        Gate::Xnor => l.v.xnor(&r),
+    };
+    put(m, &Vh::up1(v))
+}
+
+/// [`vs_gate`] of a vector of up to 64 elements of `0 1 L H` and a scalar `0 1 L H`.
+fn fast_vs_gate<const G: u8, const LEFT: bool>(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    let (vi, si) = if LEFT { (1, 0) } else { (0, A1) };
+    let l = small(m, a, vi)?;
+    let s = match *a.get(si)? {
+        2 | 6 => 0,
+        3 | 7 => !0,
+        _ => return None,
+    };
+    put_small(
+        m,
+        l.n,
+        gate_bits(GATES[G as usize], l.bits, s),
+        1,
+        l.n as i64,
+        false,
+    )
+    .ok()
+}
+
+/// `to_stdulogicvector (b)` of a `bit_vector`: its elements are the codes of `'0'` and `'1'`
+/// already, so the planes are copied as they are, `(n - 1 downto 0)`; no general path.
+fn to_sulv(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
+    let (data, left, right, down) = dim_at(a, 0)?;
+    let n = dim_len(left, right, down).ok_or_else(|| Fault::Runtime("array too long".into()))?;
+    let n = usize::try_from(n).map_err(|_| Fault::Runtime("array too long".into()))?;
+    let mut out = Vec::with_capacity(n.div_ceil(64));
+    if n > 0 {
+        let b = m.rd(data, n.div_ceil(64) as u64 * 32)?;
+        for (i, w) in b.as_chunks::<32>().0.iter().enumerate() {
+            let valid = low(n - i * 64);
+            out.push([le8(&w[0..8]) & valid, valid, 0, 0]);
+        }
+    }
+    put_blocks(m, &out, n as i64 - 1, 0, true)
+}
+
+fn fast_to_sulv(m: &mut Machine, a: &[u64]) -> Option<u64> {
+    to_sulv(m, &mut None, None, a).ok().flatten()
+}
+
 /// `numeric_std` gate of two `unsigned` or `signed`: the std_logic_1164 gate of the same elements
 /// with the bounds `(n-1 downto 0)`. Unequal lengths go back to the body.
 fn num_gate<const G: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
@@ -3183,6 +3250,29 @@ pub(crate) fn lookup(symbol: &str) -> Option<NativeFn> {
         Op::Conv(_, true) => conv::<2, true>,
         Op::To01 => to_01_vec,
         Op::ToBitVector => to_bitvector,
+        Op::ToSulv => to_sulv,
+        Op::VecScalarGate { g, left } => {
+            let k = GATES.iter().position(|x| *x == g)?;
+            if left {
+                [
+                    vs_gate::<0, true> as NativeFn,
+                    vs_gate::<1, true>,
+                    vs_gate::<2, true>,
+                    vs_gate::<3, true>,
+                    vs_gate::<4, true>,
+                    vs_gate::<5, true>,
+                ][k]
+            } else {
+                [
+                    vs_gate::<0, false> as NativeFn,
+                    vs_gate::<1, false>,
+                    vs_gate::<2, false>,
+                    vs_gate::<3, false>,
+                    vs_gate::<4, false>,
+                    vs_gate::<5, false>,
+                ][k]
+            }
+        }
         Op::Truthy => truthy,
         Op::IsX(true) => is_x_vec,
         Op::IsX(false) => is_x_sul,
@@ -3413,6 +3503,29 @@ pub(crate) fn lookup_fast(symbol: &str) -> Option<FastFn> {
         Op::Conv(1, true) => fast_conv_vec::<1>,
         Op::Conv(_, true) => fast_conv_vec::<2>,
         Op::ToBitVector => fast_to_bitvector,
+        Op::ToSulv => fast_to_sulv,
+        Op::VecScalarGate { g, left } => {
+            let k = GATES.iter().position(|x| *x == g)?;
+            if left {
+                [
+                    fast_vs_gate::<0, true> as FastFn,
+                    fast_vs_gate::<1, true>,
+                    fast_vs_gate::<2, true>,
+                    fast_vs_gate::<3, true>,
+                    fast_vs_gate::<4, true>,
+                    fast_vs_gate::<5, true>,
+                ][k]
+            } else {
+                [
+                    fast_vs_gate::<0, false> as FastFn,
+                    fast_vs_gate::<1, false>,
+                    fast_vs_gate::<2, false>,
+                    fast_vs_gate::<3, false>,
+                    fast_vs_gate::<4, false>,
+                    fast_vs_gate::<5, false>,
+                ][k]
+            }
+        }
         Op::Add {
             sub,
             signed,

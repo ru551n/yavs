@@ -83,6 +83,8 @@ begin
       -- The predefined ?= and ?/= of std_ulogic_vector and std_ulogic.
       mix(v ?= vu); mix(std_logic_vector(au) ?/= std_logic_vector(bu)); mix(a(0) ?= b(k)); mix(au(1) ?/= bu(0));
       bv := to_bitvector(v); mix(bv(0) = '1');
+      -- The gates of a vector and a scalar, and to_stdulogicvector.
+      vu := (v and a(0)) xor (b(1) or vu); v := v xor to_stdulogicvector(bv);
       wait for 1 ns;
     end loop;
     report "W=" & integer'image(W) & " sum=" & to_hstring(s) & " " & to_hstring(ss) & " " & integer'image(acc);

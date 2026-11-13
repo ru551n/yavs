@@ -599,6 +599,15 @@ case!(ieee_share, "n=", &[], [("ops", Max(3626))]);
 // `clift`; an unlisted key is bounded by 0. A new path updates this table in the same commit
 // (root `AGENTS.md` section 4, `docs/decisions.md` "Guards for the paths of the `ieee` natives").
 const IEEE_GENERAL: &[(&str, u64)] = &[
+    // The gates of a vector and a scalar have a one-word path only: 65 and 128 elements.
+    (
+        r#"std_logic_1164."and"(std_ulogic_vector,std_ulogic)std_ulogic_vector"#,
+        60,
+    ),
+    (
+        r#"std_logic_1164."or"(std_ulogic,std_ulogic_vector)std_ulogic_vector"#,
+        60,
+    ),
     ("numeric_std.shift_right(signed,integer)signed", 120),
     (
         "std_logic_1164.to_01(std_ulogic_vector,std_ulogic)std_ulogic_vector",
@@ -2282,9 +2291,21 @@ mod clift {
         ),
         (
             r#"std_logic_1164."xor"(std_ulogic_vector,std_ulogic_vector)std_ulogic_vector"#,
-            2387,
+            2507,
         ),
         ("std_logic_1164.is_x(std_ulogic_vector)boolean", 62),
+        (
+            r#"std_logic_1164."and"(std_ulogic_vector,std_ulogic)std_ulogic_vector"#,
+            150,
+        ),
+        (
+            r#"std_logic_1164."or"(std_ulogic,std_ulogic_vector)std_ulogic_vector"#,
+            150,
+        ),
+        (
+            "std_logic_1164.to_stdulogicvector(bit_vector)std_ulogic_vector",
+            150,
+        ),
         (
             "std_logic_1164.to_bitvector(std_ulogic_vector,bit)bit_vector",
             150,

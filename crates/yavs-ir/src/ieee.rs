@@ -173,6 +173,15 @@ pub enum Op {
     /// `std_logic_1164` gate on two vectors, or a vector and a scalar (`Form::Vv` only: the
     /// scalar forms are separate keys).
     VecGate(Gate),
+    /// `std_logic_1164` gate of a vector and a scalar (`left`: the scalar is the left operand):
+    /// the gate of every element with the scalar, `(1 to n)`.
+    VecScalarGate {
+        g: Gate,
+        left: bool,
+    },
+    /// `to_stdulogicvector` and `to_stdlogicvector` of a `bit_vector`: the same codes,
+    /// `(n - 1 downto 0)`.
+    ToSulv,
     Not,
     VecNot,
     /// A gate over all elements of one vector: the unary `std_logic_1164` and `numeric_std`
@@ -314,6 +323,22 @@ pub fn parse(key: &str) -> Option<Op> {
         ("std_logic_1164", n, ["std_ulogic_vector", "std_ulogic_vector"], "std_ulogic_vector") => {
             gate(n).map(Op::VecGate)
         }
+        ("std_logic_1164", n, ["std_ulogic_vector", "std_ulogic"], "std_ulogic_vector")
+            if gate(n).is_some() =>
+        {
+            gate(n).map(|g| Op::VecScalarGate { g, left: false })
+        }
+        ("std_logic_1164", n, ["std_ulogic", "std_ulogic_vector"], "std_ulogic_vector")
+            if gate(n).is_some() =>
+        {
+            gate(n).map(|g| Op::VecScalarGate { g, left: true })
+        }
+        (
+            "std_logic_1164",
+            "to_stdulogicvector" | "to_stdlogicvector",
+            ["bit_vector"],
+            "std_ulogic_vector",
+        ) => Some(Op::ToSulv),
         ("std_logic_1164", n, ["std_ulogic_vector"], "std_ulogic") => gate(n).map(Op::Reduce),
         ("std_logic_misc", n, ["std_ulogic_vector"], "std_ulogic") => {
             gate(n.strip_suffix("_reduce")?).map(Op::Reduce)
@@ -356,8 +381,9 @@ pub fn parse(key: &str) -> Option<Op> {
         ("numeric_std", "not", [a], r) if !bit && a == &r && (r == "unsigned" || r == "signed") => {
             Some(Op::NumNot)
         }
-        ("numeric_std", "-", ["signed"], "signed") if !bit => Some(Op::Neg),
-        ("numeric_std", "abs", ["signed"], "signed") if !bit => Some(Op::Abs),
+        // numeric_bit's bodies compute the same without the metavalue cases (BIT has none).
+        ("numeric_std", "-", ["signed"], "signed") => Some(Op::Neg),
+        ("numeric_std", "abs", ["signed"], "signed") => Some(Op::Abs),
         ("numeric_std", n @ ("+" | "-"), ps, r) => {
             let (signed, form, t) = num_form(ps)?;
             (r == t).then_some(Op::Add {
@@ -392,8 +418,12 @@ pub fn parse(key: &str) -> Option<Op> {
             };
             Some(Op::QCompare { cmp, signed, form })
         }
-        ("numeric_std", n @ ("maximum" | "minimum"), ps, r) if !bit => {
+        // numeric_bit: two vectors only (with an integer, a truncation warning names the package).
+        ("numeric_std", n @ ("maximum" | "minimum"), ps, r) => {
             let (signed, form, t) = num_form(ps)?;
+            if bit && !matches!(form, Form::Vv) {
+                return None;
+            }
             (r == t).then_some(Op::MinMax {
                 max: n == "maximum",
                 signed,

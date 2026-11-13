@@ -253,6 +253,14 @@ fn testbench(seed: u64, per_op: usize) -> String {
         g.case(&format!("is_x({x})"), "img");
         g.case(&format!("to_bitvector({x})"), "img");
         g.case(&format!("to_bitvector({x}, '1')"), "img");
+        g.case(&format!("to_stdulogicvector(to_bitvector({x}))"), "img");
+        // The gates of a vector and a scalar, both sides, every scalar value.
+        for op in sl {
+            let c = sul.as_bytes()[g.rng.below(9) as usize] as char;
+            g.case(&format!("{x} {op} std_ulogic'('{c}')"), "img");
+            let c = sul.as_bytes()[g.rng.below(9) as usize] as char;
+            g.case(&format!("std_ulogic'('{c}') {op} {x}"), "img");
+        }
         // Reductions, also over several plane words.
         let w = if g.rng.below(2) == 0 {
             x.clone()
@@ -2641,6 +2649,12 @@ fn native_numeric_bit_matches_bodies() {
             }
             g.case(&format!("{a} sll {c}"), "img");
             g.case(&format!("{a} sra {c}"), "img");
+            g.case(&format!("minimum({a}, {b})"), "img");
+            g.case(&format!("maximum({b}, {a})"), "img");
+            if !nat {
+                g.case(&format!("-{a}"), "img");
+                g.case(&format!("abs {a}"), "img");
+            }
             let s: String = (0..g.rng.below(31))
                 .map(|_| b"01"[g.rng.below(2) as usize] as char)
                 .collect();
@@ -2664,6 +2678,14 @@ fn native_numeric_bit_matches_bodies() {
             "img",
         );
         g.case(&format!("{ty}(\"{v}\", 0, false) + 1"), "img");
+        g.case(
+            &format!("minimum({ty}(\"{v}\", 0, false), {ty}(\"01\", 1, true))"),
+            "img",
+        );
+        if ty == "gv" {
+            g.case(&format!("-{ty}(\"{v}\", 0, false)"), "img");
+            g.case(&format!("abs {ty}(\"{v}\", 0, false)"), "img");
+        }
     }
     let src = format!(
         "{BIT_HEAD}{}    wait;\n  end process;\nend architecture;\n",

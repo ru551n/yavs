@@ -41,6 +41,8 @@ rows! {
     "Truthy": Op::Truthy => FAST, CALL;
     "IsX": Op::IsX(false) => FAST, CALL;
     "ToBitVector": Op::ToBitVector => FAST, CALL;
+    "ToSulv": Op::ToSulv => FAST, CALL;
+    "VecScalarGate": Op::VecScalarGate { .. } => FAST, CALL;
     // Compiled code tests the edge itself.
     "Edge": Op::Edge(_) => NO_FAST, CALL;
     "VecGate": Op::VecGate(_) => FAST, IN_PLACE;
@@ -106,7 +108,8 @@ pub fn every_op() -> Vec<(Op, String)> {
         "mod", "?>", "?<", "?<=", "?>=", "?=", "?/=", ">", "<", "<=", ">=", "=", "/=", "**", "sll",
         "srl", "sla", "sra", "rol", "ror",
     ];
-    const FNS: [&str; 61] = [
+    const FNS: [&str; 62] = [
+        "to_stdulogicvector",
         "and_reduce",
         "nand_reduce",
         "or_reduce",

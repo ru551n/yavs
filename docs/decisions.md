@@ -3405,7 +3405,10 @@ user's performance priority:
   `numeric_bit` subprogram is the `numeric_std` one with `bit_vector` for `std_ulogic_vector`;
   lowering gives such a native a type argument (the type of its first parameter) so the native
   can name its warnings `NUMERIC_BIT.` instead of `NUMERIC_STD.`. There are no metavalues in
-  `bit` arrays, so the metavalue paths never run.
+  `bit` arrays, so the metavalue paths never run. Unary `-` and `abs` of `signed` and `minimum`/
+  `maximum` of two vectors run on the same natives too (2026-11-13, opfast2): the `numeric_bit`
+  bodies compute what the `numeric_std` ones do without the metavalue cases; the forms with an
+  integer stay bodies (a truncation warning names the package).
 - **Procedures and string results:** a native may be a procedure (`uniform`: seeds by reference,
   `x` out, the body's two ERROR reports); `to_hstring`/`to_ostring` return a string and hand a
   null vector back to the body (its index error is the answer). `shift_left` ... `rotate_right`

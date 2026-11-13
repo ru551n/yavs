@@ -1,0 +1,2 @@
+exit	0
+diag	note	0	0	:std_logic_1164_natives:_p0	std_logic_1164_natives cases=992 acc=601226 bad=0

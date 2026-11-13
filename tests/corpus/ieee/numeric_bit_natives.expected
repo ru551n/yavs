@@ -1,0 +1,2 @@
+exit	0
+diag	note	0	0	:numeric_bit_natives:_p0	numeric_bit_natives cases=107 acc=584899 bad=0

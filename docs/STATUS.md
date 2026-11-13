@@ -11287,3 +11287,7 @@ A call whose parameters the prologue does not all load, or whose body reads a pa
 
 ## Copies of subprograms by descriptors
 A specialised copy calls a copy of a subprogram made for the descriptors of records and arrays of composites it knows at the call (`yavs-ir` `opt/subcopy.rs`, `docs/decisions.md` "Copies of subprograms by the descriptors of their arguments"). Stored copies name those calls by what they are for. Not on the eager `--tier=clift`, which has no copies; a descriptor a caller builds per call (a formal of a subtype with a non-static bound) is not known, and compiled-to-compiled calls are outside the debug check.
+
+## `--yavs-jobserver` with `-p 0`, and the cores of `--tier-compile=wait` (vunit-yavs, yavs, #1141, 2026-11-13)
+
+`-p 0` (one job per CPU) left the token server off: `from_args` tested the raw 0. It now resolves 0 with `multiprocessing.cpu_count()`, as the test runner does. Tests: `test_interface.py` (`-p 0` with 6 and with 1 CPU), `test_fake_e2e.py` (`--threads=auto` and the token calls for `-p 0`, 1, 4 with and without the flag). The docs said `--tier-compile=wait` keeps no more cores busy than `--threads`; the tier-up thread still prepares functions alongside the run (measured on a full suite at `-p 0`: about a tenth of a process's CPU, up to 30 percent in a short test) and a process has a sampler and a signal thread, so `--help`, `cli-reference.rst`, `running-faster.rst`, `threads.rst`, `parallel.md`, `vunit.rst`, `vunit-yavs.rst` and `cli-contract.md` now say that. No behaviour changed.

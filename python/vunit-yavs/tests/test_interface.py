@@ -889,6 +889,17 @@ class TestYavsInterface(unittest.TestCase):
         self.assertEqual(tokens.num_threads, 4)
         tokens.close()
 
+    @NEEDS_FAKE_BIN
+    def test_token_server_with_p_0_is_one_slot_per_cpu(self):
+        # -p 0 is one job per CPU for the test runner, so the token server has that many slots (#1141)
+        with mock.patch("os.cpu_count", return_value=6):
+            tokens = self._from_args(num_threads=0, yavs_jobserver=True)._tokens
+            self.assertEqual(tokens.num_threads, 6)
+            tokens.close()
+            self.assertIsNone(self._from_args(num_threads=0)._tokens)
+        with mock.patch("os.cpu_count", return_value=1):
+            self.assertIsNone(self._from_args(num_threads=0, yavs_jobserver=True)._tokens)
+
     def _simulate_with_tokens(self, config, elaborate_only=False):
         tokens = TokenServer(4)
         self.addCleanup(tokens.close)

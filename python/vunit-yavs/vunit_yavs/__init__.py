@@ -24,6 +24,7 @@ import threading
 import warnings
 from functools import total_ordering
 import os
+from multiprocessing import cpu_count
 from os import environ, makedirs
 from pathlib import Path
 
@@ -448,9 +449,11 @@ class YavsInterface(SimulatorInterface):
             check_interactive_args(args, debug_port)
 
         tokens = None
-        if getattr(args, "yavs_jobserver", False) and args.num_threads > 1:
+        # -p 0 means one job per CPU: the test runner resolves it the same way (#1141)
+        jobs = (args.num_threads or cpu_count()) if getattr(args, "yavs_jobserver", False) else 1
+        if jobs > 1:
             try:
-                tokens = TokenServer(args.num_threads)
+                tokens = TokenServer(jobs)
             except OSError as exc:
                 # Tokens only speed a run up: every simulation then runs on one thread (#878)
                 LOGGER.warning("--yavs-jobserver: cannot start the token server (%s); simulations use one thread", exc)

@@ -36,8 +36,9 @@ as ``--name=value``.
        It overrides ``--yavs-max-threads`` for a test. Not passed under ``--yavs-debug`` or to
        ``elab``. A ``--threads`` in ``yavs.sim_flags`` comes after it and wins.
    * - ``yavs.tier_compile``
-     - ``yavs run --tier-compile=MODE``: ``"wait"`` (yavs's default: a simulation waits while a function compiles,
-       so it keeps no more cores busy than its threads) or ``"background"`` (functions compile on a thread of their
+     - ``yavs run --tier-compile=MODE``: ``"wait"`` (yavs's default: a simulation waits while a function compiles; a tier-up
+       thread still prepares functions alongside it, so a run can use somewhat more cores than its threads for short
+       periods) or ``"background"`` (functions compile on a thread of their
        own at the lowest system priority, alongside the run: a test that compiles a lot may end sooner when there are
        idle cores) (:doc:`running-faster`). Not passed to ``elab``. A ``--tier-compile`` in ``yavs.sim_flags``
        wins.
@@ -126,7 +127,7 @@ out stops the run script with one ``error:`` line that says why and what to drop
      - ``results.merge_coverage()`` reads exclusion files, root and kinds from this YAML file
        (``yavs cov report --config``). No file is read without it.
    * - ``--yavs-jobserver``
-     - With ``-p N`` above 1: lends the CPU slots that no test uses to the running simulations
+     - With ``-p N`` above 1 (``-p 0``, one job per CPU, counts as the CPU count): lends the CPU slots that no test uses to the running simulations
        through a token server (:doc:`threads`).
 
 Without ``yavs.max_threads`` or ``--yavs-max-threads`` no thread count is passed and yavs runs

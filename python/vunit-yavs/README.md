@@ -120,7 +120,7 @@ waiting for a debugger on the port. The waves and coverage files of such a run a
 
 ## Token server
 
-With `-p N --yavs-jobserver` (Linux and Windows) the run script starts a token server on
+With `-p N --yavs-jobserver` (Linux and Windows; `-p 0`, one job per CPU, counts as the CPU count) the run script starts a token server on
 127.0.0.1 and lends the CPU slots of `-p N` that no test uses to the running simulations. Every
 simulation runs with `--threads=auto` (unless `yavs.max_threads` or `--yavs-max-threads` says otherwise) and gets
 `YAVS_TOKENS=<port>:<secret>`, a secret of its own; yavs runs its extra threads only on tokens the

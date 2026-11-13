@@ -156,8 +156,9 @@ fails the compile step (:doc:`lint`).
 Share CPU cores
 ---------------
 
-``-p N`` runs N tests side by side and is usually all you need. Each simulation keeps at most its own threads
-busy: it waits while yavs compiles one of its functions, so ``-p N`` on N cores leaves the computer usable. On a
+``-p N`` runs N tests side by side and is usually all you need. Each simulation waits while yavs compiles one of its
+functions, and apart from a tier-up thread that prepares functions alongside it, it keeps at most its own threads
+busy, so ``-p N`` on N cores leaves the computer usable. On a
 machine with idle cores, ``vu.set_sim_option("yavs.tier_compile", "background")`` compiles alongside the run
 instead, at the lowest system priority (:doc:`running-faster`). Near the end of a regression, when only long
 tests are left, the token server can lend the idle slots to them as threads:

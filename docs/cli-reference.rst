@@ -516,7 +516,7 @@ Arguments:
 
 .. option:: --tier-compile=wait|background
 
-   With ``--tier=auto``: where the functions that become hot are compiled. ``wait``: the run waits while one compiles, so it keeps no more cores busy than ``--threads``; ``background``: on a thread of its own, at the lowest priority of the system, alongside the run.
+   With ``--tier=auto``: where the functions that become hot are compiled. ``wait``: the run waits while one compiles instead of running it interpreted meanwhile; a tier-up thread still prepares functions alongside the run, so a run can use somewhat more than ``--threads`` cores for short periods; ``background``: on a thread of its own, at the lowest priority of the system, alongside the run. ``--tier=interp`` starts no tier-up thread.
 
    Default: ``wait``.
 

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from multiprocessing import cpu_count
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -129,6 +130,19 @@ class TestFakeYavs(unittest.TestCase):
         # slot of -p 2
         self.assertTrue(all("--threads=auto" in run for run in self._runs(calls)))
         self.assertIn(["tokens", 1], calls)
+
+    def test_token_server_for_every_job_count(self):
+        # -p 0 is one job per CPU: the same as -p N for N the CPU count (#1141)
+        for jobs, slots in (("0", cpu_count()), ("1", 1), ("4", 4)):
+            for flag in (True, False):
+                with self.subTest(p=jobs, jobserver=flag):
+                    exit_code, output, _, calls = self._run("-p", jobs, *(["--yavs-jobserver"] if flag else []), PASS)
+                    self.assertEqual(exit_code, 0, output)
+                    runs = self._runs(calls)
+                    self.assertEqual(len(runs), 1)
+                    served = flag and slots > 1
+                    self.assertEqual(bool([call for call in calls if call[0] == "tokens"]), served)
+                    self.assertEqual("--threads=auto" in runs[0], served)
 
     def test_no_token_server_without_the_flag(self):
         _, _, _, calls = self._run("-p", "2", PASS, COMMA)

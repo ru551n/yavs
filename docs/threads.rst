@@ -22,9 +22,10 @@ is 1. ``--threads=auto`` decides while the run goes (`Letting yavs decide`_).
   while it runs, and keeps the work on one thread for a design whose groups turn out no faster.
 * A process that touches files, shared variables or protected objects runs on the main thread, in the
   same order as on one thread.
-* ``--tier=auto`` compiles while the simulation waits (``--tier-compile=wait``, the default), so it adds no busy
-  thread. With ``--tier-compile=background`` it compiles on one more thread, at the lowest priority of the system,
-  not counted in ``--threads``.
+* ``--tier=auto`` compiles while the simulation waits (``--tier-compile=wait``, the default). A tier-up thread
+  still prepares functions alongside the run, so a run can use somewhat more than ``--threads`` cores for short
+  periods, and ``--tier=interp`` starts no such thread. With ``--tier-compile=background`` it compiles on that
+  thread alongside the run, at the lowest priority of the system, not counted in ``--threads``.
 * A debugger or console session runs on one thread, and ``--threads`` is then ignored with warning
   ``W0109``.
 

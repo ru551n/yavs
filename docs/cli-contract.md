@@ -650,7 +650,11 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   (default `wait`; user, 2026-11-07, #1123): with `auto` (and `clift-auto`), where hot functions
   compile. `wait`: the tier-up thread compiles only while the simulation waits for it at a pause point (the
   start of a delta cycle, the interpreter's periodic looks inside a long process run, a step that compiled
-  code hands the interpreter), so a run keeps at most `--threads` threads busy; compiled code in a loop that
+  code hands the interpreter), so no compile runs alongside the simulation threads. The tier-up thread
+  still prepares functions (optimising ahead of the compile, analyses) alongside the run, so a run can use
+  somewhat more than `--threads` cores for short periods (measured, 2026-11: on average about a tenth of a
+  process's CPU time, up to 30 percent in a short test), and it has further helper threads (sampler, signal
+  waiter); `--tier=interp` starts no tier-up thread. Compiled code in a loop that
   never leaves it reaches no pause point, and a compile waits until it does. The compiles are paced: their
   compile time, each priced at what compiling it was measured to cost, stays within a quarter of the
   simulation CPU time the looks covered (the whole of it once the looks hold a second of simulation work), and a function whose whole compile does not fit waits; of those the
@@ -684,7 +688,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   option `yavs.max_threads` (or the runner argument `--yavs-max-threads N` for every test; both
   take a number or `auto`) becomes `--threads=N` before the raw flags, so `--threads` in
   `yavs.sim_flags` still wins; none under `--dap` or for `elab`. With the runner's
-  `--yavs-jobserver` and `-p N` above 1, the runner starts a token server and every `yavs run`
+  `--yavs-jobserver` and `-p N` above 1 (`-p 0` is one job per CPU), the runner starts a token server and every `yavs run`
   gets `--threads=auto` (or `yavs.max_threads` when set, before the raw flags) and its own
   `YAVS_TOKENS`: the runner lends the CPU slots no test uses as tokens, at most
   `min(N, 8) - 1` per test with `auto` and `yavs.max_threads - 1` with a number, breadth first,

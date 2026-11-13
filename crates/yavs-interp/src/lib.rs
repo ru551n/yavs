@@ -143,9 +143,29 @@ pub struct ProcDriver {
     pub range: Range,
 }
 
-/// Shared variables and the shared heap, used only by serial processes (ir.md 3.5).
+/// Shared variables and the shared heap, used only by serial processes (ir.md 3.5). Boxed, so
+/// lending it to a serial process for an activation moves one pointer (`InterpProcess::run_serial`).
 #[derive(Clone, Default)]
-pub struct SharedState {
+pub struct SharedState(Box<SharedData>);
+
+impl std::ops::Deref for SharedState {
+    type Target = SharedData;
+    #[inline(always)]
+    fn deref(&self) -> &SharedData {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for SharedState {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut SharedData {
+        &mut self.0
+    }
+}
+
+/// What a [`SharedState`] holds.
+#[derive(Clone, Default)]
+pub struct SharedData {
     /// Addressed by `AddrSpace::Shared`; `Program::shared_roots` is its root map.
     pub vars: Vec<u8>,
     /// Boxed: a process that never allocates in it carries only the pointer.
@@ -205,7 +225,7 @@ impl SharedState {
     }
 
     pub fn new(vars: Vec<u8>) -> SharedState {
-        SharedState {
+        SharedState(Box::new(SharedData {
             vars,
             heap: Some(Box::new(Heap::new(heap::SHARED))),
             procs: Vec::new(),
@@ -213,7 +233,7 @@ impl SharedState {
             tainted: None,
             init_reports: Vec::new(),
             init_printed: 0,
-        }
+        }))
     }
 
     /// Shared-heap slots that some serial process's frames address, sorted; `None` when a
@@ -2583,6 +2603,9 @@ pub struct InterpProcess {
     /// (as a `hot` process after its first activation; one started by `prestart` stands at the
     /// start of its statements, which is no entry of compiled code).
     lent: bool,
+    /// The empty state left in the lock while the shared state is lent to this process (`lend`):
+    /// made once, so a lend moves pointers only.
+    spare: Option<SharedState>,
 }
 
 impl InterpProcess {
@@ -2626,6 +2649,7 @@ impl InterpProcess {
             shared,
             roots_slot: None,
             lent: false,
+            spare: None,
         })
     }
 
@@ -2698,12 +2722,25 @@ impl InterpProcess {
         let mut g = shared
             .lock()
             .map_err(|_| "shared state lock poisoned".to_string())?;
-        self.m.sh = Some(std::mem::take(&mut *g));
+        self.lend(&mut g);
         let r = f(&mut self.m);
-        if let Some(st) = self.m.sh.take() {
-            *g = st;
-        }
+        self.give_back(&mut g);
         r.map_err(fault_text)
+    }
+
+    /// Moves the shared state out of the lock (`g`, held) into the machine, leaving the spare.
+    #[inline(always)]
+    fn lend(&mut self, g: &mut SharedState) {
+        let spare = self.spare.take().unwrap_or_default();
+        self.m.sh = Some(std::mem::replace(g, spare));
+    }
+
+    /// The other half of [`InterpProcess::lend`]: the state back into the lock, the spare kept.
+    #[inline(always)]
+    fn give_back(&mut self, g: &mut SharedState) {
+        if let Some(st) = self.m.sh.take() {
+            self.spare = Some(std::mem::replace(g, st));
+        }
     }
 
     /// Whether the process has its variables: it has started (or [`InterpProcess::prestart`]
@@ -3131,22 +3168,9 @@ impl InterpProcess {
         };
         let r = match shared.lock() {
             Ok(mut g) => {
-                self.m.sh = Some(std::mem::take(&mut *g));
+                self.lend(&mut g);
                 let r = self.run_lent(ctx);
-                if let Some(st) = self.m.sh.take() {
-                    // ponytail: `take` left an empty state, which owns no memory: forgotten, not
-                    // dropped (its drop glue was a tenth of the activation). Needs `SharedState::default`
-                    // to stay allocation-free.
-                    let empty = std::mem::replace(&mut *g, st);
-                    debug_assert!(
-                        empty.vars.capacity() == 0
-                            && empty.heap.is_none()
-                            && empty.procs.capacity() == 0
-                            && empty.tainted.is_none()
-                            && empty.init_reports.capacity() == 0
-                    );
-                    std::mem::forget(empty);
-                }
+                self.give_back(&mut g);
                 r
             }
             Err(_) => {
@@ -3205,14 +3229,14 @@ impl InterpProcess {
             None => None,
         };
         if let Some(g) = guard.as_mut() {
-            self.m.sh = Some(std::mem::take(&mut **g));
+            self.lend(g);
         }
         let r = self.m.run(ctx, 0);
         if r.is_ok() {
             self.m.publish_shared(&mut self.roots_slot);
         }
-        if let (Some(g), Some(st)) = (guard.as_mut(), self.m.sh.take()) {
-            **g = st;
+        if let Some(g) = guard.as_mut() {
+            self.give_back(g);
         }
         r
     }

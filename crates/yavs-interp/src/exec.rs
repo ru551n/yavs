@@ -13668,6 +13668,14 @@ mod tests {
         assert_eq!((ROOT_BUILDS.get(), slot), (1, Some(0)));
     }
 
+    /// A serial process's activation lends it the shared state by moving one pointer
+    /// (`InterpProcess::run_serial`): moving the state's fields in and out was half its shell.
+    #[test]
+    fn the_shared_state_is_one_pointer() {
+        assert_eq!(std::mem::size_of::<SharedState>(), 8);
+        assert_eq!(std::mem::size_of::<Option<SharedState>>(), 8);
+    }
+
     /// An error built inline in the source of the op loop shifts the cost of unrelated ops by
     /// percent (#508): every error with a message is built by `cold`, through `ice_f!` and its
     /// siblings.

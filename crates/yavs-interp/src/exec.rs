@@ -13272,6 +13272,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
         src: &[u8],
         size: u64,
         fill: u32,
+        obj: &mut [u64; 3],
     ) -> u64 {
         let m = &mut *self.m;
         // `step`'s `New`/`NewFill` when its `reclaim` has nothing to do; anything else is stepped.
@@ -13288,6 +13289,18 @@ impl crate::TierHost for Host<'_, '_, '_> {
         };
         let h = hp.alloc(heap::Obj::Typed(TyId(ty)), v).unwrap_or(0);
         m.tier_heaps(tf);
+        // The object as the `Deref` after it finds it (`object` of its address, writable), unless
+        // write counts are asked for (`TIER_STAMPS`: every write finds its object again).
+        *obj = [0; 3];
+        if h != 0
+            && tf.flags & crate::TIER_STAMPS == 0
+            && let Ok((hp, space)) = m.heap_of(h)
+            && let Ok(i) = hp.resolve(h)
+            && let Ok(a) = mk_addr(space, i, 0)
+            && let Some(d) = hp.data_mut(i)
+        {
+            *obj = [a, d.as_mut_ptr() as u64, d.len() as u64];
+        }
         h
     }
 

@@ -2374,7 +2374,8 @@ pub unsafe extern "C" fn yavs_rt_new(
         } else {
             part(src, n as usize)
         };
-        (*envp).host.alloc(
+        let mut obj = [0; 3];
+        let h = (*envp).host.alloc(
             &mut (*mem).fr,
             ty_shared as u32,
             ty_shared >> 32 & 1 != 0,
@@ -2382,7 +2383,20 @@ pub unsafe extern "C" fn yavs_rt_new(
             s,
             size,
             fill,
-        )
+            &mut obj,
+        );
+        // The object goes to its entry with its handle, writable, as `FAST_DEREF` enters it:
+        // the `Deref` after the allocation and the accesses are inline.
+        if obj[0] != 0 {
+            (*mem).put_obj(Obj {
+                hi: obj[0] >> 32,
+                ptr: obj[1] as *mut u8,
+                len: obj[2],
+                w: 1,
+                h,
+            });
+        }
+        h
     }));
     match r {
         Ok(h) => h,

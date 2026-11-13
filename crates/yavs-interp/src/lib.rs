@@ -949,7 +949,9 @@ pub trait TierHost {
     /// (`shared`, or the frame allocates there) or the process heap, made of `desc` followed by
     /// `src` (with `fill` > 0, its bytes repeated to `size`); its handle (`fr`'s heap fields
     /// brought up to date), or 0, nothing changed, where the instruction is to be stepped: a
-    /// collection or recycling is due, or the step would report an error.
+    /// collection or recycling is due, or the step would report an error. `obj` is the new
+    /// object as [`TierHost::object`] of its address (`[address, pointer, length]`) would give it
+    /// for writing, or zeros: compiled code enters it in its object table.
     #[allow(clippy::too_many_arguments)]
     fn alloc(
         &mut self,
@@ -960,8 +962,9 @@ pub trait TierHost {
         src: &[u8],
         size: u64,
         fill: u32,
+        obj: &mut [u64; 3],
     ) -> u64 {
-        let _ = (fr, ty, shared, desc, src, size, fill);
+        let _ = (fr, ty, shared, desc, src, size, fill, obj);
         0
     }
 

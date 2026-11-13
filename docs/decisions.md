@@ -16174,3 +16174,8 @@ Amends "Stage entries of a design that loads units late" (#671).
   due after any allocation, so those suites exercise the decline; the fast path itself is covered by
   `clift_parity` `allocations_in_compiled_code_match_the_interpreter` (every allocator form, both modes, collections
   forced with `--gc-threshold`, four threads) and difftest `clift-check`. Counter `cb_new`; perf case `new_compiled`.
+- **The new object in the object table** (agent, same day). The `Deref` after every `new` missed the object table
+  (`yavs_rt_fast` or `cold_deref`, then `TierHost::deref` and `TierHost::object`: about 8 percent of a compiled
+  `new`). `TierHost::alloc` now hands back the object as `object` of its address would for writing (address,
+  pointer, length; `data_mut`, so the write count is what the `Deref` after it made it) and `yavs_rt_new` enters
+  it with its handle as `FAST_DEREF` does. Not while `TIER_STAMPS` is set: then the step's path, with no entry.

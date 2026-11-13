@@ -26,10 +26,13 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{
     DataDescription, DataId, FuncId as ClifId, FuncOrDataId, Linkage, Module, ModuleReloc,
 };
-use yavs_interp::space;
+use yavs_interp::{
+    MEMO_DIR_HITS, MEMO_DIR_OFF_AT, MEMO_DIR_OFF_SEEN, MEMO_ENT_FUNC, MEMO_ENT_MASK, MEMO_ENT_TAB,
+    MEMO_SLOT_AT, MEMO_SLOT_HASH, MEMO_SLOT_KLEN, MEMO_SLOT_VLEN, MEMO_SLOT_WORD, space,
+};
 use yavs_ir::{
     AddrSpace, BoolOp, CheckKind, CmpOp, FOp, FUnOp, Func, FuncId, FuncKind, Inst, IntOp, IntUnOp,
-    Program, Reg, Width,
+    MemoArg, Program, Reg, Width,
 };
 use yavs_rt::native::{
     Arg, call_fits, closed_frame, ieee_fast, ieee_layout, native_set, uniform_regs,
@@ -142,6 +145,7 @@ pub struct Jit {
     /// `yavs_rt_region` of a held region asked again (`Gen::hold_recheck`), same stub.
     cold_region: ClifId,
     hold_check: ClifId,
+    memo_holds: ClifId,
     rare: ClifId,
     steps: ClifId,
     /// Module data by its bytes and whether it is 8-byte aligned.
@@ -593,6 +597,7 @@ impl Jit {
             (DRIVE_FLUSH, yavs_rt_drive_flush as *const u8),
             (REGION, yavs_rt_region as *const u8),
             (HOLD_CHECK, yavs_rt_hold_check as *const u8),
+            (MEMO_HOLDS, yavs_rt_memo_holds as *const u8),
             (RARE, yavs_rt_rare as *const u8),
             (STEPS, yavs_rt_steps as *const u8),
             (WAIT_EDGE, yavs_rt_wait_edge as *const u8),
@@ -689,6 +694,7 @@ impl Jit {
             )?,
         ];
         let hold_check = imp(HOLD_CHECK, &[I64, I64, I64, I64, I64, I32, I64, I64], None)?;
+        let memo_holds = imp(MEMO_HOLDS, &[I64, I64, I32, I64, I32, I64, I64], None)?;
         let rare = imp(RARE, &[I32], None)?;
         let steps = imp(STEPS, &[I64, I64, I64, I32, I32], Some(I32))?;
         let mut stubs = Vec::new();
@@ -754,6 +760,7 @@ impl Jit {
             cold_deref,
             cold_region,
             hold_check,
+            memo_holds,
             rare,
             steps,
             tables: HashMap::new(),
@@ -1680,6 +1687,9 @@ impl Jit {
             hold_check: self
                 .module
                 .declare_func_in_func(self.hold_check, &mut ctx.func),
+            memo_holds: self
+                .module
+                .declare_func_in_func(self.memo_holds, &mut ctx.func),
             rare: self.module.declare_func_in_func(self.rare, &mut ctx.func),
             steps: cheap
                 .is_some()
@@ -1936,6 +1946,8 @@ struct Imports {
     cold_deref: FuncRef,
     cold_region: FuncRef,
     hold_check: FuncRef,
+    /// `yavs_rt_memo_holds`: the check of an inline memo hit (debug builds).
+    memo_holds: FuncRef,
     rare: FuncRef,
     /// `yavs_rt_steps`, declared only in a body with a block that never ran (`YAVS_CLIFT_CHEAP`).
     steps: Option<FuncRef>,
@@ -2545,6 +2557,31 @@ fn xstep_wide(f: &Func, i: &Inst) -> bool {
 enum Op {
     C(u64),
     V(Value),
+}
+
+/// The multiplier of the memo's key hash (`yavs_interp` `pmemo::hash`).
+const MEMO_K: u64 = 0x517c_c1b7_2722_0a95;
+
+/// A memoised call compiled code probes by itself (`Gen::memo_inline`): per argument a scalar
+/// (false) or a flat logic array of one dimension (true), and the result's kind.
+struct MemoShape {
+    flat: Vec<bool>,
+    ret_flat: bool,
+}
+
+impl MemoShape {
+    /// `None` where the host probes alone (an array with a descriptor in memory, other elements).
+    fn of(sig: &yavs_ir::MemoSig) -> Option<MemoShape> {
+        let flat = |a: &MemoArg| match a {
+            MemoArg::Scalar => Some(false),
+            MemoArg::Flat(x) if x.logic && x.dims == 1 => Some(true),
+            _ => None,
+        };
+        Some(MemoShape {
+            flat: sig.args.iter().map(flat).collect::<Option<_>>()?,
+            ret_flat: flat(&sig.ret)?,
+        })
+    }
 }
 
 /// `YAVS_COUNTERS`: the sites lowered so far of an `is_x` or reduction of a vector computed in
@@ -4621,7 +4658,7 @@ fn gen_func(
                         if memo.is_some_and(|m| !m.dear) {
                             note_site(8);
                         }
-                        let memo = memo.is_some_and(|m| m.dear);
+                        let memo = memo.filter(|m| m.dear).map(MemoShape::of);
                         let caller = prog.base_of(id);
                         g.native_call(
                             pc, &inst, caller, f, nr, func, callee, args, dst, None, memo,
@@ -4654,7 +4691,7 @@ fn gen_func(
                             args,
                             dst,
                             Some(obj),
-                            false,
+                            None,
                         )
                     }
                     _ => g.step(pc, &inst),
@@ -5644,7 +5681,7 @@ impl Gen<'_> {
         args: yavs_ir::Regs,
         dst: Option<Reg>,
         obj: Option<Reg>,
-        memo: bool,
+        memo: Option<Option<MemoShape>>,
     ) {
         let (slow, join) = self.slow_path(pc, inst);
         // A protected call: the process must be allowed the shared state (else the interpreter's
@@ -5746,7 +5783,7 @@ impl Gen<'_> {
         }
         // The memo of pure calls (`TierHost::memo_probe`): a hit is the result, a miss makes the
         // call and keeps its result below.
-        let memo = memo.then(|| {
+        let memo = memo.map(|shape| {
             let n = rs.len();
             let slot = |s: &mut Self, bytes: u32| {
                 let ss = s.b.create_sized_stack_slot(StackSlotData::new(
@@ -5757,28 +5794,33 @@ impl Gen<'_> {
                 s.b.ins().stack_addr(I64, ss, 0)
             };
             let (buf, out) = (slot(self, n as u32 * 8), slot(self, 16));
+            let dep = match &self.nat {
+                Some(n) => n.depth,
+                None => self.c64(NATIVE_FRAME_MODE as i64),
+            };
+            let merge = self.b.create_block();
+            self.b.append_block_param(merge, I64);
+            if let Some(sh) = shape {
+                let probe = self.b.create_block();
+                // The inline probe's values do not reach the host's probe or the merge.
+                let (cache, slots) = (self.cache.clone(), self.slots);
+                self.memo_inline(callee, &rs, &sh, (buf, dep), merge, probe);
+                (self.cache, self.slots) = (cache, slots);
+                self.b.switch_to_block(probe);
+            }
             for (k, r) in rs.iter().enumerate() {
                 let v = self.ld(*r);
                 self.b
                     .ins()
                     .store(MemFlagsData::trusted(), v, buf, (k * 8) as i32);
             }
-            let dep = match &self.nat {
-                Some(n) => n.depth,
-                None => self.c64(NATIVE_FRAME_MODE as i64),
-            };
             let (cv, nv) = (self.fid(callee), self.c32(n as u32));
             let c = self
                 .b
                 .ins()
                 .call(self.imp.memo, &[self.env, self.mem, cv, buf, nv, dep, out]);
             let st = self.b.inst_results(c)[0];
-            let (hit, go, merge) = (
-                self.b.create_block(),
-                self.b.create_block(),
-                self.b.create_block(),
-            );
-            self.b.append_block_param(merge, I64);
+            let (hit, go) = (self.b.create_block(), self.b.create_block());
             let is_hit = self.b.ins().icmp_imm_s(IntCC::Equal, st, 1);
             self.brif_split(is_hit, hit, go);
             self.b.switch_to_block(hit);
@@ -5843,6 +5885,168 @@ impl Gen<'_> {
             self.st(d, val);
         }
         self.join(join);
+    }
+
+    /// The memo of pure calls probed by compiled code itself (`docs/decisions.md` "Memo of pure
+    /// calls: the probe in compiled code"): the process's table of `callee`
+    /// (`TierFrame::pmemo`), the key's words hashed and compared as the host does
+    /// (`pmemo::hash`), a hit's result to `merge`; anything else goes to `probe`, the host's
+    /// probe, before any effect. `chk` is the argument buffer and depth `yavs_rt_memo_holds`
+    /// takes in debug builds.
+    fn memo_inline(
+        &mut self,
+        callee: FuncId,
+        rs: &[Reg],
+        sh: &MemoShape,
+        chk: (Value, Value),
+        merge: Block,
+        probe: Block,
+    ) {
+        let tf = MemFlagsData::trusted();
+        // Bytes of a slot: an allocation of single bytes.
+        let bf = MemFlagsData::new().with_notrap();
+        // Tests are joined into few branches (no `brif_split`): every block costs compile time
+        // at each call site, and the probe is short.
+        let test = |s: &mut Self, c: Value| {
+            let go = s.b.create_block();
+            s.b.ins().brif(c, go, &[], probe, &[]);
+            s.b.switch_to_block(go);
+        };
+        let dir = self.mem_ld(MEM_PMEMO);
+        let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, dir, 0);
+        test(self, has);
+        let ent = (yavs_interp::MEMO_DIR_ENTS
+            + callee.0 as usize % yavs_interp::MEMO_DIR * yavs_interp::MEMO_ENT_SIZE)
+            as i32;
+        let fv = self.b.ins().load(I64, tf, dir, ent + MEMO_ENT_FUNC as i32);
+        let mine = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::Equal, fv, i64::from(callee.0));
+        // No function went off for all since the table was shown (`Pre::memo_off`).
+        let offp = self.b.ins().load(I64, tf, dir, MEMO_DIR_OFF_AT as i32);
+        let off = self.b.ins().load(I64, MemFlagsData::new(), offp, 0);
+        let seen = self.b.ins().load(I64, tf, dir, MEMO_DIR_OFF_SEEN as i32);
+        let same = self.b.ins().icmp(IntCC::Equal, off, seen);
+        let ok = self.b.ins().band(mine, same);
+        test(self, ok);
+        // The key, as `Machine::memo_key` makes it: a scalar's word; a flat logic array's left,
+        // right and direction words and its one plane block (1 to 64 elements; the 32 bytes are
+        // read whatever the length, which is tested with the slot below).
+        let mut words = Vec::new();
+        let mut fits = None;
+        let mut at = 0;
+        for &flat in &sh.flat {
+            if !flat {
+                words.push(self.ld(rs[at]));
+                at += 1;
+                continue;
+            }
+            let (data, l, r, d) = (
+                self.ld(rs[at]),
+                self.ld(rs[at + 1]),
+                self.ld(rs[at + 2]),
+                self.ld(rs[at + 3]),
+            );
+            let down = self.b.ins().icmp_imm_s(IntCC::Equal, d, 1);
+            let hi = self.b.ins().select(down, l, r);
+            let lo = self.b.ins().select(down, r, l);
+            let span = self.b.ins().isub(hi, lo);
+            let f = self
+                .b
+                .ins()
+                .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, span, 63);
+            fits = Some(match fits {
+                Some(x) => self.b.ins().band(x, f),
+                None => f,
+            });
+            let p = self.host(data, Some(rs[at]), Op::C(0), Op::C(32), false, probe);
+            words.extend([l, r, d]);
+            for k in 0..4 {
+                let w = self.b.ins().load(I64, self.gf, p, k * 8);
+                words.push(w);
+            }
+            at += 4;
+        }
+        let klen = 8 * words.len() as i64;
+        let mut h = self.c64(klen);
+        for &w in &words {
+            let x = self.b.ins().rotl_imm_s(h, 5);
+            let x = self.b.ins().bxor(x, w);
+            h = self.b.ins().imul_imm_s(x, MEMO_K as i64);
+        }
+        let x = self.b.ins().rotl_imm_s(h, 5);
+        h = self.b.ins().imul_imm_s(x, MEMO_K as i64);
+        let tab = self.b.ins().load(I64, tf, dir, ent + MEMO_ENT_TAB as i32);
+        let mask = self.b.ins().load(I64, tf, dir, ent + MEMO_ENT_MASK as i32);
+        let i = self.b.ins().band(h, mask);
+        let io = self.b.ins().ishl_imm_s(i, 3);
+        let sa = self.b.ins().iadd(tab, io);
+        let sp = self.b.ins().load(I64, tf, sa, 0);
+        let full = self.b.ins().icmp_imm_s(IntCC::NotEqual, sp, 0);
+        test(self, full);
+        let sh_ = self.b.ins().load(I64, tf, sp, MEMO_SLOT_HASH as i32);
+        let kl = self.b.ins().load(I64, tf, sp, MEMO_SLOT_KLEN as i32);
+        let vl = self.b.ins().load(I64, tf, sp, MEMO_SLOT_VLEN as i32);
+        // The hash, then the key's length and whole bytes (the hash only picks the slot); a
+        // scalar result has no bytes, a flat one its descriptor and one plane block.
+        let x = self.b.ins().bxor(sh_, h);
+        let y = self.b.ins().bxor_imm_s(kl, klen);
+        let mut diff = self.b.ins().bor(x, y);
+        let z = self
+            .b
+            .ins()
+            .bxor_imm_s(vl, if sh.ret_flat { 56 } else { 0 });
+        diff = self.b.ins().bor(diff, z);
+        // (The slot's bytes are read only once their length is known.)
+        let same = self.b.ins().icmp_imm_s(IntCC::Equal, diff, 0);
+        test(self, same);
+        let kp = self.b.ins().load(I64, tf, sp, MEMO_SLOT_AT as i32);
+        let mut diff = self.c64(0);
+        for (k, &w) in words.iter().enumerate() {
+            let s = self.b.ins().load(I64, bf, kp, (8 * k) as i32);
+            let x = self.b.ins().bxor(s, w);
+            diff = self.b.ins().bor(diff, x);
+        }
+        let mut ok = self.b.ins().icmp_imm_s(IntCC::Equal, diff, 0);
+        if let Some(f) = fits {
+            ok = self.b.ins().band(ok, f);
+        }
+        test(self, ok);
+        let v = if sh.ret_flat {
+            let vo = klen as i32;
+            let bw: Vec<Value> = (0..7)
+                .map(|k| self.b.ins().load(I64, bf, kp, vo + 8 * k))
+                .collect();
+            let n32 = self.c64(32);
+            let (addr, ptr) = self.temp_alloc(n32, probe);
+            for (k, &w) in bw[3..].iter().enumerate() {
+                self.b.ins().store(self.gf, w, ptr, (8 * k) as i32);
+            }
+            let rb = self.mem_ld(MEM_RET_BOUNDS);
+            for (k, &w) in bw[..3].iter().enumerate() {
+                self.b.ins().store(tf, w, rb, (8 * k) as i32);
+            }
+            addr
+        } else {
+            self.b.ins().load(I64, tf, sp, MEMO_SLOT_WORD as i32)
+        };
+        let hits = self.b.ins().load(I64, tf, dir, MEMO_DIR_HITS as i32);
+        let hits = self.b.ins().iadd_imm_s(hits, 1);
+        self.b.ins().store(tf, hits, dir, MEMO_DIR_HITS as i32);
+        if cfg!(debug_assertions) {
+            let (buf, dep) = chk;
+            for (k, r) in rs.iter().enumerate() {
+                let x = self.ld(*r);
+                self.b.ins().store(tf, x, buf, (k * 8) as i32);
+            }
+            let (cv, nv) = (self.fid(callee), self.c32(rs.len() as u32));
+            self.b.ins().call(
+                self.imp.memo_holds,
+                &[self.env, self.mem, cv, buf, nv, dep, v],
+            );
+        }
+        self.b.ins().jump(merge, &[BlockArg::Value(v)]);
     }
 
     /// Return `v` (an i32): a jump to the function's exit block.

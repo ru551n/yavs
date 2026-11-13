@@ -146,6 +146,23 @@ pub(crate) fn bytes_eq(a: &[u8], b: &[u8]) -> bool {
     a == b
 }
 
+/// Whether two 8-byte elements are equal as IEEE doubles (`0.0 = -0.0`; a NaN equals nothing, so
+/// callers compare bytes first, which keeps a NaN equal to its own bits).
+#[inline]
+pub(crate) fn float_eq(a: &[u8], b: &[u8]) -> bool {
+    match (<[u8; 8]>::try_from(a), <[u8; 8]>::try_from(b)) {
+        (Ok(x), Ok(y)) => f64::from_le_bytes(x) == f64::from_le_bytes(y),
+        _ => false,
+    }
+}
+
+/// `bytes_eq`, or for `float` elements equal as doubles: the test of a driver's value against a
+/// drive that the signal's value already is (`0.0` and `-0.0` drive the same, #1145).
+#[inline(always)]
+pub(crate) fn drive_eq(float: bool, a: &[u8], b: &[u8]) -> bool {
+    bytes_eq(a, b) || (float && float_eq(a, b))
+}
+
 /// `dst.copy_from_slice(src)` for the element sizes of byte signals, without the library call
 /// of the generic copy (the lengths are equal).
 #[inline(always)]
@@ -584,6 +601,23 @@ impl Buf {
             }
             _ => unreachable!("storage kinds are checked when values enter the kernel"),
         }
+    }
+
+    /// The bits of `m` (the `diff_chunk` of up to 64 elements starting at `off` against `other`
+    /// at `ooff`) whose elements differ as doubles: the zeros of both signs drop out (#1145).
+    pub fn float_diff(&self, m: u64, off: usize, other: &Buf, ooff: usize) -> u64 {
+        let (Buf::Bytes { es: 8, data }, Buf::Bytes { data: od, .. }) = (self, other) else {
+            return m;
+        };
+        let (mut r, mut w) = (m, m);
+        while w != 0 {
+            let i = w.trailing_zeros() as usize;
+            w &= w - 1;
+            if float_eq(&data[(off + i) * 8..][..8], &od[(ooff + i) * 8..][..8]) {
+                r &= !(1 << i);
+            }
+        }
+        r
     }
 
     /// IEEE 1164 resolution of `nsrc` sources (`src(i)`: the buffer and its element offset)

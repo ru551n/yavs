@@ -262,6 +262,18 @@ impl Builder {
         }
     }
 
+    /// The elements of `s` are IEEE doubles (REAL): its events compare them by value, so a
+    /// change from `0.0` to `-0.0` is none (#1145). Other signals compare bytes.
+    pub fn real_valued(&mut self, s: SignalId) {
+        let Some((s, _)) = self.chk(s.into()) else {
+            return;
+        };
+        if self.signals[s.0 as usize].ty.elem != Elem::Bytes(8) {
+            return self.usage("real_valued: the signal's elements are not 8 bytes".into());
+        }
+        self.signals[s.0 as usize].float = true;
+    }
+
     /// Keep no byte codes for `s`: no process reads a single element of it, so refreshing a code
     /// per changed element costs more than it saves (#734). Reads still work, from the planes.
     pub fn no_codes(&mut self, s: SignalId) {

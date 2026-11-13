@@ -1223,10 +1223,12 @@ impl Elab<'_> {
             }
             for (k, &(sl, sr)) in rs.iter().enumerate() {
                 let elem = self.m.nets.leaves[sl.index()].ty.elem;
+                let float = self.m.nets.leaves[sl.index()].float;
                 let init = self.m.nets.leaf(sl).init.clone();
                 let l = &mut self.m.nets.leaves[a.index() + k];
                 // The kernel decides the representation (K2): the prefix's for 'delayed.
                 l.ty = yavs_kernel::SignalType { elem, len: sr.len };
+                l.float = float;
                 l.init = init;
                 l.implicit = Some((kind, sl, sr));
             }
@@ -5104,6 +5106,7 @@ impl Model {
                 obj: id,
                 path,
                 ty: yavs_kernel::SignalType { elem: *elem, len },
+                float: crate::eval::is_real(db, leaf.ty()),
                 resolution,
                 guard: None,
                 disconnect: yavs_kernel::Time::ZERO,

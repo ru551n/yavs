@@ -440,6 +440,8 @@ pub struct Leaf {
     /// Record field indices from the object's root to this leaf.
     pub path: Vec<u32>,
     pub ty: SignalType,
+    /// A REAL leaf: the kernel compares its elements by value for events (`real_valued`).
+    pub float: bool,
     pub resolution: Option<LeafRes>,
     /// `bus` or `register` (a guarded signal, LRM 6.4.2.3).
     pub guard: Option<yavs_kernel::GuardKind>,

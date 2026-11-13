@@ -16100,3 +16100,33 @@ Amends "Stage entries of a design that loads units late" (#671).
   hierarchy, instances of a generic-type entity; each run's output checked, and the last run reads a stored
   lowering). Without the change every one of them fails at its third run.
 
+## Events of REAL signals compare by value (yavs-kernel, yavs-elab, #1145, 2026-11-13)
+
+- **Decision** (user, 2026-11-13): a signal whose elements are floating-point (a REAL, a `real_vector`, a field or element of
+  any composite of reals, resolved or not, a port's formal or actual) has an event only when its effective value changes as an
+  IEEE double, so `0.0` to `-0.0` (and back) is no event, as `=` on reals and on arrays of reals since #1144.
+- **Why**: LRM 14.7.3 defines an event as a change of value and 9.2.3 makes the zeros equal. The two open references split (sim1:
+  event, sim2: none; catalogue `real-negative-zero-event`), the maintainer picked no event.
+- **Agent decisions under it** (to confirm): (1) With no event the signal keeps its value: `cur` changes on events only, so
+  `0.0` stays `0.0` after a drive of `-0.0` (as sim2; sim1 shows `-0.0`). The sign of that zero shows only in text such as
+  `real'image`, and every reader of `cur` (waves, `'last_value`, the compiled tier's compare and the record images, which refresh
+  from events) stays right without a second path. (2) The drive is a transaction (`'active`, `'transaction`, the delta) and the
+  driving value is the driven one. (3) NaN: values are never NaN in legal VHDL; a NaN from a foreign call that is bit for bit the
+  value held is no event (bytes are compared first), any other NaN is a change (a NaN equals nothing by value). (4) The preemption
+  test of inertial transactions (`same_value`, by bytes) is unchanged: it decides which pending transactions a new one deletes,
+  not events, and `=` of two transactions' values is not asked of the LRM there.
+- **How**: `Leaf::float` (elaboration, from the scalar type) sets `Builder::real_valued` on the kernel signal (`Signal::float`);
+  `finish_bytes_elem`, `finish_bquick` and `update_effective` (ports, resolved signals, composites, force and release, through
+  `Buf::float_diff`) compare by value after the byte compare says different; `apply_op`'s force events likewise. Types without float
+  leaves run the same byte compare as before; the float test sits behind the byte-unequal branch. The same-value skip of a
+  drive needs `cur` to hold the drive's bytes (compiled code and the record images compare `cur` bytes) and the driver to hold
+  the same value, by value for a float signal (`drive_eq`: so a drive of `0.0` onto a driver left at `-0.0` is skipped by the kernel
+  as it is by compiled code, and the check mode's `gate_check` agrees); a drive of `-0.0` onto `0.0` is never skipped. Both compiled
+  tiers reach the kernel for every event and compare bytes only in their skips, so they agree. Packs of record leaves are logic
+  only, so a REAL field is its own kernel signal.
+- **Tests**: `crates/yavs-kernel/tests/real_events.rs` (a real-valued and an 8-byte integer signal driven through the same bit
+  patterns: only the integer one sees the zero flips, and keeps the other zero; fails without `real_valued`),
+  `crates/yavs/tests/wave.rs` `wave_negative_zero_is_no_change`, corpus `delta/real_negative_zero` (signal, vector, record, nested
+  record, array of records, resolved, port collapsed, port over a conversion, port on a slice, delayed and transport drives, a user
+  floating type, `'last_value`), `delta/real_negative_zero_force`, `held/held_real_zero` (hand-checked, equal to sim2; run in check
+  mode of the compiled tier), catalogue `real-negative-zero-event`.

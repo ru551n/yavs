@@ -1,0 +1,14 @@
+exit	0
+diag	note	1000000	1	:real_negative_zero:drv	active=true true true true true true event=false false false false false false lv=true
+diag	note	2000000	0	:real_negative_zero:drv	after -0.0 n: s=1 sv=1 rc=1 rc.r=1 o=1 o.i.x=1 o.i.v=1 ra=1 rr=1 port=1 conv=1 slice=1 dl=1 vt=1
+diag	note	3000000	0	:real_negative_zero:drv	after 0.0 again n: s=1 sv=1 rc=1 rc.r=1 o=1 o.i.x=1 o.i.v=1 ra=1 rr=1 port=1 conv=1 slice=1 dl=1 vt=1
+diag	note	3000000	1	:real_negative_zero:drv	event=true true true true true true lv=true
+diag	note	4000000	0	:real_negative_zero:drv	after 1.0 n: s=2 sv=2 rc=2 rc.r=2 o=2 o.i.x=2 o.i.v=2 ra=2 rr=2 port=2 conv=2 slice=2 dl=1 vt=1
+diag	note	5000000	0	:real_negative_zero:drv	after l n: s=2 sv=2 rc=3 rc.r=2 o=2 o.i.x=2 o.i.v=2 ra=2 rr=2 port=2 conv=2 slice=2 dl=1 vt=1
+diag	note	6000000	0	:real_negative_zero:drv	to 0.0 n: s=3 sv=2 rc=4 rc.r=3 o=2 o.i.x=2 o.i.v=2 ra=2 rr=2 port=3 conv=3 slice=2 dl=1 vt=1
+diag	note	6000000	1	:real_negative_zero:drv	to -0.0 event=false false lv=true true
+diag	note	7000000	0	:real_negative_zero:drv	to -0.0 n: s=3 sv=2 rc=4 rc.r=3 o=2 o.i.x=2 o.i.v=2 ra=2 rr=2 port=3 conv=3 slice=2 dl=1 vt=1
+diag	note	10000000	0	:real_negative_zero:drv	delayed -0.0 n: s=3 sv=2 rc=4 rc.r=3 o=2 o.i.x=2 o.i.v=2 ra=2 rr=2 port=3 conv=3 slice=2 dl=1 vt=1
+diag	note	13000000	0	:real_negative_zero:drv	delayed 1.0 n: s=3 sv=2 rc=4 rc.r=3 o=2 o.i.x=2 o.i.v=2 ra=2 rr=2 port=3 conv=3 slice=2 dl=2 vt=2
+diag	note	16000000	0	:real_negative_zero:drv	delayed 0.0 n: s=3 sv=2 rc=4 rc.r=3 o=2 o.i.x=2 o.i.v=2 ra=2 rr=2 port=3 conv=3 slice=2 dl=3 vt=3
+diag	note	19000000	0	:real_negative_zero:drv	delayed transport -0.0 n: s=3 sv=2 rc=4 rc.r=3 o=2 o.i.x=2 o.i.v=2 ra=2 rr=2 port=3 conv=3 slice=2 dl=3 vt=3

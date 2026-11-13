@@ -83,7 +83,7 @@ whole pack. So leaves join a pack only when all of these hold for every leaf:
 
 | Rule | Why |
 |---|---|
-| element kind logic (`std_ulogic`, BIT, BOOLEAN) | bit-planes everywhere (#83, user 2026-10-18); byte leaves come later (step 6) |
+| element kind logic (`std_ulogic`, BIT, BOOLEAN) | bit-planes everywhere (#83, user 2026-10-18); byte leaves come later (step 6), and a REAL leaf then stays out of a pack or the pack needs a per-element float mask: events of a real-valued kernel signal compare by value (`Signal::float`, #1145) |
 | resolution none or `std_logic` (`resolved`) | one resolution per kernel signal; an unresolved leaf has at most one source per element (elaboration checks LRM 14.7.2 before the build), and `std_logic` resolution of one source is the identity, so both behave the same in a `std_logic` pack. A leaf with a user resolution function (the verification libraries' resolved transaction records) or in a composite resolved as a whole stays alone |
 | no guard, not implicit, not the prefix of an implicit signal, not a force/release target | signal-wide in the kernel (`guard`, `inactive`, the dirty-range path of a forced cycle) |
 | the same port situation: no port edge at all, or (step 3) the same edges' kind and peer objects | `independent`, `skip_ok` and port levels are per signal; a mixed pack would lose the direct path for its port-free leaves |

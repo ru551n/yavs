@@ -1,0 +1,3 @@
+exit	0
+diag	note	395000000	0	:held_real_zero:u1:_p7	g=1 events s 11 rv 11 rc.r 11 rc 11 n 39
+diag	note	395000000	0	:held_real_zero:u0:_p7	g=0 events s 11 rv 11 rc.r 11 rc 11 n 39

@@ -491,6 +491,41 @@ fn wave_signal(tag: &str, sig: &str, flush: Option<&str>) {
     assert!(changes(&s, "clock.c").split(' ').count() > 10, "{s}");
 }
 
+/// A REAL signal going from 0.0 to -0.0 and back is no event, so the waveform has no change
+/// for it (#1145); the change to 1.0 is there.
+#[test]
+fn wave_negative_zero_is_no_change() {
+    let d = scratch("negzero");
+    let src = d.join("negzero.vhd");
+    std::fs::write(
+        &src,
+        "entity negzero is end entity;\n\
+         architecture a of negzero is\n\
+           signal s : real := 0.0;\n\
+           signal v : real_vector(0 to 1) := (0.0, 0.0);\n\
+         begin\n\
+           process\n\
+             variable z : real := 0.0;\n\
+           begin\n\
+             z := -z;\n\
+             wait for 1 ns; s <= z; v <= (z, z);\n\
+             wait for 1 ns; s <= 0.0; v <= (0.0, 0.0);\n\
+             wait for 1 ns; s <= 1.0; v <= (z, 1.0);\n\
+             wait;\n\
+           end process;\n\
+         end architecture;\n",
+    )
+    .unwrap();
+    assert!(analyze(&d, &src, "2008"));
+    let fst = d.join("a.fst");
+    let out = run(&d, &[&format!("--wave={}", fst.display()), "negzero"]);
+    assert!(out.status.success(), "{out:?}");
+    let s = dump(&fst);
+    // The initial value and the change at 3 ns only.
+    assert_eq!(changes(&s, "negzero.s").split(' ').count(), 2, "{s}");
+    assert!(changes(&s, "negzero.s").contains("3000000="), "{s}");
+}
+
 /// Every corpus testbench that simulates writes an FST that wellen reads in full (#129).
 #[test]
 fn corpus_waves() {

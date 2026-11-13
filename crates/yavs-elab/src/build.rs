@@ -148,6 +148,9 @@ impl Elaborated {
                 }
             };
             debug_assert_eq!(id.0 as usize, k, "kernel signals in pack order");
+            if leaf.float {
+                b.real_valued(id);
+            }
             if self.lean.get(i) == Some(&true) {
                 b.lean_events(id);
             }

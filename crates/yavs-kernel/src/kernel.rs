@@ -6010,10 +6010,10 @@ fn apply_op(sig: &mut Signal, op: &SignalOp, now: Time, cycle: u64) -> Result<()
     }
     if let Some(before) = before {
         let after = sig.effective_of(op.range);
-        if (0..n)
-            .step_by(64)
-            .any(|c| before.diff_chunk(c, &after, c, (n - c).min(64)) != 0)
-        {
+        if (0..n).step_by(64).any(|c| {
+            let m = before.diff_chunk(c, &after, c, (n - c).min(64));
+            m != 0 && (!sig.float || before.float_diff(m, c, &after, c) != 0)
+        }) {
             sig.force_ev.push(op.range);
         }
     }

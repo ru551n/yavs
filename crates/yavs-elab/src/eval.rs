@@ -1994,6 +1994,14 @@ pub fn elem_of(db: &Db, t: TypeId) -> Elem {
     }
 }
 
+/// Whether the scalar type `t` is a floating-point type: its signals compare by value (#1145).
+pub fn is_real(db: &Db, t: TypeId) -> bool {
+    matches!(
+        db.types[t].kind,
+        TypeKind::Floating | TypeKind::UniversalReal
+    )
+}
+
 fn is_logic(db: &Db, t: TypeId) -> bool {
     let wk = &db.well_known;
     if Some(t) == wk.bit || Some(t) == wk.boolean {

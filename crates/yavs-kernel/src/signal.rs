@@ -11,8 +11,8 @@ use smallvec::{SmallVec, smallvec};
 use crate::error::ErrorKind;
 use crate::time::Time;
 use crate::value::{
-    Buf, Elem, SignalType, Value, bits, bytes_eq, fill_bits, plane_code, plane_is, put_bits,
-    put_bytes, put_plane_code,
+    Buf, Elem, SignalType, Value, bits, bytes_eq, drive_eq, fill_bits, float_eq, plane_code,
+    plane_is, put_bits, put_bytes, put_plane_code,
 };
 use yavs_logic::Block;
 use yavs_logic::wide::{nmask, put_block};
@@ -857,6 +857,11 @@ pub(crate) struct Signal {
     pub callouts: Vec<(crate::process::Severity, String)>,
     /// An assignment of the value a source already has may be skipped (`Builder::build`).
     pub skip_ok: bool,
+    /// The elements are IEEE doubles (`Builder::real_valued`): an event needs a change of value,
+    /// so `0.0` to `-0.0` is none and leaves `cur` alone (#1145). A skip needs `cur` to hold the
+    /// bytes of the drive (what compiled code and the record images compare) and the driver the
+    /// same value.
+    pub float: bool,
     /// What `plain` asks that never changes after the build (`SimControl::new`).
     pub static_plain: bool,
     /// `lean_words_now`, set when the run starts.
@@ -1226,6 +1231,7 @@ impl Signal {
             force_ev: Vec::new(),
             callouts: Vec::new(),
             skip_ok: false,
+            float: false,
             static_plain: false,
             lean_words: false,
             seg_hint: 0,
@@ -1833,7 +1839,11 @@ impl Signal {
         let cells = !self.cuts.is_empty();
         for c in (0..n).step_by(64) {
             let k = (n - c).min(64);
-            let m = self.cur.diff_chunk(off + c, src, soff + c, k);
+            let mut m = self.cur.diff_chunk(off + c, src, soff + c, k);
+            if self.float && m != 0 {
+                // Equal values with other bytes (the zeros) are no event and no new value.
+                m = self.cur.float_diff(m, off + c, src, soff + c);
+            }
             if m == 0 {
                 continue;
             }
@@ -2164,9 +2174,10 @@ impl Signal {
             let d = &self.drivers[slot as usize];
             let rel = (elem - d.range.offset) as usize * es;
             matches!(&d.value, Buf::Bytes { data, .. }
-                if data.get(rel..rel + es).is_some_and(|x| bytes_eq(x, v)))
+                if data.get(rel..rel + es).is_some_and(|x| drive_eq(self.float, x, v)))
         } else {
-            drv.get(at..at + es).is_some_and(|x| bytes_eq(x, v))
+            drv.get(at..at + es)
+                .is_some_and(|x| drive_eq(self.float, x, v))
         }
     }
 
@@ -2195,12 +2206,12 @@ impl Signal {
             let d = &mut self.drivers[slot as usize];
             let rel = (elem - d.range.offset) as usize * es;
             if let Buf::Bytes { data, .. } = &mut d.value {
-                if same && self.skip_ok && bytes_eq(&data[rel..rel + es], v) {
+                if same && self.skip_ok && drive_eq(self.float, &data[rel..rel + es], v) {
                     return None;
                 }
                 data[rel..rel + es].copy_from_slice(v);
             }
-        } else if same && self.skip_ok && bytes_eq(&drv[at..at + es], v) {
+        } else if same && self.skip_ok && drive_eq(self.float, &drv[at..at + es], v) {
             return None;
         }
         put_bytes(&mut drv[at..at + es], v);
@@ -2675,6 +2686,9 @@ impl Signal {
         if bytes_eq(c, d) {
             return false;
         }
+        if self.float && float_eq(c, d) {
+            return false;
+        }
         put_bytes(&mut last[e * es..(e + 1) * es], c);
         put_bytes(c, d);
         set_event(&mut self.stamps, n, e, cycle, now);
@@ -3040,6 +3054,9 @@ impl Signal {
         drv[e * es..(e + 1) * es].copy_from_slice(v);
         let c = &mut cur[e * es..(e + 1) * es];
         if bytes_eq(c, v) {
+            return;
+        }
+        if self.float && float_eq(c, v) {
             return;
         }
         last[e * es..(e + 1) * es].copy_from_slice(c);

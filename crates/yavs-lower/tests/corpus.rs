@@ -192,6 +192,8 @@ const PASS: &[&str] = &[
     "delta/async_triggers",
     "delta/concurrent_assign",
     "delta/delta_chain",
+    "delta/real_negative_zero",
+    "delta/real_negative_zero_force",
     "delta/delta_order",
     "delta/event_attrs",
     "delta/guard_activity",

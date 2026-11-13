@@ -1,0 +1,6 @@
+exit	0
+diag	note	2000000	0	:real_negative_zero_force:drv	forced n=1 m=1
+diag	note	3000000	0	:real_negative_zero_force:drv	released n=1 m=1
+diag	note	4000000	0	:real_negative_zero_force:drv	forced1 n=2 m=2
+diag	note	5000000	0	:real_negative_zero_force:drv	forced-0 n=3 m=3
+diag	note	6000000	0	:real_negative_zero_force:drv	released n=3 m=3

@@ -119,6 +119,10 @@ pub struct Builder {
     ports: Vec<PortEdge>,
     implicits: Vec<Implicit>,
     groups: Vec<Group>,
+    /// Drivers that start from a value of their own (`Builder::driver_init`).
+    driver_inits: Vec<(DriverId, Buf)>,
+    /// Sources no process owns, holding a value (`Builder::constant_source`).
+    consts: Vec<(SignalId, Range, Buf)>,
     error: Option<SimError>,
 }
 
@@ -371,6 +375,37 @@ impl Builder {
         DriverId(self.drivers.len() as u32 - 1)
     }
 
+    /// Driver `d` starts from `init` instead of its signal's initial value: a driver declared
+    /// on a port that elaboration collapsed into its actual starts from the port's default.
+    pub fn driver_init<'v>(&mut self, d: DriverId, init: impl Into<ValueRef<'v>>) {
+        let Some(&(s, range, _)) = self.drivers.get(d.0 as usize) else {
+            return self.usage(format!("driver {} does not exist", d.0));
+        };
+        let elem = self.signals[s.0 as usize].ty.elem;
+        match Buf::from_ref(elem, range.len as usize, init.into()) {
+            Ok(b) => self.driver_inits.push((d, b)),
+            Err(m) => self.usage(format!("driver {}: initial value: {m}", d.0)),
+        }
+    }
+
+    /// A source of `target` that keeps `value` and that no process owns: the default of the
+    /// elements of an `inout` port without a source of their own (LRM 14.7.3.2 a), once the
+    /// port is collapsed into its actual.
+    pub fn constant_source<'v>(
+        &mut self,
+        target: impl Into<SigRef>,
+        value: impl Into<ValueRef<'v>>,
+    ) {
+        let Some((s, range)) = self.chk(target.into()) else {
+            return;
+        };
+        let elem = self.signals[s.0 as usize].ty.elem;
+        match Buf::from_ref(elem, range.len as usize, value.into()) {
+            Ok(b) => self.consts.push((s, range, b)),
+            Err(m) => self.usage(format!("constant source: {m}")),
+        }
+    }
+
     /// A process owning `drivers`.
     pub fn process(
         &mut self,
@@ -595,6 +630,10 @@ impl Builder {
             });
             add_source(s, range, &mut taken[sig.0 as usize]).map_err(usage)?;
         }
+        for (d, b) in std::mem::take(&mut self.driver_inits) {
+            let info = &infos[d.0 as usize];
+            self.signals[info.signal.0 as usize].drivers[info.slot as usize].value = b;
+        }
         for p in &mut self.ports {
             for &(f, fr) in &p.formal {
                 let f = &mut self.signals[f.0 as usize];
@@ -616,6 +655,14 @@ impl Builder {
                         d.off = None; // a port source is never disconnected
                     }
                 }
+            }
+        }
+        // Constant sources last: process drivers, then ports, then these.
+        for (sig, range, b) in std::mem::take(&mut self.consts) {
+            let s = &mut self.signals[sig.0 as usize];
+            add_source(s, range, &mut taken[sig.0 as usize]).map_err(usage)?;
+            if let Some(d) = s.drivers.last_mut() {
+                (d.value, d.off) = (b, None);
             }
         }
         drop(taken);

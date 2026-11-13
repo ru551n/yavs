@@ -1093,6 +1093,22 @@ case!(
         ("process_runs", Max(1472)),
     ]
 );
+// The same lanes with ports that default to all 'Z' and drive only the fields they own, on an
+// array initialised to '0': the drivers start from the port's default and the undriven fields
+// keep it as a source, so these formals collapse too (126 signals, 10532 events and 127 general
+// updates when each was a signal of its own).
+case!(
+    port_inout_default,
+    "sum=C006",
+    &[],
+    [
+        ("signals", Max(23)),
+        ("events", Max(3540)),
+        ("update_general", Max(94)),
+        ("general_assigns", Max(0)),
+        ("process_runs", Max(1448)),
+    ]
+);
 case!(
     out_port,
     "q=",

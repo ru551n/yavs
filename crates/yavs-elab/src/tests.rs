@@ -2621,10 +2621,11 @@ end;
 }
 
 /// `inout` formals collapse onto their actuals (elements of an array of records, through three
-/// levels) when every element has a source inside and the defaults agree; an undriven leaf, a
-/// default other than the actual's initial value and a forced actual keep the edges.
+/// levels); an undriven leaf keeps its default as a constant source of the actual, a driver of a
+/// formal whose default differs from the actual's initial value starts from that default, and a
+/// forced actual keeps the edges.
 #[test]
-fn inout_ports_collapse_when_every_element_has_a_source() {
+fn inout_ports_collapse_into_their_actuals() {
     let src = "library ieee; use ieee.std_logic_1164.all;
 package p is
   type rec_t is record v : std_logic; d : std_logic_vector(3 downto 0); r : std_logic; end record;
@@ -2698,11 +2699,31 @@ end;
     ] {
         assert!(!edged(&e, l), "{l}");
     }
-    // `r` of `half` has no source inside (its default is a source); `dflt` starts its driver at
-    // '1', not at the actual's 'U'; `b3` is forced.
-    for l in [":top:h:s", ":top:d:b", ":top:f:b"] {
-        assert!(edged(&e, l), "{l}");
+    // `r` of `half` has no source inside: its default 'U' stays a source of `y(0).r`; `dflt`'s
+    // driver starts from the port's '1', not from the actual's 'U'; `b3` is forced.
+    for l in [":top:h:s", ":top:d:b"] {
+        assert!(!edged(&e, l), "{l}");
     }
+    let (y, _) = obj(&e, ":top:y");
+    let u = yavs_kernel::Value::Logic(yavs_kernel::LogicVec::from_fn(1, |_| {
+        yavs_logic::StdULogic::U
+    }));
+    assert!(
+        e.nets.consts.iter().any(|c| c.0.0 == y.0.0 + 2 && c.2 == u),
+        "{:?}",
+        e.nets.consts
+    );
+    let (b2, _) = obj(&e, ":top:b2");
+    let one = yavs_kernel::Value::Logic(yavs_kernel::LogicVec::from_fn(1, |_| {
+        yavs_logic::StdULogic::One
+    }));
+    assert!(
+        e.nets
+            .drivers
+            .iter()
+            .any(|d| d.leaf == b2.0 && d.init == Some(one.clone()))
+    );
+    assert!(edged(&e, ":top:f:b"));
 }
 
 #[test]

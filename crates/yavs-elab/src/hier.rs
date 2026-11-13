@@ -482,6 +482,9 @@ pub struct DriverDecl {
     pub proc: ProcIdx,
     pub leaf: LeafId,
     pub range: Range,
+    /// Its initial value when it is not the signal's: a driver of an `inout` formal collapsed
+    /// into an actual with another initial value starts from the formal's default.
+    pub init: Option<Value>,
 }
 
 /// A composite resolved as a whole (LRM 4.6, 14.7.3.1: a basic signal): a signal whose
@@ -514,6 +517,9 @@ pub struct NetGraph {
     pub ports: Vec<PortEdge>,
     pub conv_ports: Vec<ConvPort>,
     pub drivers: Vec<DriverDecl>,
+    /// Sources no process owns, holding a value: the default of the elements of a collapsed
+    /// `inout` formal that have no source of their own.
+    pub consts: Vec<(LeafId, Range, Value)>,
     pub wholes: Vec<Whole>,
     /// Per leaf, where it is stored (`NetGraph::place`).
     pub loc: Vec<LeafLoc>,

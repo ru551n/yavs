@@ -26,11 +26,12 @@
 //! `std_logic` resolution (commutative and associative, one value its own result) resolving
 //! the formal's sources among the actual's other sources gives the same value as resolving
 //! them first, at any depth; unresolved, the formal is the actual's only source. So its
-//! drivers can drive the actual, which the formal then is. Only when every element of the
-//! formal has a source (an element without one contributes the formal's default) and the
-//! formal's default is the actual's initial value (its drivers start from it); the actual
-//! may be fed from above. Not collapsed: an actual that is guarded, forced or released, a
-//! converted or whole-resolved one, or a user resolution function on either side.
+//! drivers can drive the actual, which the formal then is. Its drivers keep the formal's
+//! default as their initial value (`DriverDecl::init`), and an element of the formal without
+//! a source of its own keeps contributing the default (`NetGraph::consts`: a `'U'` must still
+//! win, and a `'Z'` is not neutral against a `'-'`). The actual may have other sources and be
+//! fed from above. Not collapsed: an actual that is guarded, forced or released, a converted
+//! or whole-resolved one, or a user resolution function on either side.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -150,8 +151,10 @@ pub(crate) fn ports(
     // `NetGraph::select` mirrors both the same way).
     let mut alias: Vec<Option<(LeafId, u32)>> = vec![None; n];
     let mut count = 0;
-    // The collapsed `out` and `buffer` formal leaves (their actuals take their initial values).
+    // The collapsed `out` and `buffer` formal leaves (their actuals take their initial values),
+    // and the collapsed `inout` ones.
     let mut outs = Vec::new();
+    let mut inouts = vec![false; n];
     for (o, obj) in nets.objs.iter().enumerate() {
         let mode = match obj.kind {
             ObjKind::Port(m) | ObjKind::ComponentPort(m) => m,
@@ -171,8 +174,7 @@ pub(crate) fn ports(
                 && leaf.guard.is_none()
                 && leaf.implicit.is_none()
                 && (out || inout || !driven[l])
-                && matches!(leaf.resolution, None | Some(LeafRes::StdLogic))
-                && (!inout || covered(&sources[l], leaf.ty.len));
+                && matches!(leaf.resolution, None | Some(LeafRes::StdLogic));
             let e = ok.then(|| &nets.ports[edge[l]]);
             let Some(e) = e.filter(|e| {
                 let al = &nets.leaves[e.actual.0.index()];
@@ -191,13 +193,11 @@ pub(crate) fn ports(
                     && e.actual.1.len == leaf.ty.len
                     && al.ty.elem == leaf.ty.elem
                     && (!out || sole(e) && res)
-                    // An `inout` formal's drivers start from its default, now the actual's.
                     && (!inout
                         || res
                             && !excluded[e.actual.0.index()]
                             && al.guard.is_none()
-                            && !forced.contains(&al.obj)
-                            && slice_init(&al.init, al.ty.len, e.actual.1) == leaf.init)
+                            && !forced.contains(&al.obj))
             }) else {
                 break;
             };
@@ -214,6 +214,9 @@ pub(crate) fn ports(
             }
             if out {
                 outs.extend(a..b);
+            }
+            if inout {
+                inouts[a..b].fill(true);
             }
             count += 1;
         }
@@ -245,6 +248,32 @@ pub(crate) fn ports(
         }
         (l, off)
     };
+    // A driver of a collapsed `inout` formal starts from the formal's default, not from the
+    // initial value of the signal it now drives; the elements of the formal without a source
+    // of their own keep the default as a source of the actual (LRM 14.7.3.2 a).
+    let init_of = |l: LeafId, r: Range| {
+        let leaf = &nets.leaves[l.index()];
+        slice_init(&leaf.init, leaf.ty.len, r)
+    };
+    let mut inits = Vec::new();
+    for (i, d) in nets.drivers.iter().enumerate() {
+        if inouts[d.leaf.index()] {
+            let own = init_of(d.leaf, d.range);
+            let (t, off) = find(d.leaf);
+            if own != init_of(t, Range::new(d.range.offset + off, d.range.len)) {
+                inits.push((i, own));
+            }
+        }
+    }
+    for (i, v) in inits {
+        nets.drivers[i].init = Some(v);
+    }
+    for (l, _) in inouts.iter().enumerate().filter(|(_, x)| **x) {
+        for r in uncovered(&sources[l], nets.leaves[l].ty.len) {
+            let v = init_of(LeafId(l as u32), r);
+            nets.consts.push((LeafId(l as u32), r, v));
+        }
+    }
     // New ids: the kept leaves in their old order.
     let mut pos = Vec::with_capacity(n + 1);
     let mut k = 0u32;
@@ -310,6 +339,11 @@ pub(crate) fn ports(
         let mut p = (d.leaf, d.range);
         mr(&mut p);
         (d.leaf, d.range) = p;
+    }
+    for (l, r, _) in &mut nets.consts {
+        let mut p = (*l, *r);
+        mr(&mut p);
+        (*l, *r) = p;
     }
     for w in &mut nets.wholes {
         w.instances.iter_mut().flatten().for_each(mr);
@@ -386,20 +420,21 @@ pub(crate) fn ports(
     count
 }
 
-/// Whether the non-empty `ranges` cover elements `0..len`: an element of an `inout` formal
-/// without a source has the formal's default as driving value (LRM 14.7.3.2), a source of the
-/// actual that a collapse would drop (not neutral: `'Z'` with a `'-'` resolves to `'X'`).
-fn covered(ranges: &[Range], len: u32) -> bool {
+/// The runs of elements `0..len` that no non-empty range of `ranges` covers.
+fn uncovered(ranges: &[Range], len: u32) -> Vec<Range> {
     let mut rs: Vec<Range> = ranges.iter().filter(|r| r.len > 0).copied().collect();
     rs.sort_unstable_by_key(|r| r.offset);
-    let mut end = 0;
+    let (mut out, mut end) = (Vec::new(), 0);
     for r in rs {
         if r.offset > end {
-            return false;
+            out.push(Range::new(end, r.offset - end));
         }
         end = end.max(r.end());
     }
-    end >= len
+    if end < len {
+        out.push(Range::new(end, len - end));
+    }
+    out
 }
 
 /// The elements `r` of `v`, a leaf of `len` elements.

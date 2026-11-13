@@ -4765,6 +4765,7 @@ impl Elab<'_> {
                 proc: idx,
                 leaf,
                 range,
+                init: None,
             });
         }
         let lsps = per_lsp

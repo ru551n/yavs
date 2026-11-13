@@ -29,8 +29,10 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   (a `Buf` of up to 16 bytes or one logic block, one waiter, one segment, one pending
   transaction, a signal's scratch range lists) are stored inline (`SmallVec`): a scalar signal
   and its driver cost no allocation of their own (#421).
-- **Sources**: a signal's source list holds process drivers (creation order) and then out-ports
-  (`DriverSlot { range, value, off }`). A driver's current value lives in the signal, its
+- **Sources**: a signal's source list holds process drivers (creation order), then out-ports, then
+  sources no process owns that keep a value (`Builder::constant_source`)
+  (`DriverSlot { range, value, off }`). A driver starts from its signal's initial value unless
+  `Builder::driver_init` gives it one of its own. A driver's current value lives in the signal, its
   projected output waveform in the owning process (`ProcState::waveforms`), so a running process
   mutates only its own state. `off` marks disconnected elements of drivers of guarded signals.
 - **Segments**: at build time each signal is split into runs of elements with the same set of

@@ -193,6 +193,9 @@ impl Elaborated {
             };
             b.port(sig(&e.formal), sig(&e.actual), e.mode, pc);
         }
+        for (l, r, v) in &self.nets.consts {
+            b.constant_source(nets.kref(*l, *r), v);
+        }
         for e in &self.nets.conv_ports {
             let pc = PortConv {
                 to_formal: conv(e.to_formal),
@@ -219,7 +222,10 @@ impl Elaborated {
             while i < parts.len() {
                 let (s, mut r) = parts[i];
                 let mut j = i + 1;
+                let init = nets.drivers[p.drivers[i]].init.as_ref();
                 while let Some(&(t, q)) = parts.get(j)
+                    && init.is_none()
+                    && nets.drivers[p.drivers[j]].init.is_none()
                     && t == s
                     && q.offset == r.offset + r.len
                     && target_of(p.drivers[j]) == target_of(p.drivers[i])
@@ -228,6 +234,9 @@ impl Elaborated {
                     j += 1;
                 }
                 let id = b.driver(s.slice(r.offset, r.len));
+                if let Some(v) = init {
+                    b.driver_init(id, v);
+                }
                 ds.extend(std::iter::repeat_n(id, j - i));
                 i = j;
             }

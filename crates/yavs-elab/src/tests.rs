@@ -2547,7 +2547,7 @@ end;
     assert_eq!(obj(&e, ":top:u:v"), (wl, Some(Range::new(2, 4))));
     assert_eq!(obj(&e, ":top:u:bf"), obj(&e, ":top:b"));
     assert_eq!(obj(&e, ":top:u:s"), obj(&e, ":top:s1"));
-    // An `inout` port collapses too (perf/skid-inout).
+    // An `inout` port collapses too.
     assert_eq!(obj(&e, ":top:u:io").0, obj(&e, ":top:io").0);
     for kept in [":top:k:s", ":top:k:y", ":top:i:u:y"] {
         let (l, _) = obj(&e, kept);

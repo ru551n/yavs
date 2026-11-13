@@ -1407,8 +1407,8 @@ a note and a help suggesting an access type, as the reference simulators reject 
   leaf through one sort per leaf, never a scan per port (`elab_source_steps`, perf design
   `out_ports_shared`). Tests: `hierarchy/record_port_element`, `record_port_slice`,
   `record_port_element_force`; perf design `port_elem_record`.
-- **`inout` ports collapse into their actuals too** (proposed on perf/skid-inout, 2026-11-13, awaiting
-  the maintainer; extends the three entries above): an `inout` formal under the same association
+- **`inout` ports collapse into their actuals too** (user, 2026-11-13; extends
+  the three entries above): an `inout` formal under the same association
   conditions (leaves one to one onto whole leaves or parts of consecutive leaves of one object, no
   conversion, not forced or released, no guard, not whole-resolved) takes its actual's leaves and its
   drivers drive the actual, when the formal and the actual are unresolved or resolved by `resolved`
@@ -1441,8 +1441,8 @@ a note and a help suggesting an access type, as the reference simulators reject 
   `inout_port_defaults`, `inout_port_default_slices`, `inout_port_conv_read`,
   `inout_port_user_resolution` (a mean resolution that keeps its edges); perf designs `port_inout_record`, `port_inout_default`; unit test
   `inout_ports_collapse_into_their_actuals`.
-- **A null field does not keep a record port apart** (proposed on perf/skid-inout, 2026-11-13, awaiting
-  the maintainer; extends the entries above): a formal leaf with no element (a null field, such as an
+- **A null field does not keep a record port apart** (user, 2026-11-13; extends
+  the entries above): a formal leaf with no element (a null field, such as an
   unconstrained `user` field of width 0) has no port edge, so a formal with one failed the per-leaf
   conditions and kept every other leaf's edges too. Such a leaf now takes the actual's leaf at its place
   among the formal's other leaves (consecutive leaves of one object, and that leaf null as well); it has

@@ -8136,7 +8136,7 @@ optimiser round 11 (#534): memoisation across a block and its sole successor, a 
 temporaries, and fusions across block starts nothing jumps to (`docs/decisions.md` "Shared offsets must stay memoisable and
 fusable"). `YAVS_DUMPIR=1` dumps the finished IR and the predecoded ops of every function that runs.
 
-## `inout` port collapsing (perf/skid-inout, 2026-11-13, proposed)
+## `inout` port collapsing (2026-11-13)
 
 `inout` ports collapse into their actuals like `in` and `out` ports (`collapse.rs` `ports`, `docs/decisions.md` "Elaboration"):
 the formal's drivers drive the actual, keep the formal's default as initial value where it differs from the actual's

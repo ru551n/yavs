@@ -206,7 +206,7 @@ A statement label that repeats a declaration of its region is `E1101`, sequentia
 
 ### Perf map of compiled code (#1074, 2026-11-02)
 
-`YAVS_CLIFT_PERFMAP` / `YAVS_LLVM_PERFMAP` list every function of generated code once, with its size and a name (`f<id>_<process instance path>`, `n`/`c` variants, subprograms by name), also for code linked from the compilation cache and under `--tier=clift`; `perf report` on a warm run attributes compiled code per process. Test: `crates/yavs/tests/perfmap.rs` (cold and cached, each tier).
+`YAVS_CLIFT_PERFMAP` / `YAVS_LLVM_PERFMAP` list every function of generated code once, with its size and a name (`f<id>_<process instance path>`, `n`/`c` variants, subprograms by name), also for code linked from the compilation cache and under `--tier=clift`; `perf report` on a warm run attributes compiled code per process. The map of a process starts empty (a file of an earlier process with the same pid is cut, #1135, #1140). Test: `crates/yavs/tests/perfmap.rs` (cold and cached, each tier).
 
 ### Debug session without a process (#995, 2026-11-01)
 

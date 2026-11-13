@@ -525,6 +525,11 @@ impl Drop for Jit {
 
 impl Jit {
     pub fn new() -> Result<Jit, Error> {
+        // The map starts empty also when the JIT module writes it (`PERF_BUILDID_DIR`, #1135).
+        if flag("YAVS_CLIFT_PERFMAP", "0") == "1" || std::env::var_os("PERF_BUILDID_DIR").is_some()
+        {
+            yavs_rt::perfmap::start();
+        }
         let opt = flag("YAVS_CLIFT_OPT", "speed");
         let verify = flag(
             "YAVS_CLIFT_VERIFY",

@@ -72,7 +72,27 @@ fn setup(name: &str) -> common::Tmp {
 /// Run the design on `tier` with the perf map on (`var`), `jit_lists`: as under `perf record`,
 /// which sets `PERF_BUILDID_DIR`. Reads and removes `/tmp/perf-<pid>.map`.
 fn run(dir: &Path, tier: &str, var: &str, jit_lists: bool, gens: &[&str]) -> Map {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_yavs"));
+    run_with(dir, tier, var, jit_lists, false, gens)
+}
+
+/// The stale line a run finds in the map of its own pid when `stale` (#1135): `sh` writes it,
+/// then becomes yavs, so the pid is the same, as when a pid is reused.
+const STALE: &str = "1000 10 stale_symbol";
+
+fn run_with(dir: &Path, tier: &str, var: &str, jit_lists: bool, stale: bool, gens: &[&str]) -> Map {
+    let yavs = env!("CARGO_BIN_EXE_yavs");
+    let mut cmd = if stale {
+        let mut c = Command::new("sh");
+        c.args([
+            "-c",
+            &format!("echo '{STALE}' > /tmp/perf-$$.map; exec \"$@\""),
+            "sh",
+            yavs,
+        ]);
+        c
+    } else {
+        Command::new(yavs)
+    };
     cmd.args(["run", "--std=2008", "--work=work:work", tier])
         .args(gens)
         .arg("perfmap")
@@ -207,6 +227,30 @@ fn auto(tier: &str, var: &str) {
             "{:?}",
             m.lines
         );
+    }
+}
+
+/// A map left by an earlier process with the same pid is emptied when the process starts, by the
+/// writer of the run (no `PERF_BUILDID_DIR`) and by the JIT module's (#1135).
+#[cfg(feature = "clift")]
+#[test]
+fn clift_map_starts_empty_over_a_stale_file_of_the_pid() {
+    let dir = setup("perfmap_stale");
+    for jit_lists in [false, true] {
+        let m = run_with(
+            &dir,
+            "--tier=clift",
+            "YAVS_CLIFT_PERFMAP",
+            jit_lists,
+            true,
+            SHORT,
+        );
+        assert!(
+            m.lines.iter().all(|l| l.2 != "stale_symbol"),
+            "jit_lists {jit_lists}: {:?}",
+            m.lines
+        );
+        well_formed(&m);
     }
 }
 

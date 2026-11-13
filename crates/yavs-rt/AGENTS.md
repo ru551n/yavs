@@ -40,7 +40,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `src/work.rs` | The work clock (#670, #673): `install` (sets the `yavs_interp::on_simulation_thread` hook: threads note their ids), `activate` (the sampler opens one `perf_event_open` counter of user-mode instructions per noted thread, `Err` says why not), counters by slot index, `per_thread` (counts by slot index), `thread_id`/`of_thread` (one thread's count by its id: the kernel thread's for the trace line that pairs it with its CPU time), `per_us`/`work_us` (`INSTR_PER_US`, 16 000, `YAVS_AUTO_IPUS` overrides it, a tuning aid). Linux x86_64 and aarch64; elsewhere `install` says there is no counter and the sampler uses CPU time |
 | `src/hugezone.rs` | The reservation and bump zones with huge-page chunks behind the code arena of `yavs-clift` (`hugearena.rs`); `reserve` refuses under an address space limit |
 | `src/census.rs` | The callbacks of compiled code by kind (`callback_counts`, `cb_*` of `YAVS_COUNTERS`): counted in debug builds and with `op-census` |
-| `src/perfmap.rs` | `/tmp/perf-<pid>.map` for `perf report` (`YAVS_CLIFT_PERFMAP`, #1074): `symbol` (`f`/`n`/`c<id>_<Program::label>`), `append` (one writer per process) |
+| `src/perfmap.rs` | `/tmp/perf-<pid>.map` for `perf report` (`YAVS_CLIFT_PERFMAP`, #1074): `symbol` (`f`/`n`/`c<id>_<Program::label>`), `start` (empties the pid's file once per process, also when the JIT module writes it; pids are reused, #1135), `append` (one writer per process) |
 
 ## 3. Design decisions that bind this module
 

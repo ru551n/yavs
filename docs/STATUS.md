@@ -8136,6 +8136,23 @@ optimiser round 11 (#534): memoisation across a block and its sole successor, a 
 temporaries, and fusions across block starts nothing jumps to (`docs/decisions.md` "Shared offsets must stay memoisable and
 fusable"). `YAVS_DUMPIR=1` dumps the finished IR and the predecoded ops of every function that runs.
 
+## `inout` port collapsing (perf/skid-inout, 2026-11-13, proposed)
+
+`inout` ports collapse into their actuals like `in` and `out` ports (`collapse.rs` `ports`, `docs/decisions.md` "Elaboration"):
+the formal's drivers drive the actual, keep the formal's default as initial value where it differs from the actual's
+(`Builder::driver_init`), and the elements of the formal without a source of their own keep that default as a source of the
+actual that no process owns (`Builder::constant_source`). A formal on a guarded, forced, converted or whole-resolved actual,
+or with a user resolution function, keeps its edges. Record ports with a null field collapse too. Measured on a chain of
+stream stages with one `inout` record per interface (`tready` inside), interpreter instructions per stage and clock:
+4.2-4.4 times the two-record `in`/`out` form before, 1.5-1.65 after (the rest is the general drive path of leaves with two
+sources); a shared bus of 256 `inout` slaves: 28.6 G to 24.5 G instructions, and 3.1 G with resolution once per update
+(#1139) against 7.3 G without the collapse. Checked: differential corpus (695) at 1 and 4 threads shuffled on the
+interpreter, the default tier, `yavs-clift-check` and `yavs-auto-warm`, and with `--no-collapse-ports`; GRLIB leon3mp and
+Microwatt CoreMark whole runs equal to main; new corpus tests `hierarchy/inout_port_collapse`, `inout_record_lanes`,
+`inout_port_collapse_force`, `inout_port_collapse_parts`, `inout_port_collapse_external`, `inout_port_defaults`; perf designs
+`port_inout_record`, `port_inout_default`, `port_null_record`. Not covered: conversions in port maps, partial (per-field)
+association, mode-view ports.
+
 ## Out-port collapsing (#528, 2026-10-22)
 
 `out` and `buffer` ports that are the only source of their actual's elements collapse into the actual like `in` ports

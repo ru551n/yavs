@@ -76,6 +76,8 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         ("gc_collections", yavs_interp::gc_collections()),
         ("pmemo_hits", memo_hits),
         ("pmemo_runs", memo_runs),
+        // The part of `pmemo_hits` compiled code answered by itself.
+        ("pmemo_inline_hits", yavs_interp::pmemo_inline_hits()),
         ("pmemo_off", yavs_interp::pmemo_off()),
         ("wave_var_reads", reads),
         ("wave_var_idle_skips", idle),

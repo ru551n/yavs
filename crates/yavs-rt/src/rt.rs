@@ -84,6 +84,7 @@ pub const PUT_SMALL_BYTES: u32 = 16 + yavs_ir::DOPE_DIM_BYTES as u32 + 32;
 pub const NATIVE_LIGHT: &str = "yavs_rt_native_light";
 pub const MEMO: &str = "yavs_rt_memo";
 pub const MEMO_KEEP: &str = "yavs_rt_memo_keep";
+pub const MEMO_HOLDS: &str = "yavs_rt_memo_holds";
 pub const TROOT: &str = "yavs_rt_troot";
 pub const ENDSTMT: &str = "yavs_rt_endstmt";
 pub const XSTEP: &str = "yavs_rt_xstep";
@@ -353,6 +354,7 @@ pub const MEM_TEMP_ROOTS: u64 = std::mem::offset_of!(Mem, fr.temp_roots) as u64;
 pub const MEM_SIGTAB: u64 = std::mem::offset_of!(Mem, fr.sigtab) as u64;
 pub const MEM_GATE: u64 = std::mem::offset_of!(Mem, fr.gate) as u64;
 pub const MEM_CELLS: u64 = std::mem::offset_of!(Mem, fr.cells) as u64;
+pub const MEM_PMEMO: u64 = std::mem::offset_of!(Mem, fr.pmemo) as u64;
 pub const MEM_SKIPPED: u64 = std::mem::offset_of!(Mem, skipped) as u64;
 pub const MEM_SIGTAB_LEN: u64 = std::mem::offset_of!(Mem, fr.sigtab_len) as u64;
 pub const MEM_KNOWN: u64 = std::mem::offset_of!(Mem, fr.known) as u64;
@@ -1812,6 +1814,51 @@ pub unsafe extern "C" fn yavs_rt_memo(
             unsafe { (*envp).panic = Some(p) };
             0
         }
+    }
+}
+
+/// `TierHost::memo_holds` for a call compiled code answered from the memo by itself (debug
+/// builds, `Gen::memo_inline`): `v` must be what the memo holds, else this panics.
+pub unsafe extern "C" fn yavs_rt_memo_holds(
+    env: *mut c_void,
+    mem: *mut Mem,
+    func: u32,
+    cells: *const u64,
+    n: u32,
+    depth: u64,
+    v: u64,
+) {
+    // SAFETY: as `yavs_rt_memo`.
+    let envp = env as *mut Env<'_>;
+    unsafe { (*mem).sync(&mut *(*envp).host) };
+    let r = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let cells = std::slice::from_raw_parts(cells, n as usize);
+        let env = &mut *envp;
+        let depth = (depth & NATIVE_FRAME_MODE == 0).then_some(depth);
+        if depth.is_some() {
+            let _ = env
+                .windows
+                .get_or_insert_with(|| Box::new(TabSlots((*mem).nslots)));
+        }
+        let ok = env.host.memo_holds(
+            &mut (*mem).fr,
+            FuncId(func),
+            cells,
+            depth,
+            &mut env.windows,
+            v,
+        );
+        assert!(
+            ok,
+            "an inline memo hit of function {func} is not what the memo holds"
+        );
+    }));
+    // SAFETY: as above.
+    let m = unsafe { &mut *mem };
+    m.temp_seen = m.fr.temp_len;
+    if let Err(p) = r {
+        // SAFETY: as above.
+        unsafe { (*envp).panic = Some(p) };
     }
 }
 

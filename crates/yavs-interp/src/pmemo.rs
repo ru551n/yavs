@@ -11,6 +11,7 @@
 //! the process.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use yavs_ir::{Func, FuncId, MemoArg, MemoArr, MemoSig, Program, Reg, Regs};
 use yavs_kernel::Ctx;
@@ -46,9 +47,13 @@ pub fn pmemo_off() -> u64 {
     OFF.load(Ordering::Relaxed)
 }
 
-/// Calls answered from a memo, and calls run and remembered, over all processes.
+/// Calls answered from a memo (by the host or compiled code), and calls run and remembered,
+/// over all processes.
 pub fn pmemo_stats() -> (u64, u64) {
-    (HITS.load(Ordering::Relaxed), MISSES.load(Ordering::Relaxed))
+    (
+        HITS.load(Ordering::Relaxed) + pmemo_inline_hits(),
+        MISSES.load(Ordering::Relaxed),
+    )
 }
 
 /// Whether the memo is on (`YAVS_NO_PMEMO=1` turns it off).
@@ -64,21 +69,155 @@ pub(crate) enum Val {
     Array(Box<[u8]>),
 }
 
-struct Slot {
+/// One remembered call, laid out for compiled code too ([`Machine::memo_view`]): it reads
+/// `hash`, `word`, `klen`, `vlen` and the bytes at `at`, never writes.
+#[repr(C)]
+pub struct Slot {
     hash: u64,
-    key: Box<[u8]>,
-    val: Val,
+    /// A scalar result (`vlen` 0).
+    word: u64,
+    /// Bytes of the key, then of an array result (descriptor, then elements), in `bytes`.
+    klen: u64,
+    vlen: u64,
+    /// The address of `bytes`.
+    at: usize,
+    bytes: Box<[u8]>,
+}
+
+impl Slot {
+    fn new(hash: u64, key: &[u8], val: Val) -> Slot {
+        let (word, v): (u64, &[u8]) = match &val {
+            Val::Word(w) => (*w, &[]),
+            Val::Array(b) => (0, b),
+        };
+        let bytes: Box<[u8]> = [key, v].concat().into();
+        Slot {
+            hash,
+            word,
+            klen: key.len() as u64,
+            vlen: v.len() as u64,
+            at: bytes.as_ptr() as usize,
+            bytes,
+        }
+    }
+
+    fn key(&self) -> &[u8] {
+        &self.bytes[..self.klen as usize]
+    }
+
+    fn val(&self) -> ValRef<'_> {
+        match self.vlen {
+            0 => ValRef::Word(self.word),
+            _ => ValRef::Array(&self.bytes[self.klen as usize..]),
+        }
+    }
+}
+
+/// A remembered result.
+enum ValRef<'a> {
+    Word(u64),
+    Array(&'a [u8]),
+}
+
+/// Entries of a process's directory of the tables compiled code probes inline, by function
+/// number (a power of two).
+pub const MEMO_DIR: usize = 256;
+/// `MemoEnt::func` of an empty entry.
+pub const MEMO_FREE: u64 = u64::MAX;
+
+/// The tables of a process compiled code probes by itself (`TierFrame::pmemo`, docs/decisions.md
+/// "Memo of pure calls: the probe in compiled code"): written by the host only.
+#[repr(C)]
+pub struct MemoDir {
+    /// The address of the count of functions off for all processes, and its value when the
+    /// entries were made: compiled code goes to the host while they differ.
+    pub off_at: u64,
+    pub off_seen: AtomicU64,
+    /// Calls compiled code answered from these tables.
+    pub hits: AtomicU64,
+    _pad: u64,
+    pub ents: [MemoEnt; MEMO_DIR],
+}
+
+/// A function's table in a [`MemoDir`], at `func % MEMO_DIR`.
+#[repr(C)]
+pub struct MemoEnt {
+    /// The function, [`MEMO_FREE`] for none.
+    pub func: AtomicU64,
+    /// The slots (`Option<Box<Slot>>`: an address or null) and their number less one.
+    pub tab: AtomicU64,
+    pub mask: AtomicU64,
+    _pad: u64,
+}
+
+/// Byte offsets compiled code reads at.
+pub const MEMO_DIR_OFF_AT: usize = std::mem::offset_of!(MemoDir, off_at);
+pub const MEMO_DIR_OFF_SEEN: usize = std::mem::offset_of!(MemoDir, off_seen);
+pub const MEMO_DIR_HITS: usize = std::mem::offset_of!(MemoDir, hits);
+pub const MEMO_DIR_ENTS: usize = std::mem::offset_of!(MemoDir, ents);
+pub const MEMO_ENT_SIZE: usize = std::mem::size_of::<MemoEnt>();
+pub const MEMO_ENT_FUNC: usize = std::mem::offset_of!(MemoEnt, func);
+pub const MEMO_ENT_TAB: usize = std::mem::offset_of!(MemoEnt, tab);
+pub const MEMO_ENT_MASK: usize = std::mem::offset_of!(MemoEnt, mask);
+pub const MEMO_SLOT_HASH: usize = std::mem::offset_of!(Slot, hash);
+pub const MEMO_SLOT_WORD: usize = std::mem::offset_of!(Slot, word);
+pub const MEMO_SLOT_KLEN: usize = std::mem::offset_of!(Slot, klen);
+pub const MEMO_SLOT_VLEN: usize = std::mem::offset_of!(Slot, vlen);
+pub const MEMO_SLOT_AT: usize = std::mem::offset_of!(Slot, at);
+
+/// The directories of live processes, and the hits of those dropped: `pmemo_stats` counts both
+/// (the counters are printed while the processes live).
+static DIRS: Mutex<Vec<Weak<MemoDir>>> = Mutex::new(Vec::new());
+static GONE: AtomicU64 = AtomicU64::new(0);
+
+impl Drop for MemoDir {
+    fn drop(&mut self) {
+        GONE.fetch_add(*self.hits.get_mut(), Ordering::Relaxed);
+    }
+}
+
+impl MemoDir {
+    fn new() -> Arc<MemoDir> {
+        let d = Arc::new(MemoDir {
+            off_at: std::ptr::addr_of!(OFF) as u64,
+            off_seen: AtomicU64::new(OFF.load(Ordering::Relaxed)),
+            hits: AtomicU64::new(0),
+            _pad: 0,
+            ents: std::array::from_fn(|_| MemoEnt {
+                func: AtomicU64::new(MEMO_FREE),
+                tab: AtomicU64::new(0),
+                mask: AtomicU64::new(0),
+                _pad: 0,
+            }),
+        });
+        let mut ds = DIRS.lock().unwrap_or_else(PoisonError::into_inner);
+        ds.retain(|w| w.strong_count() > 0);
+        ds.push(Arc::downgrade(&d));
+        d
+    }
+}
+
+/// Calls compiled code answered from a memo by itself (part of `pmemo_stats`'s hits).
+pub fn pmemo_inline_hits() -> u64 {
+    let ds = DIRS.lock().unwrap_or_else(PoisonError::into_inner);
+    GONE.load(Ordering::Relaxed)
+        + ds.iter()
+            .filter_map(Weak::upgrade)
+            .map(|d| d.hits.load(Ordering::Relaxed))
+            .sum::<u64>()
 }
 
 /// The memo of one function.
 pub(crate) struct Memo {
     pub func: u32,
-    slots: Vec<Option<Slot>>,
+    slots: Vec<Option<Box<Slot>>>,
     calls: u32,
     hits: u32,
     /// Entries replaced by another key since the table last grew.
     evicted: usize,
     off: bool,
+    /// The table is in the directory, at this entry.
+    shown: Option<usize>,
 }
 
 /// The memo state of a process: absent until its first call of a memoised function.
@@ -100,6 +239,8 @@ pub(crate) struct State {
     pub miss_hash: u64,
     /// The last lookup made the memo of its function in this process (its first call).
     pub fresh: bool,
+    /// The tables compiled code probes by itself, made with the first one shown.
+    dir: Option<Arc<MemoDir>>,
 }
 
 /// A hash of `key`: eight bytes a step.
@@ -145,6 +286,7 @@ impl State {
                     hits: 0,
                     evicted: 0,
                     off: false,
+                    shown: None,
                 });
                 self.fresh = true;
                 self.memos.len() - 1
@@ -198,7 +340,7 @@ impl State {
             m.calls += 1;
             if m.slots[i]
                 .as_ref()
-                .is_some_and(|s| s.hash == hash && *s.key == *key)
+                .is_some_and(|s| s.hash == hash && s.key() == &key[..])
             {
                 m.hits += 1;
                 HITS.fetch_add(1, Ordering::Relaxed);
@@ -215,8 +357,70 @@ impl State {
     }
 
     /// The result in slot `i` of memo `at` (from [`Look::Hit`]).
-    fn val(&self, at: usize, i: usize) -> Option<&Val> {
-        self.memos.get(at)?.slots.get(i)?.as_ref().map(|s| &s.val)
+    fn val(&self, at: usize, i: usize) -> Option<ValRef<'_>> {
+        self.memos.get(at)?.slots.get(i)?.as_ref().map(|s| s.val())
+    }
+
+    /// Show the table of memo `at` to compiled code, once its function has been judged and kept
+    /// (`WARM` calls: the hits compiled code makes by itself are not counted for the judgement).
+    /// A function whose entry another holds stays with the host.
+    fn show(&mut self, at: usize) {
+        let m = &mut self.memos[at];
+        if m.shown.is_some() || m.off || m.calls < WARM || m.slots.is_empty() {
+            return;
+        }
+        let d = self.dir.get_or_insert_with(MemoDir::new);
+        // ponytail: one function per entry, first come; a probed chain if hot functions collide.
+        let k = m.func as usize % MEMO_DIR;
+        let e = &d.ents[k];
+        let f = e.func.load(Ordering::Relaxed);
+        if f != MEMO_FREE && f != u64::from(m.func) {
+            return;
+        }
+        e.tab.store(m.slots.as_ptr() as u64, Ordering::Relaxed);
+        e.mask.store(m.slots.len() as u64 - 1, Ordering::Relaxed);
+        e.func.store(u64::from(m.func), Ordering::Relaxed);
+        m.shown = Some(k);
+    }
+
+    /// The table of memo `at` moved (it grew): its entry follows it.
+    fn reshow(&mut self, at: usize) {
+        let m = &self.memos[at];
+        if let (Some(k), Some(d)) = (m.shown, &self.dir) {
+            d.ents[k]
+                .tab
+                .store(m.slots.as_ptr() as u64, Ordering::Relaxed);
+            d.ents[k]
+                .mask
+                .store(m.slots.len() as u64 - 1, Ordering::Relaxed);
+        }
+    }
+
+    /// Some function went off for all processes since the directory was made: empty it (each
+    /// function is shown again at its next host probe if it is still on).
+    pub fn recheck_off(&mut self) {
+        let Some(d) = &self.dir else {
+            return;
+        };
+        let now = OFF.load(Ordering::Relaxed);
+        if d.off_seen.load(Ordering::Relaxed) == now {
+            return;
+        }
+        for e in &d.ents {
+            e.func.store(MEMO_FREE, Ordering::Relaxed);
+        }
+        d.off_seen.store(now, Ordering::Relaxed);
+        for m in &mut self.memos {
+            m.shown = None;
+        }
+    }
+
+    /// The directory's address for compiled code, 0 for none (or while calls run `NEST` deep).
+    pub fn dir_addr(&self) -> usize {
+        match &self.dir {
+            Some(d) if self.depth < NEST => Arc::as_ptr(d) as usize,
+            _ => 0,
+        }
     }
 
     /// Remember a call that ended with `val` (`hash` and `key` from [`Look::Miss`] and the
@@ -230,13 +434,11 @@ impl State {
         if m.slots[i].is_some() {
             m.evicted += 1;
         }
-        m.slots[i] = Some(Slot {
-            hash,
-            key: key.into(),
-            val,
-        });
+        m.slots[i] = Some(Box::new(Slot::new(hash, key, val)));
         if m.evicted >= m.slots.len() && m.slots.len() < LAST {
             m.grow();
+            let at = self.index(func);
+            self.reshow(at);
         }
         MISSES.fetch_add(1, Ordering::Relaxed);
     }
@@ -329,6 +531,10 @@ impl Machine {
         if std::mem::take(&mut st.fresh) {
             self.memo_user(prog, func);
         }
+        if matches!(look, Look::Hit(_) | Look::Miss) {
+            st.show(at);
+            self.pmemo_at = st.dir_addr();
+        }
         match look {
             Look::Off => {
                 self.pm = Some(st);
@@ -341,8 +547,8 @@ impl Machine {
             }
             Look::Hit(i) => {
                 let r = match st.val(at, i) {
-                    Some(Val::Word(v)) => Ok(*v),
-                    Some(Val::Array(b)) => match sig.ret {
+                    Some(ValRef::Word(v)) => Ok(v),
+                    Some(ValRef::Array(b)) => match sig.ret {
                         MemoArg::Array(a) => self.memo_array(a, b),
                         MemoArg::Flat(a) => self.memo_flat(a, b),
                         MemoArg::Scalar => Err(cold(|| ice("memo: an array for a scalar result"))),
@@ -356,6 +562,41 @@ impl Machine {
                 let reports = st.reports;
                 self.pm = Some(st);
                 Ok(Probe::Miss(reports))
+            }
+        }
+    }
+
+    /// Whether `v` is what the memo holds for the call of `func` with argument `cells`, looked
+    /// up without counting: the check of a hit compiled code made by itself (debug builds). An
+    /// array result is the data address, its bounds in `ret_bounds`.
+    pub(crate) fn memo_holds(&self, func: FuncId, sig: &MemoSig, cells: &[u64], v: u64) -> bool {
+        let Some(st) = self.pm.as_ref() else {
+            return false;
+        };
+        let mut key = Vec::new();
+        if !self.memo_key(sig, cells.len(), &|_, i| cells[i], &mut key) {
+            return false;
+        }
+        let h = hash(&key);
+        let Some(m) = st.memos.iter().find(|m| m.func == func.0) else {
+            return false;
+        };
+        let Some(Some(s)) = m.slots.get(h as usize & m.slots.len().wrapping_sub(1)) else {
+            return false;
+        };
+        if s.hash != h || s.key() != &key[..] {
+            return false;
+        }
+        match s.val() {
+            ValRef::Word(w) => w == v,
+            ValRef::Array(b) => {
+                let (d, e) = b.split_at(24);
+                let bounds: Vec<u8> = self
+                    .ret_bounds()
+                    .iter()
+                    .flat_map(|x| x.to_le_bytes())
+                    .collect();
+                bounds == d && self.rd(v, e.len() as u64).is_ok_and(|x| x == e)
             }
         }
     }
@@ -506,11 +747,13 @@ impl Machine {
         let reports = st.reports;
         st.depth += 1;
         st.frames.push(self.frames.len());
+        self.pmemo_at = st.dir_addr();
         self.pm = Some(st);
         let r = self.call_to_end(prog, f, func, args, Some(dst), ctx);
         let mut st = self.pm.take().unwrap_or_default();
         st.depth = st.depth.saturating_sub(1);
         st.frames.pop();
+        self.pmemo_at = st.dir_addr();
         let out = match r {
             Ok(Outcome::Returned(Some(v))) => {
                 if st.reports == reports

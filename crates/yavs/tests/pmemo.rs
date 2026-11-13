@@ -87,6 +87,9 @@ fn memoised_calls_change_nothing_but_the_work() {
         assert!(reports(&all1) >= 30, "{all1}");
         assert_eq!(counter(&e0, "pmemo_hits"), 0);
         assert!(counter(&e1, "pmemo_hits") > 100, "{e1}");
+        // Compiled code answers repeats by itself, the interpreter never does.
+        let inline = counter(&e1, "pmemo_inline_hits");
+        assert_eq!(inline > 0, args[0] == "--tier=clift", "{args:?}: {e1}");
         assert!(all1.contains("acc="), "{all1}");
     }
 }

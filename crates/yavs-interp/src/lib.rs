@@ -66,7 +66,11 @@ pub use debug::{
 pub use exec::{Host, SPIN_CHECK, SPIN_LIMIT, copy_bits};
 pub use heap::{HEAP_LOG, Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
-pub use pmemo::{pmemo_off, pmemo_stats};
+pub use pmemo::{
+    MEMO_DIR, MEMO_DIR_ENTS, MEMO_DIR_HITS, MEMO_DIR_OFF_AT, MEMO_DIR_OFF_SEEN, MEMO_ENT_FUNC,
+    MEMO_ENT_MASK, MEMO_ENT_SIZE, MEMO_ENT_TAB, MEMO_FREE, MEMO_SLOT_AT, MEMO_SLOT_HASH,
+    MEMO_SLOT_KLEN, MEMO_SLOT_VLEN, MEMO_SLOT_WORD, pmemo_inline_hits, pmemo_off, pmemo_stats,
+};
 pub use pre::{
     FusedCopy, ScalarDrive, fused_drives, light_ieee as light_native, retreating_brs, static_wait,
     static_wait_edge,
@@ -941,6 +945,22 @@ pub trait TierHost {
         let _ = (fr, func, cells, depth, slots, reports, v);
     }
 
+    /// Whether `v` is what the memo holds for the call of `func` with argument `cells` (as
+    /// [`TierHost::memo_probe`] reads them), counting nothing: debug builds check every call
+    /// compiled code answered from the memo by itself.
+    fn memo_holds(
+        &mut self,
+        fr: &mut TierFrame,
+        func: FuncId,
+        cells: &[u64],
+        depth: Option<u64>,
+        slots: &mut Option<Box<dyn NativeSlots>>,
+        v: u64,
+    ) -> bool {
+        let _ = (fr, func, cells, depth, slots, v);
+        false
+    }
+
     /// `Inst::TempRoot` from a native frame: record the temporary at `addr` for the GC until
     /// its statement ends (`ty` its type and `desc` the descriptor bytes, or the fat pair at
     /// `addr` when `ty` is `None`). `false`: the interpreter must execute the instruction.
@@ -1089,6 +1109,9 @@ pub struct TierFrame {
     pub gate: *const u64,
     /// The machine's [`ImageCell`]s, null while it has none.
     pub cells: *const ImageCell,
+    /// The process's `pmemo::MemoDir` (the tables of pure calls compiled code probes by itself),
+    /// 0 for none or where the memo is not used.
+    pub pmemo: u64,
 }
 
 /// [`ImageCell`]s of whole gathers, by the low bits of the leaf table: one other table with the
@@ -1480,6 +1503,7 @@ impl Default for TierFrame {
             ndrivers: 0,
             gate: NO_GATE[0].as_ptr(),
             cells: std::ptr::null(),
+            pmemo: 0,
         }
     }
 }

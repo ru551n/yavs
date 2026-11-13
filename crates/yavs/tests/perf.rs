@@ -1721,7 +1721,9 @@ mod clift {
             ("cb_wait_same", Max(1780)),
         ]
     );
-    // The memo of pure calls (#701) answers the compiled calls of this tier too.
+    // The memo of pure calls (#701) answers the compiled calls of this tier too; once a function
+    // passed its first 64 calls, compiled code finds a repeat in its table by itself (316 of the
+    // 433 hits) and calls the host only for the rest.
     clift_case!(
         pure_memo,
         "pure_memo",
@@ -1729,8 +1731,9 @@ mod clift {
         [
             ("pmemo_hits", Min(420)),
             ("pmemo_runs", Max(14)),
-            ("cb_memo", Max(470)),
-            ("cb_memo", Min(430)),
+            ("pmemo_inline_hits", Min(305)),
+            ("cb_memo", Max(145)),
+            ("cb_memo", Min(130)),
         ]
     );
     // A compiled call of a cheap pure function skips the memo: its body costs less than the
@@ -1743,7 +1746,8 @@ mod clift {
             // `half` (recursive) only: `pick` would add its 248 hits.
             ("pmemo_hits", Max(525)),
             ("pmemo_hits", Min(495)),
-            ("cb_memo", Max(760)),
+            ("pmemo_inline_hits", Min(460)),
+            ("cb_memo", Max(270)),
             ("clift_memo_unprobed_sites", Min(1)),
         ]
     );

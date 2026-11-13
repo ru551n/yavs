@@ -303,6 +303,7 @@ const PASS: &[&str] = &[
     "protected/region_shared_elab",
     "hierarchy/use_type_functions",
     "hierarchy/external_alias",
+    "hierarchy/external_alias_field",
     "hierarchy/external_direct",
     "hierarchy/external_port_inertial",
     "hierarchy/external_subprogram",

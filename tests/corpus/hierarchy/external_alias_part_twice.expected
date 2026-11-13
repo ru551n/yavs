@@ -1,0 +1,17 @@
+exit	0
+diag	note	0	0	:external_alias_part_twice:i1:g1:pr:_p0	probe 1pr '0'
+diag	note	0	0	:external_alias_part_twice:i1:g1:pr2:_p0	probe 1pr2 '0'
+diag	note	0	0	:external_alias_part_twice:i2:g2:pr:_p0	probe 2pr '0'
+diag	note	0	0	:external_alias_part_twice:i2:g2:pr2:_p0	probe 2pr2 '0'
+diag	note	0	0	:external_alias_part_twice:i2:g2:pr3:_p0	probe 2pr3 '0'
+diag	note	0	0	:external_alias_part_twice:i3:g1:pr:_p0	probe 1pr '0'
+diag	note	0	0	:external_alias_part_twice:i3:g1:pr2:_p0	probe 1pr2 '0'
+diag	note	1000000	0	:external_alias_part_twice:i1:g1:pr2:_p0	probe 1pr2 '1'
+diag	note	1000000	0	:external_alias_part_twice:i2:g2:pr2:_p0	probe 2pr2 '1'
+diag	note	1000000	0	:external_alias_part_twice:i3:g1:pr2:_p0	probe 1pr2 '1'
+diag	note	1000000	0	:external_alias_part_twice:i2:g2:_p0	inner V=2 '1''1'4
+diag	note	1000000	1	:external_alias_part_twice:i1:g1:pr:_p0	probe 1pr '1'
+diag	note	1000000	1	:external_alias_part_twice:i2:g2:pr:_p0	probe 2pr '1'
+diag	note	1000000	1	:external_alias_part_twice:i3:g1:pr:_p0	probe 1pr '1'
+diag	note	2000000	0	:external_alias_part_twice:i3:g1:_p0	inner V=1 '1''1'4
+diag	note	2000000	0	:external_alias_part_twice:i1:g1:_p0	inner V=1 '1''1'4

@@ -1506,9 +1506,11 @@ const EXT_SUB: &str = r#"entity sub is end;
 architecture a of sub is
   signal s : bit := '0';
   signal n : integer := 0;
+  signal v : bit_vector(3 downto 0) := "0000";
   constant c : integer := 7;
 begin
   s <= '1' after 1 ns;
+  v <= "1010" after 1 ns;
   n <= 3 after 2 ns;
 end;
 "#;
@@ -1563,6 +1565,30 @@ end;
 "#,
         &["V=1 c=8", "V=1 o='1'"],
         &["V=2 n=0", "V=2 n=3", "V=2 c=7", "V=2 o='0'"],
+    ),
+    // Aliases of a part of an external name, in the branch the generic selects and in the
+    // other one (#1143): the unselected branch's aliases are made after the selected one's.
+    (
+        "part",
+        r#"entity top is generic (V : natural := 1); end;
+architecture a of top is
+begin
+  u : entity work.sub;
+  g1 : if V = 1 generate
+    alias w is <<signal .top.u.v : bit_vector(3 downto 0)>>(1);
+  begin
+    p : process begin wait for 2 ns; report "V=1 w=" & bit'image(w); wait; end process;
+  end generate;
+  g2 : if V = 2 generate
+    alias w is <<signal .top.u.v : bit_vector(3 downto 0)>>(3 downto 2);
+    alias k is <<constant .top.u.c : integer>>;
+  begin
+    p : process begin wait for 2 ns; report "V=2 w=" & to_string(w) & " k=" & integer'image(k); wait; end process;
+  end generate;
+end;
+"#,
+        &["V=1 w='1'"],
+        &["V=2 w=10 k=7"],
     ),
     // An external constant: 1, 2, 1 printed `c=1` here, a wrong value without an error.
     (

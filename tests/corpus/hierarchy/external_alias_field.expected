@@ -1,0 +1,14 @@
+exit	0
+diag	note	0	0	:external_alias_field:g2:b:_p0	g2 b 0'0'
+diag	note	0	0	:external_alias_field:g3:_p0	g3 else 0
+diag	note	0	0	:external_alias_field:gc:_p0	gc 0 '0'
+diag	note	0	0	:external_alias_field:gf(0):_p0	gf 0 0
+diag	note	0	0	:external_alias_field:gf(1):_p0	gf 1 0
+diag	note	1000000	0	:external_alias_field:g2:p	g2 8 0000
+diag	note	2000000	0	:external_alias_field:g3:_p0	g3 else 5
+diag	note	2000000	0	:external_alias_field:g2:p	g2 13 0110
+diag	note	3000000	0	:external_alias_field:g2:b:_p0	g2 b 3'1'
+diag	note	3000000	0	:external_alias_field:gf(0):_p0	gf 0 3
+diag	note	3000000	0	:external_alias_field:gf(1):_p0	gf 1 3
+diag	note	3000000	0	:external_alias_field:gc:_p0	gc 0 '1'
+diag	note	4000000	0	:external_alias_field:g3:_p0	g3 else 6

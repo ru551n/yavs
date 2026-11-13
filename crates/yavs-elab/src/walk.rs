@@ -4528,8 +4528,15 @@ impl Elab<'_> {
         }
     }
 
+    /// The subprograms and the aliases of a part of an external name that `scope` declares.
     fn alias_untaken_subs(&mut self, scope: yavs_sem::ScopeId) {
         for d in self.db.decls_with_instances(scope) {
+            // An alias of a part of an external name (#1143).
+            if let DeclKind::Alias(Alias::Object { target, .. }) = self.db.decls[d].kind
+                && !matches!(self.db.exprs[target].kind, ExprKind::Obj(_))
+            {
+                self.db.alias_external_uses(ExtOwner::Alias(d), scope);
+            }
             for m in self.db.decl_subprograms(d) {
                 if let Some(sc) = self.db.sub_scope(m) {
                     self.db.alias_external_uses(ExtOwner::Sub(m), sc);

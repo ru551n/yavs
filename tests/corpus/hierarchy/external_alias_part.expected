@@ -1,0 +1,25 @@
+exit	0
+diag	note	0	0	:external_alias_part:g2:pr:_p0	probe g2 '0'
+diag	note	0	0	:external_alias_part:g3:_p0	g3 else '0'
+diag	note	0	0	:external_alias_part:gc:_p0	gc 0 00
+diag	note	0	0	:external_alias_part:gf(0):_p0	gf 0 0000
+diag	note	0	0	:external_alias_part:gf(0):_p1	gf 0 n 0
+diag	note	0	0	:external_alias_part:gf(1):_p0	gf 1 0000
+diag	note	0	0	:external_alias_part:gf(1):_p1	gf 1 n 0
+diag	note	1000000	0	:external_alias_part:gc:_p0	gc 0 10
+diag	note	1000000	0	:external_alias_part:gf(1):_p0	gf 1 1010
+diag	note	1000000	0	:external_alias_part:g3:_p0	g3 else '1'
+diag	note	1000000	0	:external_alias_part:gf(0):_p0	gf 0 0101
+diag	note	1500000	0	:external_alias_part:g2:p	g2 0101 '0' 30 1010
+diag	note	2000000	0	:external_alias_part:g2:_p2	g2 wait 25
+diag	note	2500000	0	:external_alias_part:g2:p	g2 40 0110
+diag	note	3000000	0	:external_alias_part:g2:b:_p0	g2 b 1001
+diag	note	3000000	0	:external_alias_part:g2:p	g2 ne '1' 30
+diag	note	3000000	0	:external_alias_part:gf(1):_p1	gf 1 n 9
+diag	note	4000000	0	:external_alias_part:gf(0):_p0	gf 0 1100
+diag	note	4000000	0	:external_alias_part:g3:_p0	g3 else '0'
+diag	note	4000000	0	:external_alias_part:gc:_p0	gc 0 00
+diag	note	4000000	0	:external_alias_part:gf(1):_p0	gf 1 0011
+diag	note	4000000	1	:external_alias_part:g2:pr:_p0	probe g2 '1'
+diag	note	20000000	0	:external_alias_part:chk	done V=2
+diag	note	21000000	0	:external_alias_part:tb:_p0	top_sl 00

@@ -147,6 +147,10 @@ Module-local decisions go in this section and ir.md section 4 or `docs/decisions
 - `ProcInst::lsps` must match `ProcessInfo::drivers` of the HIR statement one to one, in order
   (the lowering's driver slots).
 - Restart test: anything cached across `elaborate` calls breaks rule 4.
+- A generate branch that is not elaborated (`Elab::untaken`) is still lowered with its architecture: `alias_untaken`
+  gives its statements, subprograms and declared aliases of a part of an external name (`ExtOwner::Alias`) their
+  implicit aliases, and nothing binds or resolves them (#1143). A new kind of declaration or statement that holds an
+  external name must be reached there too, or lowering meets `ExprKind::External` (`E2001`).
 - A stage entry holds ids of what elaboration appended to the `Db` (implicit aliases of external names, generic
   entity instances, late units), in an order the generics choose: key it with `Db::stage_extent`, which digests
   those entries, never with `Db::extent` alone (#1142, `tests/cache.rs` `lowered_design_depends_on_what_elaboration_added`).

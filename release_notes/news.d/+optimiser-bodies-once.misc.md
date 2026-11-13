@@ -1,1 +1,0 @@
-Runs start sooner: the optimiser makes the optimised body of each small subprogram once instead of again for every level of inlining, and long functions full of vector operations are optimised in time that grows with their length.

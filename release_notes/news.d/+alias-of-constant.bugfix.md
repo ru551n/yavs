@@ -1,1 +1,0 @@
-An object alias of a generic, of a constant that is not locally static, or of a part of one (`alias x : integer_vector(0 to t'length - 1) is t;` in a subprogram or a process) is accepted, where it was rejected as not implemented.

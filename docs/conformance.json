@@ -231,8 +231,8 @@
        8
       ],
       "composite": [
-       163,
-       163
+       164,
+       164
       ],
       "delta": [
        19,
@@ -251,16 +251,16 @@
        59
       ],
       "held": [
-       10,
-       10
+       11,
+       11
       ],
       "hierarchy": [
        91,
        91
       ],
       "ieee": [
-       21,
-       21
+       23,
+       23
       ],
       "implicit": [
        6,
@@ -271,8 +271,8 @@
        2
       ],
       "process": [
-       50,
-       50
+       56,
+       56
       ],
       "protected": [
        27,
@@ -299,16 +299,16 @@
        5
       ],
       "scalar": [
-       20,
-       20
+       24,
+       24
       ],
       "shared": [
        4,
        4
       ],
       "sigassign": [
-       37,
-       37
+       38,
+       38
       ],
       "std93": [
        6,
@@ -336,8 +336,8 @@
        8
       ],
       "composite": [
-       163,
-       163
+       164,
+       164
       ],
       "delta": [
        19,
@@ -356,16 +356,16 @@
        59
       ],
       "held": [
-       10,
-       10
+       11,
+       11
       ],
       "hierarchy": [
        91,
        91
       ],
       "ieee": [
-       21,
-       21
+       23,
+       23
       ],
       "implicit": [
        6,
@@ -376,8 +376,8 @@
        2
       ],
       "process": [
-       50,
-       50
+       56,
+       56
       ],
       "protected": [
        27,
@@ -404,16 +404,16 @@
        5
       ],
       "scalar": [
-       20,
-       20
+       24,
+       24
       ],
       "shared": [
        4,
        4
       ],
       "sigassign": [
-       37,
-       37
+       38,
+       38
       ],
       "std93": [
        6,
@@ -441,8 +441,8 @@
        8
       ],
       "composite": [
-       163,
-       163
+       164,
+       164
       ],
       "delta": [
        19,
@@ -461,16 +461,16 @@
        59
       ],
       "held": [
-       10,
-       10
+       11,
+       11
       ],
       "hierarchy": [
        91,
        91
       ],
       "ieee": [
-       21,
-       21
+       23,
+       23
       ],
       "implicit": [
        6,
@@ -481,8 +481,8 @@
        2
       ],
       "process": [
-       50,
-       50
+       56,
+       56
       ],
       "protected": [
        27,
@@ -509,16 +509,16 @@
        5
       ],
       "scalar": [
-       20,
-       20
+       24,
+       24
       ],
       "shared": [
        4,
        4
       ],
       "sigassign": [
-       37,
-       37
+       38,
+       38
       ],
       "std93": [
        6,
@@ -625,9 +625,9 @@
   }
  },
  "generated": {
-  "commit": "9bbdb36189",
-  "commit_date": "2026-11-10",
-  "version": "0.19.0"
+  "commit": "d805534ef4",
+  "commit_date": "2026-11-13",
+  "version": "0.19.1"
  },
  "local": {
   "records": {
@@ -1348,162 +1348,162 @@
   "corpus_refs": {
    "en_cl_fix-2008": {
     "pass": 149,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 149
    },
    "fletcher-2008": {
     "pass": 101,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 101
    },
    "grlib-1993": {
     "pass": 454,
-    "recorded": "2026-10-23",
+    "recorded": "2026-11-13",
     "total": 454
    },
    "grlib-2008": {
     "pass": 410,
-    "recorded": "2026-10-23",
+    "recorded": "2026-11-13",
     "total": 410
    },
    "hdl-modules-2008": {
     "pass": 86,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 86
    },
    "hdl-modules-2019": {
     "pass": 86,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 86
    },
    "json-for-vhdl-2008": {
     "pass": 149,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 149
    },
    "neorv32-2008": {
     "pass": 67,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 67
    },
    "neotrng-2008": {
     "pass": 2,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 2
    },
    "open-logic-2008": {
     "pass": 386,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 386
    },
    "osvvm-2008": {
     "pass": 174,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 174
    },
    "osvvm-2019": {
     "pass": 174,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 174
    },
    "poc-2008": {
     "pass": 417,
-    "recorded": "2026-11-02",
+    "recorded": "2026-11-13",
     "total": 417
    },
    "satcat5-2008": {
     "pass": 246,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 246
    },
    "surf-2008": {
     "pass": 310,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 318
    },
    "uvvm-2008": {
     "pass": 235,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 235
    },
    "uvvm-2019": {
     "pass": 235,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 235
    },
    "vests-1993": {
     "pass": 1939,
-    "recorded": "2026-10-23",
+    "recorded": "2026-11-13",
     "total": 1939
    },
    "vhdl-compliance-2008": {
     "pass": 171,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 171
    },
    "vhdl-compliance-2019": {
     "pass": 208,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 208
    },
    "vhdl-extras-2008": {
     "pass": 25,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 25
    },
    "vhdl-ideas-2019": {
     "pass": 18,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 19
    },
    "vhdl-interfaces-2019": {
     "pass": 34,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 34
    },
    "vhdl-tool-checks-2008": {
     "pass": 1,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 1
    },
    "vhdl-tool-checks-2019": {
     "pass": 1,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 1
    },
    "vhlib-2008": {
     "pass": 26,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 26
    },
    "vunit-2008": {
     "pass": 143,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 143
    },
    "vunit-2019": {
     "pass": 143,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 143
    },
    "vunit-tests-2008": {
     "pass": 218,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 218
    },
    "vunit-tests-2019": {
     "pass": 218,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 218
    },
    "yavs-lib-2008": {
     "pass": 27,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 27
    },
    "yavs-lib-2019": {
     "pass": 26,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-13",
     "total": 28
    }
   },

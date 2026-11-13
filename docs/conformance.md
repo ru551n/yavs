@@ -1,14 +1,14 @@
 # yavs conformance report
 
-Generated: yavs 0.19.0 at commit `9bbdb36189` (2026-11-10) by `tools/conformance/run.py`; do not edit by hand.
+Generated: yavs 0.19.1 at commit `d805534ef4` (2026-11-13) by `tools/conformance/run.py`; do not edit by hand.
 
 yavs is checked by running the test suites of VHDL libraries, a VHDL language test suite and real designs on it, and by comparing its output
-with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 15073 of 15176
+with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 15088 of 15191
 tests pass; every failure is tracked as an issue. This is evidence, not a proof of correctness.
 
 | Project or suite | What it is | Passed / total |
 | --- | --- | ---: |
-| Differential testbenches | small testbenches of this repository; output must equal sim1's, at 1 and 4 threads | 667/667 |
+| Differential testbenches | small testbenches of this repository; output must equal sim1's, at 1 and 4 threads | 682/682 |
 | Known simulator differences | one reproducer per case where simulators disagree | 271/271 |
 | sim1's regression tests | a reference simulator's own self-checking tests (runnable ones) | 1014/1070 |
 | sim2's regression tests | a reference simulator's own self-checking tests (runnable ones) | 463/504 |
@@ -40,30 +40,30 @@ Every testbench of `tests/corpus` runs on yavs and its normalised output is comp
 | --- | --- | --- | --- |
 | access | 8/8 | 8/8 | 8/8 |
 | arith | 8/8 | 8/8 | 8/8 |
-| composite | 163/163 | 163/163 | 163/163 |
+| composite | 164/164 | 164/164 | 164/164 |
 | delta | 19/19 | 19/19 | 19/19 |
 | env | 16/16 | 16/16 | 16/16 |
 | force | 12/12 | 12/12 | 12/12 |
 | generics | 59/59 | 59/59 | 59/59 |
-| held | 10/10 | 10/10 | 10/10 |
+| held | 11/11 | 11/11 | 11/11 |
 | hierarchy | 91/91 | 91/91 | 91/91 |
-| ieee | 21/21 | 21/21 | 21/21 |
+| ieee | 23/23 | 23/23 | 23/23 |
 | implicit | 6/6 | 6/6 | 6/6 |
 | postponed | 2/2 | 2/2 | 2/2 |
-| process | 50/50 | 50/50 | 50/50 |
+| process | 56/56 | 56/56 | 56/56 |
 | protected | 27/27 | 27/27 | 27/27 |
 | psl | 16/16 | 16/16 | 16/16 |
 | reflect | 14/14 | 14/14 | 14/14 |
 | report | 10/10 | 10/10 | 10/10 |
 | resolution | 24/24 | 24/24 | 24/24 |
 | rtl | 5/5 | 5/5 | 5/5 |
-| scalar | 20/20 | 20/20 | 20/20 |
+| scalar | 24/24 | 24/24 | 24/24 |
 | shared | 4/4 | 4/4 | 4/4 |
-| sigassign | 37/37 | 37/37 | 37/37 |
+| sigassign | 38/38 | 38/38 | 38/38 |
 | std93 | 6/6 | 6/6 | 6/6 |
 | synopsys | 20/20 | 20/20 | 20/20 |
 | textio | 19/19 | 19/19 | 19/19 |
-| total | 667/667 | 667/667 | 667/667 |
+| total | 682/682 | 682/682 | 682/682 |
 
 Failing: none.
 

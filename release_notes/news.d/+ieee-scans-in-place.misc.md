@@ -1,1 +1,0 @@
-Compiled code now computes `is_x` and the reduction operators (`and`, `or`, `xor` and their negations of a vector) itself for vectors of up to 64 elements, so designs that test buses for metavalues or reduce them every clock simulate faster.

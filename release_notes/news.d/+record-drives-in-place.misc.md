@@ -1,1 +1,0 @@
-Compiled code now drives a record signal assignment that changes only some of the fields, and an assignment to one element of an array of records, without handing the work to the interpreter, so processor and bus designs with record signals simulate faster.

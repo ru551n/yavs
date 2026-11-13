@@ -103,7 +103,7 @@ build and no 32-bit build.
 On Windows, compare ``(Get-FileHash yavs-<version>-x86_64-pc-windows-msvc.zip).Hash`` in
 PowerShell with the line of ``SHA256SUMS``, unzip the archive and add its directory to ``PATH``.
 ``yavs --version`` prints the version and the kind of archive on the first line, for example
-``yavs 0.19.1 (compiled tier: cranelift)``, the CPU level of the build on the second (``Build: x86-64-v3, AVX2 support``,
+``yavs 0.20.0 (compiled tier: cranelift)``, the CPU level of the build on the second (``Build: x86-64-v3, AVX2 support``,
 ``Build: x86-64 baseline`` or ``Build: aarch64``) and the copyright notice on the third.
 
 Every archive has everything in it: nothing else needs to be installed. Its

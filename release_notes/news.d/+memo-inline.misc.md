@@ -1,1 +1,0 @@
-Compiled code answers a repeated call of a pure function on scalars and short vectors from the memo of pure calls by itself, without calling into the simulator, so designs that call such helper functions often simulate faster.

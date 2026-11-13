@@ -11342,3 +11342,18 @@ elements of a vector, each driven once): about 2 percent more per element drive 
 +0.7 to +0.8 percent of interpreter instructions on two bench designs with one drive per activation (`rtl_chain`,
 `rec_pair`), accepted. Tests: `direct_paths` `repeated_drives_of_an_element_match_the_general_path`, corpus
 `sigassign/redrive_values`, `redrive_active`, `redrive_after`, perf design `redrive`.
+
+## The activation shell of serial processes: the shared state lent by one pointer, roots published only when they change (2026-11-13)
+
+A serial process (one that may touch the shared heap or shared variables) had the whole shared state moved out of its
+lock into the machine and back at every activation, and scanned its frames for shared-heap roots at every suspension.
+`SharedState` is now one `Box` (`Deref` to its fields), lent by swapping the pointer with a spare empty state the
+process keeps (`lend`, `give_back`); the lock and its guard stay as they were. `publish_shared` skips the root scan when
+the frames' functions and the words its root maps name are those of one of the process's last two scans (`Published`,
+`published_same`); debug and `gc-stress` builds scan anyway and check the kept roots equal the scan (`check_published`).
+Measured per activation of a serial process that waits in a loop (compiled): 1059 -> 968 instructions; a testbench of the
+usual verification-library shape shows no measurable change (the activations there are long; root scans fell from 72 to
+11 percent of serial activations). Tests: `the_shared_state_is_one_pointer`, perf design `serial_roots`
+(`shared_publishes`), corpus `protected/serial_line_roots` (shared-heap collections with roots in `line` variables). Not
+done: removing the lock (a lend per batch needs a kernel hook), a persistent per-process compiled-entry view (ruled out by
+the decision on persistent per-process machine state, #634).

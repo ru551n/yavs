@@ -3786,6 +3786,23 @@ user's performance priority:
   not stored). `--tier=auto` keeps the interpreter's value: the functions it compiles run
   interpreted first, and the measured difference there is below the noise.
 
+- **Procedures that can wait (2026-11-13):** a procedure that can suspend (a `wait`, or a call
+  of one that can) promotes its slots by the process rule: integer and real slots no suspension
+  leaves live, named variables kept in their slots under `opt::external_variables`. It also needs
+  two or more accesses of the slot: a parameter read once would only have its load moved to the
+  entry. Before, any procedure that could wait kept every local in its slot, a load and a store
+  per statement even on the calls that never wait (the verification-component shape: a wait
+  behind a condition). Work counter `wait_proc_slots`.
+  **Accepted slower band** (user, 2026-11-13): fewer instructions per run move the run's total work, so a first run
+  that crossed `WAIT_LONG` (1 s of looks' work) just before its end, and compiled a big held subprogram there for the
+  later runs to link, now ends under the line; the subprogram then stays held (`unpaid`, later `unrepaid`) in every
+  run. Measured on a probe whose process calls one procedure of 28 202 IR instructions (`--tier=auto`, 3 fresh worlds of 5 runs,
+  instructions of all threads, 2026-11-13): base code links it from about 29k calls, this change from about 33k
+  (with a wait on every call: 27k and 31k); inside that band run 1 costs 0.41 to 0.45 of base and every later run 2.4
+  to 3.7 times base (five-run sums 1.26 to 1.39), outside it every run 0.82 to 0.88 of base. Accepted because any
+  reduction of work moves the same cliff; the price-scaled rule that removes it (a run is long for a subprogram whose
+  price its work repays) made three short real-design first runs 12 to 20 percent dearer, and was not landed.
+
 ## Clean-up of finished subprograms: threading through short-circuit tests, slice emptiness tests, coalesced moves (yavs-ir `opt/cfg.rs`, #444)
 
 - **What:** after the optimiser's walks and before registers are numbered, a linear pass over the finished code of a

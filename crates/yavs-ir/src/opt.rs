@@ -5602,12 +5602,14 @@ impl<'a> Opt<'a> {
     fn promote(&mut self) -> Option<Vec<Reg>> {
         let f = self.f;
         let process = f.kind == FuncKind::Process;
+        // A procedure that can wait promotes as a process does: only slots no suspension leaves
+        // live, and only numbers (the suspension invariant holds of the registers).
+        let waits = !process && !self.nosusp;
         if self.nested
             || !(process
-                || matches!(f.kind, FuncKind::Function | FuncKind::Procedure)
-                    && !f.flags.contains(FuncFlags::MAY_SUSPEND)
-                    && f.body.is_none()
-                    && self.nosusp)
+                || matches!(f.kind, FuncKind::Function | FuncKind::Procedure) && f.body.is_none())
+            // (A suspension this walk does not see, `is_susp`: nothing is known about it.)
+            || !process && self.nosusp && f.flags.contains(FuncFlags::MAY_SUSPEND)
         {
             return None;
         }
@@ -5747,13 +5749,16 @@ impl<'a> Opt<'a> {
                 || !a.ok
                 || !matches!(a.w, Width::B8 | Width::B1)
                 || ty == RegTy::Sig
-                || (process
+                || ((process || waits)
                     && !a
                         .kinds
                         .iter()
                         .all(|k| matches!(k, Some(RegTy::I64 | RegTy::F64))))
                 || !clear_of(&esc, o, bytes)
                 || !clear_of(&wide, o, bytes)
+                // (One access gains nothing: a parameter read once would only move its load to
+                // the entry, which the passes after a suspension do not fold back.)
+                || (waits && a.sites.len() < 2)
             {
                 continue;
             }
@@ -5781,7 +5786,7 @@ impl<'a> Opt<'a> {
                     .is_some_and(|t| t.scalar_size().is_some());
                 // (A plugin may deposit into the variables of a process.)
                 if keep_vars
-                    || (process && external())
+                    || ((process || waits) && external())
                     || (scalar && (i64::from(l.slot) != o || i64::from(l.size) != bytes))
                 {
                     continue;
@@ -5790,7 +5795,7 @@ impl<'a> Opt<'a> {
             let is_param = f.params.iter().any(|p| p.slot == off);
             cands.push((off, Reg(0), ty, is_param));
         }
-        if process && !cands.is_empty() {
+        if (process || waits) && !cands.is_empty() {
             // A register is not live across a suspension: only slots no suspension leaves
             // live (read before written on the way on) qualify.
             let offs: Vec<u32> = cands.iter().map(|c| c.0).collect();
@@ -5918,7 +5923,8 @@ impl<'a> Opt<'a> {
     }
 
     /// For each frame slot of `slots` (sorted offsets of direct 8-byte loads and stores, reached
-    /// through the address registers of `faddr`) of a process: does no suspension leave it live?
+    /// through the address registers of `faddr`) of a process or a procedure that can wait: does no
+    /// suspension leave it live?
     /// A slot is live where some path reads it before writing it; the code behind a `wait;`
     /// with nothing to wake it does not run.
     fn dead_at_suspends(&self, slots: &[u32], faddr: &FxMap<u32, u32>) -> Vec<bool> {

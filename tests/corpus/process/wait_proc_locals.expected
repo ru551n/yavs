@@ -1,0 +1,4 @@
+exit	0
+diag	note	45000000	0	:wait_proc_locals:main	across r=6634 now=45000000 fs
+diag	note	140000000	0	:wait_proc_locals:main	cycles r=6739 now=140000000 fs
+diag	note	185000000	0	:wait_proc_locals:main	outer r=90011 now=185000000 fs

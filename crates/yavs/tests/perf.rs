@@ -724,6 +724,9 @@ case!(zero_ne, "n=", &[], [("ops", Max(6200))]);
 case!(zero_range, "n=", &[], [("ops", Max(4950))]);
 // An aggregate of one range choice of a logic vector is one plane fill (`LFill`), not a loop.
 case!(zero_fill, "n=", &[], [("ops", Max(33800))]);
+// A procedure that can wait keeps its integer locals in registers where no wait leaves them live:
+// a call that does not wait loads and stores no frame slot per statement.
+case!(wait_proc_slots, "r=", &[], [("ops", Max(14030))]);
 case!(wide_vec, "wide=0", &[], [("ops", Max(1997254))]);
 case!(
     licm_loop,

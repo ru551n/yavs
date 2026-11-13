@@ -1,0 +1,1 @@
+Procedures that can wait, such as verification-component calls whose wait is behind a condition, keep their integer and real variables in registers where no wait needs them in memory, so their calls run faster.

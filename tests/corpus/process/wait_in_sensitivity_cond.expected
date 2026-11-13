@@ -1,0 +1,6 @@
+exit	1
+diag	note	0	0	:wait_in_sensitivity_cond:p	s=0 r=19
+diag	note	5000000	0	:wait_in_sensitivity_cond:p	s=1 r=38
+diag	note	10000000	0	:wait_in_sensitivity_cond:p	s=2 r=57
+diag	note	15000000	0	:wait_in_sensitivity_cond:p	s=3 r=76
+diag	fatal	20000000	0	:wait_in_sensitivity_cond:p	wait statement in a procedure called by a process with a sensitivity list

@@ -1,0 +1,10 @@
+exit	0
+diag	note	8000000	0	:can_wait_calls:main	chain r=62695 s=5391 now=8000000 fs
+diag	note	10000000	0	:can_wait_calls:copies(2):p	copy 2 r=52452 now=10000000 fs
+diag	note	12000000	0	:can_wait_calls:copies(1):p	copy 1 r=54451 now=12000000 fs
+diag	note	34000000	0	:can_wait_calls:main	timed out at 6
+diag	note	60000000	0	:can_wait_calls:main	timed out at 12
+diag	note	90000000	0	:can_wait_calls:main	handshake req=13 ack=13 now=90000000 fs
+diag	note	125000000	0	:can_wait_calls:main	recursion s=19362 now=125000000 fs
+diag	note	145000000	0	:can_wait_calls:main	list sum=5050 now=145000000 fs
+diag	note	145000000	0	:can_wait_calls:main	counter=887

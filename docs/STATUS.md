@@ -6200,6 +6200,14 @@ only has `wait;` is never woken, which the verifier knows too. Plugins (`--vhpi`
 write the variables of a process from outside: `opt::external_variables` keeps named variables in memory and unknown
 after a suspension and stops the store of optimised process copies. The memoisation of instance-constant values
 needs a gain of 6 instead of 3 per copy under `--tier=llvm` (`opt::compiled_tier`).
+Procedures that can wait promote by the same rule (2026-11-13): integer and real slots no suspension leaves live and
+accessed more than once become registers, so a call that does not reach its wait no longer loads and stores a slot
+per statement (work counter `wait_proc_slots`). Known slower band, accepted by the maintainer (decisions.md "Intervals and
+register promotion in processes"): a design whose first run ends just past the `WAIT_LONG` line of `--tier=auto` now ends under it, so a big
+subprogram that base code compiled at the end of run 1 (and later runs linked) stays interpreted in every run. On a
+probe whose process calls one procedure of 28 202 IR instructions that is 29k to 32k calls (27k to 29k with a wait on
+every call): run 1 0.41 to 0.45 of
+base, every later run 2.4 to 3.7 times base; outside the band 0.82 to 0.88 of base in every run.
 
 `tools/bench` on the pinned performance core 2, total CPU seconds before / after (interleaved, 7 runs; ratio after / before):
 

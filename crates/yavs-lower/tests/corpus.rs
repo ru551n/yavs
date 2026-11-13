@@ -312,6 +312,7 @@ const PASS: &[&str] = &[
     "hierarchy/inout_port_collapse_force",
     "hierarchy/inout_port_collapse_parts",
     "hierarchy/inout_port_conv_read",
+    "hierarchy/inout_port_defaults",
     "hierarchy/inout_record_lanes",
     "hierarchy/instance_path_names",
     "hierarchy/path_name_generic_actual",

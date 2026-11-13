@@ -9,7 +9,7 @@
 Per benchmark and binary it reports the median CPU seconds of each phase (analyze, elaborate,
 init, simulate: from `yavs run --time-report`), the process CPU total (exact, from rusage) and
 the wall total. With --compare the two binaries run interleaved (rep-major, order alternating
-every rep) and the table shows B/A ratios: below 1 is faster, `!` marks a slowdown and `+` a
+every rep; each timed run starts from the auto tier's first-run state, see --learn) and the table shows B/A ratios: below 1 is faster, `!` marks a slowdown and `+` a
 speedup beyond --threshold (default 10%) and 0.05 s. Reference simulators (--sims) time the
 internal designs only, as one number (elaborate + run), labels only: see AGENTS.md.
 --ref is the pinned head-to-head mode (ref_mode below); tiny.py runs the same on the tiny-test corpus.
@@ -292,6 +292,31 @@ def measure(cmds, Y, tr):
                 d["wall"] += float(w)
                 d["cpu"] += float(c) if c != "n/a" else 0.0
     return {"rc": rc, "wall": wall, "cpu": cpu, "rss": rss, "fst_bytes": fst, "gc": gcs, "phases": ph, "error": tail}
+
+
+def reset_policy(cmds):
+    """Forget what the auto tier learned in earlier runs: the compiled objects, run-to-run profiles and routes (`yavs-cache/obj`)
+    of every library a command names. Analysis images stay (preparation, not policy)."""
+    for argv, _ in cmds:
+        for a in argv:
+            if a.startswith(("--work=", "--map=")):
+                shutil.rmtree(Path(a.split(":", 1)[1]) / "yavs-cache" / "obj", ignore_errors=True)
+
+
+def prime(cmds, Y, tr, warmup):
+    """Give a binary's world the same history on every invocation (#1147): the policy memory is reset, then `warmup` untimed runs
+    (the analysis images of a closure are made on its second and fourth run). A world kept from earlier invocations has learned
+    for many runs, a fresh one for none."""
+    reset_policy(cmds)
+    for _ in range(warmup):
+        measure(cmds, Y, tr)
+
+
+def sample(cmds, Y, tr, learn):
+    """One timed sample; unless the auto tier is to keep learning, from its first-run state."""
+    if not learn:
+        reset_policy(cmds)
+    return measure(cmds, Y, tr)
 
 
 def measure_sim(tpl, sub):
@@ -596,6 +621,9 @@ def main():
     ap.add_argument("--bench", help="comma separated benchmark names")
     ap.add_argument("--group", default="all", choices=["internal", "h2h", "external", "all"])
     ap.add_argument("--runs", type=int, default=3)
+    ap.add_argument("--warmup", type=int, default=4, help="untimed runs per benchmark and binary before timing, so the analysis images exist in every world (#1147)")
+    ap.add_argument("--learn", action="store_true", help="let the auto tier keep learning from run to run while timing (after one reset and the warm-up); "
+                    "default: its memory is reset before every timed run, so no world is ahead of another. A/A of two identical builds then differs by up to 25 percent on some designs (the learning settles in one world and not the other)")
     ap.add_argument("--threshold", type=float, default=0.10)
     ap.add_argument("--sims", default="", help="reference simulator labels, e.g. sim1,sim2 (internal designs only)")
     ap.add_argument("--ref", default="", help="head-to-head: reference labels (e.g. sim1,sim2); BIN is the yavs binary")
@@ -647,6 +675,9 @@ def main():
     for n in names:
         if a.compare:
             check_same_config(n, configs[n]["A"], configs[n]["B"])
+    for n in names:
+        for l, b, tr in zip(labels, bins, trs):
+            prime(cmds[(l, n)], b, tr, a.warmup)
     samples = {(l, n): [] for l in labels for n in names}
     for rep in range(a.runs):
         order = list(zip(labels, bins, trs))
@@ -654,7 +685,7 @@ def main():
             order.reverse()  # alternate A/B order so a drifting host load hits both
         for n in names:
             for l, b, tr in order:
-                samples[(l, n)].append(measure(cmds[(l, n)], b, tr))
+                samples[(l, n)].append(sample(cmds[(l, n)], b, tr, a.learn))
             print(f"rep {rep + 1}/{a.runs} {n}", file=sys.stderr)
     summ = {l: {n: summarize(samples[(l, n)]) for n in names} for l in labels}
     sims = load_sims([s for s in a.sims.split(",") if s]) if a.sims else {}
@@ -710,8 +741,35 @@ def self_test():
             raise AssertionError("different configurations accepted")
         except SystemExit as e:
             assert "ent_tb" in str(e) and "A:" in str(e) and "-gX=1" in str(e), e
+        selftest_worlds(Path(d))
     CACHE, CORPUS = old
     print("bench self-test: ok")
+
+
+def selftest_worlds(d):
+    """#1147: every sample starts from the same policy memory, the warm-up runs happen, analysis images stay. The stand-in binary
+    leaves a compiled object behind, as a run of the auto tier does, and logs whether one was there when it started."""
+    lib, log = d / "lib", d / "log"
+    (lib / "yavs-cache" / "obj").mkdir(parents=True)
+    fake = d / "yavs"
+    fake.write_text(f"""#!/bin/sh
+for a; do case $a in --work=*) lib=${{a#--work=*:}};; esac; done
+mkdir -p "$lib/yavs-cache/obj"
+ls "$lib/yavs-cache/obj" | wc -l >> {log}
+touch "$lib/yavs-cache/obj/learned" "$lib/yavs-cache/ir.img"
+""")
+    fake.chmod(0o755)
+    cmds = [(["{Y}", "run", f"--work=work:{lib}", "top"], str(d))]
+    seen = lambda: [int(x) for x in log.read_text().split()]
+    (lib / "yavs-cache" / "obj" / "old").touch()  # what an earlier invocation learned
+    prime(cmds, str(fake), False, 4)
+    assert seen() == [0, 1, 1, 1], seen()  # reset first; the warm-up runs learn on
+    log.unlink()
+    for learn in (False, True):
+        for _ in range(3):
+            assert sample(cmds, str(fake), False, learn)["rc"] == 0
+    assert seen() == [0, 0, 0, 1, 1, 1], seen()  # reset before each sample unless the tier learns
+    assert (lib / "yavs-cache" / "ir.img").exists()  # preparation is not policy
 
 
 def _sub(snippet, sub):

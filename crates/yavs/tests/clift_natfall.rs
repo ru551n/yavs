@@ -1,5 +1,5 @@
-//! `--tier=clift-auto`: a function the Cranelift native-frame lowering refuses (here an integer
-//! power) gets frame-mode code once a compiled caller exists, instead of an empty native-frame
+//! `--tier=clift-auto`: a function the Cranelift native-frame lowering refuses (here a layout from
+//! a run-time descriptor, `rows(r'range)(r'element'range)`) gets frame-mode code once a compiled caller exists, instead of an empty native-frame
 //! compile that repeats and leaves every call from compiled code to the interpreter. Needs the
 //! `clift` feature.
 //!
@@ -18,6 +18,7 @@ use std::process::Output;
 
 const SRC: &str = "entity natfall is generic (N : natural := 400000); end;
 architecture a of natfall is
+  type rows is array (natural range <>) of bit_vector;
   function pw(x, n : integer) return integer is
     variable r : integer := 0;
   begin
@@ -27,9 +28,13 @@ architecture a of natfall is
     end loop;
     return r;
   end;
-  function step(x : integer) return integer is
+  function step(x : integer; r : rows) return integer is
     variable t : integer := 0;
+    variable u : rows(r'range)(r'element'range);
   begin
+    u := r;
+    u(u'left)(0) := not u(u'left)(0);
+    t := u(u'left)'length;
     for k in 1 to 4 loop
       t := t + pw(x mod 50 + k, 3) mod 1013;
     end loop;
@@ -39,9 +44,10 @@ begin
   process
     variable x : integer := 1;
     variable acc : integer := 0;
+    constant g : rows(0 to 1)(0 to 3) := (\"1010\", \"0110\");
   begin
     for i in 1 to N loop
-      x := step(x + i);
+      x := step(x + i, g);
       acc := (acc + x) mod 1000003;
     end loop;
     report integer'image(acc);
@@ -53,7 +59,7 @@ end;
 fn command(dir: &Path, args: &[&str]) -> std::process::Command {
     let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_yavs"));
     c.args(args).env("YAVS_AUTO_TRACE", "1").current_dir(dir);
-    // (The count rule has native-frame code of `**`, and no such wait: `auto_count.rs`.)
+    // (The count rule has native-frame code of the layout, and no such wait: `auto_count.rs`.)
     c.env("YAVS_AUTO_POLICY", "sampled");
     c
 }

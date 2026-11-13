@@ -1273,6 +1273,63 @@ pub fn copy_bits(sw: &[[u64; 4]], dw: &mut [[u64; 4]], s0: u64, d0: u64, n: u64)
     yavs_logic::wide::copy_range(dw, d0 as usize, sw, s0 as usize, n as usize);
 }
 
+/// `Inst::LEq`: the planes of the first `n` elements of the plane bytes `x` and `y` (at least
+/// `n.div_ceil(64)` blocks each) are equal; bits beyond `n` are not compared. Compiled code calls
+/// it on the same memory (`yavs-rt`).
+pub fn planes_eq(x: &[u8], y: &[u8], n: usize) -> bool {
+    let full = n / 64 * 32;
+    // Whole blocks as bytes, then the last block under the mask of its elements.
+    x[..full] == y[..full]
+        && (n.is_multiple_of(64) || {
+            let mask = (1u64 << (n % 64)) - 1;
+            (0..4).all(|p| (plane_word(&x[full..], p) ^ plane_word(&y[full..], p)) & mask == 0)
+        })
+}
+
+/// `real ** real` (`Inst::FBin` `Pow`), shared with compiled code as [`real_pow_int`] is.
+#[inline(never)]
+pub fn real_pow(x: f64, y: f64) -> f64 {
+    x.powf(y)
+}
+
+/// What [`arith_of`] computes (its `op`).
+pub const ARITH_IPOW: u64 = 0;
+pub const ARITH_FPOWI: u64 = 1;
+pub const ARITH_FPOW: u64 = 2;
+pub const ARITH_PHYS_MUL: u64 = 3;
+pub const ARITH_PHYS_DIV: u64 = 4;
+
+/// The arithmetic compiled code calls out for (`yavs-rt` `yavs_rt_arith`), as the interpreter
+/// computes it: integer `**`, `real ** integer` and `real ** real` (`a` the real's bits, `b` the
+/// exponent or its bits), physical times or divided by a real (`b` the real's bits). `None` where
+/// the interpreter fails (overflow, a negative exponent, a result out of range or not finite).
+pub fn arith_of(op: u64, a: u64, b: u64) -> Option<u64> {
+    let f = f64::from_bits;
+    match op {
+        ARITH_IPOW => arith::pow(a as i64, b as i64).ok().map(|v| v as u64),
+        ARITH_FPOWI | ARITH_FPOW => {
+            let r = if op == ARITH_FPOWI {
+                real_pow_int(f(a), b as i64)
+            } else {
+                real_pow(f(a), f(b))
+            };
+            r.is_finite().then(|| r.to_bits())
+        }
+        ARITH_PHYS_MUL => arith::phys_mul_real(a as i64, f(b)).ok().map(|v| v as u64),
+        _ => arith::phys_div_real(a as i64, f(b)).ok().map(|v| v as u64),
+    }
+}
+
+/// `real ** integer` (`Inst::FBin` `PowI`), shared with compiled code (`yavs-rt`) so both tiers
+/// run the same code.
+#[inline(never)]
+pub fn real_pow_int(x: f64, e: i64) -> f64 {
+    match i32::try_from(e) {
+        Ok(e) => x.powi(e),
+        Err(_) => x.powf(e as f64),
+    }
+}
+
 /// `Inst::ArrCmp`: the lexicographic order (-1, 0, 1) of the arrays of `la` and `lb` elements
 /// whose bytes are `a` and `b` (at least the planes or the elements of each; `w` as in the
 /// instruction). The first difference from the left decides, else the shorter array is less
@@ -9264,19 +9321,7 @@ impl Machine {
             self.rd(self.regs[a as usize], bytes)?,
             self.rd(self.regs[b as usize], bytes)?,
         );
-        let tail = match n % 64 {
-            0 => !0,
-            r => (1u64 << r) - 1,
-        };
-        let last = bytes as usize / 32;
-        let eq = (0..last).all(|blk| {
-            let mask = if blk + 1 == last { tail } else { !0 };
-            (0..4).all(|p| {
-                let o = blk * 32;
-                (plane_word(&x[o..], p) ^ plane_word(&y[o..], p)) & mask == 0
-            })
-        });
-        Ok(eq.into())
+        Ok(planes_eq(x, y, n as usize).into())
     }
 
     /// `Inst::ArrCmp` (stepped), out of line.
@@ -11341,11 +11386,8 @@ impl Machine {
                         }
                         x / y
                     }
-                    FOp::PowI => match i32::try_from(self.ri(b)) {
-                        Ok(e) => x.powi(e),
-                        Err(_) => x.powf(self.ri(b) as f64),
-                    },
-                    FOp::Pow => x.powf(self.rf(b)),
+                    FOp::PowI => real_pow_int(x, self.ri(b)),
+                    FOp::Pow => real_pow(x, self.rf(b)),
                 };
                 let v = real_ok(v, "arithmetic")?;
                 self.set(dst, v);

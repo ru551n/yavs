@@ -30,6 +30,8 @@ end;
 entity pk is end;
 architecture a of pk is
   type tab_t is array (0 to 7) of integer;
+  type rows is array (natural range <>) of bit_vector;
+  constant g : rows(0 to 1)(0 to 3) := (\"1010\", \"0110\");
   signal clk : bit := '0';
   signal n : integer := 0;
   signal q8a, q8b : bit_vector(7 downto 0);
@@ -61,15 +63,17 @@ architecture a of pk is
     b := (a * 13 + b) mod 1033;
     return (a + b) mod 2039;
   end;
-  function pw(x : integer) return integer is
+  function pw(x : integer; r : rows) return integer is
     variable a, b : integer;
+    variable t : rows(r'range)(r'element'range);
   begin
+    t := r;
     a := (x + 1) mod 1009;
     b := (a * 3 + 7) mod 1013;
     a := (b * 5 + a) mod 1019;
     b := (a * 7 + b) mod 1021;
     a := (b * 11 + a) mod 1031;
-    return (a mod 5 + 1) ** (b mod 3 + 1);
+    return (a mod 5 + 1) ** (b mod 3 + 1) + t(t'left)'length;
   end;
   function pick(i : integer) return integer is
     constant tab : tab_t := (11, 12, 13, 14, 15, 16, 17, 18);
@@ -86,7 +90,7 @@ architecture a of pk is
   end;
   function outer(x : integer) return integer is
   begin
-    return small(one(x)) + small(two(x)) + pw(x);
+    return small(one(x)) + small(two(x)) + pw(x, g);
   end;
 begin
   clk <= not clk after 5 ns when n < 60;
@@ -512,7 +516,8 @@ mod mutations {
         );
     }
 
-    /// `YAVS_AUTO_POLICY` decides whether `**` runs on a native frame: read outside the lowering.
+    /// `YAVS_AUTO_POLICY` decides whether a layout from a run-time descriptor (`pw`'s `t`) runs on a
+    /// native frame: read outside the lowering.
     #[test]
     fn the_compile_policy() {
         by_env(

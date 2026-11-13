@@ -445,7 +445,8 @@ end;
 ";
 
 /// `**` and a layout from a run-time descriptor have native-frame code under the rule (nothing to
-/// leave for at every call), and the old policy keeps the old refusal.
+/// leave for at every call), and the old policy keeps the old refusal of the layout (`**` is a
+/// call of compiled code under both since it no longer steps).
 #[test]
 fn the_two_instructions_run_on_native_frames() {
     let dir = setup("auto_count_arms", POW);
@@ -476,13 +477,16 @@ fn the_two_instructions_run_on_native_frames() {
         ],
     );
     let e = err(&eager);
-    for f in ["pw", "bits"] {
-        assert!(
-            e.lines()
-                .any(|l| l.starts_with("no native variant of") && l.contains(&format!(" {f}: "))),
-            "{e}"
-        );
-    }
+    assert!(
+        e.lines()
+            .any(|l| l.starts_with("no native variant of") && l.contains(" bits: ")),
+        "{e}"
+    );
+    assert!(
+        !e.lines()
+            .any(|l| l.starts_with("no native variant of") && l.contains(" pw: ")),
+        "{e}"
+    );
 }
 
 /// The old policy is one switch away: no count, the switch to a copy at activation 1024.

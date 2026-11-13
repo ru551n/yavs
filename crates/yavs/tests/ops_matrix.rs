@@ -48,7 +48,7 @@ const WIDTHS: [u32; 3] = [1, 64, 2048];
 /// The steps of the operator plan that have landed: 1 array ordering, 2 compiled code without
 /// host steps for `**` and `time * real`, 3 the `yavs.implicit` array natives on planes, 4 the
 /// missing natives.
-const LANDED: u8 = 1;
+const LANDED: u8 = 2;
 
 /// Designs run at once (each a `yavs` process).
 const JOBS: usize = 4;
@@ -109,6 +109,8 @@ const ALL_CLASSES: &[TypeClass] = {
 enum Cost {
     /// Cost per 64-bit word or less.
     Word,
+    /// No growth with the width (a scalar operation).
+    Fixed,
 }
 
 /// One row: an operator family on one type class.
@@ -247,13 +249,11 @@ fn cell(f: Family, c: TypeClass) -> Vec<Item> {
         // Arithmetic (LRM 9.2.6 to 9.2.8).
         (Add | Sub | Neg | Pos | Abs | Mul | Div, Int | Real) => vec![Pending(SCALAR_INLINE)],
         (Add | Sub | Neg | Pos | Abs, Phys) => vec![Pending(SCALAR_INLINE)],
-        (Mul | Div, Phys) => vec![Later(
-            2,
-            "physical times or divided by a real (`Inst::Phys`): a host step of compiled code",
-        )],
+        (Mul, Phys) => rows(phys_rows(f).into_iter().chain(call_rows()).collect()),
+        (Div, Phys) => rows(phys_rows(f)),
         (Rem | Mod, Int | Phys) => vec![Pending(SCALAR_INLINE)],
         (Rem | Mod, Real) => vec![Na],
-        (Exp, Int | Real) => vec![Later(2, "`**`: a host step of compiled code")],
+        (Exp, Int | Real) => rows(exp_rows(c)),
         (Exp, Phys) => vec![Na],
         (
             Add | Sub | Mul | Div | Neg | Pos | Abs | Exp | Rem | Mod,
@@ -764,6 +764,92 @@ fn logic_rows(f: Family, c: TypeClass) -> Vec<Row> {
         );
     }
     vec![r]
+}
+
+/// A scalar row: variables, their setup and the checks of odd and even iterations.
+fn scalar(name: &str, class: TypeClass, vars: &str, setup: &str, ops1: &str, ops0: &str) -> Row {
+    Row {
+        name: name.to_string(),
+        class,
+        cost: Cost::Fixed,
+        group: String::new(),
+        asym_ok: &[],
+        general_ok: None,
+        step_ok: None,
+        decls: "",
+        vars: vars.to_string(),
+        setup: setup.to_string(),
+        ops1: ops1.to_string(),
+        ops0: ops0.to_string(),
+        n_ops: 2,
+    }
+}
+
+/// `**` of integers and of reals (an integer exponent). The operands come from
+/// variables, so nothing folds.
+fn exp_rows(c: TypeClass) -> Vec<Row> {
+    use TypeClass::*;
+    vec![match c {
+        Int => scalar(
+            "exp_Int",
+            Int,
+            "variable x, n : integer;",
+            "x := W mod 7 + 3; n := 3;",
+            "check(x ** n = x * x * x, true); check((-x) ** n = -(x * x * x), true);",
+            "check(x ** 2 = x * x, true); check(x ** 0 = 1, true);",
+        ),
+        _ => scalar(
+            "exp_Real",
+            Real,
+            "variable rv : real; variable n : integer;",
+            "rv := real(W mod 7) + 1.5; n := 2;",
+            "check(rv ** n = rv * rv, true); check(rv ** (-n) = 1.0 / (rv * rv), true);",
+            "check(rv ** (n - 1) = rv, true); check(rv ** (n - 2) = 1.0, true);",
+        ),
+    }]
+}
+
+/// `**`, `time * real` and `time / real` inside functions the loop calls (native frames of
+/// compiled code), against the same operations in line.
+fn call_rows() -> Vec<Row> {
+    vec![scalar(
+        "call_Arith",
+        TypeClass::Phys,
+        "variable t : time; variable h, rv : real; variable x, n : integer;
+    function tm(a : time; b : real) return time is begin return a * b; end function;
+    function td(a : time; b : real) return time is begin return a / b; end function;
+    function ip(a, b : integer) return integer is begin return a ** b; end function;
+    function rp(a : real; b : integer) return real is begin return a ** b; end function;",
+        "t := (W mod 7 + 2) * 10 ns; h := 0.5; rv := real(W mod 7) + 1.5; x := W mod 7 + 3; n := 3;",
+        "check(tm(t, h) = t / 2, true); check(td(t, h) = t + t, true);
+        check(ip(x, n) = x * x * x, true); check(rp(rv, n) = rv * rv * rv, true);",
+        "check(tm(t, 1.0) = t, true); check(td(t, 2.0) = t / 2, true);
+        check(ip(x, 0) = 1, true); check(rp(rv, 1) = rv, true);",
+    )]
+}
+
+/// Physical values times and divided by a real.
+fn phys_rows(f: Family) -> Vec<Row> {
+    let (name, ops1, ops0) = match f {
+        Family::Mul => (
+            "mul_Phys",
+            "check(t * h = t / 2, true); check(t * 2.0 = t + t, true);",
+            "check(t * 1.0 = t, true); check(t * 0.0 = 0 ns, true);",
+        ),
+        _ => (
+            "div_Phys",
+            "check(t / 2.0 = t / 2, true); check(t / 0.5 = t + t, true);",
+            "check(t / 1.0 = t, true); check((t + t) / 2.0 = t, true);",
+        ),
+    };
+    vec![scalar(
+        name,
+        TypeClass::Phys,
+        "variable t : time; variable h : real;",
+        "t := (W mod 7 + 2) * 10 ns; h := 0.5;",
+        ops1,
+        ops0,
+    )]
 }
 
 /// The design of `row`: `W` a generic, or with `stat` the locally static constant `stat`.

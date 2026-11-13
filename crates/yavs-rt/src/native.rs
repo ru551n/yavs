@@ -4,7 +4,7 @@
 //! Their instruction predicates (`is_inline`, `nat_inline`) describe what a generator lowers
 //! without a step; keep them in step with the generators.
 
-use yavs_ir::{AddrSpace, FOp, Func, FuncId, FuncKind, Inst, IntOp, Program, Reg, Width};
+use yavs_ir::{AddrSpace, Func, FuncId, FuncKind, Inst, Program, Reg, Width};
 
 use crate::rt::*;
 
@@ -102,8 +102,8 @@ pub fn is_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
             static_layout(prog, *ty).is_some()
                 || cache.is_some() && layout_shape(prog, *ty).is_some()
         }
-        Inst::Bin { op, .. } | Inst::BinRange { op, .. } => *op != IntOp::Pow,
-        Inst::FBin { op, .. } => !matches!(op, FOp::Pow | FOp::PowI),
+        // `**` too: compiled code calls `yavs_rt_arith` for it.
+        Inst::Bin { .. } | Inst::BinRange { .. } | Inst::FBin { .. } | Inst::Phys { .. } => true,
         Inst::AddrOf { space, .. } => {
             addr_const(*space, 0).is_some() || matches!(space, AddrSpace::Up(1..=2))
         }

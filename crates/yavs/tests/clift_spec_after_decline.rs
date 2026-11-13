@@ -1,5 +1,5 @@
 //! `--tier=clift-auto` with `YAVS_SPEC_AFTER=2`: processes still switch to their copies after the
-//! tier has declined a function (an integer power has no native-frame variant, so its frame-mode
+//! tier has declined a function (a layout from a run-time descriptor has no native-frame variant, so its frame-mode
 //! code waits for a compiled caller, `Worker::entered_from_code`). That look at every function
 //! once fixed the reserved copy slots empty, and every later switch failed silently. Needs the
 //! `clift` feature.
@@ -28,6 +28,8 @@ begin
 end;
 entity spec_decline is generic (N : natural := 400000); end;
 architecture a of spec_decline is
+  type rows is array (natural range <>) of bit_vector;
+  constant gr : rows(0 to 1)(0 to 3) := (\"1010\", \"0110\");
   function pw(x, n : integer) return integer is
     variable r : integer := 0;
   begin
@@ -37,9 +39,13 @@ architecture a of spec_decline is
     end loop;
     return r;
   end;
-  function step(x : integer) return integer is
+  function step(x : integer; r : rows) return integer is
     variable t : integer := 0;
+    variable u : rows(r'range)(r'element'range);
   begin
+    u := r;
+    u(u'left)(0) := not u(u'left)(0);
+    t := u(u'left)'length;
     for k in 1 to 4 loop
       t := t + pw(x mod 50 + k, 3) mod 1013;
     end loop;
@@ -58,7 +64,7 @@ begin
     variable acc : integer := 0;
   begin
     for i in 1 to N loop
-      x := step(x + i);
+      x := step(x + i, gr);
       acc := (acc + x) mod 1000003;
     end loop;
     report integer'image(acc);
@@ -75,7 +81,7 @@ fn yavs(dir: &Path, args: &[&str]) -> Output {
         .env("YAVS_AUTO_FORCE", "step,_p0")
         .env("YAVS_COUNTERS", "1")
         .env("YAVS_SPEC_AFTER", "2")
-        // (The count rule has native-frame code of `**`, and declines nothing here.)
+        // (The count rule has native-frame code of the layout, and declines nothing here.)
         .env("YAVS_AUTO_POLICY", "sampled")
         .current_dir(dir)
         .output()
@@ -133,7 +139,7 @@ fn processes_switch_to_copies_after_a_function_was_declined() {
 /// Many instances of clocked processes, a declined function called while they run, and no
 /// `YAVS_SPEC_AFTER`: each process switches to its copy at its 1024th activation. Every function
 /// is compiled when the interpreter enters it and the run waits for each compile
-/// (`--tier-heat=0,0,0`), so the integer power is declined before any copy is made, on every host.
+/// (`--tier-heat=0,0,0`), so `step` is declined before any copy is made, on every host.
 const SCALE: &str =
     "entity tickd is generic (K : natural := 1); port (clk : in bit; q : out natural); end;
 architecture a of tickd is
@@ -146,6 +152,8 @@ begin
 end;
 entity spec_scale is end;
 architecture a of spec_scale is
+  type rows is array (natural range <>) of bit_vector;
+  constant gr : rows(0 to 1)(0 to 3) := (\"1010\", \"0110\");
   function pw(x, n : integer) return integer is
     variable r : integer := 0;
   begin
@@ -155,9 +163,13 @@ architecture a of spec_scale is
     end loop;
     return r;
   end;
-  function step(x : integer) return integer is
+  function step(x : integer; r : rows) return integer is
     variable t : integer := 0;
+    variable u : rows(r'range)(r'element'range);
   begin
+    u := r;
+    u(u'left)(0) := not u(u'left)(0);
+    t := u(u'left)'length;
     for k in 1 to 4 loop
       t := t + pw(x mod 50 + k, 3) mod 1013;
     end loop;
@@ -176,7 +188,7 @@ begin
     variable acc : integer := 0;
   begin
     for i in 1 to 2000 loop
-      acc := (acc + step(i)) mod 1000003;
+      acc := (acc + step(i, gr)) mod 1000003;
       wait for 10 ns;
     end loop;
     for i in q'range loop acc := (acc + q(i) * (i + 1)) mod 1000003; end loop;
@@ -195,7 +207,7 @@ fn copies_are_not_lost_at_scale() {
         let o = std::process::Command::new(env!("CARGO_BIN_EXE_yavs"))
             .args(args)
             .env("YAVS_COUNTERS", "1")
-            // (The count rule has native-frame code of `**`, and declines nothing here.)
+            // (The count rule has native-frame code of the layout, and declines nothing here.)
             .env("YAVS_AUTO_POLICY", "sampled")
             .envs(env.iter().copied())
             .current_dir(&dir)

@@ -3844,6 +3844,21 @@ user's performance priority:
 - **Why:** these values are equal exactly when their stored bytes are; the key comparison of the
   data-types dictionary tests spent its time in that loop.
 
+## Compiled code calls out instead of stepping for `**` and physical times real (yavs-clift, yavs-rt, yavs-interp, 2026-11-13)
+
+- **What:** integer `**` (`Bin`/`BinRange` `Pow`), `real ** integer` (`FBin` `PowI`) and `Inst::Phys`
+  (physical times or divided by a real) were host steps of compiled code (the interpreter ran the instruction
+  through `TierHost::step`, 200 to 300 instructions more per operation than interpreting it). They are now a
+  direct call of the interpreter's own function on the operand registers: `yavs_rt_arith`
+  (`yavs_interp::arith_of`: `yavs_std::arith::pow`, `phys_mul_real`, `phys_div_real`, `real_pow_int`,
+  `real_pow`). A failing operation (overflow, a negative exponent, a non-finite or out-of-range result)
+  returns no value and compiled code leaves the instruction to the interpreter at its pc, which reports it.
+- **Why:** compiled code must never be slower than the interpreter for an operator; the shared functions
+  make both tiers compute the same bits (`real_pow_int`, `real_pow` are `#[inline(never)]`, so one
+  compilation of `powi`/`powf` serves both). `yavs-rt` `native::is_inline` counts them as inline, so a
+  function with `**` gets a native-frame variant under the old `sampled` policy too. The interpreter's `LEq`
+  compares the whole blocks as bytes and the last under its mask (`yavs_interp::planes_eq`).
+
 ## Ordering of one-dimensional arrays is one scan (yavs-lower, yavs-interp, yavs-rt, yavs-clift, 2026-11-13)
 
 - **What:** `<`, `<=`, `>`, `>=` of one-dimensional discrete arrays (logic arrays, `bit_vector`,

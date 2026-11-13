@@ -64,7 +64,10 @@ pub use debug::{
     DebugSession, Debugger, FrameView, HitCond, Hits, LineBp, LocalView, ProcState, ProcStatus,
     Resume, SignalBreak, Stop, StopReason, Watches, format_scalar,
 };
-pub use exec::{Host, SPIN_CHECK, SPIN_LIMIT, arr_cmp, copy_bits};
+pub use exec::{
+    ARITH_FPOW, ARITH_FPOWI, ARITH_IPOW, ARITH_PHYS_DIV, ARITH_PHYS_MUL, Host, SPIN_CHECK,
+    SPIN_LIMIT, arith_of, arr_cmp, copy_bits, planes_eq, real_pow, real_pow_int,
+};
 pub use heap::{HEAP_LOG, Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
 pub use pmemo::{

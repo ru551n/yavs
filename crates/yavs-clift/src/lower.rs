@@ -159,6 +159,7 @@ pub struct Jit {
     lfill: ClifId,
     memeq: ClifId,
     arrcmp: ClifId,
+    arith: ClifId,
     cat: ClifId,
     layout_into: ClifId,
     free: ClifId,
@@ -602,6 +603,7 @@ impl Jit {
             ("clift_lfill", clift_lfill as *const u8),
             (MEMEQ, yavs_rt_memeq as *const u8),
             (ARRCMP, yavs_rt_arrcmp as *const u8),
+            (ARITH, yavs_rt_arith as *const u8),
             (CAT, yavs_rt_cat as *const u8),
             (LAYOUT_INTO, yavs_rt_layout_into as *const u8),
             (FREE, yavs_rt_free as *const u8),
@@ -668,6 +670,7 @@ impl Jit {
         let lfill = imp("clift_lfill", &[I64, I64, I64, I64], None)?;
         let memeq = imp(MEMEQ, &[I64, I64, I64], Some(I64))?;
         let arrcmp = imp(ARRCMP, &[I64; 5], Some(I64))?;
+        let arith = imp(ARITH, &[I64; 4], Some(I64))?;
         let cat = imp(
             CAT,
             &[I64, I64, I64, I64, I64, I64, I32, I32, I32],
@@ -796,6 +799,7 @@ impl Jit {
             lfill,
             memeq,
             arrcmp,
+            arith,
             cat,
             layout_into,
             free,
@@ -1750,6 +1754,7 @@ impl Jit {
             lfill: self.module.declare_func_in_func(self.lfill, &mut ctx.func),
             memeq: self.module.declare_func_in_func(self.memeq, &mut ctx.func),
             arrcmp: self.module.declare_func_in_func(self.arrcmp, &mut ctx.func),
+            arith: self.module.declare_func_in_func(self.arith, &mut ctx.func),
             cat: self.module.declare_func_in_func(self.cat, &mut ctx.func),
             layout_into: self
                 .module
@@ -1988,6 +1993,7 @@ struct Imports {
     lfill: FuncRef,
     memeq: FuncRef,
     arrcmp: FuncRef,
+    arith: FuncRef,
     cat: FuncRef,
     /// `yavs_rt_layout_into(env, mem, ty, desc, dsz, n) -> address`: the `n` words of a layout from
     /// the interpreter's layout memo in new temporary memory, 0 when it declines.
@@ -3694,8 +3700,14 @@ fn gen_func(
                         g.b.ins().fdiv(x, y)
                     }
                     FOp::PowI | FOp::Pow => {
-                        g.step(pc, &inst);
-                        continue;
+                        let k = if op == FOp::PowI {
+                            yavs_interp::ARITH_FPOWI
+                        } else {
+                            yavs_interp::ARITH_FPOW
+                        };
+                        let (xa, ya) = (g.ld(a), g.ld(b));
+                        let bits = g.arith(k, xa, ya, pc);
+                        g.b.ins().bitcast(F64, MemFlagsData::new(), bits)
                     }
                 };
                 // Not finite: |v| is not below infinity (NaN compares false).
@@ -4395,6 +4407,16 @@ fn gen_func(
                 let v = g.b.inst_results(c)[0];
                 g.st(dst, v);
                 g.join(join);
+            }
+            // Physical times or divided by a real, as the interpreter computes it.
+            Inst::Phys { op, dst, a, b } => {
+                let k = match op {
+                    yavs_ir::PhysOp::MulReal => yavs_interp::ARITH_PHYS_MUL,
+                    yavs_ir::PhysOp::DivReal => yavs_interp::ARITH_PHYS_DIV,
+                };
+                let (x, y) = (g.ld(a), g.ld(b));
+                let v = g.arith(k, x, y, pc);
+                g.st(dst, v);
             }
             // The order of two arrays: one call of the interpreter's scan on the memory found.
             Inst::ArrCmp {
@@ -7211,8 +7233,23 @@ impl Gen<'_> {
                 let sum = self.b.ins().iadd(r, y);
                 self.b.ins().select(fix, sum, r)
             }
-            IntOp::Pow => return None,
+            IntOp::Pow => self.arith(yavs_interp::ARITH_IPOW, x, y, pc),
         })
+    }
+
+    /// `yavs_rt_arith` of `op` (`yavs_interp::arith_of`) on `a` and `b`: the result, or the
+    /// instruction at `pc` left to the interpreter where it fails.
+    fn arith(&mut self, op: u64, a: Value, b: Value, pc: u32) -> Value {
+        let ss =
+            self.b
+                .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+        let out = self.b.ins().stack_addr(I64, ss, 0);
+        let k = self.c64(op as i64);
+        let c = self.b.ins().call(self.imp.arith, &[k, a, b, out]);
+        let ok = self.b.inst_results(c)[0];
+        let bad = self.b.ins().icmp_imm_s(IntCC::Equal, ok, 0);
+        self.exit_if(bad, pc);
+        self.b.ins().load(I64, MemFlagsData::trusted(), out, 0)
     }
 
     /// Call a callback (the arguments after env, regs, mem) that returns `GO` or what the

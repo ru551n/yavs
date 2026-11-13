@@ -81,6 +81,7 @@ pub const SCALAR: &str = "yavs_rt_scalar";
 pub const PLANES: &str = "yavs_rt_planes";
 pub const MEMEQ: &str = "yavs_rt_memeq";
 pub const ARRCMP: &str = "yavs_rt_arrcmp";
+pub const ARITH: &str = "yavs_rt_arith";
 pub const CAT: &str = "yavs_rt_cat";
 pub const NATIVE: &str = "yavs_rt_native";
 /// The bytes `ieee::put_small` writes: a fat pair, a descriptor and one block of planes.
@@ -2160,6 +2161,23 @@ pub unsafe extern "C" fn yavs_rt_memeq(a: *const u8, b: *const u8, n: u64) -> u6
     }
 }
 
+/// The arithmetic compiled code does not inline (`yavs_interp::arith_of`); the result goes to
+/// `out`, 0 when the operation fails: compiled code then leaves the instruction to the
+/// interpreter, which reports it.
+///
+/// # Safety
+/// `out` is writable for 8 bytes.
+pub unsafe extern "C" fn yavs_rt_arith(op: u64, a: u64, b: u64, out: *mut u64) -> u64 {
+    match yavs_interp::arith_of(op, a, b) {
+        // SAFETY: the caller's contract.
+        Some(v) => unsafe {
+            out.write_unaligned(v);
+            1
+        },
+        None => 0,
+    }
+}
+
 /// `Inst::ArrCmp` on the arrays of `la` and `lb` elements compiled code found at `a` and `b`
 /// (`Gen::host`): `yavs_interp::arr_cmp`, the interpreter's own order; `w` is the element width in
 /// bytes, 0 for logic arrays.
@@ -3827,6 +3845,7 @@ pub fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
         Inst::CoverIn { dst, acc, src, .. } => vec![dst, acc, src],
         Inst::Bin { dst, a, b, .. }
         | Inst::FBin { dst, a, b, .. }
+        | Inst::Phys { dst, a, b, .. }
         | Inst::Cmp { dst, a, b, .. }
         | Inst::FCmp { dst, a, b, .. }
         | Inst::Bool { dst, a, b, .. } => vec![dst, a, b],

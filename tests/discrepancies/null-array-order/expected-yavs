@@ -1,0 +1,5 @@
+== 2008
+note: RES str lt=false le=true gt=false ge=true
+note: RES bv lt=false ge=true
+note: RES intv lt=false ge=true
+note: RES null lt nonnull=true

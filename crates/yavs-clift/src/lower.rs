@@ -158,6 +158,7 @@ pub struct Jit {
     fill: ClifId,
     lfill: ClifId,
     memeq: ClifId,
+    arrcmp: ClifId,
     cat: ClifId,
     layout_into: ClifId,
     free: ClifId,
@@ -600,6 +601,7 @@ impl Jit {
             ("clift_fill", clift_fill as *const u8),
             ("clift_lfill", clift_lfill as *const u8),
             (MEMEQ, yavs_rt_memeq as *const u8),
+            (ARRCMP, yavs_rt_arrcmp as *const u8),
             (CAT, yavs_rt_cat as *const u8),
             (LAYOUT_INTO, yavs_rt_layout_into as *const u8),
             (FREE, yavs_rt_free as *const u8),
@@ -665,6 +667,7 @@ impl Jit {
         let fill = imp("clift_fill", &[I64, I64, I64, I64], None)?;
         let lfill = imp("clift_lfill", &[I64, I64, I64, I64], None)?;
         let memeq = imp(MEMEQ, &[I64, I64, I64], Some(I64))?;
+        let arrcmp = imp(ARRCMP, &[I64; 5], Some(I64))?;
         let cat = imp(
             CAT,
             &[I64, I64, I64, I64, I64, I64, I32, I32, I32],
@@ -792,6 +795,7 @@ impl Jit {
             fill,
             lfill,
             memeq,
+            arrcmp,
             cat,
             layout_into,
             free,
@@ -1745,6 +1749,7 @@ impl Jit {
             fill: self.module.declare_func_in_func(self.fill, &mut ctx.func),
             lfill: self.module.declare_func_in_func(self.lfill, &mut ctx.func),
             memeq: self.module.declare_func_in_func(self.memeq, &mut ctx.func),
+            arrcmp: self.module.declare_func_in_func(self.arrcmp, &mut ctx.func),
             cat: self.module.declare_func_in_func(self.cat, &mut ctx.func),
             layout_into: self
                 .module
@@ -1982,6 +1987,7 @@ struct Imports {
     fill: FuncRef,
     lfill: FuncRef,
     memeq: FuncRef,
+    arrcmp: FuncRef,
     cat: FuncRef,
     /// `yavs_rt_layout_into(env, mem, ty, desc, dsz, n) -> address`: the `n` words of a layout from
     /// the interpreter's layout memo in new temporary memory, 0 when it declines.
@@ -2606,6 +2612,7 @@ fn xstep_wide(f: &Func, i: &Inst) -> bool {
                 | Inst::Cat { .. }
                 | Inst::SlicePos { .. }
                 | Inst::MemEq { .. }
+                | Inst::ArrCmp { .. }
         ) && {
             let n = f.reg_ty.len() as u32;
             let (uses, defs) = yavs_interp::inst_regs(f, i);
@@ -4385,6 +4392,51 @@ fn gen_func(
                 let bv = g.ld(b);
                 let pb = g.host(bv, Some(b), Op::C(0), Op::V(k), false, slow);
                 let c = g.b.ins().call(g.imp.memeq, &[pa, pb, k]);
+                let v = g.b.inst_results(c)[0];
+                g.st(dst, v);
+                g.join(join);
+            }
+            // The order of two arrays: one call of the interpreter's scan on the memory found.
+            Inst::ArrCmp {
+                dst,
+                a,
+                b,
+                la,
+                lb,
+                w,
+            } => {
+                let (slow, join) = g.slow_path_x(pc, &inst, f);
+                let size = |g: &mut Gen, n: Value| match w {
+                    None => {
+                        let k = g.b.ins().iadd_imm_s(n, 63);
+                        let k = g.b.ins().ushr_imm_s(k, 6);
+                        g.b.ins().ishl_imm_s(k, 5)
+                    }
+                    Some(w) => g.b.ins().imul_imm_s(n, i64::from(w.bytes())),
+                };
+                let (na, nb) = (g.ld(la), g.ld(lb));
+                // A null operand has no memory to find: the order is the lengths' (LRM 9.2.3).
+                let za = g.b.ins().icmp_imm_s(IntCC::NotEqual, na, 0);
+                let zb = g.b.ins().icmp_imm_s(IntCC::NotEqual, nb, 0);
+                let both = g.b.ins().band(za, zb);
+                let (go, null) = (g.b.create_block(), g.b.create_block());
+                g.branch(both, go, null);
+                g.start(null);
+                let lt = g.b.ins().icmp(IntCC::SignedLessThan, na, nb);
+                let gt = g.b.ins().icmp(IntCC::SignedGreaterThan, na, nb);
+                let (m1, one, zero) = (g.c64(-1), g.c64(1), g.c64(0));
+                let v = g.b.ins().select(gt, one, zero);
+                let v = g.b.ins().select(lt, m1, v);
+                g.st(dst, v);
+                g.join(join);
+                g.start(go);
+                let (sa, sb) = (size(&mut g, na), size(&mut g, nb));
+                let av = g.ld(a);
+                let pa = g.host(av, Some(a), Op::C(0), Op::V(sa), false, slow);
+                let bv = g.ld(b);
+                let pb = g.host(bv, Some(b), Op::C(0), Op::V(sb), false, slow);
+                let wk = g.c64(w.map_or(0, |w| i64::from(w.bytes())));
+                let c = g.b.ins().call(g.imp.arrcmp, &[pa, na, pb, nb, wk]);
                 let v = g.b.inst_results(c)[0];
                 g.st(dst, v);
                 g.join(join);

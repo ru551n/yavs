@@ -480,6 +480,18 @@ pub enum Inst {
         b: Reg,
         n: Reg,
     },
+    /// The lexicographic order of two one-dimensional arrays of `la` and `lb` elements (LRM
+    /// 9.2.3): `dst` is -1, 0 or 1. `w` is the element width of an array of integers or
+    /// enumerations, which compare as `Load` reads them (`B1` unsigned, `B4` and `B8` signed);
+    /// `None` is a logic array (bit planes), whose elements compare as their codes.
+    ArrCmp {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        la: Reg,
+        lb: Reg,
+        w: Option<Width>,
+    },
     LGet {
         dst: Reg,
         base: Reg,
@@ -1168,6 +1180,15 @@ impl Inst {
                 f(a, Use, p);
                 f(b, Use, p);
                 f(n, Use, i);
+            }
+            Inst::ArrCmp {
+                dst, a, b, la, lb, ..
+            } => {
+                d(dst, i);
+                f(a, Use, p);
+                f(b, Use, p);
+                f(la, Use, i);
+                f(lb, Use, i);
             }
             Inst::LGet { dst, base, idx } => {
                 d(dst, i);

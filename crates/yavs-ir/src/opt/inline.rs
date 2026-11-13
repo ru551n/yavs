@@ -985,6 +985,7 @@ fn allowed(prog: &crate::Program, i: &Inst) -> bool {
         | Inst::LEq { .. }
         | Inst::LKey { .. }
         | Inst::MemEq { .. }
+        | Inst::ArrCmp { .. }
         | Inst::SubtypeCheck { .. }
         | Inst::FBin { .. }
         | Inst::FUn { .. }

@@ -3840,9 +3840,27 @@ user's performance priority:
 - **What:** `=` and `/=` of one-dimensional arrays whose elements are integers, physical or
   enumeration values (not logic arrays, which compare planes) test the lengths and then run one
   `Inst::MemEq` over the bytes, instead of a loop of `Pos`/`Index`/`Load`/`Cmp` per element. Ordering
-  comparisons keep the loop.
+  comparisons: see "Ordering of one-dimensional arrays is one scan".
 - **Why:** these values are equal exactly when their stored bytes are; the key comparison of the
   data-types dictionary tests spent its time in that loop.
+
+## Ordering of one-dimensional arrays is one scan (yavs-lower, yavs-interp, yavs-rt, yavs-clift, 2026-11-13)
+
+- **What:** `<`, `<=`, `>`, `>=` of one-dimensional discrete arrays (logic arrays, `bit_vector`,
+  `boolean_vector`, `string`, `integer_vector`, arrays of enumerations and of integers of any width)
+  lower to one `Inst::ArrCmp`, the three-way order, and a compare of it with 0, instead of a loop of
+  `LGet` or `Index`/`Load` and two compares per element. `yavs_interp::arr_cmp` finds the first
+  difference from the left: on planes 64 elements at a time from the top plane element down (the two
+  operands at their own offsets when the lengths differ), then the codes of that element; on bytes
+  256 at a time, then the element of the first differing byte read as `Load` reads it (`B1`
+  unsigned, `B4`/`B8` signed). No difference: the shorter array is less. The interpreter steps the
+  instruction; compiled code calls the same function on the memory it found (`yavs_rt_arrcmp`), no
+  host step (a null operand: the lengths' order in line). Arrays of reals (2019 ordering) keep the element
+  loop, which compares as reals (#1144): their bits do not order as their values.
+- **Why:** the loop cost about 7 interpreted operations (and 50 to 75 compiled instructions) per
+  element; codes are the enumeration positions, so they order as the elements do (LRM 9.2.3).
+  The reference simulator compiles a per-element loop of its predefined function; a word-wise scan
+  for the first difference needs no element loop at all.
 
 ## Floor of a run: freeing the analysis (#426, yavs decision under the user's single-thread performance priority)
 

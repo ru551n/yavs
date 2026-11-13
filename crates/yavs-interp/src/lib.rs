@@ -64,7 +64,7 @@ pub use debug::{
     DebugSession, Debugger, FrameView, HitCond, Hits, LineBp, LocalView, ProcState, ProcStatus,
     Resume, SignalBreak, Stop, StopReason, Watches, format_scalar,
 };
-pub use exec::{Host, SPIN_CHECK, SPIN_LIMIT, copy_bits};
+pub use exec::{Host, SPIN_CHECK, SPIN_LIMIT, arr_cmp, copy_bits};
 pub use heap::{HEAP_LOG, Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
 pub use pmemo::{

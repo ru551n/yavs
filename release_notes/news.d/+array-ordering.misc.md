@@ -1,0 +1,1 @@
+The ordering operators `<`, `<=`, `>` and `>=` on one-dimensional arrays (logic vectors, `bit_vector`, `boolean_vector`, `string`, `integer_vector`, arrays of enumerations) compare the arrays a word at a time instead of element by element, so sorting, searching and range checks on wide values simulate faster.

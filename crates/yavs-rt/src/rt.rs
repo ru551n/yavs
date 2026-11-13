@@ -80,6 +80,7 @@ pub const SCALAR: &str = "yavs_rt_scalar";
 
 pub const PLANES: &str = "yavs_rt_planes";
 pub const MEMEQ: &str = "yavs_rt_memeq";
+pub const ARRCMP: &str = "yavs_rt_arrcmp";
 pub const CAT: &str = "yavs_rt_cat";
 pub const NATIVE: &str = "yavs_rt_native";
 /// The bytes `ieee::put_small` writes: a fat pair, a descriptor and one block of planes.
@@ -2159,6 +2160,35 @@ pub unsafe extern "C" fn yavs_rt_memeq(a: *const u8, b: *const u8, n: u64) -> u6
     }
 }
 
+/// `Inst::ArrCmp` on the arrays of `la` and `lb` elements compiled code found at `a` and `b`
+/// (`Gen::host`): `yavs_interp::arr_cmp`, the interpreter's own order; `w` is the element width in
+/// bytes, 0 for logic arrays.
+pub unsafe extern "C" fn yavs_rt_arrcmp(
+    a: *const u8,
+    la: u64,
+    b: *const u8,
+    lb: u64,
+    w: u64,
+) -> i64 {
+    let w = match w {
+        0 => None,
+        1 => Some(yavs_ir::Width::B1),
+        4 => Some(yavs_ir::Width::B4),
+        _ => Some(yavs_ir::Width::B8),
+    };
+    let size = |n: u64| w.map_or(n.div_ceil(64) * 32, |w| n * u64::from(w.bytes()));
+    // SAFETY: compiled code checked `size` readable bytes at each.
+    unsafe {
+        yavs_interp::arr_cmp(
+            std::slice::from_raw_parts(a, size(la) as usize),
+            la as usize,
+            std::slice::from_raw_parts(b, size(lb) as usize),
+            lb as usize,
+            w,
+        )
+    }
+}
+
 /// `Inst::Cat` of bytes from compiled code (`Gen::cat_bytes`), as `Machine::cat` does: the `np`
 /// pieces at `parts` (pairs of an address, or of a value where bit `j` of `scalars` is set, and
 /// an element count) one after another into the `n * m` bytes at `dst`, a value stored as its
@@ -3763,6 +3793,9 @@ pub fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
         }
         Inst::Deref { dst, handle, .. } => vec![dst, handle],
         Inst::MemEq { dst, a, b, n } => vec![dst, a, b, n],
+        Inst::ArrCmp {
+            dst, a, b, la, lb, ..
+        } => vec![dst, a, b, la, lb],
         Inst::LGet { dst, base, idx } => vec![dst, base, idx],
         Inst::LCopy {
             dst,
@@ -3906,6 +3939,7 @@ pub fn keeps_objects(i: &Inst) -> bool {
             | Inst::LEq { .. }
             | Inst::LKey { .. }
             | Inst::MemEq { .. }
+            | Inst::ArrCmp { .. }
             | Inst::LGet { .. }
             | Inst::LSet { .. }
             | Inst::LCopy { .. }
@@ -4494,6 +4528,7 @@ fn steady(i: &Inst) -> bool {
             | Inst::LEq { .. }
             | Inst::LKey { .. }
             | Inst::MemEq { .. }
+            | Inst::ArrCmp { .. }
             | Inst::LGet { .. }
             | Inst::LSet { .. }
             | Inst::LFill { .. }
@@ -4689,7 +4724,9 @@ fn addr_params(f: &Func, any: bool) -> Vec<ParamAddr> {
             Inst::LGet { base, .. } => (&[*base], &[]),
             Inst::LSet { base, .. } | Inst::LFill { base, .. } => (&[], &[*base]),
             Inst::LCopy { dst, src, .. } => (&[*src], &[*dst]),
-            Inst::LEq { a, b, .. } | Inst::MemEq { a, b, .. } => (&[*a, *b], &[]),
+            Inst::LEq { a, b, .. } | Inst::MemEq { a, b, .. } | Inst::ArrCmp { a, b, .. } => {
+                (&[*a, *b], &[])
+            }
             Inst::LKey { a, .. } => (&[*a], &[]),
             _ => (&[], &[]),
         };

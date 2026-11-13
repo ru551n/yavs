@@ -1273,6 +1273,76 @@ pub fn copy_bits(sw: &[[u64; 4]], dw: &mut [[u64; 4]], s0: u64, d0: u64, n: u64)
     yavs_logic::wide::copy_range(dw, d0 as usize, sw, s0 as usize, n as usize);
 }
 
+/// `Inst::ArrCmp`: the lexicographic order (-1, 0, 1) of the arrays of `la` and `lb` elements
+/// whose bytes are `a` and `b` (at least the planes or the elements of each; `w` as in the
+/// instruction). The first difference from the left decides, else the shorter array is less
+/// (LRM 9.2.3). Compiled code calls it on the same memory (`yavs-rt`).
+pub fn arr_cmp(a: &[u8], la: usize, b: &[u8], lb: usize, w: Option<Width>) -> i64 {
+    let m = la.min(lb);
+    let first = match w {
+        None => plane_diff(a, la - m, b, lb - m, m),
+        Some(w) => {
+            let k = w.bytes() as usize;
+            // Whole runs of bytes compared at once, then the element of the first differing byte.
+            let (x, y) = (&a[..m * k], &b[..m * k]);
+            x.chunks(256)
+                .zip(y.chunks(256))
+                .position(|(p, q)| p != q)
+                .and_then(|c| {
+                    let o = c * 256;
+                    let j = x[o..].iter().zip(&y[o..]).position(|(p, q)| p != q)?;
+                    let e = (o + j) / k * k;
+                    let (p, q) = (cell_w(&x[e..e + k], w), cell_w(&y[e..e + k], w));
+                    Some((p as i64).cmp(&(q as i64)))
+                })
+        }
+    };
+    match first.unwrap_or(la.cmp(&lb)) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
+/// The order of the codes at the first difference from the left of the `m` plane elements of
+/// `a` from element `ao` and of `b` from `bo` (their leftmost elements are the highest): scanned
+/// 64 elements at a time from the top, `None` when they are equal.
+fn plane_diff(a: &[u8], ao: usize, b: &[u8], bo: usize, m: usize) -> Option<std::cmp::Ordering> {
+    for c in (0..m.div_ceil(64)).rev() {
+        let n = (m - c * 64).min(64);
+        let (x, y) = (plane_run(a, ao + c * 64, n), plane_run(b, bo + c * 64, n));
+        let d = (0..4).fold(0, |d, p| d | (x[p] ^ y[p]));
+        if d != 0 {
+            let bit = 63 - d.leading_zeros();
+            let code = |v: [u64; 4]| (0..4).fold(0, |c, p| c | (v[p] >> bit & 1) << p);
+            return Some(code(x).cmp(&code(y)));
+        }
+    }
+    None
+}
+
+/// The planes of the `n` (1 to 64) elements of the plane bytes `b` from element `off`, element
+/// `off` in bit 0, the bits above `n` clear.
+#[inline(always)]
+fn plane_run(b: &[u8], off: usize, n: usize) -> [u64; 4] {
+    let (blk, s) = (off / 64, off % 64);
+    let lo = plane_words_at(b, blk * 32);
+    let hi = if s + n > 64 {
+        plane_words_at(b, blk * 32 + 32)
+    } else {
+        [0; 4]
+    };
+    let mask = if n == 64 { !0 } else { (1u64 << n) - 1 };
+    std::array::from_fn(|p| {
+        let v = if s == 0 {
+            lo[p]
+        } else {
+            lo[p] >> s | hi[p] << (64 - s)
+        };
+        v & mask
+    })
+}
+
 fn bytes_of(blocks: &[[u64; 4]]) -> Vec<u8> {
     let mut out = Vec::with_capacity(blocks.len() * 32);
     for w in blocks.as_flattened() {
@@ -9209,6 +9279,21 @@ impl Machine {
         Ok(eq.into())
     }
 
+    /// `Inst::ArrCmp` (stepped), out of line.
+    #[inline(never)]
+    fn op_arr_cmp(&self, a: u32, b: u32, la: u32, lb: u32, w: Option<Width>) -> R<u64> {
+        let (la, lb) = (self.regs[la as usize], self.regs[lb as usize]);
+        let size = |n: u64| match w {
+            None => n.div_ceil(64) * 32,
+            Some(w) => n * u64::from(w.bytes()),
+        };
+        let (x, y) = (
+            self.rd(self.regs[a as usize], size(la))?,
+            self.rd(self.regs[b as usize], size(lb))?,
+        );
+        Ok(arr_cmp(x, la as usize, y, lb as usize, w) as u64)
+    }
+
     /// `Op::LKey`, out of line.
     #[inline(never)]
     fn op_lkey(&self, a: u32, n: u32) -> R<u64> {
@@ -11408,6 +11493,17 @@ impl Machine {
                 let n = self.r(n);
                 let v = self.rd(self.r(a), n)? == self.rd(self.r(b), n)?;
                 self.set(dst, v.into());
+            }
+            Inst::ArrCmp {
+                dst,
+                a,
+                b,
+                la,
+                lb,
+                w,
+            } => {
+                let v = self.op_arr_cmp(a.0, b.0, la.0, lb.0, w)?;
+                self.set(dst, v);
             }
             Inst::LGet { dst, base, idx } => {
                 let code = self.lget(self.r(base), self.r(idx))?;

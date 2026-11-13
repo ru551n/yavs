@@ -57,6 +57,12 @@ textual dump.
 - `Inst::MemEq` (#444): `dst` = 1 when `n` bytes at two addresses are equal. Lowering emits it for `=` and
   `/=` of one-dimensional arrays of integer or enumeration elements (not logic arrays) after the
   length test, instead of an element loop. The LLVM tier leaves it to the interpreter.
+- `Inst::ArrCmp { dst, a, b, la, lb, w }`: the lexicographic order (-1, 0, 1) of two one-dimensional
+  arrays of `la` and `lb` elements (LRM 9.2.3); `w` is the element width of integers or enumerations
+  (`B1` unsigned, `B4`/`B8` signed, as `Load` reads them), `None` a logic array on planes. Lowering
+  emits it for `<`, `<=`, `>`, `>=` of every one-dimensional discrete array, then a `Cmp` of the
+  result with 0. The interpreter steps it (`yavs_interp::arr_cmp`, a scan of 64 plane elements or
+  256 bytes at a time); compiled code calls the same function (`yavs_rt_arrcmp`).
 - Optimiser (#444): interval analysis, branch threading and dead-definition removal (`opt/range.rs`, `opt/live.rs`); unreachable blocks now end in a jump to the next block, which the predecoder of yavs-interp runs as no operation. No instruction changes.
 - `Func::moved`, `Local`s of no name and no type (#1048, `opt/proc_objects.rs`): composite variables of a process in its frame. Consumers that list locals skip them with `is_frame_object`; a debugger never sees one (the pass is off).
 - `Inst::NewFrame` (#444): made only by the optimiser. An object `[descriptor][value]` (the

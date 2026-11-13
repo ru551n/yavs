@@ -3999,6 +3999,7 @@ impl<'a> Opt<'a> {
                 | Inst::LSet { .. }
                 | Inst::LGet { .. }
                 | Inst::MemEq { .. }
+                | Inst::ArrCmp { .. }
                 | Inst::Zero { .. }
                 | Inst::MakeDope { .. }
                 | Inst::DopeLen { .. }
@@ -4178,6 +4179,7 @@ impl<'a> Opt<'a> {
             | Inst::LEq { .. }
             | Inst::LKey { .. }
             | Inst::MemEq { .. }
+            | Inst::ArrCmp { .. }
             | Inst::LGet { .. }
             | Inst::Check { .. }
             | Inst::FCheck { .. }

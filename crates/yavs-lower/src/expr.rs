@@ -4339,6 +4339,22 @@ impl<'a> Fx<'a, '_> {
             self.at(j);
             return Ok(if op == CmpOp::Ne { self.not(r) } else { r });
         }
+        if !real {
+            // The order of the first difference from the left, else of the lengths: one scan of
+            // the planes or the elements, word by word. (Reals compare as reals, element by
+            // element below: `-0.0 = 0.0`, and their bits do not order as their values.)
+            let w = (!logic).then_some(w);
+            self.emit(Inst::ArrCmp {
+                dst: r,
+                a: ad,
+                b: bd,
+                la,
+                lb,
+                w,
+            });
+            let zero = self.int(0);
+            return Ok(self.cmp(op, r, zero));
+        }
         let i = self.reg(RegTy::I64);
         self.emit(Inst::Const { dst: i, v: 0 });
         let lt = self.cmp(CmpOp::Lt, la, lb);

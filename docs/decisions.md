@@ -16107,10 +16107,10 @@ Amends "Stage entries of a design that loads units late" (#671).
   IEEE double, so `0.0` to `-0.0` (and back) is no event, as `=` on reals and on arrays of reals since #1144.
 - **Why**: LRM 14.7.3 defines an event as a change of value and 9.2.3 makes the zeros equal. The two open references split (sim1:
   event, sim2: none; catalogue `real-negative-zero-event`), the maintainer picked no event.
-- **Decisions under it**: (2) is still an agent decision (to confirm); (1), (3) and (4) are the user's. (1) With no event the signal keeps its value (user, 2026-11-13): `cur` changes on events only, so
+- **Decisions under it** (user, 2026-11-13, all four): (1) With no event the signal keeps its value (user, 2026-11-13): `cur` changes on events only, so
   `0.0` stays `0.0` after a drive of `-0.0` (as sim2; sim1 shows `-0.0`). The sign of that zero shows only in text such as
   `real'image`, and every reader of `cur` (waves, `'last_value`, the compiled tier's compare and the record images, which refresh
-  from events) stays right without a second path. (2) The drive is a transaction (`'active`, `'transaction`, the delta) and the
+  from events) stays right without a second path. (2) The drive is a transaction (user, 2026-11-13) (`'active`, `'transaction`, the delta) and the
   driving value is the driven one. (3) NaN (user, 2026-11-13): values are never NaN in legal VHDL; a NaN from a foreign call that is bit for bit the
   value held is no event (bytes are compared first), any other NaN is a change (a NaN equals nothing by value). (4) The preemption
   test of inertial transactions (`same_value`, by bytes) is unchanged (user, 2026-11-13): it decides which pending transactions a new one deletes,

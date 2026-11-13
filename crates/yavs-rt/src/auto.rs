@@ -1398,6 +1398,9 @@ struct Worker {
     /// they were.
     want: Vec<FuncId>,
     wanted: Vec<bool>,
+    /// The seen time of the functions whose native-frame code a callee keeps unpublished, by callee
+    /// (`publish`): what compiling the callee lets run compiled, which its own seen time does not show.
+    blocked: Vec<u64>,
     /// The sampled work before anything is compiled by the count (`COUNT_GATE`), the count, and the
     /// CPU time of the last run from which a warm run does not wait (`COUNT_GATE_CPU`).
     gate: u64,
@@ -1689,6 +1692,7 @@ impl Worker {
             carried: Default::default(),
             want: Vec::new(),
             wanted: vec![false; nfuncs],
+            blocked: vec![0; nfuncs],
             gate: 0,
             count: 0,
             gate_cpu: COUNT_GATE_CPU,
@@ -1820,7 +1824,10 @@ impl Worker {
             let share = us as f64 / self.total.max(1) as f64;
             (share * rest * (profile::EARLY_RUNS as f64) + before) * self.wait_gain < price as f64
         };
-        held((self.time[id.0 as usize][0], self.body_price(id)))
+        // (A callee that keeps compiled native-frame code unpublished repays by its callers' time
+        // too: held by its own, a rare one held them for good.)
+        let k = id.0 as usize;
+        held((self.time[k][0] + self.blocked[k], self.body_price(id)))
             && (!subtree || held(self.unlocked(id)))
     }
 
@@ -2707,12 +2714,16 @@ impl Worker {
 
     /// Publish the native-frame code whose callees are all compiled.
     fn publish(&mut self) {
+        self.blocked.fill(0);
         for k in 0..self.nat.len() {
             let (addr, done) = self.nat[k];
             if addr == 0 || done || self.lost[k] {
                 continue;
             }
             let missing = self.missing(FuncId(k as u32));
+            if let Some(c) = missing {
+                self.blocked[c.0 as usize] += self.time[k][0] + self.time[k][1];
+            }
             // Under the count rule a callee that ran is what compiled code calls: it does not wait for
             // its count, or a rare one would keep its callers unpublished.
             if let Some(c) = missing
@@ -5357,6 +5368,10 @@ mod tests {
         w.wait_held_runs = 2;
         assert!(!w.waits(caller), "held in two runs");
         (w.wait_held_runs, w.carried) = (super::WAIT_HELD_RUNS, Default::default());
+        // A callee that keeps compiled callers unpublished repays by their time too (`blocked`).
+        w.blocked[k] = 100;
+        assert!(!w.waits(caller), "callers waiting for it repay it");
+        w.blocked[k] = 0;
         w.wait_gain = 0.0;
         assert!(!w.waits(caller), "off");
         w.wait_gain = 0.5;

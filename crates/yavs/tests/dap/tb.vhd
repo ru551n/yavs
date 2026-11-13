@@ -82,3 +82,30 @@ begin
     wait;
   end process;
 end architecture;
+
+-- A timed wait woken by events that leave its condition false, while the session runs, pauses
+-- in it and steps over it: the timeout still ends it at the time of its statement.
+entity tw is
+end entity;
+
+architecture a of tw is
+  signal s : integer := 0;
+begin
+  stim : process
+  begin
+    for k in 1 to 3 loop
+      wait for 10 ns;
+      s <= k;
+    end loop;
+    wait;
+  end process;
+
+  w : process
+  begin
+    wait on s until s = 99 for 45 ns;
+    report "first at " & time'image(now) & " s=" & integer'image(s);
+    wait on s until s = 99 for 10 ns;
+    report "second at " & time'image(now);
+    wait;
+  end process;
+end architecture;

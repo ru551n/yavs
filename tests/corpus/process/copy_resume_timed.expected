@@ -1,0 +1,4 @@
+exit	0
+diag	note	15001000000	0	:copy_resume_timed:_p2	lane 0: 30 420 14995
+diag	note	15001000000	0	:copy_resume_timed:_p2	lane 1: 30 390 14983
+diag	note	15001000000	0	:copy_resume_timed:_p2	lane 2: 30 389 14979

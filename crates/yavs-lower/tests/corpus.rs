@@ -408,6 +408,7 @@ const PASS: &[&str] = &[
     "process/copy_resume_attrs",
     "process/copy_resume_drive",
     "process/copy_resume_hold",
+    "process/copy_resume_timed",
     "process/copy_resume_waits",
     "process/edge_alias",
     "process/edge_shapes",

@@ -412,3 +412,24 @@ PLUGIN_EXPORT void transport(void) {
   reg(vhpiCbValueChange, 0, tout_changed, h("tout"), &tv, "tout");
   reg(vhpiCbLastKnownDeltaCycle, 0, transport_rw, NULL, NULL, "rw");
 }
+
+/* ---- timed: deposits that wake a timed wait with its condition false, then end it -------- */
+
+static void timed_at(const vhpiCbDataT *cb) {
+  long c;
+  unsigned t = now(&c);
+  int v = t == 70 ? 99 : (int)(t / 10);
+  (void)cb;
+  vhpi_printf("vhpi: deposit s=%d t=%u rc=%d\n", v, t, put_int(h("s"), v, vhpiDepositPropagate));
+}
+
+static void timed_start(const vhpiCbDataT *cb) {
+  static const unsigned times[] = {10, 20, 30, 70};
+  (void)cb;
+  for (unsigned i = 0; i < sizeof times / sizeof times[0]; i++)
+    reg(vhpiCbAfterDelay, times[i], timed_at, NULL, NULL, "timed");
+}
+
+PLUGIN_EXPORT void timed(void) {
+  reg(vhpiCbStartOfSimulation, 0, timed_start, NULL, NULL, "start");
+}

@@ -273,6 +273,16 @@ fn run_to_time_and_steps() {
     script_case("runto", &["--threads=4"]);
 }
 
+/// A timed wait (`wait on s until s = 99 for 45 ns`) that three events wake with its condition
+/// false: a run that stops at 25 ns inside it and continues reaches the breakpoint after it at
+/// 45 ns, and stepping over the next timed wait stops after it at 55 ns. Identical at
+/// `--threads=4`.
+#[test]
+fn timed_wait_paused_and_stepped() {
+    script_case("timed_wait", &[]);
+    script_case("timed_wait", &["--threads=4"]);
+}
+
 /// The console's commands in `evaluate` with context `repl`, a run from there and a restart.
 #[test]
 fn console_commands_in_evaluate() {

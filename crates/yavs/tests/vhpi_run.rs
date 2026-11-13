@@ -765,6 +765,39 @@ fn vhpi_read_write_at_time_zero_reaches_a_transport_delay() {
     assert!(out.contains("vhpi: tout=0 t=10 d=0\n"), "{out}");
 }
 
+/// Deposits from the plugin wake `wait on s until s = 99 for 45 ns` three times with its
+/// condition false (10, 20, 30 ns): the timeout still ends it at 45 ns, and the next timed wait
+/// ends at 70 ns by the deposit that makes the condition true, at every tier and thread count.
+#[test]
+fn vhpi_deposits_wake_a_timed_wait() {
+    let vhdl = "entity top is end;\n\
+                architecture a of top is\n\
+                  signal s : integer := 0;\n\
+                begin\n\
+                  process begin\n\
+                    wait on s until s = 99 for 45 ns;\n\
+                    report \"first t=\" & integer'image(now / 1 ns) & \" s=\" & integer'image(s);\n\
+                    wait on s until s = 99 for 100 ns;\n\
+                    report \"second t=\" & integer'image(now / 1 ns) & \" s=\" & integer'image(s);\n\
+                    wait;\n\
+                  end process;\n\
+                end;\n";
+    let (lib, so) = setup_with("put", vhdl);
+    let spec = format!("--vhpi={}:timed", so.display());
+    let mut first = None;
+    for extra in [&[][..], &["--threads=4"], &["--tier=interp"]] {
+        let mut args = vec!["run", &lib, &spec, "--resolution=ns"];
+        args.extend_from_slice(extra);
+        args.push("top");
+        let (code, err, out) = yavs(&args);
+        assert_eq!(code, 0, "{err}");
+        let all = format!("{out}{err}");
+        assert!(all.contains("first t=45 s=3"), "{extra:?}: {all}");
+        assert!(all.contains("second t=70 s=99"), "{extra:?}: {all}");
+        assert_eq!(*first.get_or_insert_with(|| out.clone()), out, "{extra:?}");
+    }
+}
+
 /// Runs entity `top` of `yavs-vhpi/tests/foreign/design.vhd` with the `foreign` plugin.
 fn foreign(top: &str, extra: &[&str]) -> (i32, String, String) {
     let vhdl =

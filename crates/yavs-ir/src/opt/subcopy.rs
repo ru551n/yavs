@@ -46,12 +46,13 @@ const MAX_DESC: u64 = 4096;
 /// Block visits that find what holds at the block starts, at least; past the limit nothing is rewritten.
 const MAX_VISITS: usize = 4096;
 
-/// A subprogram that can have copies: called by id, no frame above it to reach, no suspension.
+/// A subprogram that can have copies: called by id, no suspension, no subprogram nested in it. One
+/// declared in a process or subprogram has keys only when it reaches no frame around it
+/// (`reads`): its copy keeps its parent, so it is called as it is.
 fn copyable(f: &Func) -> bool {
     matches!(f.kind, FuncKind::Function | FuncKind::Procedure)
         && !f.spare
         && !f.nested
-        && f.parent.is_none()
         && !f.flags.contains(FuncFlags::MAY_SUSPEND)
 }
 
@@ -90,7 +91,10 @@ fn note(
 
 /// The `'dope` slots of `g` a copy may key on: its lowered code reads the descriptor, so knowing it
 /// can fold something and keying on any other would only part instances; and nothing writes the
-/// slot or lets a pointer to the parameters out, so what the caller passed stays there.
+/// slot or lets a pointer to the parameters out, so what the caller passed stays there. For an
+/// array passed flat (`Param::flat`) the slot is that of its left bound: the three words of the
+/// bounds are read by loads or as the descriptor of a `DopeLen`, `Pos`, `SlicePos`,
+/// `SubtypeCheck` or `LayoutOf`.
 pub(crate) fn reads(g: &Func) -> Vec<u32> {
     let raw = g.full();
     let params_end = raw
@@ -104,6 +108,14 @@ pub(crate) fn reads(g: &Func) -> Vec<u32> {
             .iter()
             .any(|p| i64::from(p.slot) == o && p.name.ends_with("'dope"))
     };
+    // The slots of the left bounds of flat arrays, each the first of three words.
+    let flat: Vec<i64> = raw
+        .params
+        .iter()
+        .filter(|p| p.arr.is_some() && p.flat)
+        .map(|p| i64::from(p.slot) + 8)
+        .collect();
+    let bounds_of = |o: i64| flat.iter().copied().find(|&s| s <= o && o < s + 24);
     // The lowered code defines its addresses once, before their uses in the order of the code.
     let (mut at, mut k, mut from) = (HashMap::new(), HashMap::new(), HashMap::new());
     let mut out = Vec::new();
@@ -118,6 +130,11 @@ pub(crate) fn reads(g: &Func) -> Vec<u32> {
             } => {
                 at.insert(dst.0, i64::from(off));
             }
+            // It reaches a frame around it: no keys, kept as the plain call (#1122).
+            Inst::AddrOf {
+                space: AddrSpace::Up(_),
+                ..
+            } => return Vec::new(),
             Inst::Const { dst, v } => {
                 k.insert(dst.0, v);
             }
@@ -147,6 +164,9 @@ pub(crate) fn reads(g: &Func) -> Vec<u32> {
                 }
             }
             Inst::Load { dst, addr, .. } => {
+                if let Some(s) = at.get(&addr.0).and_then(|&o| bounds_of(o)) {
+                    out.push(s as u32);
+                }
                 note(&from, &at, addr, &mut out);
                 if let Some(&o) = at.get(&addr.0)
                     && is_dope(o)
@@ -162,9 +182,23 @@ pub(crate) fn reads(g: &Func) -> Vec<u32> {
                 leaks |= note(&from, &at, src, &mut out).is_some_and(|o| o < params_end);
             }
             _ => {
+                // A flat array's bounds read as a descriptor: no pointer to them goes anywhere.
+                let descs: &[Reg] = match i {
+                    Inst::DopeLen { dope, .. }
+                    | Inst::Pos { dope, .. }
+                    | Inst::SlicePos { dope, .. } => std::slice::from_ref(dope),
+                    Inst::LayoutOf { desc, .. } => std::slice::from_ref(desc),
+                    Inst::SubtypeCheck { dope, want, .. } => &[*dope, *want],
+                    _ => &[],
+                };
                 i.visit(&mut |r, role, _| {
-                    if role == crate::Role::Use {
-                        leaks |= note(&from, &at, r, &mut out).is_some_and(|o| o < params_end);
+                    if role != crate::Role::Use {
+                        return;
+                    }
+                    let bounds = at.get(&r.0).copied().filter(|o| flat.contains(o));
+                    match bounds {
+                        Some(s) if descs.contains(&r) => out.push(s as u32),
+                        _ => leaks |= note(&from, &at, r, &mut out).is_some_and(|o| o < params_end),
                     }
                 });
                 if let Some(l) = i.list() {
@@ -181,9 +215,10 @@ pub(crate) fn reads(g: &Func) -> Vec<u32> {
     out.sort_unstable();
     out.dedup();
     out.retain(|&s| {
+        let len = if flat.contains(&i64::from(s)) { 24 } else { 8 };
         !written
             .iter()
-            .any(|&(o, n)| o < i64::from(s) + 8 && i64::from(s) < o + n)
+            .any(|&(o, n)| o < i64::from(s) + len && i64::from(s) < o + n)
     });
     out
 }
@@ -427,6 +462,17 @@ impl Walk<'_> {
                 continue;
             };
             if !reads.contains(&p.slot) || !worth_keying(self.prog, ty) {
+                continue;
+            }
+            if g.params[j - 1].flat {
+                // The bounds themselves, left, right and direction: constants of the caller.
+                let words: Option<Vec<i64>> = regs
+                    .get(j..j + 3)
+                    .and_then(|w| w.iter().map(|&r| self.k_of(r)).collect());
+                if let Some(w) = words {
+                    let b: Vec<u8> = w.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    encode(&mut data, p.slot, &b);
+                }
                 continue;
             }
             let Some(n) = Ty::desc_size(&self.prog.types, ty).filter(|&n| n > 0) else {

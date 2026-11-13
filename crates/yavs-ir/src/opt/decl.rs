@@ -942,18 +942,33 @@ impl Opt<'_> {
         }
     }
 
-    /// What a copy of a subprogram knows on entry: the descriptor a `'dope` slot points to.
+    /// What a copy of a subprogram knows on entry: the descriptor a `'dope` slot points to, and
+    /// the bounds of a flat array in the three words from its left bound's slot (`subcopy::reads`
+    /// found nothing writes them).
     pub(super) fn param_facts(&self) -> Option<Facts> {
         let (_, _, _, params) = self.inst?;
         if params.is_empty() {
             return None;
         }
-        let descs: FxMap<u32, (Rc<[u8]>, u32)> = params
-            .iter()
-            .map(|(s, b)| (*s, (Rc::from(*b), 0)))
-            .collect();
+        let flat =
+            |s: u32| (self.f.params.iter()).any(|p| p.arr.is_some() && p.flat && p.slot + 8 == s);
+        let mut bytes: Vec<Option<u8>> = Vec::new();
+        let mut descs: FxMap<u32, (Rc<[u8]>, u32)> = FxMap::default();
+        for &(s, b) in params {
+            if !flat(s) {
+                descs.insert(s, (Rc::from(b), 0));
+                continue;
+            }
+            let at = s as usize;
+            if bytes.len() < at + b.len() {
+                bytes.resize(at + b.len(), None);
+            }
+            for (d, &x) in bytes[at..].iter_mut().zip(b) {
+                *d = Some(x);
+            }
+        }
         Some(Facts {
-            bytes: Vec::new(),
+            bytes,
             addrs: FxMap::default(),
             descs,
             objects: Vec::new(),

@@ -1299,6 +1299,28 @@ fn spec_record_var() {
     );
 }
 
+/// A function on an unconstrained array of vectors, declared in the process and called with the
+/// bounds of static signals: a process copy calls a copy of it for those bounds (#1122), which
+/// folds what they fix: the same report, fewer ops.
+#[test]
+fn sub_flat_bounds() {
+    let d = tempdir("sub_flat_bounds");
+    let src = include_str!("perf/sub_flat_bounds.vhd");
+    let run = |env: &[(&str, &str)]| run_design_env(&d, "sub_flat_bounds", src, "interp", &[], env);
+    let (shared, copies) = (
+        run(&[("YAVS_NO_SPEC", "1")]),
+        run(&[("YAVS_SPEC_AFTER", "2")]),
+    );
+    assert_eq!((shared.code, copies.code), (0, 0), "{}", copies.all());
+    assert!(copies.all().contains("sum="), "{}", copies.all());
+    assert_eq!(shared.stdout, copies.stdout);
+    check_bounds(
+        "sub_flat_bounds",
+        &copies,
+        &[("spec_subs", Min(2)), ("ops", Max(283700))],
+    );
+}
+
 /// A variable after an array-of-composite variable, passed by reference: the copy does not fold it
 /// (#856).
 #[test]

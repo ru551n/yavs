@@ -14793,6 +14793,36 @@ whole-signal read, the call, the result's check and copy, the wide drive).
 
 **Off.** `YAVS_NO_SUBCOPY=1` (fingerprint `subcopy`), `YAVS_SUB_ALL=1` keys on plain vectors too.
 
+## Copies of subprograms for the bounds of flat arrays (yavs-ir `opt/subcopy.rs`, `opt/decl.rs`, #1122, 2026-11-13)
+
+Written by Claude.
+
+- **Finding.** The adder-tree function of #1122 (`reduce (src : t_arr) return t_arr`, `t_arr` an array of `signed`)
+  ran 1.12 times the instructions of the same loops in the process at the default tier, 1.13 interpreted. With
+  locally static formal subtypes (`t_arr(0 to 12)` in, `t_arr(0 to 6)` out) it ran 1.02 times: the gap was the
+  shape, not the call. A formal of an array whose elements are constrained is passed flat (data, left, right,
+  direction), and copies of subprograms keyed only on `'dope` slots, so such a function never had a copy, whatever
+  its callers passed.
+- **Decision: a copy of a subprogram is also keyed on the bounds of an array passed flat** (`Param::flat`) when the
+  caller's three registers are constants, for the types `worth_keying` already names (arrays of composites, several
+  dimensions; a plain vector still has none). The key is the 24 bytes of the bounds at the slot of the left bound;
+  the copy has them as frame bytes of its `Opt::wf` facts (`param_facts`), so loads of the slots, `DopeLen` and `Pos`
+  of the frame's descriptor fold. `reads` takes a slot only when the code reads the bounds by loads or as the
+  descriptor of a `DopeLen`, `Pos`, `SlicePos`, `SubtypeCheck` or `LayoutOf` and nothing writes them; the debug
+  check of the arguments (`Machine::check_sub_args`) compares the cells.
+- **Decision: a subprogram declared in a process or subprogram can have copies when its code reaches no frame around
+  it** (no `AddrOf Up`; `reads` gives no keys otherwise). The copy keeps its parent, so it is called and finds its
+  static link as the subprogram does. The adder-tree function is declared in its process.
+- **Tests.** `sub_copies.rs`: flat arrays ascending, descending and with negative bounds, a slice of run-time bounds
+  (no key), nested functions calling a sibling, a nested procedure that drives the process's signal, a nested
+  function that reads the process's variable (no copy), and `an_index_error_in_a_copy_for_bounds_has_its_own_text`
+  (an index out of the parameter's range and out of a local's range, ascending and descending: the same text and
+  exit as the plain call on every tier). `perf.rs` `sub_flat_bounds`: `spec_subs` at least 2, `ops` 288 943 to
+  275 443.
+- **Not done.** Shared code makes no copies (an optimised body without instance data must depend on the program
+  alone, and copy ids are given out per run), so a process the copy cap leaves shared, and `--tier=clift`, keep the
+  plain call.
+
 ## Cold optimiser cost: exact fixes and a cheaper pass set for huge bodies (yavs-ir `opt`, yavs-lower, perf/w3-t3, maintainer ruling 2026-11-07)
 
 The cold main thread of library testbenches had risen 6 to 28 percent over the pinned baseline of wave 3, mostly in

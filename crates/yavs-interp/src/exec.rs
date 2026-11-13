@@ -10681,9 +10681,18 @@ impl Machine {
                     callee.name
                 ));
             };
+            // A flat array's bounds are the argument cells themselves.
+            let flat = j.is_some_and(|j| j > 0 && callee.params[j - 1].flat);
             let a = self.r(r);
             for (k, w) in want.chunks(8).enumerate() {
-                let got = self.load(add_addr(a, 8 * k as u64)?, Width::B8)?;
+                let got = if flat {
+                    let cell = j
+                        .and_then(|j| regs.get(j + k))
+                        .ok_or_else(|| ice_f!("no bound at slot {slot} of {}", callee.name))?;
+                    self.r(*cell)
+                } else {
+                    self.load(add_addr(a, 8 * k as u64)?, Width::B8)?
+                };
                 let mut x = [0u8; 8];
                 x[..w.len()].copy_from_slice(w);
                 if w.len() == 8 && got != u64::from_le_bytes(x) {

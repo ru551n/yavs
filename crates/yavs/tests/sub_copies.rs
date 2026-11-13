@@ -22,6 +22,12 @@ package p is
   function recur(v : bit_vector) return natural;
   function pure_sum(v : bit_vector) return natural;
   procedure poke(x : inout bit_vector; i : natural);
+  -- Passed as data and bounds (`Param::flat`): copies are keyed on the bounds themselves.
+  type nv is array (integer range <>) of bit_vector(3 downto 0);
+  function fold(x : nv) return nv;
+  function nvsum(x : nv) return natural;
+  function pick(x : nv; i : integer) return bit_vector;
+  function put(x : nv; i : integer) return nv;
 end package;
 
 package body p is
@@ -61,12 +67,47 @@ package body p is
   begin
     x(i) := not x(i);
   end procedure;
+  -- Pairs in the argument's own direction, the result sized from its length.
+  function fold(x : nv) return nv is
+    variable r : nv(0 to (x'length + 1) / 2 - 1);
+    variable j : natural := 0;
+  begin
+    for i in x'range loop
+      r(j / 2) := r(j / 2) xor x(i);
+      j := j + 1;
+    end loop;
+    return r;
+  end function;
+  function nvsum(x : nv) return natural is
+    variable n : natural := x'length * 7 + (x'left mod 5) * 3;
+  begin
+    for i in x'range loop
+      for b in 0 to 3 loop
+        if x(i)(b) = '1' then
+          n := n + abs (i) * 4 + b + 1;
+        end if;
+      end loop;
+    end loop;
+    return n;
+  end function;
+  -- An index out of the argument's range (`Pos` of the bounds a copy knows).
+  function pick(x : nv; i : integer) return bit_vector is
+  begin
+    return x(i);
+  end function;
+  -- An index out of the range of a local sized from the argument.
+  function put(x : nv; i : integer) return nv is
+    variable r : nv(0 to x'length - 1) := x;
+  begin
+    r(i) := not r(i);
+    return r;
+  end function;
 end package body;
 
 use work.p.all;
 
 entity sub is
-  generic (w : natural := 5; l : natural := 2; bad : boolean := false);
+  generic (w : natural := 5; l : natural := 2; bad : boolean := false; badf : natural := 0);
   port (clk : in bit);
 end entity;
 
@@ -74,16 +115,55 @@ architecture a of sub is
   constant k : recs(0 to l - 1)(tag(w - 1 downto 0), row(0 to 1)(w downto 0)) :=
     (others => (tag => (others => '1'), row => (others => (others => '0'))));
   constant s : bit_vector(0 to w) := (others => '1');
+  constant fd : nv(w downto -1) := (others => "1010");
+  constant fa : nv(-2 to w + 1) := (others => "0110");
+  signal sq : natural := 0;
 begin
   process (clk)
     variable v : bit_vector(w - 1 downto 0) := (others => '0');
     variable n : natural := 0;
     variable sum : natural := 0;
+    -- Declared in the process: copies keep their parent; a call of a sibling, a drive of the
+    -- process's signal, and one that reads the process's variable (no copy).
+    function nsum(x : nv) return natural is
+      variable k : natural := x'length;
+    begin
+      for i in x'range loop
+        if x(i)(i mod 4) = '1' then
+          k := k + 1;
+        end if;
+      end loop;
+      return k;
+    end function;
+    function nfold(x : nv) return natural is
+    begin
+      return nsum(fold(x)) + nsum(x) * 2;
+    end function;
+    impure function nup(x : nv) return natural is
+    begin
+      return x'length + n mod 7;
+    end function;
+    procedure ndrive(x : nv) is
+    begin
+      sq <= nsum(x) + x'left;
+    end procedure;
   begin
     if clk = '1' then
       n := n + 1;
       poke(v, n mod w);
       sum := (sum * 3 + outer(k, n mod l) + inner(k, 0) + recur(s) + pure_sum(s) + pure_sum(v)) mod 1000003;
+      sum := (sum + nvsum(fold(fd)) + nvsum(fold(fold(fa))) + nvsum(fa(n mod 2 to w))) mod 1000003;
+      sum := (sum + nfold(fd) + nfold(fa) + nup(fa) + sq) mod 1000003;
+      ndrive(fd);
+      if n = 8 then
+        case badf is
+          when 1 => v(0) := pick(fd, w + 1 + n - 8)(0);
+          when 2 => v(0) := pick(fa, n - 11)(0);
+          when 3 => v(0) := put(fa, w + 4 + n - 8)(0)(0);
+          when 4 => v(0) := put(fd, n - 9)(0)(0);
+          when others => null;
+        end case;
+      end if;
       if bad and n = 8 then
         poke(v, w + 3);
       end if;
@@ -95,13 +175,13 @@ begin
 end architecture;
 
 entity top is
-  generic (wa : natural := 5; wb : natural := 3; bad : boolean := false);
+  generic (wa : natural := 5; wb : natural := 3; bad : boolean := false; badf : natural := 0);
 end entity;
 
 architecture a of top is
   signal clk : bit := '0';
 begin
-  ua : entity work.sub generic map (wa, 2, bad) port map (clk);
+  ua : entity work.sub generic map (wa, 2, bad, badf) port map (clk);
   ub : entity work.sub generic map (wb, 3, false) port map (clk);
   -- The same descriptors in two instances, and ones a generate fixes.
   uc : entity work.sub generic map (wa, 2, false) port map (clk);
@@ -304,6 +384,39 @@ fn an_error_in_a_copy_has_its_own_text() {
             (&got.0, &got.1, &got.2),
             "{tier:?}"
         );
+    }
+}
+
+/// An index out of the bounds a copy keyed on flat bounds knows, ascending and descending, of
+/// the parameter and of a local sized from it: the text and the call path of the plain call.
+#[test]
+fn an_index_error_in_a_copy_for_bounds_has_its_own_text() {
+    let (d, work) = prepared("sub_copies_flat_error");
+    for badf in ["1", "2", "3", "4"] {
+        let g = [format!("-gbadf={badf}")];
+        let g: Vec<&str> = g.iter().map(String::as_str).collect();
+        let want = run(
+            &d,
+            &work,
+            &[NO_SUBS],
+            &["--tier=interp"],
+            &["--no-cache"],
+            &g,
+        );
+        assert_ne!(want.0, 0, "badf {badf}: the index must fail: {}", want.2);
+        assert!(want.2.contains("index"), "badf {badf}: {}", want.2);
+        for (env, tier) in [
+            (vec![SPEC], vec!["--tier=interp"]),
+            (vec![], vec!["--tier=clift"]),
+            (vec![SPEC], EAGER.to_vec()),
+        ] {
+            let got = run(&d, &work, &env, &tier, &["--no-cache"], &g);
+            assert_eq!(
+                (&want.0, &want.1, &want.2),
+                (&got.0, &got.1, &got.2),
+                "badf {badf} {tier:?}"
+            );
+        }
     }
 }
 

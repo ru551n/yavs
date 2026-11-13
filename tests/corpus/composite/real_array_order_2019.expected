@@ -1,0 +1,11 @@
+exit	0
+diag	note	0	0	:real_array_order_2019:_p0	zeros lt false le false gt true ge true eq false
+diag	note	0	0	:real_array_order_2019:_p0	zeros2 lt true le true gt false ge false eq false
+diag	note	0	0	:real_array_order_2019:_p0	zeros3 lt false le true gt false ge true eq true
+diag	note	0	0	:real_array_order_2019:_p0	neg lt true le true gt false ge false eq false
+diag	note	0	0	:real_array_order_2019:_p0	negpos lt true le true gt false ge false eq false
+diag	note	0	0	:real_array_order_2019:_p0	pos lt true le true gt false ge false eq false
+diag	note	0	0	:real_array_order_2019:_p0	prefix lt true le true gt false ge false eq false
+diag	note	0	0	:real_array_order_2019:_p0	longer lt false le false gt true ge true eq false
+diag	note	0	0	:real_array_order_2019:_p0	null lt true le true gt false ge false eq false
+diag	note	0	0	:real_array_order_2019:_p0	first lt false le false gt true ge true eq false

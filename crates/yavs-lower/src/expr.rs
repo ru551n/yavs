@@ -4117,6 +4117,28 @@ impl<'a> Fx<'a, '_> {
         }
     }
 
+    /// Element `i` of a 1-D array of reals.
+    fn real_at(&mut self, data: Reg, i: Reg, w: Width) -> Reg {
+        let a = self.reg(RegTy::Ptr);
+        self.emit(Inst::Index {
+            dst: a,
+            base: data,
+            pos: i,
+            stride: w.bytes(),
+        });
+        self.load(a, w, RegTy::F64)
+    }
+
+    /// `a op b` of two elements, as reals (`-0.0 = 0.0`) or as integers.
+    fn elem_cmp(&mut self, real: bool, op: CmpOp, a: Reg, b: Reg) -> Reg {
+        if !real {
+            return self.cmp(op, a, b);
+        }
+        let dst = self.reg(RegTy::I64);
+        self.emit(Inst::FCmp { op, dst, a, b });
+        dst
+    }
+
     /// Element type facts of an array type: (IR type, logic, element width).
     pub(crate) fn elem_facts(&mut self, t: TypeId, span: Span) -> R<(TyId, bool, Width)> {
         let tid = self.ty(t, span)?;
@@ -4128,8 +4150,15 @@ impl<'a> Fx<'a, '_> {
         Ok((tid, logic, w))
     }
 
-    /// Lexicographic comparison of 1-D arrays of discrete elements (LRM 9.2.3).
+    /// Lexicographic comparison of 1-D arrays of scalar elements (LRM 9.2.3).
     pub(crate) fn array_cmp(&mut self, op: CmpOp, a: V, b: V, t: TypeId, span: Span) -> R<Reg> {
+        // Bytes equal is value equal for discrete elements only: `-0.0 = 0.0` (#1144).
+        let real =
+            ty::array_of(self.db, t).is_some_and(|(e, _)| ty::is_real(self.db, self.db.base(e)));
+        if real && matches!(op, CmpOp::Eq | CmpOp::Ne) {
+            let r = self.comp_eq(t, a, b, span)?;
+            return Ok(if op == CmpOp::Ne { self.not(r) } else { r });
+        }
         let (ad, ap) = self.arr(a, span)?;
         let (bd, bp) = self.arr(b, span)?;
         let (_, logic, w) = self.elem_facts(t, span)?;
@@ -4195,9 +4224,15 @@ impl<'a> Fx<'a, '_> {
         let more = self.cmp(CmpOp::Lt, i, m);
         self.branch(more, body, tail);
         self.at(body);
-        let ea = self.elem_at(ad, i, la, logic, w);
-        let eb = self.elem_at(bd, i, lb, logic, w);
-        let same = self.cmp(CmpOp::Eq, ea, eb);
+        let (ea, eb) = if real {
+            (self.real_at(ad, i, w), self.real_at(bd, i, w))
+        } else {
+            (
+                self.elem_at(ad, i, la, logic, w),
+                self.elem_at(bd, i, lb, logic, w),
+            )
+        };
+        let same = self.elem_cmp(real, CmpOp::Eq, ea, eb);
         self.branch(same, inc, diff);
         self.at(inc);
         let one = self.int(1);
@@ -4210,7 +4245,7 @@ impl<'a> Fx<'a, '_> {
             CmpOp::Ge => CmpOp::Gt,
             o => o,
         };
-        let d = self.cmp(strict, ea, eb);
+        let d = self.elem_cmp(real, strict, ea, eb);
         self.emit(Inst::Move { dst: r, src: d });
         self.jump(j);
         self.at(tail);

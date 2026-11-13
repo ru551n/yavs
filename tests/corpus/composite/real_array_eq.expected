@@ -1,0 +1,17 @@
+exit	0
+diag	note	0	0	:real_array_eq:_p0	vector eq true ne false
+diag	note	0	0	:real_array_eq:_p0	vector rev true ne false
+diag	note	0	0	:real_array_eq:_p0	vector same true ne false
+diag	note	0	0	:real_array_eq:_p0	vector diff false ne true
+diag	note	0	0	:real_array_eq:_p0	vector slice true len false
+diag	note	0	0	:real_array_eq:_p0	vector null true ne false
+diag	note	0	0	:real_array_eq:_p0	vector lit true true
+diag	note	0	0	:real_array_eq:_p0	subtype eq true ne false
+diag	note	0	0	:real_array_eq:_p0	records eq true ne false
+diag	note	0	0	:real_array_eq:_p0	records diff false ne true
+diag	note	0	0	:real_array_eq:_p0	vrec eq true ne false
+diag	note	0	0	:real_array_eq:_p0	vrec diff false ne true
+diag	note	0	0	:real_array_eq:_p0	nested eq true ne false
+diag	note	0	0	:real_array_eq:_p0	nested diff false ne true
+diag	note	0	0	:real_array_eq:_p0	2d eq true ne false
+diag	note	0	0	:real_array_eq:_p0	2d diff false ne true

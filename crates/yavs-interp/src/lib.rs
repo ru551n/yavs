@@ -945,6 +945,26 @@ pub trait TierHost {
         false
     }
 
+    /// `Inst::New`/`NewFill` from compiled code: an object of type `ty` in the shared heap
+    /// (`shared`, or the frame allocates there) or the process heap, made of `desc` followed by
+    /// `src` (with `fill` > 0, its bytes repeated to `size`); its handle (`fr`'s heap fields
+    /// brought up to date), or 0, nothing changed, where the instruction is to be stepped: a
+    /// collection or recycling is due, or the step would report an error.
+    #[allow(clippy::too_many_arguments)]
+    fn alloc(
+        &mut self,
+        fr: &mut TierFrame,
+        ty: u32,
+        shared: bool,
+        desc: &[u8],
+        src: &[u8],
+        size: u64,
+        fill: u32,
+    ) -> u64 {
+        let _ = (fr, ty, shared, desc, src, size, fill);
+        0
+    }
+
     /// All the layout words of type `ty` for the descriptor bytes `desc` into `out`, from the same
     /// memo (`Inst::LayoutOf` with a run-time descriptor, in compiled code); `false` where the
     /// layout fails or has another size than `out`.

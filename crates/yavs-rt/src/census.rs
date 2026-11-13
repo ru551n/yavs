@@ -57,9 +57,11 @@ pub(crate) enum Cb {
     WaitAt,
     /// `yavs_rt_timed_out`: `TimedOut` after such a wait.
     TimedOut,
+    /// `yavs_rt_new`: an allocation (`new`).
+    New,
 }
 
-const N: usize = 34;
+const N: usize = 35;
 
 /// Whether this build counts (the generators emit the calls of `yavs_rt_rare` only then).
 pub const COUNTING: bool = cfg!(any(debug_assertions, feature = "op-census"));
@@ -99,6 +101,7 @@ const NAMES: [&str; N] = [
     "record_part",
     "wait_at",
     "timed_out",
+    "new",
 ];
 
 #[cfg(any(debug_assertions, feature = "op-census"))]

@@ -69,6 +69,7 @@ pub const IMAGE_CHECK: &str = "yavs_rt_image_check";
 pub const LAYOUT_WORD: &str = "yavs_rt_layout_word";
 pub const LAYOUT_INTO: &str = "yavs_rt_layout_into";
 pub const FREE: &str = "yavs_rt_free";
+pub const NEW: &str = "yavs_rt_new";
 pub const SCAN: &str = "yavs_rt_scan";
 pub const ELOOP: &str = "yavs_rt_eloop";
 pub const ELOOP_EXEC: &str = "yavs_rt_eloop_exec";
@@ -2331,6 +2332,60 @@ pub unsafe extern "C" fn yavs_rt_free(env: *mut c_void, mem: *mut Mem, h: u64, c
             1
         }
         Ok(false) => 0,
+        Err(p) => {
+            // SAFETY: as above.
+            unsafe { (*envp).panic = Some(p) };
+            0
+        }
+    }
+}
+
+/// `Inst::New`/`NewFill` from compiled code: an object of type `ty` (bit 32 of `ty_shared`: the
+/// instruction's `shared`) of the `dsize` descriptor bytes at `desc` and the bytes at `src`
+/// (`size` of them, or with `fill` > 0 its `fill` bytes repeated to `size`; `dsize_fill` is
+/// `dsize | fill << 32`), both host pointers compiled code checked. Its handle, or 0 with nothing
+/// changed where the host declines (`TierHost::alloc`): the instruction is stepped.
+pub unsafe extern "C" fn yavs_rt_new(
+    env: *mut c_void,
+    mem: *mut Mem,
+    ty_shared: u64,
+    desc: *const u8,
+    dsize_fill: u64,
+    src: *const u8,
+    size: u64,
+) -> u64 {
+    cb(Cb::New);
+    // SAFETY: `mem` is what compiled code was given.
+    let envp = unsafe { env_or(env, mem) } as *mut Env<'_>;
+    let (dsize, fill) = (dsize_fill as u32 as usize, (dsize_fill >> 32) as u32);
+    let n = if fill == 0 { size } else { u64::from(fill) };
+    // SAFETY: as in `yavs_rt_step`; compiled code checked `dsize` readable bytes at `desc` and `n`
+    // at `src` (no allocation of 4 GiB or more is made: the host declines it first).
+    let r = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let part = |p: *const u8, n: usize| -> &[u8] {
+            if n == 0 {
+                &[]
+            } else {
+                std::slice::from_raw_parts(p, n)
+            }
+        };
+        let s = if n > 1 << 32 {
+            &[][..]
+        } else {
+            part(src, n as usize)
+        };
+        (*envp).host.alloc(
+            &mut (*mem).fr,
+            ty_shared as u32,
+            ty_shared >> 32 & 1 != 0,
+            part(desc, dsize),
+            s,
+            size,
+            fill,
+        )
+    }));
+    match r {
+        Ok(h) => h,
         Err(p) => {
             // SAFETY: as above.
             unsafe { (*envp).panic = Some(p) };

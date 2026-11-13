@@ -1782,14 +1782,28 @@ mod clift {
             ("cb_layout_into", Max(410))
         ]
     );
-    // A deallocation on a native frame is one call of the host's free, not a step (the `new`
-    // before it stays one).
+    // An allocation in compiled code is one call of the host's allocation, not a step: on a
+    // native frame (no `yavs_rt_xstep`) and in frame mode (no `yavs_rt_step` of a `New`).
+    clift_case!(
+        new_compiled,
+        "new_compiled",
+        "s=80786",
+        [
+            ("cb_xstep", Max(0)),
+            ("cb_step", Max(103)),
+            ("cb_new", Min(1350)),
+            ("cb_new", Max(1440))
+        ]
+    );
+    // A deallocation on a native frame is one call of the host's free, not a step (nor is the
+    // `new` before it).
     clift_case!(
         free_native,
         "free_native",
         "s=",
         [
-            ("cb_xstep", Max(410)),
+            ("cb_xstep", Max(0)),
+            ("cb_new", Min(390)),
             ("cb_free", Min(390)),
             ("cb_free", Max(410))
         ]

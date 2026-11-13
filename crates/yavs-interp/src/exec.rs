@@ -11582,36 +11582,9 @@ impl Machine {
                 if fill != 0 && !size.is_multiple_of(u64::from(fill)) {
                     return Err(ice_s!("NewFill size is not a multiple of its element"));
                 }
-                let (ds, size) = (dsize as usize, size as usize);
                 let dbytes = self.rd(self.r(desc), u64::from(dsize))?.to_vec();
-                let src = self.rd(
-                    self.r(data),
-                    if fill == 0 {
-                        size as u64
-                    } else {
-                        u64::from(fill)
-                    },
-                )?;
-                // An all-zero fill is a zeroed allocation: the OS maps its pages on first
-                // touch, so a large array that is only sparsely used stays small (#486).
-                let v = if fill != 0 && src.iter().all(|&b| b == 0) {
-                    let mut v = vec![0u8; ds + size];
-                    v[..ds].copy_from_slice(&dbytes);
-                    v
-                } else {
-                    let mut v = Vec::with_capacity(ds + size);
-                    v.extend_from_slice(&dbytes);
-                    if fill == 0 {
-                        v.extend_from_slice(src);
-                    } else if fill == 1 {
-                        v.resize(ds + size, src[0]);
-                    } else {
-                        for _ in 0..size / fill as usize {
-                            v.extend_from_slice(src);
-                        }
-                    }
-                    v
-                };
+                let src = self.rd(self.r(data), if fill == 0 { size } else { u64::from(fill) })?;
+                let v = fill_object(&dbytes, src, size as usize, fill);
                 let r = self.alloc_heap(shared)?.alloc(heap::Obj::Typed(ty), v);
                 let h =
                     r.map_err(|_| runtime_s!("heap object limit (16M objects per heap) exceeded"))?;
@@ -12027,6 +12000,31 @@ impl Machine {
         }
         Ok(Flow::Next)
     }
+}
+
+/// The bytes of a `NewFill` object: the descriptor `desc`, then `src` (the `size` bytes, or
+/// with `fill` > 0 its `fill` bytes repeated to `size`, a multiple of `fill`).
+fn fill_object(desc: &[u8], src: &[u8], size: usize, fill: u32) -> Vec<u8> {
+    let ds = desc.len();
+    // An all-zero fill is a zeroed allocation: the OS maps its pages on first touch, so a
+    // large array that is only sparsely used stays small (#486).
+    if fill != 0 && src.iter().all(|&b| b == 0) {
+        let mut v = vec![0u8; ds + size];
+        v[..ds].copy_from_slice(desc);
+        return v;
+    }
+    let mut v = Vec::with_capacity(ds + size);
+    v.extend_from_slice(desc);
+    if fill == 0 {
+        v.extend_from_slice(src);
+    } else if fill == 1 {
+        v.resize(ds + size, src[0]);
+    } else {
+        for _ in 0..size / fill as usize {
+            v.extend_from_slice(src);
+        }
+    }
+    v
 }
 
 /// The interpreter under compiled code (`Machine::run_tier`, `Tier::run_cached`).
@@ -13265,6 +13263,34 @@ impl crate::TierHost for Host<'_, '_, '_> {
         true
     }
 
+    fn alloc(
+        &mut self,
+        tf: &mut crate::TierFrame,
+        ty: u32,
+        shared: bool,
+        desc: &[u8],
+        src: &[u8],
+        size: u64,
+        fill: u32,
+    ) -> u64 {
+        let m = &mut *self.m;
+        // `step`'s `New`/`NewFill` when its `reclaim` has nothing to do; anything else is stepped.
+        if self.ctx.is_some() && m.reclaim_work()
+            || size > 1 << 32
+            || fill != 0 && !size.is_multiple_of(u64::from(fill))
+        {
+            return 0;
+        }
+        let v = fill_object(desc, src, size as usize, fill);
+        let shared = shared || tf.flags & crate::TIER_SHARED_ALLOC != 0;
+        let Ok(hp) = m.alloc_heap(shared) else {
+            return 0;
+        };
+        let h = hp.alloc(heap::Obj::Typed(TyId(ty)), v).unwrap_or(0);
+        m.tier_heaps(tf);
+        h
+    }
+
     fn layout_into(&mut self, ty: u32, desc: &[u8], out: &mut [u8]) -> bool {
         self.m
             .layout_into(self.prog, TyId(ty), desc, out)
@@ -13551,8 +13577,14 @@ impl crate::TierHost for Host<'_, '_, '_> {
             None => m.fat_root(addr).is_ok(),
             Some(t) => {
                 let t = yavs_ir::TyId(t);
-                let n = Ty::desc_size(&prog.types, t);
-                let ok = split(addr).0 == TEMP && n.is_some_and(|n| n as usize == desc.len());
+                // Compiled code took the length from `desc_size` of the same type (a walk of
+                // the type per allocation of a record was 4 to 7 percent of a `new`).
+                debug_assert_eq!(
+                    Ty::desc_size(&prog.types, t),
+                    Some(desc.len() as u64),
+                    "descriptor of a recorded temporary"
+                );
+                let ok = split(addr).0 == TEMP;
                 if ok {
                     m.temp_root(addr, Some(t), desc.into());
                 }

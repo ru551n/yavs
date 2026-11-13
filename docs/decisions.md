@@ -16148,3 +16148,29 @@ Amends "Stage entries of a design that loads units late" (#671).
   record, array of records, resolved, port collapsed, port over a conversion, port on a slice, delayed and transport drives, a user
   floating type, `'last_value`), `delta/real_negative_zero_force`, `held/held_real_zero` (hand-checked, equal to sim2; run in check
   mode of the compiled tier), catalogue `real-negative-zero-event`.
+
+
+## Compiled code: allocations in one call (yavs-clift `Gen::new_obj`, yavs-rt `yavs_rt_new`, yavs-interp `TierHost::alloc`, perf/skid-access, 2026-11-13)
+
+- **Finding** (agent). Every `new` left compiled code through the generic host step: on a native frame a
+  `TierHost::native_step` through `yavs_rt_xstep` (a frame of the host's pushed, the instruction dispatched by
+  `Machine::step`, the view rebuilt), in frame mode a `yavs_rt_step`, plus there `yavs_rt_signal` for the typed
+  `TempRoot` of a record aggregate holding access values and again for the `Stmt` that drops it. `gc_random` at ten
+  times its steps made 2.5 M such steps a run; a `new` cost 1650 to 2700 instructions compiled against 230 to 490
+  for sim2.
+- **Change** (agent). `New` and `NewFill` find their descriptor and data with `Gen::host` and call
+  `yavs_rt_new(env, mem, ty | shared << 32, desc, dsize | fill << 32, src, size)`. The host (`TierHost::alloc`) makes
+  the same object as the step (the bytes by `fill_object`, shared with `Machine::step`; the heap by `alloc_heap` of
+  the instruction's `shared` or the frame's `TIER_SHARED_ALLOC`) and returns its handle, or 0 with nothing changed
+  where the step would collect, recycle or fail: `Machine::reclaim_work` (as `TierHost::free`), an object of 4 GiB
+  or more, a size that is no multiple of the fill, no shared state, a full heap. A decline steps the instruction as
+  before (`slow_path_x`: on a native frame `native_step`, which leaves the frame when a collection is due). In frame
+  mode a typed `TempRoot` is `yavs_rt_troot` and a `Stmt` with recorded temporaries `yavs_rt_endstmt`, as native
+  frames had them; `TierHost::temp_root` checks the descriptor length compiled code took from `Ty::desc_size` only
+  in debug builds (the walk of the type was 4 to 7 percent of a `new`).
+- **Why it is exact**. The step's `reclaim` does nothing when `reclaim_work` is false, so the fast path is the
+  step's allocation with the same bytes, heap, type and accounting (`since_gc`); every case where the step does
+  more (a collection, a recycling, an error and its message) still runs the step. Under `gc-stress` a collection is
+  due after any allocation, so those suites exercise the decline; the fast path itself is covered by
+  `clift_parity` `allocations_in_compiled_code_match_the_interpreter` (every allocator form, both modes, collections
+  forced with `--gc-threshold`, four threads) and difftest `clift-check`. Counter `cb_new`; perf case `new_compiled`.

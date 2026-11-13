@@ -161,6 +161,7 @@ pub struct Jit {
     cat: ClifId,
     layout_into: ClifId,
     free: ClifId,
+    new: ClifId,
     deopt: ClifId,
     deopt_slots: ClifId,
     deopt_end: ClifId,
@@ -602,6 +603,7 @@ impl Jit {
             (CAT, yavs_rt_cat as *const u8),
             (LAYOUT_INTO, yavs_rt_layout_into as *const u8),
             (FREE, yavs_rt_free as *const u8),
+            (NEW, yavs_rt_new as *const u8),
             (WAIT, yavs_rt_wait as *const u8),
             (WAIT_ON, yavs_rt_wait_on as *const u8),
             (WAIT_SAME, yavs_rt_wait_same as *const u8),
@@ -670,6 +672,7 @@ impl Jit {
         )?;
         let layout_into = imp(LAYOUT_INTO, &[I64, I64, I32, I64, I64, I64], Some(I64))?;
         let free = imp(FREE, &[I64, I64, I64, I64], Some(I32))?;
+        let new = imp(NEW, &[I64, I64, I64, I64, I64, I64, I64], Some(I64))?;
         let deopt = imp(
             DEOPT,
             &[I64, I64, I32, I32, I64, I64, I64, I64, I64],
@@ -792,6 +795,7 @@ impl Jit {
             cat,
             layout_into,
             free,
+            new,
             deopt,
             deopt_slots,
             deopt_end,
@@ -1746,6 +1750,7 @@ impl Jit {
                 .module
                 .declare_func_in_func(self.layout_into, &mut ctx.func),
             free: self.module.declare_func_in_func(self.free, &mut ctx.func),
+            new: self.module.declare_func_in_func(self.new, &mut ctx.func),
             deopt: self.module.declare_func_in_func(self.deopt, &mut ctx.func),
             deopt_slots: self
                 .module
@@ -1983,6 +1988,9 @@ struct Imports {
     layout_into: FuncRef,
     /// `yavs_rt_free(env, mem, handle, cell) -> 1 | 0`: a deallocation, 0 when the host declines.
     free: FuncRef,
+    /// `yavs_rt_new(env, mem, ty | shared << 32, desc, dsize | fill << 32, src, size) -> handle`:
+    /// an allocation, 0 when the host declines.
+    new: FuncRef,
     deopt: FuncRef,
     deopt_slots: FuncRef,
     deopt_end: FuncRef,
@@ -3890,10 +3898,8 @@ fn gen_func(
             },
             Inst::Stmt => {
                 let (slow, join) = g.slow_path(pc, &inst);
-                // In a native frame the host's own function drops the recorded temporaries.
-                if g.nat.is_some()
-                    && let Some(sl) = g.slows.last_mut()
-                {
+                // The host's own function drops the recorded temporaries.
+                if let Some(sl) = g.slows.last_mut() {
                     sl.endstmt = true;
                 }
                 let roots = g.mem_ld(MEM_TEMP_ROOTS);
@@ -5005,6 +5011,36 @@ fn gen_func(
                 }
             }
             Inst::Free { ptr } if g.nat.is_some() => g.free(pc, &inst, ptr),
+            Inst::New {
+                dst,
+                ty,
+                init,
+                size,
+                shared,
+            } if g.nat.is_none() || xstep_wide(f, &inst) => {
+                g.new_obj(pc, &inst, f, dst, ty, None, init, size, 0, shared)
+            }
+            Inst::NewFill {
+                dst,
+                ty,
+                desc,
+                dsize,
+                data,
+                size,
+                fill,
+                shared,
+            } if g.nat.is_none() || xstep_wide(f, &inst) => g.new_obj(
+                pc,
+                &inst,
+                f,
+                dst,
+                ty,
+                Some((desc, dsize)),
+                data,
+                size,
+                fill,
+                shared,
+            ),
             _ if g.nat.is_some() && xstep_wide(f, &inst) => g.native_step(pc, &inst, f),
             _ => g.step(pc, &inst),
         }
@@ -5101,6 +5137,13 @@ fn gen_func(
             g.b.ins().call(g.imp.endstmt, &[g.env, g.mem, base]);
             g.hold_recheck();
             g.b.ins().jump(s.join, &[]);
+            continue;
+        }
+        if s.endstmt {
+            let base = g.mem_ld(MEM_TEMP_BASE);
+            g.b.ins().call(g.imp.endstmt, &[g.env, g.mem, base]);
+            let args = back(&mut g);
+            g.b.ins().jump(s.join, &args);
             continue;
         }
         if g.nat.is_some() {
@@ -6312,6 +6355,69 @@ impl Gen<'_> {
         self.b.ins().store(self.gf, zero, p, 0);
         self.b.ins().jump(null, &[]);
         self.b.switch_to_block(null);
+        self.join(join);
+    }
+
+    /// `Inst::New` (no descriptor) and `Inst::NewFill`: the descriptor and the data found here, the
+    /// object made by the host (`yavs_rt_new`). Where the host declines (a collection or recycling
+    /// due, an error to report) the instruction is stepped as before: in a native frame on a frame
+    /// of the host's (`slow_path_x`), which leaves the frame when a collection is due.
+    #[allow(clippy::too_many_arguments)]
+    fn new_obj(
+        &mut self,
+        pc: u32,
+        i: &Inst,
+        f: &Func,
+        dst: Reg,
+        ty: yavs_ir::TyId,
+        desc: Option<(Reg, u32)>,
+        data: Reg,
+        size: Reg,
+        fill: u32,
+        shared: bool,
+    ) {
+        let (slow, join) = self.slow_path_x(pc, i, f);
+        let sz = self.ld(size);
+        // The step's errors (an object of 4 GiB or more, a size that is not a multiple of the
+        // fill) are the interpreter's.
+        let big = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, sz, 1 << 32);
+        self.guard(big, slow);
+        if fill > 1 {
+            let r = self.b.ins().urem_imm_u(sz, i64::from(fill));
+            let z = self.b.ins().icmp_imm_s(IntCC::Equal, r, 0);
+            self.guard(z, slow);
+        }
+        let (dp, dsize) = match desc {
+            Some((d, n)) if n > 0 => {
+                let dv = self.ld(d);
+                (
+                    self.host(dv, Some(d), Op::C(0), Op::C(u64::from(n)), false, slow),
+                    n,
+                )
+            }
+            _ => (self.c64(0), 0),
+        };
+        let n = if fill == 0 {
+            Op::V(sz)
+        } else {
+            Op::C(u64::from(fill))
+        };
+        let av = self.ld(data);
+        let sp = self.host(av, Some(data), Op::C(0), n, false, slow);
+        let meta = self.c64(i64::from(ty.0) | i64::from(shared) << 32);
+        let df = self.c64(i64::from(dsize) | i64::from(fill) << 32);
+        let c = self
+            .b
+            .ins()
+            .call(self.imp.new, &[self.env, self.mem, meta, dp, df, sp, sz]);
+        let h = self.b.inst_results(c)[0];
+        self.clear();
+        let ok = self.b.ins().icmp_imm_s(IntCC::NotEqual, h, 0);
+        self.guard(ok, slow);
+        self.st(dst, h);
         self.join(join);
     }
 
@@ -11871,11 +11977,6 @@ impl Gen<'_> {
         desc: Option<Reg>,
         ty: Option<yavs_ir::TyId>,
     ) -> Result<(), String> {
-        if ty.is_some() && self.nat.is_none() {
-            // A frame-mode function steps the typed temporary.
-            self.step(pc, i);
-            return Ok(());
-        }
         let (slow, join) = self.slow_path(pc, i);
         match ty {
             None => {
@@ -11917,7 +12018,7 @@ impl Gen<'_> {
                 self.brif_split(ok, join, slow);
                 self.start(join);
             }
-            Some(t) if self.nat.is_some() => {
+            Some(t) => {
                 let n = ok(yavs_ir::Ty::desc_size(&prog.types, t), "no descriptor size")?;
                 let dp = match (n, desc) {
                     (0, _) => self.c64(0),
@@ -11938,7 +12039,6 @@ impl Gen<'_> {
                 self.guard(okv, slow);
                 self.join(join);
             }
-            Some(_) => unreachable!("handled above"),
         }
         Ok(())
     }

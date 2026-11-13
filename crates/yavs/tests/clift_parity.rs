@@ -1226,6 +1226,139 @@ fn deallocations_in_compiled_code_match_the_interpreter() {
     }
 }
 
+/// Allocations in compiled code (`Gen::new_obj`, `yavs_rt_new`) on native frames (the functions)
+/// and in frame mode (the process): records holding access values, qualified aggregates and
+/// literals (`New` and `NewFill` without a fill), objects of a subtype filled with a default of
+/// one byte, of eight (`integer`, not zero) and with `'U'`, a null range, a range aggregate, a
+/// protected type's own list (the shared heap), with collections in between; and the
+/// interpreter's error after a deallocation.
+const NEW: &str = r#"library ieee; use ieee.std_logic_1164.all;
+entity nw is generic (BAD : integer := 0); end;
+architecture a of nw is
+  type node;
+  type node_ptr is access node;
+  type node is record
+    v : integer;
+    nx : node_ptr;
+  end record;
+  type iv_ptr is access integer_vector;
+  type str_ptr is access string;
+  type slv_ptr is access std_logic_vector;
+  type int_ptr is access integer;
+  procedure len(variable p : in node_ptr; variable n : out integer) is
+    variable q : node_ptr := p;
+  begin
+    n := 0;
+    while q /= null loop
+      n := n + q.v;
+      q := q.nx;
+    end loop;
+  end procedure;
+  function churn(k, n : integer) return integer is
+    variable h : node_ptr;
+    variable iv : iv_ptr;
+    variable s : str_ptr;
+    variable l : slv_ptr;
+    variable p : int_ptr;
+    variable t : integer := k;
+    variable m : integer;
+  begin
+    for i in 1 to n loop
+      h := new node'(i, h);
+      iv := new integer_vector'(i, k, 3);
+      t := t + iv(1) + iv'length;
+      iv := new integer_vector(0 to i);
+      t := t + iv(i) mod 1000 + iv'length;
+      iv := new integer_vector'(0 to i => k + i);
+      t := t + iv(i);
+      s := new string(1 to i);
+      t := t + character'pos(s(i)) + s'length;
+      s := new string'("ab" & integer'image(i));
+      t := t + s'length;
+      s := new string(1 to 0);
+      t := t + s'length;
+      l := new std_logic_vector(0 to i + 70);
+      t := t + std_logic'pos(l(i)) + l'length;
+      p := new integer;
+      t := t + p.all mod 1000;
+      p := new integer'(i);
+      t := t + p.all;
+      deallocate(p);
+      if i mod 3 = 0 then
+        deallocate(iv);
+      end if;
+    end loop;
+    len(h, m);
+    return t + m;
+  end function;
+  type store is protected
+    procedure put(x : integer);
+    impure function sum return integer;
+  end protected;
+  type store is protected body
+    variable h : node_ptr;
+    procedure put(x : integer) is
+    begin
+      h := new node'(x, h);
+    end procedure;
+    impure function sum return integer is
+      variable m : integer;
+    begin
+      len(h, m);
+      return m;
+    end function;
+  end protected body;
+  shared variable sv : store;
+begin
+  process
+    variable s : integer := 0;
+    variable h : node_ptr;
+    variable iv : iv_ptr;
+    variable st : str_ptr;
+    variable m : integer;
+  begin
+    for k in 0 to 60 loop
+      s := (s * 7 + churn(k, k mod 6 + 1)) mod 99991;
+      h := new node'(k, h);
+      iv := new integer_vector(0 to k);
+      st := new string(1 to k mod 4);
+      len(h, m);
+      s := (s + iv'length + st'length + m) mod 99991;
+      iv := new integer_vector'(k, s, 7);
+      s := (s + iv(1)) mod 99991;
+      sv.put(k);
+      s := (s + sv.sum) mod 99991;
+      wait for 1 ns;
+    end loop;
+    report "s=" & integer'image(s);
+    if BAD = 1 then
+      deallocate(iv);
+      s := iv(0);
+    end if;
+    wait;
+  end process;
+end;
+"#;
+
+#[test]
+fn allocations_in_compiled_code_match_the_interpreter() {
+    let dir = design("clift_new", NEW);
+    let (want, got) = parity(&dir, "nw", &[]);
+    assert!(want.out.contains("s="), "{want:?}");
+    if counted(&got[0]) {
+        assert!(
+            calls(&got[0], "counters: cb_new=") > 0,
+            "{:?}",
+            got[0].census
+        );
+        assert_eq!(calls(&got[0], "cb_xstep.New"), 0, "{:?}", got[0].census);
+    }
+    for gc in ["--gc-threshold=1", "--gc-threshold=300"] {
+        parity(&dir, "nw", &[gc]);
+    }
+    parity(&dir, "nw", &["-gBAD=1"]);
+}
+
 /// `ieee` ops of 65 to 192 elements computed in place (`Gen::ieee_wide`), the gates on any
 /// element value, and concatenations of two blocks (`Gen::cat_block`), with metavalues, `L` and
 /// `H` now and then: in a function (native frame) and in a process (frame mode). The arithmetic

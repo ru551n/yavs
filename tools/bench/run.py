@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Shared benchmark harness for yavs: phase timings, A/B comparison, JSON results.
 
-  run.py --list
+  run.py --list | --self-test
   run.py BIN [--bench a,b | --group internal|h2h|external|all] [--runs N]
   run.py --compare A B [--runs N] [--sims sim1,sim2] [--fail-on-regression]
   run.py BIN --ref sim1,sim2 [--cores 0-7] [--instructions] [--tiers interp,auto]   (head-to-head, pinned)
@@ -138,11 +138,33 @@ def record(Y, key, tag, driver):
 def prep_uvvm(comp, ent, Y, key, stop=None):
     root = corpus("uvvm")
     recs = record(Y, key, f"uvvm_{comp}", ("uvvm.py", "--only", comp, "-j", "2", "--no-wrap", "--root", str(CORPUS)))
-    r = next((r for r in recs if ent in r["argv"]), None)
-    if r is None:
+    # The driver runs two jobs at once, so the record order differs between binaries (#1146) and the entity runs with several generic
+    # sets: pick by configuration (numbers in order, so the driver's first set: 8 before 16), never by position.
+    cands = [r for r in recs if ent in r["argv"]]
+    if not cands:
         raise Skip(f"no recorded run of {ent} in {root}")
+    r = min(cands, key=lambda r: natural(config_of(r["argv"], key)))
     # a bounded slice of a run that takes far over 5 minutes: --stop-time ends it with exit 0
     return [(["{Y}", r["argv"][0]] + ([f"--stop-time={stop}"] if stop else []) + r["argv"][1:], r["cwd"])]
+
+
+def natural(args):
+    """Sort key of an argument list in which numbers order as numbers."""
+    return [[int(x) if i % 2 else x for i, x in enumerate(re.split(r"(\d+)", a))] for a in args]
+
+
+def config_of(argv, key):
+    """The arguments of a recorded run without the library paths and with the binary's work directory masked: what
+    the run does, comparable between the two binaries of --compare."""
+    root = str(CACHE / "work" / key)
+    return [a.replace(root, "<work>") for a in argv if not a.startswith(("--work=", "--map="))]
+
+
+def check_same_config(name, a, b):
+    """--compare times A and B on the same work; refuse when their prepared commands are not the same configuration (#1146)."""
+    if a != b:
+        show = lambda cfg: "\n".join("    " + " ".join(shlex.quote(x) for x in c) for c in cfg)
+        sys.exit(f"refusing to compare {name}: A and B would run different configurations\n  A:\n{show(a)}\n  B:\n{show(b)}")
 
 
 def prep_osvvm(test, Y, key):
@@ -586,9 +608,12 @@ def main():
     ap.add_argument("--label", default="", help="tag stored in the JSON file name")
     ap.add_argument("--fail-on-regression", action="store_true")
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--self-test", action="store_true", help="check the choice of the recorded configuration (#1146)")
     a = ap.parse_args()
     global TIMEOUT
     TIMEOUT = a.timeout
+    if a.self_test:
+        return self_test()
     if a.list:
         for n, (g, _) in reg.items():
             print(f"{g:9} {n}")
@@ -618,6 +643,10 @@ def main():
     names = [n for n in names if n not in skipped]
     for n, why in skipped.items():
         print(f"skipped {n}: {why}", file=sys.stderr)
+    configs = {n: {l: [config_of(argv, k) for argv, _ in cmds[(l, n)]] for l, k in zip(labels, keys)} for n in names}
+    for n in names:
+        if a.compare:
+            check_same_config(n, configs[n]["A"], configs[n]["B"])
     samples = {(l, n): [] for l in labels for n in names}
     for rep in range(a.runs):
         order = list(zip(labels, bins, trs))
@@ -649,12 +678,40 @@ def main():
     reg_flag = report(names, labels, summ, a.threshold, list(sims), simsumm)
     meta = {"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "runs": a.runs, "host_cpus": os.cpu_count(),
             "binaries": {l: {"path": b, "sha256_10": k, "time_report": t} for l, b, k, t in zip(labels, bins, keys, trs)},
-            "skipped": skipped}
+            "skipped": skipped, "configs": configs}  # configs: the arguments of every command, per benchmark and binary (#1146)
     res = mkdir(Path(a.out).expanduser() / "results") / f"{time.strftime('%Y%m%d-%H%M%S')}{'-' + a.label if a.label else ''}.json"
     res.write_text(json.dumps({"meta": meta, "summary": summ, "sims": simsumm,
                                "samples": {f"{l}/{n}": v for (l, n), v in samples.items()}}, indent=1))
     print(f"\nresults: {res}")
     return 1 if (reg_flag and a.fail_on_regression) else 0
+
+
+def self_test():
+    """#1146: two binaries whose drivers recorded the runs of one testbench in a different order prepare the same configuration."""
+    global CACHE, CORPUS
+    old = CACHE, CORPUS
+    with tempfile.TemporaryDirectory() as d:
+        CACHE, CORPUS = Path(d) / "cache", Path(d) / "corpus"
+        (CORPUS / "uvvm").mkdir(parents=True)
+        sets = [["-gGC_USER_WIDTH=16"], ["-gGC_USER_WIDTH=8"], ["-gGC_USER_WIDTH=128"], ["-gGC_USER_WIDTH=1"]]
+        got = {}
+        for key, order in (("kA", sets), ("kB", sets[::-1])):
+            wd = mkdir(CACHE / "work" / key / "uvvm_comp")
+            lib = f"--work=lib:{wd}/out/lib"
+            recs = [{"argv": ["run", "--std=2008", lib, "ent_tb"] + g, "cwd": f"{wd}/out/9"} for g in order]
+            recs.insert(1, {"argv": ["run", lib, "other_tb"], "cwd": str(wd)})
+            (wd / "records.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+            (argv, _), = prep_uvvm("comp", "ent_tb", "y", key, "10us")
+            got[key] = [config_of(argv, key)]
+            assert "-gGC_USER_WIDTH=1" in argv and "--stop-time=10us" in argv, argv  # numbers order as numbers: 1 before 8, 16, 128
+        check_same_config("ent_tb", got["kA"], got["kB"])
+        try:
+            check_same_config("ent_tb", got["kA"], [got["kB"][0] + ["-gX=1"]])
+            raise AssertionError("different configurations accepted")
+        except SystemExit as e:
+            assert "ent_tb" in str(e) and "A:" in str(e) and "-gX=1" in str(e), e
+    CACHE, CORPUS = old
+    print("bench self-test: ok")
 
 
 def _sub(snippet, sub):

@@ -1,0 +1,10 @@
+exit	0
+diag	note	0	0	:inout_port_default_slices:m:u:rd	leaf v=HL01 a=01HL
+diag	note	0	0	:inout_port_default_slices:rd	top x=ZHL01ZZZ y=ZZ01HLZZ
+diag	note	0	1	:inout_port_default_slices:rd	top x=0HLZ1ZZZ y=ZZ01H01Z
+diag	note	0	1	:inout_port_default_slices:m:u:rd	leaf v=HLZ1 a=01H0
+diag	note	1000000	1	:inout_port_default_slices:rd	top x=0H1Z1ZZZ y=ZZ0ZH01Z
+diag	note	1000000	1	:inout_port_default_slices:m:u:rd	leaf v=H1Z1 a=0ZH0
+diag	note	2000000	0	:inout_port_default_slices:rd	top x=0H1Z1ZZZ y=ZZ0WH01Z
+diag	note	2000000	0	:inout_port_default_slices:m:u:rd	leaf v=H1Z1 a=0WH0
+diag	note	3000000	0	:inout_port_default_slices:check	end x=0H1Z1ZZZ y=ZZ0WH01Z

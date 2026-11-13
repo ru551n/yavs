@@ -1393,7 +1393,7 @@ impl Fx<'_, '_> {
             }) => elem_desc.is_none() && Ty::needs_desc(types, *elem),
             _ => true,
         };
-        let bytes = Ty::desc_size(types, tid).filter(|&n| deep && n > 24);
+        let bytes = self.fb.program().desc_size(tid).filter(|&n| deep && n > 24);
         let Some(bytes) = bytes else {
             return self.check_desc(t, tid, vd, want, name, span);
         };
@@ -2141,6 +2141,9 @@ impl Fx<'_, '_> {
                 }
                 let mut out = Runs::new();
                 let mut ed = Vec::new();
+                // The element size under the last element descriptor (every element has the
+                // first one's, so the layout is made once per constant, not per element).
+                let mut sized: Option<(Vec<u8>, u64)> = None;
                 let mut push =
                     |fx: &mut Self, n: u64, c: &ConstValue, ed: &mut Vec<u8>| -> Option<()> {
                         let mut d = Vec::new();
@@ -2148,10 +2151,24 @@ impl Fx<'_, '_> {
                         if ed.is_empty() {
                             *ed = d;
                         }
-                        let (l, _) = fx.fb.program().layout(elem, ed).ok()?;
-                        // A scalar element has the element size (`Ty::elem_size`).
-                        let es = fx.fb.program().types().get(elem).and_then(Ty::elem_size);
-                        let want = es.unwrap_or(l.size.next_multiple_of(l.align.max(1)));
+                        let mut size = || -> Option<u64> {
+                            let (l, _) = fx.fb.program().layout(elem, ed).ok()?;
+                            // A scalar element has the element size (`Ty::elem_size`).
+                            let es = fx.fb.program().types().get(elem).and_then(Ty::elem_size);
+                            Some(es.unwrap_or(l.size.next_multiple_of(l.align.max(1))))
+                        };
+                        let want = match &sized {
+                            Some((k, w)) if k == ed => {
+                                yavs_ir::opt::type_memo_hit();
+                                debug_assert_eq!(Some(*w), size(), "element size of {elem}");
+                                *w
+                            }
+                            _ => {
+                                let w = size()?;
+                                sized = Some((ed.clone(), w));
+                                w
+                            }
+                        };
                         let have = runs_len(&ep);
                         if want >= have {
                             push_run(&mut ep, 1, vec![0; (want - have) as usize]);

@@ -67,6 +67,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         ("ecall_session_hits", session_hits),
         ("opt_funcs", yavs_ir::optimised_functions()),
         ("dopes_scans", yavs_ir::opt::dopes_scans()),
+        ("slots_in_place", yavs_ir::opt::slots_in_place()),
         ("flat_elem_results", yavs_ir::flat_elem_results()),
         ("opt_huge", yavs_ir::opt::huge_bodies()),
         ("opt_bodies_kept", yavs_ir::opt::bodies_kept()),

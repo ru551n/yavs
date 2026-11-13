@@ -55,6 +55,12 @@ impl ProgramBuilder {
             .desc_size(types, ty)
     }
 
+    /// [`Ty::flat_array`] against the types built so far, through the program's memo.
+    pub fn flat_array(&mut self, ty: TyId) -> bool {
+        matches!(self.prog.types.get(ty), Some(Ty::Array { dims: 1, .. }))
+            && self.desc_size(ty) == Some(crate::DOPE_DIM_BYTES)
+    }
+
     /// A GC root at `off` in the shared variables area (`Program::shared_roots`).
     pub fn shared_root(&mut self, off: u32, kind: RootKind) {
         self.prog.shared_roots.push((off, kind));

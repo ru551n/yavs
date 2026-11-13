@@ -3460,7 +3460,7 @@ impl<'a> Fx<'a, '_> {
     ) -> R<()> {
         let flat = self
             .ty(self.db.base(p.subtype), span)
-            .map(|t| Ty::flat_array(self.fb.program().types(), t))?;
+            .map(|t| self.fb.program().flat_array(t))?;
         match conv {
             Conv::Body if !flat => cells.extend([data, dope]),
             Conv::Fat => cells.push(self.make_fat(data, dope)),

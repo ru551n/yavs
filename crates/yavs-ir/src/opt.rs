@@ -38,6 +38,7 @@ mod cfg;
 mod decl;
 mod dopes;
 pub use dopes::scans as dopes_scans;
+pub use slots::in_place as slots_in_place;
 mod drives;
 mod inline;
 mod layout_cache;
@@ -312,7 +313,10 @@ pub fn type_memo_hits() -> u64 {
     TYPE_MEMO.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-fn type_memo_hit() {
+/// Count one answer taken from a memo of type answers (also the lowering's memo of the element
+/// size of a constant array, `yavs_lower` `encode`).
+#[doc(hidden)]
+pub fn type_memo_hit() {
     TYPE_MEMO.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 

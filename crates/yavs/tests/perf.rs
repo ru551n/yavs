@@ -1052,6 +1052,8 @@ case!(
         ("process_runs", Max(4500)),
         ("idle_skips", Min(2850)),
         ("ops", Max(62766)),
+        // Processes whose temporaries went to the frame without a copy of the code.
+        ("slots_in_place", Min(13)),
     ]
 );
 // Variables assigned on every path before they are read (the arms of an `if`/`case`, the fields

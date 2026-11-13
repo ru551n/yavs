@@ -183,7 +183,7 @@ pub(crate) fn resolver(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, d: DeclId)
         .fb
         .param("values", Width::B8, ParamClass::Value, Mode::In, None);
     let param_ty = fx.ty(db.base(param.subtype), decl.span)?;
-    let flat = Ty::flat_array(fx.fb.program().types(), param_ty);
+    let flat = fx.fb.program().flat_array(param_ty);
     fx.fb.root(data, RootKind::Addr);
     let dope = if flat {
         for word in ["left", "right", "dir"] {
@@ -1203,9 +1203,9 @@ impl<'a, 'b> Fx<'a, 'b> {
     pub(crate) fn flat_result(&mut self, sp: &yavs_sem::decl::Subprogram, span: Span) -> R<bool> {
         let Some(r) = sp.ret else { return Ok(false) };
         let t = self.ty(self.db.base(r), span)?;
-        let types = self.fb.program().types();
-        Ok(Ty::flat_array(types, t)
-            && !Ty::has_handles(types, t)
+        let flat = self.fb.program().flat_array(t);
+        Ok(flat
+            && !Ty::has_handles(self.fb.program().types(), t)
             && yavs_ir::ieee::native_symbol(sp.mangled.as_str()).is_none())
     }
 
@@ -1418,7 +1418,7 @@ pub(crate) fn subprogram(
             Shape::Arr => {
                 let off = fx.fb.param(&name, Width::B8, ParamClass::Value, mode, None);
                 let t = fx.ty(db.base(p.subtype), decl.span)?;
-                if Ty::flat_array(fx.fb.program().types(), t) {
+                if fx.fb.program().flat_array(t) {
                     for (k, word) in ["left", "right", "dir"].iter().enumerate() {
                         let n = format!("{name}'{word}");
                         let at = fx

@@ -15,6 +15,14 @@
 
 use super::*;
 
+static IN_PLACE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Processes whose temporaries went to the frame without a copy of the code (a work counter:
+/// `YAVS_COUNTERS`).
+pub fn in_place() -> u64 {
+    IN_PLACE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The most bytes of one temporary, and of slots one process takes (signal copies go past the
 /// small sizes with the variables they are copied to, `opt/proc_objects.rs`).
 fn limits() -> (u32, u32) {
@@ -270,6 +278,62 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
             skip.extend(cands[c].zero_stores.iter().map(|&p| (p, ())));
         }
     }
+    // Nothing inserted or dropped and the blocks laid out in order over the whole code: each
+    // instruction keeps its place, so it is rewritten where it is (no copy of the function).
+    let contiguous = f
+        .blocks
+        .values()
+        .iter()
+        .try_fold(0u32, |at, b| (b.start == at).then_some(b.end));
+    // (Debug builds also make the copy and check the two agree.)
+    let mut kept: Option<Vec<Inst>> = None;
+    if skip.is_empty()
+        && taken
+            .iter()
+            .all(|&c| cands[c].skip_zero || cands[c].size == 0)
+        && contiguous == Some(f.code.len() as u32)
+        && f.loc.len() == f.code.len()
+        && f.via.len() <= f.code.len()
+    {
+        IN_PLACE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut code = if cfg!(debug_assertions) {
+            f.code.clone()
+        } else {
+            std::mem::take(&mut f.code)
+        };
+        let mut addr: FxMap<Reg, u32> = FxMap::default();
+        for (pc, slot) in code.iter_mut().enumerate() {
+            let i = match at_pc.get(&pc) {
+                Some(&c) => {
+                    let k = &cands[c];
+                    addr.insert(k.dst, base + k.at);
+                    Inst::AddrOf {
+                        dst: k.dst,
+                        space: AddrSpace::Frame,
+                        off: base + k.at,
+                    }
+                }
+                None => match fold(*slot, &addr, &konst) {
+                    Some((dst, off)) => {
+                        addr.insert(dst, off);
+                        Inst::AddrOf {
+                            dst,
+                            space: AddrSpace::Frame,
+                            off,
+                        }
+                    }
+                    None => continue,
+                },
+            };
+            *slot = i;
+        }
+        if !cfg!(debug_assertions) {
+            f.code = code;
+            f.frame = base + peak;
+            return true;
+        }
+        kept = Some(code);
+    }
     let mut code = Vec::with_capacity(f.code.len() + taken.len());
     let mut loc = Vec::with_capacity(code.capacity());
     // (Per instruction, the calls it was inlined through: empty when nothing was inlined.)
@@ -278,22 +342,6 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
     // The frame offsets the (fresh) registers of the blocks hold: an address derived from one by
     // a constant is a constant too, which the frame starts with.
     let mut addr: FxMap<Reg, u32> = FxMap::default();
-    let fold = |i: Inst, addr: &FxMap<Reg, u32>| -> Option<(Reg, u32)> {
-        match i {
-            Inst::Index {
-                dst,
-                base,
-                pos,
-                stride,
-            } => {
-                let o = i64::from(*addr.get(&base)?)
-                    .checked_add(konst.get(&pos)?.checked_mul(i64::from(stride))?)?;
-                Some((dst, u32::try_from(o).ok()?))
-            }
-            Inst::Move { dst, src } => Some((dst, *addr.get(&src)?)),
-            _ => None,
-        }
-    };
     for b in f.blocks.values() {
         let start = code.len() as u32;
         for pc in b.start as usize..b.end as usize {
@@ -304,7 +352,7 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
                 via.push(v);
             }
             let Some(&c) = at_pc.get(&pc) else {
-                let i = match fold(f.code[pc], &addr) {
+                let i = match fold(f.code[pc], &addr, &konst) {
                     Some((dst, off)) => {
                         addr.insert(dst, off);
                         Inst::AddrOf {
@@ -350,7 +398,30 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
     f.loc = loc;
     f.via = via;
     f.frame = base + peak;
+    debug_assert!(
+        kept.is_none_or(|k| k == f.code),
+        "slots: the in-place rewrite of {} differs from the copy",
+        f.name
+    );
     true
+}
+
+/// The frame offset an `Index` by a constant or a `Move` of a register of `addr` gives.
+fn fold(i: Inst, addr: &FxMap<Reg, u32>, konst: &FxMap<Reg, i64>) -> Option<(Reg, u32)> {
+    match i {
+        Inst::Index {
+            dst,
+            base,
+            pos,
+            stride,
+        } => {
+            let o = i64::from(*addr.get(&base)?)
+                .checked_add(konst.get(&pos)?.checked_mul(i64::from(stride))?)?;
+            Some((dst, u32::try_from(o).ok()?))
+        }
+        Inst::Move { dst, src } => Some((dst, *addr.get(&src)?)),
+        _ => None,
+    }
 }
 
 /// Rename the registers of `map` that the instruction at `pc` reads; a derived address (an

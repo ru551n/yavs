@@ -297,10 +297,10 @@ def measure(cmds, Y, tr):
 def reset_policy(cmds):
     """Forget what the auto tier learned in earlier runs: the compiled objects, run-to-run profiles and routes (`yavs-cache/obj`)
     of every library a command names. Analysis images stay (preparation, not policy)."""
-    for argv, _ in cmds:
+    for argv, cwd in cmds:
         for a in argv:
             if a.startswith(("--work=", "--map=")):
-                shutil.rmtree(Path(a.split(":", 1)[1]) / "yavs-cache" / "obj", ignore_errors=True)
+                shutil.rmtree(Path(cwd, a.split(":", 1)[1], "yavs-cache", "obj"), ignore_errors=True)  # relative paths are the command's
 
 
 def prime(cmds, Y, tr, warmup):

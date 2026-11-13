@@ -9,7 +9,8 @@ use common::tempdir;
 use std::process::Command;
 
 // The register sharing gives `c` and `t` one cell, the last block of the code ends with `t := 7`
-// (the rest of the inlined `g`), and the fill of 100 elements has no fast path.
+// (the rest of the inlined `g`), and the fill of `e`, null at run time, has no fast path (a fill of
+// 100 elements has one since 2026-11-13).
 const SRC: &str = "library ieee; use ieee.std_logic_1164.all;
 entity clift_slow_path_facts is end;
 architecture a of clift_slow_path_facts is
@@ -19,12 +20,14 @@ architecture a of clift_slow_path_facts is
   end;
   function f(c : std_logic; x, y, z, w : integer) return integer is
     variable v : std_logic_vector(0 to 99);
+    variable e : std_logic_vector(1 to w - 4);
     variable k, t : integer := 0;
     variable a1, a2, a3, a4, a5, a6, a7, a8 : integer;
   begin
     a1 := x + y; a2 := a1 * z; a3 := a2 - w; a4 := a3 + x;
     a5 := a4 * y; a6 := a5 - z; a7 := a6 + w; a8 := a7 + a1 * a3;
     v := (others => c);
+    e := (others => c);
     if c = '1' then
       k := g(a8);
       t := 7;

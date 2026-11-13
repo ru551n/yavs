@@ -1967,7 +1967,9 @@ load 10 to 30, so read the ratios):
    (`Fx::part_dope`, 2026-11-13): a signal element was read once per attribute.
    A range choice of a logic array aggregate is one `LFill` when it lies inside (`(x'range => v)`, any `v`;
    2026-11-13), as `others` was: it set one element per loop iteration; the choice that is the whole aggregate
-   fills it without positions.
+   fills it without positions. Under the Cranelift tier `LEq` of any length is compiled code (the last plane block under its mask, the
+   blocks before it by one byte compare), and an `LFill` across blocks or of more than 64 elements a call of
+   `clift_lfill`: both went to the interpreter once per instruction above 64 elements (2026-11-13).
 
 | Benchmark (yavs interp) | main before the changes | after | ratio | reference `--jit` | yavs / reference |
 |---|---|---|---|---|---|

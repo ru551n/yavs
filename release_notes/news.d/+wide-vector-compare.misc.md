@@ -1,0 +1,1 @@
+Compiled code now compares and fills logic vectors of more than 64 elements itself instead of handing each comparison or fill to the interpreter, so designs with wide buses or memory words simulate faster.

@@ -1769,6 +1769,13 @@ mod clift {
             ("cb_free", Max(410))
         ]
     );
+    // `=` and `/=` of 100-element logic vectors are computed by compiled code, not stepped.
+    clift_case!(
+        zero_wide,
+        "zero_wide",
+        "n=",
+        [("cb_step", Max(1)), ("cb_xstep", Max(0))]
+    );
     // A real rounded to an integer is computed in compiled code, on a native frame and in frame
     // mode, not stepped.
     clift_case!(

@@ -89,6 +89,33 @@ extern "C" fn clift_fill(dst: *mut u8, src: *const u8, n: u64, size: u64) {
     }
 }
 
+/// `Inst::LFill` of `n` elements from plane element `i` on: the logic vector whose plane blocks
+/// start at `p` set to `code` (0 to 8), a plane word at a time.
+extern "C" fn clift_lfill(p: *mut u8, i: u64, n: u64, code: u64) {
+    let blocks = (i + n).div_ceil(64) as usize;
+    // SAFETY: compiled code passes `blocks * 32` writable bytes at `p` (`Gen::host`).
+    let b = unsafe { std::slice::from_raw_parts_mut(p, blocks * 32) };
+    let (mut i, mut n) = (i, n);
+    while n > 0 {
+        let s = i % 64;
+        let take = (64 - s).min(n);
+        let mask = if take == 64 {
+            !0
+        } else {
+            ((1u64 << take) - 1) << s
+        };
+        let at = (i / 64) as usize * 32;
+        for k in 0..4 {
+            let w = &mut b[at + k * 8..at + k * 8 + 8];
+            let old = u64::from_le_bytes(w.try_into().expect("8 bytes"));
+            let set = if code >> k & 1 == 1 { mask } else { 0 };
+            w.copy_from_slice(&(old & !mask | set).to_le_bytes());
+        }
+        i += take;
+        n -= take;
+    }
+}
+
 /// `memmove` (`Inst::Copy`; ranges may overlap).
 extern "C" fn clift_move(d: *mut u8, s: *const u8, n: u64) {
     // SAFETY: compiled code passes ranges `Mem::find` bounded.
@@ -129,6 +156,7 @@ pub struct Jit {
     zero: ClifId,
     mov: ClifId,
     fill: ClifId,
+    lfill: ClifId,
     memeq: ClifId,
     cat: ClifId,
     layout_into: ClifId,
@@ -569,6 +597,7 @@ impl Jit {
             ("clift_zero", clift_zero as *const u8),
             ("clift_move", clift_move as *const u8),
             ("clift_fill", clift_fill as *const u8),
+            ("clift_lfill", clift_lfill as *const u8),
             (MEMEQ, yavs_rt_memeq as *const u8),
             (CAT, yavs_rt_cat as *const u8),
             (LAYOUT_INTO, yavs_rt_layout_into as *const u8),
@@ -632,6 +661,7 @@ impl Jit {
         let zero = imp("clift_zero", &[I64, I64], None)?;
         let mov = imp("clift_move", &[I64, I64, I64], None)?;
         let fill = imp("clift_fill", &[I64, I64, I64, I64], None)?;
+        let lfill = imp("clift_lfill", &[I64, I64, I64, I64], None)?;
         let memeq = imp(MEMEQ, &[I64, I64, I64], Some(I64))?;
         let cat = imp(
             CAT,
@@ -757,6 +787,7 @@ impl Jit {
             zero,
             mov,
             fill,
+            lfill,
             memeq,
             cat,
             layout_into,
@@ -1708,6 +1739,7 @@ impl Jit {
             zero: self.module.declare_func_in_func(self.zero, &mut ctx.func),
             mov: self.module.declare_func_in_func(self.mov, &mut ctx.func),
             fill: self.module.declare_func_in_func(self.fill, &mut ctx.func),
+            lfill: self.module.declare_func_in_func(self.lfill, &mut ctx.func),
             memeq: self.module.declare_func_in_func(self.memeq, &mut ctx.func),
             cat: self.module.declare_func_in_func(self.cat, &mut ctx.func),
             layout_into: self
@@ -1943,6 +1975,7 @@ struct Imports {
     zero: FuncRef,
     mov: FuncRef,
     fill: FuncRef,
+    lfill: FuncRef,
     memeq: FuncRef,
     cat: FuncRef,
     /// `yavs_rt_layout_into(env, mem, ty, desc, dsz, n) -> address`: the `n` words of a layout from
@@ -4197,8 +4230,9 @@ fn gen_func(
                 g.st(dst, v);
                 g.join(join);
             }
-            // A run of 1 to 64 elements inside one plane block set to one code; any other run is
-            // the interpreter's.
+            // A run of 1 to 64 elements inside one plane block set to one code in place; a longer
+            // run (or one across blocks) by `clift_lfill` on the blocks it covers; an empty run,
+            // or a code or start out of range, is the interpreter's.
             Inst::LFill { base, idx, n, v } => {
                 let (slow, join) = g.slow_path_x(pc, &inst, f);
                 let code = g.ld(v);
@@ -4207,6 +4241,33 @@ fn gen_func(
                         .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, code, 8);
                 g.guard(okc, slow);
                 let cnt = g.ld(n);
+                // (Loaded here, so both ways below use the same values.)
+                let (av, iv) = (g.ld(base), g.ld(idx));
+                let lo = g.b.ins().band_imm_s(iv, 63);
+                let end = g.b.ins().iadd(lo, cnt);
+                let one_blk =
+                    g.b.ins()
+                        .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, end, 64);
+                let (wide, small, merge) =
+                    (g.b.create_block(), g.b.create_block(), g.b.create_block());
+                g.b.ins().brif(one_blk, small, &[], wide, &[]);
+                // What either way loads or learns does not dominate the merge: both start, and the
+                // merge goes on, from what holds here.
+                let (cache, known, slots) = (g.cache.clone(), g.known.clone(), g.slots);
+                g.b.switch_to_block(wide);
+                let okn = g.b.ins().icmp_imm_s(IntCC::SignedGreaterThan, cnt, 0);
+                g.guard(okn, slow);
+                let oki = g.b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, iv, 0);
+                g.guard(oki, slow);
+                let last = g.b.ins().iadd(iv, cnt);
+                let words = g.b.ins().iadd_imm_s(last, 63);
+                let words = g.b.ins().ushr_imm_s(words, 6);
+                let bytes = g.b.ins().ishl_imm_s(words, 5);
+                let p = g.host(av, Some(base), Op::C(0), Op::V(bytes), true, slow);
+                g.b.ins().call(g.imp.lfill, &[p, iv, cnt, code]);
+                g.b.ins().jump(merge, &[]);
+                (g.cache, g.known, g.slots) = (cache.clone(), known.clone(), slots);
+                g.b.switch_to_block(small);
                 let n1 = g.b.ins().iadd_imm_s(cnt, -1);
                 let okn = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThan, n1, 64);
                 g.guard(okn, slow);
@@ -4234,32 +4295,56 @@ fn gen_func(
                     let w = g.b.ins().bor(w, set);
                     g.b.ins().store(g.gf, w, p, k * 8);
                 }
+                g.b.ins().jump(merge, &[]);
+                (g.cache, g.known, g.slots) = (cache, known, slots);
+                g.b.switch_to_block(merge);
                 g.join(join);
             }
-            // Equality of two logic arrays of 1 to 64 elements: the four planes under the mask of
-            // the elements; any other count is the interpreter's.
+            // Equality of two logic arrays of `n` elements (1 or more): the four planes of the last
+            // block of 64 under the mask of its elements, the blocks before it (more than 64
+            // elements) by the host's byte compare; no elements is the interpreter's.
             Inst::LEq { dst, a, b, n } => {
                 let (slow, join) = g.slow_path_x(pc, &inst, f);
                 let cnt = g.ld(n);
-                let n1 = g.b.ins().iadd_imm_s(cnt, -1);
-                let okn = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThan, n1, 64);
+                let okn = g.b.ins().icmp_imm_s(IntCC::SignedGreaterThan, cnt, 0);
                 g.guard(okn, slow);
+                let words = g.b.ins().iadd_imm_s(cnt, 63);
+                let words = g.b.ins().ushr_imm_s(words, 6);
+                let bytes = g.b.ins().ishl_imm_s(words, 5);
                 let av = g.ld(a);
-                let pa = g.host(av, Some(a), Op::C(0), Op::C(32), false, slow);
+                let pa = g.host(av, Some(a), Op::C(0), Op::V(bytes), false, slow);
                 let bv = g.ld(b);
-                let pb = g.host(bv, Some(b), Op::C(0), Op::C(32), false, slow);
+                let pb = g.host(bv, Some(b), Op::C(0), Op::V(bytes), false, slow);
+                let last = g.b.ins().iadd_imm_s(bytes, -32);
+                let (la, lb) = (g.b.ins().iadd(pa, last), g.b.ins().iadd(pb, last));
                 let gf = g.gf;
                 let mut diff = g.c64(0);
                 for k in 0..4 {
-                    let x = g.b.ins().load(I64, gf, pa, k * 8);
-                    let y = g.b.ins().load(I64, gf, pb, k * 8);
+                    let x = g.b.ins().load(I64, gf, la, k * 8);
+                    let y = g.b.ins().load(I64, gf, lb, k * 8);
                     let d = g.b.ins().bxor(x, y);
                     diff = g.b.ins().bor(diff, d);
                 }
-                let mask = g.low_mask(cnt);
+                // The elements of the last block: 1 to 64.
+                let rem = g.b.ins().iadd_imm_s(cnt, -1);
+                let rem = g.b.ins().band_imm_s(rem, 63);
+                let rem = g.b.ins().iadd_imm_s(rem, 1);
+                let mask = g.low_mask(rem);
                 let masked = g.b.ins().band(diff, mask);
-                let eq = g.b.ins().icmp_imm_s(IntCC::Equal, masked, 0);
-                let v = g.b.ins().uextend(I64, eq);
+                let tail = g.b.ins().icmp_imm_s(IntCC::Equal, masked, 0);
+                let (wide, merge) = (g.b.create_block(), g.b.create_block());
+                let front = g.b.append_block_param(merge, I64);
+                let one = g.c64(1);
+                let more = g.b.ins().icmp_imm_s(IntCC::SignedGreaterThan, cnt, 64);
+                g.b.ins()
+                    .brif(more, wide, &[], merge, &[BlockArg::Value(one)]);
+                g.b.switch_to_block(wide);
+                let c = g.b.ins().call(g.imp.memeq, &[pa, pb, last]);
+                let r = g.b.inst_results(c)[0];
+                g.b.ins().jump(merge, &[BlockArg::Value(r)]);
+                g.b.switch_to_block(merge);
+                let tail = g.b.ins().uextend(I64, tail);
+                let v = g.b.ins().band(tail, front);
                 g.st(dst, v);
                 g.join(join);
             }

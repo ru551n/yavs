@@ -391,13 +391,14 @@ case!(
     &[],
     [("serial_execs", Max(0)), ("shared_publishes", Max(13))]
 );
-// Serial processes holding a line across waits (two in a procedure) scan for shared roots only
-// when a wake changed a word their root maps name: 23 scans of 809 publishes.
+// Serial processes holding a line across waits (two wait in turn in the process and in a
+// procedure) scan for shared roots only when a wake changed a word their root maps name: 29 scans
+// of 809 publishes (93 with one kept scan, 809 with none).
 case!(
     serial_roots,
     "s=90",
     &[],
-    [("serial_execs", Max(0)), ("shared_publishes", Max(24))]
+    [("serial_execs", Max(0)), ("shared_publishes", Max(30))]
 );
 // One byte entry per activation in the batch loop is a store, not a slice move.
 case!(

@@ -1,6 +1,6 @@
 -- Serial processes that keep a line, a root in the shared heap, across waits on a broadcast
--- signal (two wait in a procedure with a line of its own): a wake that leaves the lines as they
--- were publishes the roots it published before without a scan (`shared_publishes`); one that
+-- signal (two wait in turn in the process and in a procedure with a line of its own): a wake that
+-- leaves the lines as they were publishes the roots of a kept scan (`shared_publishes`); one that
 -- writes a line scans again.
 use std.textio.all;
 entity serial_roots is end;
@@ -30,7 +30,7 @@ begin
     begin
       write(l, string'("w"));
       loop
-        if i < 2 then
+        if i < 2 or h mod 2 = 0 then
           wait on net, done until net = i or done;
         else
           await;

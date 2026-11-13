@@ -448,15 +448,25 @@ fn slot_word(slots: &[u8], off: u32) -> Option<u64> {
     Some(u64::from_le_bytes(b.try_into().ok()?))
 }
 
-/// What the last shared-roots scan of a serial process read (`Machine::publish_shared`), when it
-/// read nothing else (`valid`): the function of each frame and, at the root-map offsets of each,
-/// the words of its slots.
+/// The last two shared-roots scans of a serial process (`Machine::publish_shared`): a process that
+/// waits at two places in turn (in the process and in a procedure it calls) finds the scan of
+/// each kept. `last` is the one whose roots its entry holds; `other` is boxed, made at the first
+/// change of frames (every process has the record, few use the second).
 #[derive(Default)]
 struct Published {
+    last: Shape,
+    other: Option<Box<Shape>>,
+}
+
+/// One scan, kept when it read nothing but the words named here (`valid`): the function of each
+/// frame, the words of its slots at its root map's offsets, and the roots found.
+#[derive(Default)]
+struct Shape {
     valid: bool,
     funcs: Vec<u32>,
     at: Vec<(u32, u32)>,
     words: Vec<u64>,
+    roots: ProcRoots,
 }
 
 /// The bytes of a composite variable in the root frame (`yavs_ir::FRAME_OBJECT`).
@@ -2308,7 +2318,7 @@ impl Machine {
     /// entry `slot` of the shared state (assigned on the first call), for the collection at
     /// the next safepoint (`crate::SharedGc`), and make the shared heap's deallocated slots
     /// reusable that no serial process's frames still address. Roots read from the same words
-    /// as the entry's are that entry: no scan (`published_same`).
+    /// as an earlier scan's are that scan's: no scan (`Published`).
     #[inline(always)]
     pub(crate) fn publish_shared(&mut self, slot: &mut Option<usize>) {
         // Checked first: a process without the shared state builds no roots (#356).
@@ -2316,7 +2326,7 @@ impl Machine {
             return;
         }
         if let Some(i) = *slot
-            && self.published_same(i)
+            && self.published_same(i, &self.published.last)
         {
             if cfg!(debug_assertions) || heap::STRESS {
                 self.check_published(i);
@@ -2324,33 +2334,56 @@ impl Machine {
             self.recycle_shared();
             return;
         }
-        self.publish_scan(slot);
+        self.publish_slow(slot);
     }
 
-    /// Whether the shared-heap roots of this suspension are those entry `i` holds: frames of the
-    /// functions of the last scan, no recorded temporary, and the same words in the slots their
-    /// root maps name (all handles or addresses, whose roots are a function of the words alone;
-    /// root maps are per function, not per pc). Only this process writes its entry.
+    /// Whether this suspension's shared-heap roots are those of kept scan `s`: frames of the same
+    /// functions, no recorded temporary, and the same words in the slots their root maps name
+    /// (all handles or addresses, whose roots are a function of the words alone; root maps are
+    /// per function, not per pc), with entry `i` still published.
     #[inline(always)]
-    fn published_same(&self, i: usize) -> bool {
-        let p = &self.published;
-        p.valid
+    fn published_same(&self, i: usize, s: &Shape) -> bool {
+        s.valid
             && self.troots.is_empty()
-            && self.frames.len() == p.funcs.len()
-            && (self.frames.iter().zip(&p.funcs)).all(|(f, &g)| f.func.0 == g)
+            && self.frames.len() == s.funcs.len()
+            && (self.frames.iter().zip(&s.funcs)).all(|(f, &g)| f.func.0 == g)
             && self
                 .sh
                 .as_ref()
                 .is_some_and(|sh| sh.procs.get(i).is_some_and(Option::is_some))
-            && (p.at.is_empty() || self.words_same())
+            && (s.at.is_empty() || self.words_same(s))
     }
 
     /// The words of `published_same` (out of line: most serial processes have none).
     #[inline(never)]
-    fn words_same(&self) -> bool {
+    fn words_same(&self, s: &Shape) -> bool {
+        (s.at.iter().zip(&s.words))
+            .all(|(&(k, o), &w)| self.fslots(k as usize).and_then(|f| slot_word(f, o)) == Some(w))
+    }
+
+    /// `publish_shared` when the entry's scan does not hold: the other kept scan (a process that
+    /// waits at two places in turn, in the process and in a procedure it calls) gives the entry
+    /// its roots, else a scan.
+    #[inline(never)]
+    fn publish_slow(&mut self, slot: &mut Option<usize>) {
+        let Some(i) = *slot else {
+            return self.publish_scan(slot);
+        };
         let p = &self.published;
-        (p.at.iter().zip(&p.words))
-            .all(|(&(k, o), &w)| self.fslots(k as usize).and_then(|s| slot_word(s, o)) == Some(w))
+        if !(p.other.as_deref()).is_some_and(|o| self.published_same(i, o)) {
+            return self.publish_scan(slot);
+        }
+        let p = &mut self.published;
+        if let Some(o) = p.other.as_deref_mut() {
+            std::mem::swap(&mut p.last, o);
+        }
+        if let Some(Some(mine)) = self.sh.as_mut().and_then(|sh| sh.procs.get_mut(i)) {
+            mine.clone_from(&p.last.roots);
+        }
+        if cfg!(debug_assertions) || heap::STRESS {
+            self.check_published(i);
+        }
+        self.recycle_shared();
     }
 
     /// Debug and `gc-stress` builds: a scan left out must find what the entry holds.
@@ -2409,36 +2442,51 @@ impl Machine {
             sh.procs[i] = None;
         }
         self.rscratch = r;
-        self.note_published(ok);
+        self.note_published(i, ok);
         self.recycle_shared();
     }
 
-    /// Keep what the scan just published was read from, when that is all it read: the frames'
-    /// functions and the words of their root-map slots, every one a handle or an address.
-    fn note_published(&mut self, ok: bool) {
+    /// Keep what the scan just published to entry `i` was read from, when that is all it read
+    /// (the frames' functions and the words of their root-map slots, every one a handle or an
+    /// address), with the roots: in place of the kept scan of the same frames, else the entry's
+    /// scan becomes the other one.
+    fn note_published(&mut self, i: usize, ok: bool) {
         let mut p = std::mem::take(&mut self.published);
-        p.funcs.clear();
-        p.at.clear();
-        p.words.clear();
-        p.valid = ok && self.troots.is_empty() && self.note_words(&mut p);
+        let same = p.last.funcs.len() == self.frames.len()
+            && (self.frames.iter().zip(&p.last.funcs)).all(|(f, &g)| f.func.0 == g);
+        if !same {
+            std::mem::swap(&mut p.last, p.other.get_or_insert_with(Box::default));
+        }
+        let s = &mut p.last;
+        s.funcs.clear();
+        s.at.clear();
+        s.words.clear();
+        s.valid = ok && self.troots.is_empty() && self.note_words(s);
+        if s.valid
+            && let Some(Some(mine)) = self.sh.as_ref().and_then(|sh| sh.procs.get(i))
+        {
+            s.roots.clone_from(mine);
+        } else {
+            s.valid = false;
+        }
         self.published = p;
     }
 
-    fn note_words(&self, p: &mut Published) -> bool {
+    fn note_words(&self, s: &mut Shape) -> bool {
         let prog = &self.rt.prog;
         for (k, fr) in self.frames.iter().enumerate() {
-            let (Some(f), Some(s)) = (prog.func(fr.func), self.fslots(k)) else {
+            let (Some(f), Some(slots)) = (prog.func(fr.func), self.fslots(k)) else {
                 return false;
             };
-            p.funcs.push(fr.func.0);
+            s.funcs.push(fr.func.0);
             for &(o, kind) in &f.roots {
                 let (yavs_ir::RootKind::Handle | yavs_ir::RootKind::Addr, Some(w)) =
-                    (kind, slot_word(s, o))
+                    (kind, slot_word(slots, o))
                 else {
                     return false;
                 };
-                p.at.push((k as u32, o));
-                p.words.push(w);
+                s.at.push((k as u32, o));
+                s.words.push(w);
             }
         }
         true

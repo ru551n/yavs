@@ -3,6 +3,7 @@
 #![cfg(feature = "clift")]
 
 use std::path::Path;
+use std::sync::Mutex;
 
 use yavs_clift::First;
 use yavs_diag::{FileId, Span};
@@ -80,8 +81,13 @@ fn compiled(dir: &Path) -> usize {
     })
 }
 
+static ONE: Mutex<()> = Mutex::new(());
+
 #[test]
 fn a_body_does_not_follow_what_compiles_with_it() {
+    let _one = ONE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tmp = std::env::temp_dir().join(format!("yavs_stable_keys_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).expect("scratch");
@@ -107,6 +113,80 @@ fn a_body_does_not_follow_what_compiles_with_it() {
     let (other, caller2, inc2) = program(2);
     compile(&other, caller2, &[caller2, inc2]);
     assert!(compiled(&tmp) > n, "another callee is another entry");
+
+    yavs_clift::set_cache(None);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// The entries of the two lists under `dir` (the compiled functions, the routes), with what tells a
+/// rewrite: size, time and, where there is one, the file's identity.
+fn lists(dir: &Path) -> Vec<(String, u64, std::time::SystemTime, u64)> {
+    let mut v: Vec<_> = std::fs::read_dir(dir.join("yavs-cache").join("obj"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !(name.starts_with("list-") || name.starts_with("route-")) {
+                return None;
+            }
+            let m = e.metadata().ok()?;
+            #[cfg(unix)]
+            let ino = std::os::unix::fs::MetadataExt::ino(&m);
+            #[cfg(not(unix))]
+            let ino = 0;
+            Some((name, m.len(), m.modified().ok()?, ino))
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+/// The end of a run that cannot wait for a compile in flight (`AutoTier::stop`, a signal) stores
+/// the lists from its own thread: what the compiles noted is on disk after one call, a second call
+/// with nothing new writes nothing (no file operation), and new lines are stored by the next.
+#[test]
+fn the_lists_are_stored_from_another_thread_once() {
+    let _one = ONE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let tmp = std::env::temp_dir().join(format!("yavs_stop_lists_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("scratch");
+    yavs_clift::set_cache(Some(&tmp));
+
+    let (prog, caller, inc) = program(1);
+    let mut g = First::new().expect("a code generator");
+    g.tree(&[caller, inc]);
+    let f = prog.func(caller).expect("the function");
+    g.compile(&prog, caller, f, Part::Native).expect("compiled");
+    g.cache_note("caller", 7);
+    assert!(
+        lists(&tmp).is_empty(),
+        "nothing is stored before it is asked"
+    );
+
+    let flush = g
+        .cache_flusher()
+        .expect("a store a thread of the run's end can call");
+    std::thread::spawn(flush).join().expect("flush");
+    let first = lists(&tmp);
+    let names: Vec<&str> = first.iter().map(|l| l.0.as_str()).collect();
+    assert!(
+        names.iter().any(|n| n.starts_with("list-"))
+            && names.iter().any(|n| n.starts_with("route-")),
+        "both lists: {names:?}"
+    );
+
+    // Nothing new: no write, from either side.
+    flush();
+    g.cache_flush();
+    assert_eq!(lists(&tmp), first, "a second store with nothing new wrote");
+
+    // A compile after it: the next store has it.
+    g.cache_note("later", 9);
+    std::thread::spawn(flush).join().expect("flush");
+    assert_ne!(lists(&tmp), first, "the new line was not stored");
 
     yavs_clift::set_cache(None);
     let _ = std::fs::remove_dir_all(&tmp);

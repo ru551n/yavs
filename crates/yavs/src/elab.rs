@@ -2167,7 +2167,9 @@ fn run_design(
             current.lock().unwrap_or_else(|p| p.into_inner()).stop();
         };
         ctrl_c_stops(&mut hooks, stop, flag.clone(), keep_exit);
-    } else if crate::stdout::is_on() {
+    } else if crate::stdout::is_on() || tier_up.is_some() {
+        // (With a compiled tier a signal ends the run here too, not by its default action: the
+        // compilation cache's lists are stored first.)
         hooks.first = Some(Box::new(move || {
             crate::stdout::flush();
             exit_after_signal(130, keep_exit);
@@ -2526,7 +2528,16 @@ fn wave_error(path: &str, err: yavs_wave::Error) -> Diagnostic {
 /// removed LLVM tier, whose static destructors crashed under a busy compile thread, #625.)
 fn exit_after_signal(code: u8, keep_exit: bool) -> ! {
     let _ = keep_exit;
+    store_cache_lists();
     std::process::exit(code.into())
+}
+
+/// Store what the compile thread has noted for the compilation cache's lists, for an exit that
+/// does not go through `StopTierUp::end` (a signal, standard input closing, a broken output). A
+/// compile in flight does not hold it up; nothing new is no file operation.
+pub(crate) fn store_cache_lists() {
+    #[cfg(feature = "clift")]
+    yavs_clift::flush_lists();
 }
 
 /// `--exit-on-stdin-close`: standard input goes to the null device for everything else (a plugin

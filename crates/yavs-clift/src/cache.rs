@@ -457,9 +457,52 @@ pub(crate) fn compiled_list() -> std::collections::HashSet<(String, u32)> {
         .collect()
 }
 
+/// What the compiles added to the two lists of the objects store (the compiled functions and the
+/// routes) and was not stored yet. Kept here and not in the code generator so that the end of a run
+/// can store it from any thread while the compile thread is in the middle of a compile (`flush_lists`).
+#[derive(Default)]
+struct Pending {
+    /// Compiled functions as name and IR instruction count, oldest first.
+    notes: Vec<(String, u32)>,
+    /// New route lines by the key of the entry they go to.
+    routes: Vec<(Key, String)>,
+}
+
+static PENDING: Mutex<Pending> = Mutex::new(Pending {
+    notes: Vec::new(),
+    routes: Vec::new(),
+});
+
+/// One store of the lists at a time: two of them would each read the entry before the other wrote.
+static STORING: Mutex<()> = Mutex::new(());
+
+fn pending() -> std::sync::MutexGuard<'static, Pending> {
+    PENDING.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Remember that `name` (with `len` IR instructions) has compiled code, for `compiled_list`.
+pub(crate) fn note_compiled(name: &str, len: u32) {
+    pending().notes.push((name.to_string(), len));
+}
+
+/// Store what the compiles added to the lists since the last call, in one write per list; nothing
+/// at all (no file operation) when there is nothing. Callable from any thread at any time: the
+/// compile thread when it is idle and when it ends, the end of a run that does not wait for a
+/// compile in flight, a signal's thread. Waits for another store in progress, never for a compile.
+pub fn flush_lists() {
+    // (The lock first: a store another thread has begun is waited for, so a process that ends right
+    // after this call does not cut it short. Nothing pending is no file operation.)
+    let _one = STORING.lock().unwrap_or_else(PoisonError::into_inner);
+    let p = std::mem::take(&mut *pending());
+    add_compiled(&p.notes);
+    for (k, fresh) in &p.routes {
+        Routes::store(k, fresh);
+    }
+}
+
 /// Put `names` (with their IR instruction counts, oldest first) in front of the list of
 /// `compiled_list`, the newest first.
-pub(crate) fn add_compiled(names: &[(String, u32)]) {
+fn add_compiled(names: &[(String, u32)]) {
     let Some(store) = store().filter(|_| !names.is_empty()) else {
         return;
     };
@@ -503,8 +546,6 @@ type Known = HashMap<(u64, bool), Route>;
 pub(crate) struct Routes {
     /// The entry's key and what it held at the first look; `None`: not looked yet.
     loaded: Option<(Key, Known)>,
-    /// The lines not stored yet.
-    fresh: String,
 }
 
 impl Routes {
@@ -548,28 +589,31 @@ impl Routes {
         for (g, direct) in &calls {
             line += &format!(" {g}{}", if *direct { '+' } else { '-' });
         }
-        self.fresh += &line;
-        self.fresh.push('\n');
-        if let Some((_, known)) = &mut self.loaded {
+        if let Some((k, known)) = &mut self.loaded {
             known.insert((f, native), Rc::new(calls.into_iter().collect()));
+            let mut p = pending();
+            match p.routes.iter_mut().find(|(key, _)| key == k) {
+                Some((_, text)) => {
+                    *text += &line;
+                    text.push('\n');
+                }
+                None => p.routes.push((*k, line + "\n")),
+            }
         }
     }
 
-    /// Store the new lines behind what the entry holds now: another run's line for a function wins,
-    /// since it is the first one.
-    pub(crate) fn flush(&mut self) {
-        let (Some((k, _)), Some(store)) = (&self.loaded, store()) else {
+    /// Store the new lines `fresh` behind what the entry `k` holds now: another run's line for a
+    /// function wins, since it is the first one.
+    fn store(k: &Key, fresh: &str) {
+        let Some(store) = store() else {
             return;
         };
-        if self.fresh.is_empty() {
-            return;
-        }
         let mut text = store
             .get(ROUTES, k)
             .map(|e| String::from_utf8_lossy(&e).into_owned())
             .unwrap_or_default();
         let there = Self::parse(&text);
-        for l in std::mem::take(&mut self.fresh).lines() {
+        for l in fresh.lines() {
             if Self::parse(l).keys().all(|f| !there.contains_key(f)) {
                 text += l;
                 text.push('\n');
@@ -582,6 +626,28 @@ impl Routes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A store that ends the run is not cut short by it: the call waits for one another thread has
+    /// begun (the compile thread's last store) and does not return before it is whole.
+    #[test]
+    fn a_flush_waits_for_a_store_in_progress() {
+        use std::sync::atomic::AtomicBool;
+        let begun = STORING.lock().unwrap_or_else(PoisonError::into_inner);
+        let done = std::sync::Arc::new(AtomicBool::new(false));
+        let d = done.clone();
+        let t = std::thread::spawn(move || {
+            flush_lists();
+            d.store(true, Ordering::SeqCst);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            !done.load(Ordering::SeqCst),
+            "returned under a store in progress"
+        );
+        drop(begun);
+        t.join().expect("flush");
+        assert!(done.load(Ordering::SeqCst));
+    }
 
     /// Every input of the key moves it.
     #[test]

@@ -982,11 +982,6 @@ impl Jit {
         self.allowed = Some(ids.iter().copied().collect());
     }
 
-    /// Store the routes of the functions made since the last call.
-    pub fn flush_routes(&mut self) {
-        self.routes.flush();
-    }
-
     /// `native_set` of `id` alone.
     fn nset(&mut self, prog: &Program, id: FuncId) -> Rc<HashSet<FuncId>> {
         self.nsets

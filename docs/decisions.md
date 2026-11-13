@@ -16314,28 +16314,36 @@ Amends "Stage entries of a design that loads units late" (#671).
   opened the entry once more for writing. On Windows with real-time antivirus each is a scan.
 - **Decision**: (1) the compiled-code store creates entries under their own name like the analysed units, and both
   do so on Windows too (a name that exists is replaced by rename, as before); (2) the list and the routes are kept in
-  memory and stored by `Generator::cache_flush` between compiles and after waits for work (at most every 200 ms) and
-  when the compile thread ends (the maintainer approved storing them when the thread is idle; storing between
-  compiles too is the landing agent's change of 2026-11-13, awaiting the maintainer's confirmation: see "Why it is
-  safe"); (3) a read refreshes an entry's time only when it is older than 2 s (`TOUCH_AFTER`, a fifth of `IN_USE`), on
+  memory and stored by `Generator::cache_flush` when the compile thread is idle (at most every 200 ms) and when it
+  ends, and, for a run that ends by a route that does not wait for the thread, once from the ending side (see "Stop
+  path" below; user, 2026-11-13: the compile thread no longer stores between compiles, which the landing had added
+  and the maintainer declined); (3) a read refreshes an entry's time only when it is older than 2 s (`TOUCH_AFTER`, a fifth of `IN_USE`), on
   Windows through a handle with the right to set attributes only. The entry format is unchanged: old caches read as
   before. Not done: one pack file per run with an index (a far larger change to pruning and concurrency; the count of
   files is now about one per compiled function).
 - **Why it is safe**: a half-written or cut-short entry fails the length or checksum check and is a miss, which a
   later put heals by rename (already the units' rule, #747); writers never write a name in place once it exists. A run
-  killed while compiling, or ended by `exit_now` during a compile, loses the list and route lines of the compiles since
-  the last store (at most `FLUSH_EVERY` plus the compile in flight); the compiled code itself is stored at once, so
-  the next run links those functions when the policy asks for them, and compiles only what was not stored.
-  `tests/processes.rs`: six processes sharing one store, writers killed at any point. Checked on Linux (landing,
-  2026-11-13) on a compile-heavy testbench (`--tier-heat=1,0,0`, 324 functions): killed at 10 points (after 1 to 250
-  compiles, 0.5 to 3 s), under `--tier-compile=wait` and `background`, the next run printed the same output as the
-  interpreter, read no damaged entry and compiled only the bodies not stored, the run after it compiled none; with
-  five compiled-code entries and the list and route entries cut in half by hand, the next run found 14 damaged reads,
-  compiled 5 bodies, same output, and the run after it none. A first version stored the lists only when the compile
-  thread waited for work: under `background` the thread of a busy first run never waited and the run kept no list at
-  all; it now stores between compiles too. Each store rewrites the two entries by a temporary file and a rename, at
-  most five times a second while the thread compiles: the file-operation counts below were measured before that change
-  and were not measured again (Linux or Windows).
+  killed (`kill -9`, a crash) loses the list and route lines since the last store; that costs a link or a recompile
+  in the next run and never a wrong or misleading entry. The compiled code itself is stored at once, so the next run
+  links those functions when the policy asks for them, and compiles only what was not stored.
+  `tests/processes.rs`: six processes sharing one store, writers killed at any point.
+- **Stop path** (user, 2026-11-13, replacing the landing's every-200-ms stores between compiles: a busy
+  `--tier-compile=background` first run never idles, so the idle store alone kept no list for it, and the stores between
+  compiles were up to five rewrites a second of two entries, file operations being what real-time antivirus scans). What
+  the compiles note (compiled functions, routes) lives in one process-wide pending set of `yavs-clift` (`cache.rs`
+  `PENDING`), not in the code generator on the compile thread, and `flush_lists` stores it from any thread: under one
+  store at a time (`STORING`, so two stores never read the entry before the other wrote), taking the pending lines under
+  a lock held for the take only, never across a compile, so it cannot deadlock with one in progress and writes what is
+  noted so far. It writes nothing, and makes no file operation, when nothing is pending. Callers: the compile thread
+  when idle and at its end; `AutoTier::stop(false)` when the compile thread is in a compile (the process then exits
+  at once, `exit_now`) through `Generator::cache_flusher`; `exit_after_signal` (Ctrl-C, SIGTERM, standard input
+  closing, the second signal) and the broken-output exit, which end the process without `stop`. The first
+  Ctrl-C or SIGTERM of a run with a compiled tier now ends it through `exit_after_signal` (status 130) also on a
+  terminal without a recorder, where the default action ended it before. A normal end, `std.env.stop` and `finish`, an
+  assertion that ends the run and `--stop-time` all go through `StopTierUp::end`, which joins an idle thread (its last
+  store) or stores from the simulation's side; none waits for a compile. Tests: `tests/stop_lists.rs` (every route under
+  `--tier-compile=wait` and `background`, then a run that links), `the_lists_are_stored_from_another_thread_once`
+  (`yavs-clift`), `a_stop_under_a_compile_stores_the_lists_itself` (`yavs-clift` `tier.rs`).
 - **Measured**: Windows runner, xperf file events of the yavs processes in one cold run of the long test
   (analysis and simulation): creates 7839 to 3846, renames 963 to 22, set-information calls 537 to 4; a warm run
   creates 3329 to 2596, renames 119 to 32. The 24-test suite with this and the clock change above, real-time scanning on and no

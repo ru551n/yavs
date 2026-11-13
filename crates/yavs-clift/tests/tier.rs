@@ -1323,3 +1323,78 @@ fn in_place_ieee_ops_have_their_arms() {
     }
     assert!(n > 100, "{n} in-place ops");
 }
+
+static FLUSHED: AtomicUsize = AtomicUsize::new(0);
+
+/// A generator whose compile waits to be let go, so a test can end the run under it.
+struct Blocked {
+    inner: First,
+    entered: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+impl yavs_rt::Generator for Blocked {
+    fn tree(&mut self, ids: &[FuncId]) {
+        self.inner.tree(ids);
+    }
+
+    fn compile(
+        &mut self,
+        prog: &Program,
+        id: FuncId,
+        f: &Func,
+        part: yavs_rt::native::Part,
+    ) -> Result<yavs_rt::native::Compiled, String> {
+        let _ = self.entered.send(());
+        let _ = self.release.recv();
+        self.inner.compile(prog, id, f, part)
+    }
+
+    fn cache_flusher(&self) -> Option<fn()> {
+        Some(|| {
+            FLUSHED.fetch_add(1, Ordering::SeqCst);
+        })
+    }
+}
+
+/// A run that ends while the compile thread is in a compile (`AutoTier::stop(false)`, after which
+/// the process exits at once) stores the cache's lists from the thread that ends it, once, and does
+/// not wait for the compile; a stop that waits leaves the store to the compile thread.
+#[test]
+fn a_stop_under_a_compile_stores_the_lists_itself() {
+    let (prog, f) = sum();
+    let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
+    let (entered, in_compile) = std::sync::mpsc::channel();
+    let (let_go, release) = std::sync::mpsc::channel();
+    let gen_ = Blocked {
+        inner: First::new().unwrap(),
+        entered,
+        release,
+    };
+    let note: Note = Box::new(|_, _| {});
+    let tier = AutoTier::start_with(&rt, usize::MAX, HOT, note, Box::new(gen_)).unwrap();
+    let t0 = Instant::now();
+    while in_compile.try_recv().is_err() {
+        assert!(t0.elapsed() < Duration::from_secs(60), "never compiled");
+        let r = yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
+        assert_eq!(r.unwrap(), Some(5_000_050_000));
+    }
+    assert_eq!(
+        FLUSHED.load(Ordering::SeqCst),
+        0,
+        "nothing stored before the end"
+    );
+    assert!(!tier.stop(false), "the compile is in flight");
+    assert_eq!(
+        FLUSHED.load(Ordering::SeqCst),
+        1,
+        "the end stores the lists once"
+    );
+    drop(let_go);
+    assert!(tier.stop(true));
+    assert_eq!(
+        FLUSHED.load(Ordering::SeqCst),
+        1,
+        "a stop that waits does not"
+    );
+}

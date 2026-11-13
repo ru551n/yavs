@@ -71,7 +71,7 @@ The policy times its looks and trials on Windows x86_64 by the simulation thread
 
 ### Fewer file operations per cache entry (2026-11-13)
 
-Compiled code is created in the cache under its own name (like the analysed units, on every platform), the list of compiled functions and the routes are stored at most every 200 ms and when the compile thread ends instead of after every compile, and a read refreshes an entry's time only when it is older than 2 s. A cold run of one test made about half the file creates and a fortieth of the renames (measured before the lists were also stored between compiles, at most five times a second); the format is unchanged. decisions.md "Fewer file operations per cache entry".
+Compiled code is created in the cache under its own name (like the analysed units, on every platform), the list of compiled functions and the routes are stored when the compile thread is idle (at most every 200 ms), when it ends and once from the stopping side when a run ends by any route (normal end, `stop`, `finish`, a failing assertion, `--stop-time`, Ctrl-C, SIGTERM, standard input closing) while it is compiling, instead of after every compile, and a read refreshes an entry's time only when it is older than 2 s. A cold run of one test made about half the file creates and a fortieth of the renames (file counts measured before the stop path was added, `docs/decisions.md` "Fewer file operations per cache entry"); the format is unchanged. decisions.md "Fewer file operations per cache entry".
 
 ### mimalloc as the allocator on Windows (2026-11-13)
 

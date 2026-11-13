@@ -965,6 +965,8 @@ pub struct AutoTier {
     /// The compile thread: not started until [`AutoTier::launch`] (a run of a few milliseconds
     /// never needs it).
     worker: Mutex<Thread>,
+    /// The generator's store of the cache's lists, callable from any thread (`stop`).
+    flusher: Option<fn()>,
 }
 
 /// The state of the compile thread: how it is started (the argument says whether it waits
@@ -1022,11 +1024,11 @@ struct Pending {
 const BATCH: usize = 8;
 
 /// The compile thread stores what its compiles add to the cache's lists (`Generator::cache_flush`)
-/// between compiles and after a wait for work once this long has passed since the last time, and
-/// when it ends: a cold run compiles hundreds of functions, and a store per compile wrote the two
-/// lists hundreds of times. A run that ends while a compile is running (`exit_now`), or is killed,
-/// loses the lines of the compiles since the last store: this long at most, plus the compile in
-/// flight (the next run links those functions once the policy asks for them).
+/// when it is idle, once this long has passed since the last time, and when it ends: a cold run
+/// compiles hundreds of functions, and a store per compile wrote the two lists hundreds of times.
+/// A thread that never idles (`--tier-compile=background`) stores nothing until the run ends:
+/// `AutoTier::stop` stores what is noted so far, from the simulation's side, when it cannot wait
+/// for a compile in flight (the next run links those functions once the policy asks for them).
 const FLUSH_EVERY: Duration = Duration::from_millis(200);
 
 /// What the tier and its compile thread share.
@@ -4279,6 +4281,7 @@ impl AutoTier {
                 rt.native_flags().open_copies();
             }
         }
+        let flusher = generator.cache_flusher();
         let mut w = Worker::new(
             prog,
             table,
@@ -4423,6 +4426,11 @@ impl AutoTier {
                             route(m, &mut pending, &mut inbox);
                         }
                         if inbox.is_empty() && (pending.asked.is_empty() || paced) {
+                            // Idle: nothing to compile and nothing held (`flushed`).
+                            if flushed.elapsed() >= FLUSH_EVERY {
+                                w.generator.cache_flush();
+                                flushed = std::time::Instant::now();
+                            }
                             match rx.recv_timeout(period) {
                                 Ok(m) => route(m, &mut pending, &mut inbox),
                                 Err(RecvTimeoutError::Timeout) => {}
@@ -4441,12 +4449,6 @@ impl AutoTier {
                         pending.asked.extend(free);
                         w.guard();
                         loop {
-                            // Between compiles and after a wait for work (the simulation is not
-                            // held here): a thread that never waits (`background`) stores too.
-                            if flushed.elapsed() >= FLUSH_EVERY {
-                                w.generator.cache_flush();
-                                flushed = std::time::Instant::now();
-                            }
                             publish(&w);
                             while let Ok(m) = rx.try_recv() {
                                 route(m, &mut pending, &mut inbox);
@@ -4688,6 +4690,7 @@ impl AutoTier {
             queue: Mutex::new(Some(tx)),
             shared,
             worker: Mutex::new(Thread::Idle(Box::new(spawn))),
+            flusher,
         });
         if !rt.set_tier(tier.clone()) {
             tier.stop(true);
@@ -4753,6 +4756,12 @@ impl AutoTier {
             Thread::Running(h) if h.is_finished()
         );
         if !wait && !dead && self.shared.busy.load(Ordering::SeqCst) {
+            // The process ends under the compile in flight ([`exit_now`]): what the compile
+            // thread has noted so far is stored from here, since it will not get to (it takes
+            // no lock the compile holds, so this does not wait for the compile).
+            if let Some(flush) = self.flusher {
+                flush();
+            }
             return false;
         }
         let worker = std::mem::replace(

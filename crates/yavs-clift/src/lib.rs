@@ -23,7 +23,7 @@ mod lower;
 #[cfg(feature = "clift")]
 pub use blockcov::{BodyCov, snapshot as blockcov_snapshot, write as blockcov_write};
 #[cfg(feature = "clift")]
-pub use cache::{cache_stats, key_reused, pre_unstored, set_cache, sub_copy_stats};
+pub use cache::{cache_stats, flush_lists, key_reused, pre_unstored, set_cache, sub_copy_stats};
 
 #[cfg(feature = "clift")]
 pub use lower::{BREAK, Error, Jit, compile, inline_sites};
@@ -98,8 +98,6 @@ pub struct First {
     jit: Jit,
     /// Functions whose native-frame code was reported already.
     reported: std::collections::HashSet<FuncId>,
-    /// `cache_note`s not stored yet, oldest first.
-    noted: Vec<(String, u32)>,
 }
 
 #[cfg(feature = "clift")]
@@ -108,7 +106,6 @@ impl First {
         Ok(First {
             jit: Jit::new()?,
             reported: Default::default(),
-            noted: Vec::new(),
         })
     }
 }
@@ -136,12 +133,15 @@ impl yavs_rt::Generator for First {
     }
 
     fn cache_note(&mut self, name: &str, len: u32) {
-        self.noted.push((name.to_string(), len));
+        cache::note_compiled(name, len);
     }
 
     fn cache_flush(&mut self) {
-        cache::add_compiled(&std::mem::take(&mut self.noted));
-        self.jit.flush_routes();
+        cache::flush_lists();
+    }
+
+    fn cache_flusher(&self) -> Option<fn()> {
+        Some(cache::flush_lists)
     }
 
     fn cached_only(&mut self, on: bool) {

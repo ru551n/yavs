@@ -1407,6 +1407,33 @@ a note and a help suggesting an access type, as the reference simulators reject 
   leaf through one sort per leaf, never a scan per port (`elab_source_steps`, perf design
   `out_ports_shared`). Tests: `hierarchy/record_port_element`, `record_port_slice`,
   `record_port_element_force`; perf design `port_elem_record`.
+- **`inout` ports collapse into their actuals too** (proposed on perf/skid-inout, 2026-11-13, awaiting
+  the maintainer; extends the three entries above): an `inout` formal under the same association
+  conditions (leaves one to one onto whole leaves or parts of consecutive leaves of one object, no
+  conversion, not forced or released, no guard, not whole-resolved) takes its actual's leaves and its
+  drivers drive the actual, when for every leaf (1) each element of the formal has a source of its own
+  (a driver inside or a deeper port), (2) the formal's default is the actual's initial value at those
+  elements, (3) the formal and the actual are unresolved or resolved by `resolved` (an unresolved
+  formal on a `resolved` actual too, not the other way round) and (4) the actual is not guarded,
+  forced, released, converted or whole-resolved. The actual may have other sources and may be fed
+  from above (a chain of `inout` ports collapses to the signal at its top). Why it keeps every
+  result: the effective value of an `inout` port is its actual's (LRM 14.7.3.3), so values, events,
+  `'last_value` and the delta of each change are the actual's either way, and a formal is active when
+  its actual is (14.7.3.1), so activity and `'transaction` are too; the actual's driving value is the
+  resolution of its sources, the port's driving value (the resolution of the formal's own sources)
+  among them (14.7.3.2), and `resolved` of `std_logic_1164` gives the same value for any grouping of
+  the sources into nested calls (its table is commutative and associative, one value resolves to
+  itself; checked over every grouping of up to five values); unresolved, the port is the actual's
+  only source. `'driving` and `'driving_value` read the process's own driver, which only moves. (1)
+  keeps an undriven element's default as a source: `'U'` must still win, and a `'Z'` default is not
+  neutral (`resolved(('Z', '-'))` is `'X'`, `resolved(('-'))` is `'-'`); (2) keeps the drivers'
+  initial values, which come from the signal that holds them. Anything else keeps its edges,
+  silently, as before. Why: an AXI-stream record with `tready` inside and mode `inout` (each field
+  driven by one side, 'Z' by the other) kept a kernel signal per field per port, a port source and a
+  copy of the effective value back per delta; collapsed it costs what the two-record `in`/`out` form
+  costs. `--no-collapse-ports`, `--dap` and `--vhpi` keep every port apart. Tests:
+  `hierarchy/inout_port_collapse`, `inout_record_lanes`, `inout_port_collapse_force`; perf design
+  `port_inout_record`; unit test `inout_ports_collapse_when_every_element_has_a_source`.
 
 - **The elaboration-time session grows one program** (#383, elab agent, 2026-10-19): a function
   that uses package state and is called for the first time is lowered into the session's

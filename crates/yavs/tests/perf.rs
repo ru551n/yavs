@@ -1077,15 +1077,18 @@ case!(
 );
 // `inout` record ports on elements of an array of records through two levels, eight lanes, each
 // field driven by one side and 'Z' by the other, and eight `inout` ports on one shared bus: each
-// formal is a signal of its own, a port source of its actual, copied per delta.
+// formal is an alias of its actual, its drivers drive it (126 signals, 10520 events and 127
+// general updates when each formal was a signal of its own, a port source of its actual and
+// copied back per delta). The general updates left are the deltas with drivers of leaves that
+// have several sources.
 case!(
     port_inout_record,
     "sum=C006",
     &[],
     [
-        ("signals", Max(130)),
-        ("events", Max(10840)),
-        ("update_general", Max(131)),
+        ("signals", Max(23)),
+        ("events", Max(3540)),
+        ("update_general", Max(94)),
         ("general_assigns", Max(0)),
         ("process_runs", Max(1472)),
     ]

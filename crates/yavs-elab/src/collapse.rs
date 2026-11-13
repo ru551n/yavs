@@ -1,6 +1,5 @@
-//! Port collapsing (`docs/design/performance.md` R4, plan rule 3): the formal of an `in`,
-//! `out` or `buffer` port whose leaves are, one to one and in order, whole leaves or parts of
-//! consecutive leaves of one object (`d => v(i)`, a record formal on `ch(i)` of an array of
+//! Port collapsing (`docs/design/performance.md` R4, plan rule 3): the formal of a port whose
+//! leaves are, one to one and in order, whole leaves or parts of consecutive leaves of one object (`d => v(i)`, a record formal on `ch(i)` of an array of
 //! records, an array of records on a slice), with no conversion, becomes an alias of them.
 //! The formal object keeps its name, scope and shape (waves, `'path_name`) and takes the
 //! actual's leaf range, with `SigObj::parts` for parts of leaves; its own leaves, their port
@@ -20,7 +19,18 @@
 //! initialisation anyway (LRM 14.7.5.2). Not collapsed: an actual with another source, a
 //! guard, a conversion, an effective value from above (the formal of an `in` or `inout` port),
 //! in a composite resolved as a whole, or forced or released; a formal resolved where the
-//! actual is not; `inout` ports.
+//! actual is not.
+//!
+//! An `inout` formal: its effective value is its actual's (LRM 14.7.3.3) and its driving
+//! value, the resolution of its own sources, is one source of the actual (14.7.3.2). With
+//! `std_logic` resolution (commutative and associative, one value its own result) resolving
+//! the formal's sources among the actual's other sources gives the same value as resolving
+//! them first, at any depth; unresolved, the formal is the actual's only source. So its
+//! drivers can drive the actual, which the formal then is. Only when every element of the
+//! formal has a source (an element without one contributes the formal's default) and the
+//! formal's default is the actual's initial value (its drivers start from it); the actual
+//! may be fed from above. Not collapsed: an actual that is guarded, forced or released, a
+//! converted or whole-resolved one, or a user resolution function on either side.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -81,10 +91,18 @@ pub(crate) fn ports(
             fed[e.formal.0.index()] = true;
         }
     }
+    // The actuals a converted `in` port reads: no source (an `inout` formal's element read
+    // so still contributes its default), but the `out` test counts them as before.
+    let mut conv_reads: Vec<Vec<Range>> = vec![Vec::new(); n];
     for p in &nets.conv_ports {
         p.formal.iter().for_each(|f| excluded[f.0.index()] = true);
         p.formal.iter().for_each(|f| fed[f.0.index()] = true);
-        p.actual.iter().for_each(|a| sources[a.0.index()].push(a.1));
+        let to = if p.mode == PortMode::In {
+            &mut conv_reads
+        } else {
+            &mut sources
+        };
+        p.actual.iter().for_each(|a| to[a.0.index()].push(a.1));
     }
     let mut driven = vec![false; n];
     for d in &nets.drivers {
@@ -102,8 +120,9 @@ pub(crate) fn ports(
     // before its start (those start before its end too): two searches, not a scan per port.
     let bounds: Vec<(Vec<u32>, Vec<u32>)> = sources
         .iter()
-        .map(|s| {
-            let s = s.iter().filter(|r| r.len > 0);
+        .zip(&conv_reads)
+        .map(|(s, c)| {
+            let s = s.iter().chain(c).filter(|r| r.len > 0);
             let mut starts: Vec<u32> = s.clone().map(|r| r.offset).collect();
             let mut ends: Vec<u32> = s.map(|r| r.end()).collect();
             starts.sort_unstable();
@@ -139,8 +158,9 @@ pub(crate) fn ports(
             _ => continue,
         };
         let out = matches!(mode, PortMode::Out | PortMode::Buffer);
+        let inout = mode == PortMode::Inout;
         let (a, b) = (obj.leaves.0.index(), obj.leaves.1.index());
-        if !(out || mode == PortMode::In) || a == b || forced.contains(&ObjId(o as u32)) {
+        if a == b || forced.contains(&ObjId(o as u32)) {
             continue;
         }
         let mut targets = Vec::with_capacity(b - a);
@@ -150,11 +170,19 @@ pub(crate) fn ports(
                 && edge[l] != usize::MAX
                 && leaf.guard.is_none()
                 && leaf.implicit.is_none()
-                && (out || !driven[l])
-                && matches!(leaf.resolution, None | Some(LeafRes::StdLogic));
+                && (out || inout || !driven[l])
+                && matches!(leaf.resolution, None | Some(LeafRes::StdLogic))
+                && (!inout || covered(&sources[l], leaf.ty.len));
             let e = ok.then(|| &nets.ports[edge[l]]);
             let Some(e) = e.filter(|e| {
                 let al = &nets.leaves[e.actual.0.index()];
+                // The formal's drivers drive the actual: it resolves them the same way (an
+                // unresolved formal has at most one).
+                let res = match (&leaf.resolution, &al.resolution) {
+                    (None, None | Some(LeafRes::StdLogic)) => true,
+                    (Some(LeafRes::StdLogic), r) => matches!(r, Some(LeafRes::StdLogic)),
+                    _ => false,
+                };
                 e.mode == mode
                     && e.to_formal.is_none()
                     && e.to_actual.is_none()
@@ -162,17 +190,14 @@ pub(crate) fn ports(
                     && e.formal.1.len == leaf.ty.len
                     && e.actual.1.len == leaf.ty.len
                     && al.ty.elem == leaf.ty.elem
-                    // An `out` formal's drivers drive the actual: it resolves them the same
-                    // way (an unresolved formal has at most one).
-                    && (!out
-                        || sole(e)
-                            && match (&leaf.resolution, &al.resolution) {
-                                (None, None | Some(LeafRes::StdLogic)) => true,
-                                (Some(LeafRes::StdLogic), r) => {
-                                    matches!(r, Some(LeafRes::StdLogic))
-                                }
-                                _ => false,
-                            })
+                    && (!out || sole(e) && res)
+                    // An `inout` formal's drivers start from its default, now the actual's.
+                    && (!inout
+                        || res
+                            && !excluded[e.actual.0.index()]
+                            && al.guard.is_none()
+                            && !forced.contains(&al.obj)
+                            && slice_init(&al.init, al.ty.len, e.actual.1) == leaf.init)
             }) else {
                 break;
             };
@@ -359,6 +384,22 @@ pub(crate) fn ports(
         }
     }
     count
+}
+
+/// Whether the non-empty `ranges` cover elements `0..len`: an element of an `inout` formal
+/// without a source has the formal's default as driving value (LRM 14.7.3.2), a source of the
+/// actual that a collapse would drop (not neutral: `'Z'` with a `'-'` resolves to `'X'`).
+fn covered(ranges: &[Range], len: u32) -> bool {
+    let mut rs: Vec<Range> = ranges.iter().filter(|r| r.len > 0).copied().collect();
+    rs.sort_unstable_by_key(|r| r.offset);
+    let mut end = 0;
+    for r in rs {
+        if r.offset > end {
+            return false;
+        }
+        end = end.max(r.end());
+    }
+    end >= len
 }
 
 /// The elements `r` of `v`, a leaf of `len` elements.

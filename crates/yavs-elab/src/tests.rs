@@ -2547,7 +2547,9 @@ end;
     assert_eq!(obj(&e, ":top:u:v"), (wl, Some(Range::new(2, 4))));
     assert_eq!(obj(&e, ":top:u:bf"), obj(&e, ":top:b"));
     assert_eq!(obj(&e, ":top:u:s"), obj(&e, ":top:s1"));
-    for kept in [":top:u:io", ":top:k:s", ":top:k:y", ":top:i:u:y"] {
+    // An `inout` port collapses too (perf/skid-inout).
+    assert_eq!(obj(&e, ":top:u:io").0, obj(&e, ":top:io").0);
+    for kept in [":top:k:s", ":top:k:y", ":top:i:u:y"] {
         let (l, _) = obj(&e, kept);
         assert!(e.nets.ports.iter().any(|p| p.formal.0 == l.0), "{kept}");
     }
@@ -2615,6 +2617,91 @@ end;
     for l in lanes {
         let (leaves, _) = obj(&e, l);
         assert!(!e.nets.ports.iter().any(|p| p.formal.0 == leaves.0), "{l}");
+    }
+}
+
+/// `inout` formals collapse onto their actuals (elements of an array of records, through three
+/// levels) when every element has a source inside and the defaults agree; an undriven leaf, a
+/// default other than the actual's initial value and a forced actual keep the edges.
+#[test]
+fn inout_ports_collapse_when_every_element_has_a_source() {
+    let src = "library ieee; use ieee.std_logic_1164.all;
+package p is
+  type rec_t is record v : std_logic; d : std_logic_vector(3 downto 0); r : std_logic; end record;
+  type rec_arr_t is array (natural range <>) of rec_t;
+end;
+library ieee; use ieee.std_logic_1164.all; use work.p.all;
+entity stage is port (s : inout rec_t; m : inout rec_t); end;
+architecture a of stage is begin
+  m.v <= s.v; m.d <= s.d; s.r <= m.r;
+  s.v <= 'Z'; s.d <= \"ZZZZ\"; m.r <= 'Z';
+end;
+library ieee; use ieee.std_logic_1164.all; use work.p.all;
+entity half is port (s : inout rec_t); end;
+architecture a of half is begin s.v <= 'Z'; s.d <= \"ZZZZ\"; end;
+library ieee; use ieee.std_logic_1164.all;
+entity l3 is port (b : inout std_logic); end;
+architecture a of l3 is begin b <= 'H'; end;
+library ieee; use ieee.std_logic_1164.all;
+entity l2 is port (b : inout std_logic); end;
+architecture a of l2 is begin u : entity work.l3 port map (b); end;
+library ieee; use ieee.std_logic_1164.all;
+entity l1 is port (b : inout std_logic); end;
+architecture a of l1 is begin u : entity work.l2 port map (b); end;
+library ieee; use ieee.std_logic_1164.all;
+entity dflt is port (b : inout std_logic := '1'); end;
+architecture a of dflt is begin b <= 'Z'; end;
+library ieee; use ieee.std_logic_1164.all;
+entity frc is port (b : inout std_logic); end;
+architecture a of frc is begin b <= 'Z'; end;
+library ieee; use ieee.std_logic_1164.all; use work.p.all;
+entity top is end;
+architecture t of top is
+  signal ch : rec_arr_t(0 to 2);
+  signal y : rec_arr_t(0 to 0);
+  signal b1, b2, b3 : std_logic;
+begin
+  g : for i in 0 to 1 generate
+    u : entity work.stage port map (ch(i), ch(i + 1));
+  end generate;
+  h : entity work.half port map (y(0));
+  c : entity work.l1 port map (b1);
+  d : entity work.dflt port map (b2);
+  f : entity work.frc port map (b3);
+  process begin b3 <= force '1'; wait; end process;
+end;
+";
+    let obj = |e: &Elaborated, path: &str| {
+        let k = sig_paths(e).iter().position(|p| p == path).expect(path);
+        let o = &e.nets.objs[k];
+        (o.leaves, o.parts.clone())
+    };
+    let edged = |e: &Elaborated, path: &str| {
+        let (leaves, _) = obj(e, path);
+        e.nets.ports.iter().any(|p| p.formal.0 == leaves.0)
+    };
+    let (_, e) = elab("inoutcollapse", src, "top", &[]);
+    // `ch(1)` of `ch(0 to 2)`, logic leaves mirrored.
+    let (ch, _) = obj(&e, ":top:ch");
+    let parts = vec![Range::new(1, 1), Range::new(4, 4), Range::new(1, 1)];
+    assert_eq!(obj(&e, ":top:g(0):u:m"), (ch, parts.clone()));
+    assert_eq!(obj(&e, ":top:g(1):u:s"), (ch, parts));
+    // Three levels: the deepest formal is `b1`.
+    let (b1, _) = obj(&e, ":top:b1");
+    assert_eq!(obj(&e, ":top:c:u:u:b").0, b1);
+    for l in [
+        ":top:g(0):u:s",
+        ":top:g(1):u:m",
+        ":top:c:b",
+        ":top:c:u:b",
+        ":top:c:u:u:b",
+    ] {
+        assert!(!edged(&e, l), "{l}");
+    }
+    // `r` of `half` has no source inside (its default is a source); `dflt` starts its driver at
+    // '1', not at the actual's 'U'; `b3` is forced.
+    for l in [":top:h:s", ":top:d:b", ":top:f:b"] {
+        assert!(edged(&e, l), "{l}");
     }
 }
 

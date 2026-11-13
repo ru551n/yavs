@@ -377,8 +377,8 @@ impl Store {
     }
 
     /// Store `payload` atomically, unless the directory is full (see [`IN_USE`]): a new
-    /// version of an entry that is there always goes in. Failures are only noted with
-    /// `YAVS_LOG=debug`.
+    /// version of an entry that is there always goes in, and an entry that is there with these
+    /// very bytes is left alone (no file written). Failures are only noted with `YAVS_LOG=debug`.
     pub fn put(&self, kind: &str, key: &Key, payload: &[u8]) {
         if !self.room(payload.len() as u64) && !self.file(kind, key).exists() {
             debug(format!("{} is full", self.dir.display()));
@@ -391,6 +391,10 @@ impl Store {
 
     fn try_put(&self, kind: &str, key: &Key, payload: &[u8]) -> std::io::Result<()> {
         if self.direct && self.try_put_new(kind, key, payload)? {
+            return Ok(());
+        }
+        // The entry is there with these bytes (a list stored again with nothing new): no rewrite.
+        if self.get(kind, key).is_some_and(|e| *e == *payload) {
             return Ok(());
         }
         let tmp = self.dir.join(format!(
@@ -817,6 +821,55 @@ mod tests {
                 .starts_with(".tmp")),
             "no temporary file is left"
         );
+    }
+
+    /// Which file an entry is, and when it was written: a rewrite (temporary file and rename) has
+    /// another identity (Unix) and, after a pause longer than the clock's step, another time.
+    fn identity(p: &Path) -> (u64, Option<std::time::SystemTime>) {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let m = fs::metadata(p).unwrap();
+        #[cfg(unix)]
+        let id = std::os::unix::fs::MetadataExt::ino(&m);
+        #[cfg(not(unix))]
+        let id = 0;
+        (id, m.modified().ok())
+    }
+
+    /// A put of the bytes an entry already holds writes no file, in a store that renames and in one
+    /// that creates entries under their own name; other bytes, or a damaged entry, are written.
+    #[test]
+    fn a_put_of_the_same_bytes_writes_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        for s in [
+            Store::of_library(d.path()),
+            Store::objects_of_library(d.path()),
+        ] {
+            let k = key("a");
+            s.put("list", &k, b"one\ntwo\n");
+            let p = s.file("list", &k);
+            let first = identity(&p);
+            s.put("list", &k, b"one\ntwo\n");
+            assert_eq!(identity(&p), first, "the same bytes were written again");
+            s.put("list", &k, b"one\ntwo\nthree\n");
+            assert_ne!(identity(&p), first, "new bytes were not written");
+            assert_eq!(
+                s.get("list", &k).as_deref(),
+                Some(&b"one\ntwo\nthree\n"[..])
+            );
+            // Same length, other bytes: written.
+            let second = identity(&p);
+            s.put("list", &k, b"one\ntwo\nTHREE\n");
+            assert_ne!(identity(&p), second);
+            assert_eq!(
+                s.get("list", &k).as_deref(),
+                Some(&b"one\ntwo\nTHREE\n"[..])
+            );
+            // A damaged entry is replaced by the same bytes.
+            let good = fs::read(&p).unwrap();
+            fs::write(&p, &good[..good.len() - 2]).unwrap();
+            s.put("list", &k, b"one\ntwo\nTHREE\n");
+            assert_eq!(fs::read(&p).unwrap(), good);
+        }
     }
 
     /// An entry that is replaced (a writer renames a new file over it) or removed while a run

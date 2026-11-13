@@ -649,6 +649,72 @@ mod tests {
         assert!(done.load(Ordering::SeqCst));
     }
 
+    /// What a store of the lists is: the entries' file identity and time (a rewrite makes another
+    /// file, written later than the pause before this call).
+    fn list_files(dir: &std::path::Path) -> Vec<(String, u64, Option<std::time::SystemTime>)> {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let mut v: Vec<_> = std::fs::read_dir(dir.join("yavs-cache").join("obj"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| {
+                let n = e.file_name().to_string_lossy().into_owned();
+                n.starts_with("list-") || n.starts_with("route-")
+            })
+            .map(|e| {
+                let m = e.metadata().unwrap();
+                #[cfg(unix)]
+                let id = std::os::unix::fs::MetadataExt::ino(&m);
+                #[cfg(not(unix))]
+                let id = 0;
+                (
+                    e.file_name().to_string_lossy().into_owned(),
+                    id,
+                    m.modified().ok(),
+                )
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// A store of the lists with nothing new in it (a function noted again as the newest, a route
+    /// line for a function the entry has) writes no file; a new function or route is stored.
+    #[test]
+    fn a_list_with_nothing_new_is_not_written() {
+        let tmp = std::env::temp_dir().join(format!("yavs_lists_same_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_cache(Some(&tmp));
+        let k = KeyBuilder::new("routes test").finish();
+        let route = |p: &str| pending().routes.push((k, format!("{p}\n")));
+        note_compiled("f", 3);
+        route("1 0 2+");
+        flush_lists();
+        let first = list_files(&tmp);
+        assert_eq!(first.len(), 2, "both lists: {first:?}");
+
+        note_compiled("f", 3);
+        route("1 0 2-");
+        flush_lists();
+        assert_eq!(
+            list_files(&tmp),
+            first,
+            "a list with nothing new was written"
+        );
+        assert_eq!(compiled_list().len(), 1);
+
+        note_compiled("g", 4);
+        route("5 1 6+");
+        flush_lists();
+        let both = list_files(&tmp);
+        assert_ne!(both[0], first[0], "the new function was not stored");
+        assert_ne!(both[1], first[1], "the new route was not stored");
+        assert_eq!(compiled_list().len(), 2);
+        set_cache(None);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// Every input of the key moves it.
     #[test]
     fn every_input_of_the_pre_key_moves_it() {

@@ -16361,6 +16361,30 @@ Amends "Stage entries of a design that loads units late" (#671).
   store) or stores from the simulation's side; none waits for a compile. Tests: `tests/stop_lists.rs` (every route under
   `--tier-compile=wait` and `background`, then a run that links), `the_lists_are_stored_from_another_thread_once`
   (`yavs-clift`), `a_stop_under_a_compile_stores_the_lists_itself` (`yavs-clift` `tier.rs`).
+- **No rewrite of an unchanged entry** (user, 2026-11-13). The list and the routes are stored only when something new
+  was compiled or noted since the last store (`flush_lists` with nothing pending makes no file operation), and
+  `Store::put` itself leaves an entry that holds the very bytes it is given alone (it reads the entry back, checks the
+  checksum and compares), so a store whose lines are all there already writes no file, whoever the caller is
+  (`a_put_of_the_same_bytes_writes_nothing` in `yavs-cache`, `a_list_with_nothing_new_is_not_written` in `yavs-clift`).
+  A function noted again that is not the newest still moves to the front (the list keeps the 1024 most recent) and is
+  written.
+- **Source of the renames under `--tier-compile=wait`** (agent, 2026-11-13; a backtrace at the put in a scratch build,
+  the lines of every list store compared with the entry). The 18 to 22 renames of list and route entries in a 2.5 s cold
+  run of `neorv32_single_min` are not rewrites of unchanged entries: none of the list and route stores of 12 runs
+  (cold and warm, three tests) wrote what the entry already held, and each had new lines (the list is larger every time). Each is
+  `flush_lists` called from the compile thread's idle branch (`auto.rs`, `FLUSH_EVERY` 200 ms) once functions were
+  compiled since the last store, and an entry that exists is replaced by temporary file and rename. It is the compile
+  thread waiting for looks with nothing asked, not the pacing of `wait`: flushing only when nothing is asked gave the
+  same counts. So the idle store is the between-compiles store of the landing, thinned to one per 200 ms. A warm run
+  that still compiles (the policy's budget leaves functions for the next run) does the same. With that store off
+  (scratch build, `FLUSH_EVERY` an hour): list and route renames per run, cold / next warm runs, 0 / 2 for
+  `neorv32_single_min` and `uvvm_axistream_vvc` (`hdlm_fifo_sync` compiles nothing; the first store of an entry
+  creates it, no rename), against 18 to 22 cold and 2 to 17 warm with it. The price is the lines of a run that is killed or crashes
+  (the next run links or recompiles). Open for the maintainer: keep the idle store, make it rarer, or drop it.
+- **Ctrl-C and SIGTERM** (user, 2026-11-13, kept): a run with a compiled tier ends on its first Ctrl-C or SIGTERM
+  through yavs's own exit with status 130 and stores the lists first, also on a plain terminal (before, the default
+  action ended it with the shell's 130 and the lists were lost). Stated in `docs/cli-contract.md` (console section),
+  `docs/cli-reference.rst` (exit status 130, generated from `crates/yavs/src/reference.rs`) and `docs/ci.rst`.
 - **Measured**: Windows runner, xperf file events of the yavs processes in one cold run of the long test
   (analysis and simulation): creates 7839 to 3846, renames 963 to 22, set-information calls 537 to 4; a warm run
   creates 3329 to 2596, renames 119 to 32. The 24-test suite with this and the clock change above, real-time scanning on and no

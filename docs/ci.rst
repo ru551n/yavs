@@ -30,7 +30,7 @@ Every ``yavs`` command says how it went with its exit status, so a CI step fails
    * - N
      - ``stop(N)`` or ``finish(N)`` in the design, N from 1 to 125.
    * - 130
-     - Stopped by Ctrl-C or SIGTERM.
+     - Stopped by Ctrl-C or SIGTERM (with the compiled tier, also from a plain terminal: yavs ends the run itself after storing the compilation cache's lists).
    * - 141
      - Standard output was closed.
 

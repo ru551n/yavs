@@ -427,7 +427,7 @@ Exit status
    * - 3
      - Internal error (``E9999``): please report it.
    * - 130
-     - ``run``: stopped by Ctrl-C or SIGTERM.
+     - ``run``: stopped by Ctrl-C or SIGTERM. With a compiled tier (``--tier=auto``) the first signal ends the run this way on a plain terminal too, after the compilation cache's lists of compiled functions are stored.
    * - 141
      - ``run``: standard output was closed or could not be written.
 

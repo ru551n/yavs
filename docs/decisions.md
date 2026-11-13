@@ -16223,7 +16223,9 @@ Amends "Stage entries of a design that loads units late" (#671).
 - **Decision**: (1) the compiled-code store creates entries under their own name like the analysed units, and both
   do so on Windows too (a name that exists is replaced by rename, as before); (2) the list and the routes are kept in
   memory and stored by `Generator::cache_flush` between compiles and after waits for work (at most every 200 ms) and
-  when the compile thread ends; (3) a read refreshes an entry's time only when it is older than 2 s (`TOUCH_AFTER`, a fifth of `IN_USE`), on
+  when the compile thread ends (the maintainer approved storing them when the thread is idle; storing between
+  compiles too is the landing agent's change of 2026-11-13, awaiting the maintainer's confirmation: see "Why it is
+  safe"); (3) a read refreshes an entry's time only when it is older than 2 s (`TOUCH_AFTER`, a fifth of `IN_USE`), on
   Windows through a handle with the right to set attributes only. The entry format is unchanged: old caches read as
   before. Not done: one pack file per run with an index (a far larger change to pruning and concurrency; the count of
   files is now about one per compiled function).
@@ -16239,7 +16241,9 @@ Amends "Stage entries of a design that loads units late" (#671).
   five compiled-code entries and the list and route entries cut in half by hand, the next run found 14 damaged reads,
   compiled 5 bodies, same output, and the run after it none. A first version stored the lists only when the compile
   thread waited for work: under `background` the thread of a busy first run never waited and the run kept no list at
-  all; it now stores between compiles too.
+  all; it now stores between compiles too. Each store rewrites the two entries by a temporary file and a rename, at
+  most five times a second while the thread compiles: the file-operation counts below were measured before that change
+  and were not measured again (Linux or Windows).
 - **Measured**: Windows runner, xperf file events of the yavs processes in one cold run of the long test
   (analysis and simulation): creates 7839 to 3846, renames 963 to 22, set-information calls 537 to 4; a warm run
   creates 3329 to 2596, renames 119 to 32. The 24-test suite with this and the clock change above, real-time scanning on and no

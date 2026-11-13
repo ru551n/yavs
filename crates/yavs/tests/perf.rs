@@ -123,6 +123,7 @@ fn check_bounds(design: &str, r: &Run, bounds: &[(&str, Bound)]) {
                     || name == "ops_elab"
                     || name == "wake_sole_left"
                     || name == "lean_late"
+                    || name == "calls"
                     || name == "resolutions"
                     || name.starts_with("cb_"),
                 "design `{design}`: no counter `{name}` in {:?}",
@@ -906,6 +907,21 @@ case!(
     "acc=",
     &[],
     [("process_runs", Max(2)), ("ops", Max(2710)),]
+);
+// A library's array and queue accessors: a package wrapper validates (an assertion with a built
+// message) in front of a protected method. The failing arm of each check of a leaf is a cold
+// block, so those checks inline: 3 interpreted calls a pass of the loop, 5 with the checks left
+// calls (`YAVS_NO_COLD=1`), 16 without inlining; the queue's `push` and `pop` call on, so they
+// stay calls.
+case!(
+    cold_calls,
+    "acc=10311",
+    &[],
+    [
+        ("process_runs", Max(1)),
+        ("calls", Max(309)),
+        ("ops", Max(11040))
+    ]
 );
 // The message of a check is built after the branch that reads it: images, lengths and the
 // concatenation stay out of the 270 passing calls (inlining of the check and `opt/sink.rs`).

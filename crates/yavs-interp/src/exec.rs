@@ -355,6 +355,7 @@ macro_rules! push_frame_body {
             $self.root.resize(slen, 0);
             (0, 0)
         } else {
+            crate::census::call();
             let sbase = $self.sstack.len();
             $self.sstack.resize(sbase + slen, 0);
             ($self.regs.v.len(), sbase)

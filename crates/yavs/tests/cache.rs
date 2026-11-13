@@ -37,6 +37,8 @@ const TB2: &str = "use work.reg.all;\nentity tb2 is end;\narchitecture a of tb2 
 
 struct Env {
     tmp: common::Tmp,
+    /// Environment of every command.
+    env: Vec<(&'static str, &'static str)>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -48,6 +50,10 @@ struct Out {
 
 impl Env {
     fn new(name: &str) -> Env {
+        Env::with_env(name, &[])
+    }
+
+    fn with_env(name: &str, env: &[(&'static str, &'static str)]) -> Env {
         let tmp = tempdir(name);
         let files = [
             ("pkg.vhd", PKG),
@@ -59,7 +65,10 @@ impl Env {
         for (f, t) in files {
             std::fs::write(tmp.join(f), t).expect("write");
         }
-        let e = Env { tmp };
+        let e = Env {
+            tmp,
+            env: env.to_vec(),
+        };
         for (f, _) in files {
             assert_eq!(e.yavs(&["analyze", "--work", &e.work(), f]).code, 0, "{f}");
         }
@@ -89,6 +98,7 @@ impl Env {
             .current_dir(&self.tmp)
             .env_remove("YAVS_STDLIB")
             .env("YAVS_LOG", "debug")
+            .envs(self.env.iter().copied())
             .args(["--color", "never"])
             .args(args)
             .output()
@@ -1375,7 +1385,8 @@ fn lowered_design_is_cached() {
 /// that entry and behaves as the run without the cache.
 #[test]
 fn an_entry_that_learns_is_written_again_and_read_back() {
-    let e = Env::new("irlearn");
+    // (`f` stays a call: its assertion would make it a cold block that inlines.)
+    let e = Env::with_env("irlearn", &[("YAVS_NO_COLD", "1")]);
     let plain = e.run(&["--no-cache"]);
     assert!(plain.stdout.contains("f=21"), "{plain:?}");
     // Stops before the process calls `f`.
@@ -1744,6 +1755,7 @@ fn lowered_design_depends_on_the_optimiser_and_the_build() {
         ("YAVS_NO_CFG", "1"),
         ("YAVS_NO_MEMO", "1"),
         ("YAVS_NO_INLINE", "1"),
+        ("YAVS_NO_COLD", "1"),
         ("YAVS_NO_IROPT", "1"),
         ("YAVS_CACHE_SALT", "another build"),
     ];

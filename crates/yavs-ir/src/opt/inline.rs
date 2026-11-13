@@ -23,6 +23,11 @@
 //! block, every `Ret` becomes a move of the result and a jump to the block that holds the rest
 //! of the cut block, and a `Case` of the callee a chain of compares (a table cannot be added to
 //! the program here). The protected object of a `CallProt` is the callee's first argument.
+//!
+//! A block of a leaf callee that reports (the failing arm of an assertion, its message built
+//! there) is cold: it becomes a call of the callee itself and a return, so the checks inline and
+//! the message is built in the callee's own frame (`make`, `leaf`, `cold_path_clean`;
+//! `YAVS_NO_COLD=1` turns it off).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -46,6 +51,9 @@ const WIDE: u8 = 0x80;
 const MAX_ARMS: usize = 6;
 /// The most instructions inlining adds to one function, beyond four times its own size.
 const GROWTH: usize = 800;
+/// The `via` of a forwarder's call of the callee itself (a cold block): placed at the call site,
+/// so that a trace shows the callee once, as the frame the call makes.
+const AT_SITE: u32 = u32::MAX;
 
 /// An instruction, its statement and the call it was inlined through (0: none, else 1 and an
 /// index in the `via_nodes` it belongs to).
@@ -68,6 +76,8 @@ pub(crate) struct Forwarder {
     params: Vec<Vec<Reg>>,
     /// How many instructions of the body define each register.
     defs: Vec<u8>,
+    /// The parameter registers only the cold blocks' calls read (any type, the argument itself).
+    cold: Vec<Reg>,
 }
 
 impl Forwarder {
@@ -112,6 +122,12 @@ pub(super) fn enabled() -> bool {
             .map(|v| v.is_empty() || v == "0")
             .unwrap_or(true)
     })
+}
+
+/// Are cold blocks made (`make`)? `YAVS_NO_COLD=1` keeps a callee that reports a call.
+pub(super) fn cold_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("YAVS_NO_COLD").map_or(true, |v| v.is_empty() || v == "0"))
 }
 
 /// The inlinable body of `callee`, if it has one: at level 0 its own optimised code, at level 1
@@ -162,7 +178,7 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
             .params
             .iter()
             .any(|p| p.width != Width::B8 || p.width == Width::Sig)
-        || size(&raw.full().code) > if wide { 4 } else { 2 } * MAX_MULTI
+        || hot_size(raw.full()) > if wide { 4 } else { 2 } * MAX_MULTI
     {
         return None;
     }
@@ -204,8 +220,75 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
     // Blocks the converted `Case`s add: (index, entries).
     let mut extra: Vec<Vec<Ent>> = Vec::new();
     let nb = c.blocks.len();
+    // Cold blocks: a block past the entry that reports (a failed assertion and its message)
+    // becomes a call of the callee itself and a return; the call runs the body again from its
+    // start, which is the same when nothing on the way has an effect (checked below), and
+    // reports from a frame of its own, as the call it replaces did.
+    let can_cold = cold_enabled()
+        && leaf(raw.full())
+        && !raw.flags.contains(crate::FuncFlags::HAS_COVER)
+        && (raw.kind == FuncKind::Procedure || raw.kind == FuncKind::Function && !raw.ret_flat);
+    let cold_ret = c.code.iter().find_map(|i| match *i {
+        Inst::Ret { v: Some(r) } => c.reg_ty.get(r.0 as usize).copied(),
+        _ => None,
+    });
+    let mut is_cold = vec![false; nb];
+    let mut cold: Vec<Reg> = Vec::new();
+    let mut operands = c.operands.clone();
     for (b, blk) in c.blocks.iter() {
         let mut out: Vec<Ent> = Vec::new();
+        let code = c.code.get(blk.start as usize..blk.end as usize)?;
+        if can_cold
+            && b.0 != 0
+            && (raw.kind == FuncKind::Procedure || cold_ret.is_some())
+            && code.iter().any(|i| matches!(i, Inst::Report { .. }))
+        {
+            if cold.is_empty() {
+                for p in &mut params {
+                    let r = Reg(reg_ty.len() as u32);
+                    reg_ty.push(RegTy::I64);
+                    p.push(r);
+                    cold.push(r);
+                }
+            }
+            let start = operands.len() as u32;
+            operands.extend(&cold);
+            let args = crate::Regs {
+                start,
+                len: cold.len() as u32,
+            };
+            let dst = cold_ret
+                .filter(|_| raw.kind == FuncKind::Function)
+                .map(|ty| {
+                    reg_ty.push(ty);
+                    Reg(reg_ty.len() as u32 - 1)
+                });
+            let loc = *c.loc.get(blk.start as usize)?;
+            // A constant or address defined here may be read in another block (frames start
+            // with it, `merge_consts`): those definitions stay.
+            for (pc, i) in code.iter().enumerate() {
+                if matches!(i, Inst::Const { .. } | Inst::ConstF { .. })
+                    || matches!(i, Inst::AddrOf { space, .. }
+                        if !matches!(space, AddrSpace::Frame | AddrSpace::Up(_)))
+                {
+                    let at = blk.start as usize + pc;
+                    out.push((*i, *c.loc.get(at)?, c.via.get(at).copied().unwrap_or(0)));
+                }
+            }
+            out.push((
+                Inst::Call {
+                    func: callee,
+                    args,
+                    dst,
+                },
+                loc,
+                AT_SITE,
+            ));
+            out.push((Inst::Ret { v: dst }, loc, AT_SITE));
+            is_cold[b.0 as usize] = true;
+            blocks.push(out);
+            continue;
+        }
         for pc in blk.start as usize..blk.end as usize {
             let i = *c.code.get(pc)?;
             let loc = *c.loc.get(pc)?;
@@ -255,6 +338,7 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
         }
         blocks.push(out);
     }
+    is_cold.resize(nb + extra.len(), false);
     blocks.extend(extra);
     return_selects(&mut blocks, &mut reg_ty);
     // Blocks nothing reaches (the arms of a `Case` that only fail) are not copied.
@@ -276,7 +360,10 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
             return None;
         }
     }
-    keep_definitions(&mut blocks, &seen, &c.operands);
+    if !cold.is_empty() && !cold_path_clean(&blocks, &seen, &is_cold) {
+        return None;
+    }
+    keep_definitions(&mut blocks, &seen, &operands);
     let mut renum = vec![u32::MAX; blocks.len()];
     let mut kept: Vec<Vec<Ent>> = Vec::new();
     for (b, blk) in blocks.into_iter().enumerate() {
@@ -326,12 +413,84 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
     }
     Some(Forwarder {
         blocks: kept,
-        operands: c.operands.clone(),
+        operands,
         reg_ty,
         via_nodes: c.via_nodes.clone(),
         params,
         defs,
+        cold,
     })
+}
+
+/// Nothing with an effect (a store, a call, a coverage counter) runs on a path from the entry to
+/// a cold block, so the call there, which runs the body again from its start, does what the
+/// call it replaces did. (A list of what may run there: an instruction added to `allowed` later
+/// counts as an effect until it is listed.)
+fn cold_path_clean(blocks: &[Vec<Ent>], seen: &[bool], is_cold: &[bool]) -> bool {
+    let mut reach = is_cold.to_vec();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for b in 0..blocks.len() {
+            if seen[b]
+                && !reach[b]
+                && let Some((last, ..)) = blocks[b].last()
+                && last
+                    .targets()
+                    .iter()
+                    .any(|t| reach.get(t.0 as usize) == Some(&true))
+            {
+                reach[b] = true;
+                changed = true;
+            }
+        }
+    }
+    (0..blocks.len()).all(|b| {
+        !seen[b] || !reach[b] || is_cold[b] || blocks[b].iter().all(|(i, ..)| no_effect(i))
+    })
+}
+
+/// Reads, computations, checks and branches: running one again gives the same result and
+/// leaves nothing behind.
+fn no_effect(i: &Inst) -> bool {
+    matches!(
+        i,
+        Inst::Const { .. }
+            | Inst::ConstF { .. }
+            | Inst::Move { .. }
+            | Inst::Select { .. }
+            | Inst::Index { .. }
+            | Inst::Field { .. }
+            | Inst::Bin { .. }
+            | Inst::BinRange { .. }
+            | Inst::Un { .. }
+            | Inst::Cmp { .. }
+            | Inst::Bool { .. }
+            | Inst::Check { .. }
+            | Inst::Pos { .. }
+            | Inst::SlicePos { .. }
+            | Inst::DopeLen { .. }
+            | Inst::BoundsLen { .. }
+            | Inst::BoundsPos { .. }
+            | Inst::BoundsSlice { .. }
+            | Inst::Deref { .. }
+            | Inst::LGet { .. }
+            | Inst::LEq { .. }
+            | Inst::LKey { .. }
+            | Inst::MemEq { .. }
+            | Inst::SubtypeCheck { .. }
+            | Inst::FBin { .. }
+            | Inst::FUn { .. }
+            | Inst::FCmp { .. }
+            | Inst::IToF { .. }
+            | Inst::FToI { .. }
+            | Inst::AddrOf { .. }
+            | Inst::Load { .. }
+            | Inst::Br { .. }
+            | Inst::CondBr { .. }
+            | Inst::Unreachable { .. }
+            | Inst::Ret { .. }
+    )
 }
 
 /// A constant defined once is read with no definition on the path, since a frame starts with it
@@ -653,6 +812,7 @@ fn tab_forwarder(prog: &crate::Program, callee: FuncId, t: &crate::CaseTab) -> O
         via_nodes: Vec::new(),
         params: vec![vec![p]],
         defs,
+        cold: Vec::new(),
     })
 }
 
@@ -755,6 +915,38 @@ fn case_chain(
 /// run with counters inlines what a run without them does.
 fn size(code: &[Inst]) -> usize {
     code.iter().filter(|i| !is_cov(i)).count()
+}
+
+/// No call outside the blocks that report: only such a callee gets cold blocks (a conservative
+/// scope). One that calls on (a queue's accessor in front of its storage) stays a call.
+fn leaf(f: &crate::Func) -> bool {
+    (f.blocks.iter())
+        .filter_map(|(b, blk)| {
+            f.code
+                .get(blk.start as usize..blk.end as usize)
+                .map(|c| (b, c))
+        })
+        .filter(|(b, c)| b.0 == 0 || !c.iter().any(|i| matches!(i, Inst::Report { .. })))
+        .all(|(_, c)| {
+            !c.iter()
+                .any(|i| matches!(i, Inst::Call { .. } | Inst::CallProt { .. }))
+        })
+}
+
+/// `size` of the code outside the blocks that report, which become cold blocks (`make`).
+fn hot_size(f: &crate::Func) -> usize {
+    if !cold_enabled() || !leaf(f) {
+        return size(&f.code);
+    }
+    (f.blocks.iter())
+        .filter_map(|(b, blk)| {
+            f.code
+                .get(blk.start as usize..blk.end as usize)
+                .map(|c| (b, c))
+        })
+        .filter(|(b, c)| b.0 == 0 || !c.iter().any(|i| matches!(i, Inst::Report { .. })))
+        .map(|(_, c)| size(c))
+        .sum()
 }
 
 /// A coverage counter instruction.
@@ -1046,9 +1238,10 @@ impl<'a> Expand<'a> {
         }
     }
 
-    /// (A table read has no frame of its own in a trace: it is the call's statement.)
+    /// (A table read has no frame of its own in a trace: it is the call's statement; nor has
+    /// the call a cold block makes, whose callee is the frame.)
     fn own(&self, l: StmtId, v: u32) -> (StmtId, u32) {
-        if self.round == Round::Tabs {
+        if self.round == Round::Tabs || v == AT_SITE {
             (self.loc, self.sv)
         } else {
             (l, self.chain(v))
@@ -1260,6 +1453,10 @@ fn run_with(
         let Some(fw) = fw else {
             continue;
         };
+        // (A cold block calls the callee with `Call`: a protected method stays a call.)
+        if obj.is_some() && !fw.cold.is_empty() {
+            continue;
+        }
         let Some(callee) = prog.funcs.get(func) else {
             continue;
         };
@@ -1274,8 +1471,10 @@ fn run_with(
         let ty = |r: Reg| f.reg_ty.get(r.0 as usize);
         let typed = sargs.len() == callee.params.len()
             && fw.params.iter().enumerate().all(|(k, regs)| {
-                regs.iter()
-                    .all(|r| ty(sargs[k]).is_some() && ty(sargs[k]) == fw.reg_ty.get(r.0 as usize))
+                regs.iter().all(|r| {
+                    fw.cold.contains(r)
+                        || ty(sargs[k]).is_some() && ty(sargs[k]) == fw.reg_ty.get(r.0 as usize)
+                })
             });
         let returns = fw.blocks.iter().all(|b| match b.last() {
             Some((Inst::Ret { v }, ..)) => match (dst, v) {

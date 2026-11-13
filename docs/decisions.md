@@ -5709,6 +5709,24 @@ Decisions:
   compiled tier took 10 times as long to compile the bigger units and compiled them at lower quality; with the accessors left
   as calls (they compile small and run on native frames) it runs 13.2 s interpreted and 7.3 s with the tier. Wrappers and
   thin methods are still inlined.
+- **A callee whose failing checks report is inlined without its reporting blocks** (`opt/inline.rs` cold blocks,
+  2026-11-13): a block past the entry of a procedure or function that holds a `Report` (the failing arm of an assertion with
+  the building of its message) becomes a call of the callee itself with the same arguments and a return of its result; the
+  rest of the body is inlined as before, and the raw-size exit counts only the code outside such blocks. The call runs the
+  body again from its start, which ends as running on from the block would, because no instruction on a path from the entry
+  to such a block has an effect (store, call, protected or native call, coverage counter; else the callee is not cut): the
+  checks and reads before it give the same results again and nothing was written. The report then comes from a frame of the
+  callee's own, with the same text, severity, time, process and statement, and the call carries the call site's statement
+  and inlining chain, so a trace and the `std.env` call path show the callee once, as a call that was not inlined does. The
+  constants and addresses the block defined stay in it (frames start with them, so another block may read them). Only a leaf
+  is cut (no call outside its reporting blocks, `leaf`), a conservative scope: it covers the argument checks, and a
+  callee that calls on (a queue accessor in front of its storage) keeps its call, so the units the compiled tier compiles
+  and the calls its policy counts change only by the inlined checks of leaves. Cutting such accessors too was measured
+  neither to lose nor to gain beyond the run-to-run spread of `--tier=auto` and was left out. Not cut either: a
+  protected method at a `CallProt` (the cold call is a `Call`), a function that returns flat bounds, a callee with coverage
+  counters. `YAVS_NO_COLD=1` turns it off (fingerprint `cold`). Why: the `validate_*` procedures in front of a verification
+  library's array accessors (an assertion with a built message) were calls of about 350 host instructions each, two or three
+  per access, and inlining them whole would put the message building into every caller.
 
 ## Shared offsets must stay memoisable and fusable (yavs-ir `opt/memo.rs`, `opt/share.rs`, yavs-interp `pre.rs`, #534, 2026-10-22)
 

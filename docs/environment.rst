@@ -264,6 +264,11 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - not ``0``
      - unset
      - ``run``
+   * - ``YAVS_NO_COLD``
+     - Inlines no subprogram whose failing check reports (by default the reporting branch stays a call and the rest is inlined).
+     - not ``0``
+     - unset
+     - ``run``
    * - ``YAVS_NO_MEMO``
      - Turns the optimiser's memoisation pass off.
      - not ``0``

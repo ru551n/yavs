@@ -1,0 +1,1 @@
+Library subprograms that only check their arguments (an assertion that builds a message when it fails, as the array accessors of verification libraries do) are now inlined into their callers, with the failing branch left a call, so code that reads and writes such arrays runs faster in the interpreter; a failing check reports exactly as before.

@@ -98,6 +98,24 @@ pub fn tier_skips() -> Option<u64> {
     None
 }
 
+#[cfg(any(debug_assertions, feature = "op-census"))]
+static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A frame pushed above another: an interpreted subprogram call.
+#[inline(always)]
+pub(crate) fn call() {
+    #[cfg(any(debug_assertions, feature = "op-census"))]
+    CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Those calls so far (the work counter `calls`); `None` as `ops_executed`.
+pub fn calls() -> Option<u64> {
+    #[cfg(any(debug_assertions, feature = "op-census"))]
+    return Some(CALLS.load(std::sync::atomic::Ordering::Relaxed));
+    #[cfg(not(any(debug_assertions, feature = "op-census")))]
+    None
+}
+
 static IEEE_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 static IEEE: std::sync::Mutex<Option<std::collections::HashMap<String, u64>>> =
     std::sync::Mutex::new(None);

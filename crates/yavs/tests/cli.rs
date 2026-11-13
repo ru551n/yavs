@@ -364,6 +364,73 @@ fn runtime_error_in_thin_subprograms() {
     run_snapshot("runtime_error_thin", 1);
 }
 
+/// A check whose failing arm reports is inlined with that arm left a call of the check itself (a
+/// cold block, `opt/inline.rs`): the reports, the `std.env` call path in them and the trace of a
+/// failure inside the arm are the ones of the run without inlining, in each tier.
+#[test]
+fn cold_blocks_report_as_calls() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli");
+    let tmp = tempdir("cold_blocks");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let yavs = |env: &[(&str, &str)], args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never"])
+            .args(&args[..1])
+            .arg("--std=2019")
+            .args(&args[1..])
+            .envs(env.iter().copied())
+            .current_dir(&dir)
+            .output()
+            .expect("run")
+    };
+    assert!(
+        yavs(&[], &["analyze", &lib, "cold_blocks.vhd"])
+            .status
+            .success()
+    );
+    let mut tiers = vec!["--tier=interp"];
+    if cfg!(feature = "clift") {
+        tiers.extend(["--tier=clift", "--tier=auto"]);
+    }
+    for bad in ["-gbad=1", "-gbad=9"] {
+        for tier in &tiers {
+            let run = |env: &[(&str, &str)]| {
+                let o = yavs(env, &["run", &lib, tier, "--no-cache", "cold_blocks", bad]);
+                let text = String::from_utf8_lossy(&o.stdout).into_owned()
+                    + &String::from_utf8_lossy(&o.stderr);
+                (o.status.code(), text)
+            };
+            let base = run(&[("YAVS_NO_INLINE", "1")]);
+            assert_eq!(run(&[("YAVS_NO_COLD", "1")]), base, "{bad} {tier}");
+            assert_eq!(run(&[]), base, "{bad} {tier}");
+            assert!(base.1.contains("cold_blocks.vhd:21:CHK"), "{}", base.1);
+            assert!(base.1.contains("cold_blocks.vhd:62:_P0"), "{}", base.1);
+        }
+    }
+    // The checks are inlined: fewer interpreted calls than with whole calls (debug builds count).
+    if cfg!(debug_assertions) {
+        let calls = |env: &[(&str, &str)]| {
+            let o = yavs(
+                &[env, &[("YAVS_COUNTERS", "1")]].concat(),
+                &[
+                    "run",
+                    &lib,
+                    "--tier=interp",
+                    "--threads=1",
+                    "--no-cache",
+                    "cold_blocks",
+                ],
+            );
+            let e = String::from_utf8_lossy(&o.stderr).into_owned();
+            e.lines()
+                .find_map(|l| l.strip_prefix("counters: calls=")?.parse::<u64>().ok())
+                .expect("calls counter")
+        };
+        assert!(calls(&[]) < calls(&[("YAVS_NO_COLD", "1")]));
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// Reports are written in blocks on a pipe, but a diagnostic on the same pipe still comes after
 /// every report that preceded it (#428).
 #[test]
@@ -1024,15 +1091,23 @@ fn tier_auto_matches_interp() {
             assert_eq!(yavs(&args), interp, "{heat} {threads}");
         }
     }
-    // Compiled from the first call or jump: both functions run compiled.
-    let (_, err, _, _) = yavs(&[
-        "run",
-        "--work=work:lib",
-        "hot",
-        "--tier=auto",
-        "--tier-heat=1,0,0",
-        "--verbose",
-    ]);
+    // Compiled from the first call or jump: both functions run compiled. (`mix` stays a call:
+    // its assertion would make it a cold block that inlines into `p0`.)
+    let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .current_dir(&tmp)
+        .env("YAVS_NO_COLD", "1")
+        .args([
+            "--color",
+            "never",
+            "run",
+            "--work=work:lib",
+            "hot",
+            "--tier=auto",
+        ])
+        .args(["--tier-heat=1,0,0", "--verbose"])
+        .output()
+        .expect("run");
+    let err = String::from_utf8_lossy(&o.stderr);
     for f in ["`mix`", "`p0`"] {
         assert!(
             err.contains(&format!("note: {f}")) && err.contains("is hot: compiled"),

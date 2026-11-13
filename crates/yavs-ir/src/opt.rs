@@ -252,14 +252,15 @@ pub fn fingerprint() -> String {
         proc_objects::enabled(),
         dopes::enabled(),
         subcopy::enabled(),
+        inline::cold_enabled(),
     ]);
     format!("{switches} huge={}", huge_body())
 }
 
-fn fingerprint_of(f: [bool; 14]) -> String {
+fn fingerprint_of(f: [bool; 15]) -> String {
     let names = [
         "iropt", "memo", "cfg", "inline", "keep", "compiled", "external", "layouts", "drives",
-        "slots", "blocks", "objects", "dopes", "subcopy",
+        "slots", "blocks", "objects", "dopes", "subcopy", "cold",
     ];
     let parts: Vec<String> = names
         .iter()
@@ -276,9 +277,9 @@ mod fingerprint_tests {
     /// Every switch is part of the fingerprint (#491).
     #[test]
     fn each_switch_changes_the_fingerprint() {
-        let base = fingerprint_of([false; 14]);
-        for i in 0..14 {
-            let mut f = [false; 14];
+        let base = fingerprint_of([false; 15]);
+        for i in 0..15 {
+            let mut f = [false; 15];
             f[i] = true;
             assert_ne!(fingerprint_of(f), base, "switch {i}");
         }

@@ -1,0 +1,35 @@
+exit	0
+diag	note	0	0	:inout_port_collapse_force:u1:rd	plain1 p=U
+diag	note	0	0	:inout_port_collapse_force:u2:rd	fout p=U
+diag	note	0	0	:inout_port_collapse_force:u3:rd	fin p=U
+diag	note	0	0	:inout_port_collapse_force:u4:rd	plain4 p=U
+diag	note	0	0	:inout_port_collapse_force:u5:rd	plain5 p=U
+diag	note	0	0	:inout_port_collapse_force:rd	top a=U b=U c=U d=U e=U
+diag	note	0	1	:inout_port_collapse_force:u1:rd	plain1 p=1
+diag	note	0	1	:inout_port_collapse_force:u2:rd	fout p=1
+diag	note	0	1	:inout_port_collapse_force:u3:rd	fin p=1
+diag	note	0	1	:inout_port_collapse_force:u4:rd	plain4 p=1
+diag	note	0	1	:inout_port_collapse_force:u5:rd	plain5 p=1
+diag	note	0	1	:inout_port_collapse_force:rd	top a=1 b=1 c=1 d=1 e=1
+diag	note	2000000	1	:inout_port_collapse_force:u2:rd	fout p=H
+diag	note	2000000	1	:inout_port_collapse_force:u3:rd	fin p=L
+diag	note	2000000	1	:inout_port_collapse_force:rd	top a=1 b=H c=1 d=1 e=1
+diag	note	3000000	1	:inout_port_collapse_force:u4:rd	plain4 p=X
+diag	note	3000000	1	:inout_port_collapse_force:rd	top a=1 b=H c=1 d=X e=1
+diag	note	4000000	0	:inout_port_collapse_force:u1:rd	plain1 p=Z
+diag	note	4000000	0	:inout_port_collapse_force:u5:rd	plain5 p=Z
+diag	note	4000000	0	:inout_port_collapse_force:rd	top a=Z b=H c=Z d=X e=Z
+diag	note	6000000	0	:inout_port_collapse_force:u1:rd	plain1 p=L
+diag	note	6000000	0	:inout_port_collapse_force:u2:rd	fout p=W
+diag	note	6000000	0	:inout_port_collapse_force:u5:rd	plain5 p=L
+diag	note	6000000	0	:inout_port_collapse_force:rd	top a=L b=W c=L d=X e=L
+diag	note	6000000	1	:inout_port_collapse_force:u2:rd	fout p=L
+diag	note	6000000	1	:inout_port_collapse_force:rd	top a=L b=L c=L d=X e=L
+diag	note	7000000	1	:inout_port_collapse_force:u4:rd	plain4 p=L
+diag	note	7000000	1	:inout_port_collapse_force:rd	top a=L b=L c=L d=L e=L
+diag	note	8000000	0	:inout_port_collapse_force:u1:rd	plain1 p=0
+diag	note	8000000	0	:inout_port_collapse_force:u2:rd	fout p=0
+diag	note	8000000	0	:inout_port_collapse_force:u3:rd	fin p=0
+diag	note	8000000	0	:inout_port_collapse_force:u4:rd	plain4 p=0
+diag	note	8000000	0	:inout_port_collapse_force:u5:rd	plain5 p=0
+diag	note	8000000	0	:inout_port_collapse_force:rd	top a=0 b=0 c=0 d=0 e=0

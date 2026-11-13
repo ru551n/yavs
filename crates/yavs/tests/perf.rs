@@ -1075,6 +1075,21 @@ case!(
         ("process_runs", Max(760)),
     ]
 );
+// `inout` record ports on elements of an array of records through two levels, eight lanes, each
+// field driven by one side and 'Z' by the other, and eight `inout` ports on one shared bus: each
+// formal is a signal of its own, a port source of its actual, copied per delta.
+case!(
+    port_inout_record,
+    "sum=C006",
+    &[],
+    [
+        ("signals", Max(130)),
+        ("events", Max(10840)),
+        ("update_general", Max(131)),
+        ("general_assigns", Max(0)),
+        ("process_runs", Max(1472)),
+    ]
+);
 case!(
     out_port,
     "q=",

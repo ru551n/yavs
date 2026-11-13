@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:inout_port_conv_read:m:l:rd	leaf x=U y=U
+diag	note	0	0	:inout_port_conv_read:n:l:rd	leaf x=U y=U
+diag	note	0	0	:inout_port_conv_read:rd	top s.a=U s.b=U t.a=U t.b=U
+diag	note	0	1	:inout_port_conv_read:n:l:rd	leaf x=0 y=H
+diag	note	0	1	:inout_port_conv_read:rd	top s.a=U s.b=U t.a=0 t.b=H
+diag	note	1000000	0	:inout_port_conv_read:check	done

@@ -1,0 +1,52 @@
+exit	0
+diag	note	0	0	:inout_port_collapse:l1:l2:l3:init	l3 init p=U i1=U n=0 m=5 w=U o=HL
+diag	note	0	0	:inout_port_collapse:check	top init p=U two=U i1=U n=0 m=5 w=U wz=U
+diag	note	0	1	:inout_port_collapse:l1:l2:l3:rd	l3 p=Z p'event=true p'last_value=U two=1 q=1Z10 w=U wz=X i1=1 n=1 m=5 u=U bo=false
+diag	note	0	1	:inout_port_collapse:l1:l2:l3:tr	l3 p'transaction p=Z p'active=true p'event=true
+diag	note	0	1	:inout_port_collapse:l1:l2:rd	l2 p=Z p'event=true two=1 q=1Z10 q'last_value=UUUU
+diag	note	0	1	:inout_port_collapse:rd	top p=Z p'event=true p'last_value=U p'active=true two=1 q=1Z10 w=U wz=X i1=1 n=1 m=5 u=U bo=false
+diag	note	0	1	:inout_port_collapse:tr	top p'transaction p=Z p'active=true
+diag	note	1000000	0	:inout_port_collapse:l1:l2:l3:rd	l3 p=Z p'event=false p'last_value=U two=1 q=1Z10 w=U wz=X i1=1 n=1 m=5 u=1 bo=false
+diag	note	1000000	0	:inout_port_collapse:rd	top p=Z p'event=false p'last_value=U p'active=false two=1 q=1Z10 w=U wz=X i1=1 n=1 m=5 u=1 bo=false
+diag	note	1000000	1	:inout_port_collapse:l1:l2:l3:rd	l3 p=1 p'event=true p'last_value=Z two=X q=1Z10 w=U wz=X i1=1 n=1 m=5 u=1 bo=false
+diag	note	1000000	1	:inout_port_collapse:l1:l2:l3:tr	l3 p'transaction p=1 p'active=true p'event=true
+diag	note	1000000	1	:inout_port_collapse:l1:l2:rd	l2 p=1 p'event=true two=X q=1Z10 q'last_value=UUUU
+diag	note	1000000	1	:inout_port_collapse:rd	top p=1 p'event=true p'last_value=Z p'active=true two=X q=1Z10 w=U wz=X i1=1 n=1 m=5 u=1 bo=false
+diag	note	1000000	1	:inout_port_collapse:tr	top p'transaction p=1 p'active=true
+diag	note	2000000	0	:inout_port_collapse:l1:l2:l3:rd	l3 p=1 p'event=false p'last_value=Z two=X q=1Z10 w=U wz=1 i1=1 n=1 m=5 u=1 bo=false
+diag	note	2000000	0	:inout_port_collapse:rd	top p=1 p'event=false p'last_value=Z p'active=false two=X q=1Z10 w=U wz=1 i1=1 n=1 m=5 u=1 bo=false
+diag	note	2000000	1	:inout_port_collapse:l1:l2:l3:rd	l3 p=X p'event=true p'last_value=1 two=0 q=1Z01 w=U wz=1 i1=1 n=2 m=5 u=1 bo=false
+diag	note	2000000	1	:inout_port_collapse:l1:l2:l3:tr	l3 p'transaction p=X p'active=true p'event=true
+diag	note	2000000	1	:inout_port_collapse:l1:l2:rd	l2 p=X p'event=true two=0 q=1Z01 q'last_value=1Z10
+diag	note	2000000	1	:inout_port_collapse:rd	top p=X p'event=true p'last_value=1 p'active=true two=0 q=1Z01 w=U wz=1 i1=1 n=2 m=5 u=1 bo=false
+diag	note	2000000	1	:inout_port_collapse:tr	top p'transaction p=X p'active=true
+diag	note	3000000	0	:inout_port_collapse:l1:l2:l3:rd	l3 p=X p'event=false p'last_value=1 two=0 q=1Z01 w=U wz=1 i1=1 n=2 m=5 u=1 bo=true
+diag	note	3000000	0	:inout_port_collapse:rd	top p=X p'event=false p'last_value=1 p'active=false two=0 q=1Z01 w=U wz=1 i1=1 n=2 m=5 u=1 bo=true
+diag	note	3000000	0	:inout_port_collapse:l1:l2:l3:drv_p	l3 drv p'driving_value=1 p'driving=true p=X
+diag	note	3000000	1	:inout_port_collapse:l1:l2:l3:rd	l3 p=0 p'event=true p'last_value=X two=H q=1Z01 w=U wz=1 i1=1 n=2 m=5 u=1 bo=true
+diag	note	3000000	1	:inout_port_collapse:l1:l2:l3:tr	l3 p'transaction p=0 p'active=true p'event=true
+diag	note	3000000	1	:inout_port_collapse:l1:l2:rd	l2 p=0 p'event=true two=H q=1Z01 q'last_value=1Z10
+diag	note	3000000	1	:inout_port_collapse:rd	top p=0 p'event=true p'last_value=X p'active=true two=H q=1Z01 w=U wz=1 i1=1 n=2 m=5 u=1 bo=true
+diag	note	3000000	1	:inout_port_collapse:tr	top p'transaction p=0 p'active=true
+diag	note	4000000	0	:inout_port_collapse:l1:l2:l3:rd	l3 p=0 p'event=false p'last_value=X two=W q=1Z01 w=U wz=1 i1=1 n=2 m=5 u=1 bo=true
+diag	note	4000000	0	:inout_port_collapse:l1:l2:rd	l2 p=0 p'event=false two=W q=1Z01 q'last_value=1Z10
+diag	note	4000000	0	:inout_port_collapse:rd	top p=0 p'event=false p'last_value=X p'active=false two=W q=1Z01 w=U wz=1 i1=1 n=2 m=5 u=1 bo=true
+diag	note	4000000	1	:inout_port_collapse:l1:l2:l3:rd	l3 p=Z p'event=true p'last_value=0 two=W q=1Z01 w=U wz=1 i1=1 n=2 m=5 u=1 bo=true
+diag	note	4000000	1	:inout_port_collapse:l1:l2:l3:tr	l3 p'transaction p=Z p'active=true p'event=true
+diag	note	4000000	1	:inout_port_collapse:l1:l2:rd	l2 p=Z p'event=true two=W q=1Z01 q'last_value=1Z10
+diag	note	4000000	1	:inout_port_collapse:rd	top p=Z p'event=true p'last_value=0 p'active=true two=W q=1Z01 w=U wz=1 i1=1 n=2 m=5 u=1 bo=true
+diag	note	4000000	1	:inout_port_collapse:tr	top p'transaction p=Z p'active=true
+diag	note	5000000	1	:inout_port_collapse:l1:l2:l3:rd	l3 p=X p'event=true p'last_value=Z two=W q=1Z01 w=U wz=1 i1=1 n=2 m=5 u=1 bo=true
+diag	note	5000000	1	:inout_port_collapse:l1:l2:l3:tr	l3 p'transaction p=X p'active=true p'event=true
+diag	note	5000000	1	:inout_port_collapse:l1:l2:rd	l2 p=X p'event=true two=W q=1Z01 q'last_value=1Z10
+diag	note	5000000	1	:inout_port_collapse:rd	top p=X p'event=true p'last_value=Z p'active=true two=W q=1Z01 w=U wz=1 i1=1 n=2 m=5 u=1 bo=true
+diag	note	5000000	1	:inout_port_collapse:tr	top p'transaction p=X p'active=true
+diag	note	6000000	0	:inout_port_collapse:l1:l2:l3:drv_p	l3 drv p'driving_value=- p=X
+diag	note	6000000	1	:inout_port_collapse:l1:l2:l3:rd	l3 p=0 p'event=true p'last_value=X two=W q=1Z01 w=U wz=1 i1=0 n=2 m=5 u=1 bo=true
+diag	note	6000000	1	:inout_port_collapse:l1:l2:l3:tr	l3 p'transaction p=0 p'active=true p'event=true
+diag	note	6000000	1	:inout_port_collapse:l1:l2:rd	l2 p=0 p'event=true two=W q=1Z01 q'last_value=1Z10
+diag	note	6000000	1	:inout_port_collapse:rd	top p=0 p'event=true p'last_value=X p'active=true two=W q=1Z01 w=U wz=1 i1=0 n=2 m=5 u=1 bo=true
+diag	note	6000000	1	:inout_port_collapse:tr	top p'transaction p=0 p'active=true
+diag	note	7000000	1	:inout_port_collapse:l1:l2:l3:tr	l3 p'transaction p=0 p'active=true p'event=false
+diag	note	7000000	1	:inout_port_collapse:tr	top p'transaction p=0 p'active=true
+diag	note	9000000	0	:inout_port_collapse:check	done

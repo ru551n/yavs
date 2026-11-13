@@ -1,0 +1,5 @@
+exit	0
+diag	note	900000000	0	:inout_record_lanes:_p0	k=300 got=138 sum=A60BC4E1 ch(40)=EEBF1176 ch(17)=A761FC2D last=53B0FE1F ready=1 c2(2)=1B0F cu(1).tlast=U cu(1).tvalid=1
+diag	note	1800000000	0	:inout_record_lanes:_p0	k=600 got=273 sum=7DFC5BC8 ch(40)=A3AF2587 ch(17)=AFBFA761 last=57DFD3B9 ready=1 c2(2)=3BAE cu(1).tlast=U cu(1).tvalid=1
+diag	note	2700000000	0	:inout_record_lanes:_p0	k=900 got=417 sum=FD03879F ch(40)=E1A803E5 ch(17)=7BB467F2 last=BDDA3401 ready=1 c2(2)=AAC9 cu(1).tlast=U cu(1).tvalid=1
+diag	note	3600000000	0	:inout_record_lanes:_p0	k=1200 got=560 sum=938EE3FC ch(40)=89BF17BF ch(17)=CB952D6D last=E5CA96BF ready=1 c2(2)=9932 cu(1).tlast=U cu(1).tvalid=1

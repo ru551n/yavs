@@ -420,10 +420,14 @@ impl Db {
             .order
             .iter()
             .copied()
-            .filter(|&d| !self.decls[d].implicit && matches!(&self.decls[d].kind, DeclKind::Subprogram(s) if matches!(s.body, Body::Pending)))
+            .filter(|&d| {
+                // A header generic map declares an instance; the body completes the generic behind it.
+                let g = self.header_generic(d).unwrap_or(d);
+                !self.decls[d].implicit && matches!(&self.decls[g].kind, DeclKind::Subprogram(s) if matches!(s.body, Body::Pending))
+            })
             .collect();
         for d in missing {
-            let what = match &self.decls[d].kind {
+            let what = match &self.decls[self.header_generic(d).unwrap_or(d)].kind {
                 DeclKind::Subprogram(s) if matches!(s.kind, SubprogramKind::Procedure) => {
                     "procedure"
                 }

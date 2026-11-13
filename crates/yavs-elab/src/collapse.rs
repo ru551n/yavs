@@ -169,6 +169,12 @@ pub(crate) fn ports(
         let mut targets = Vec::with_capacity(b - a);
         for l in a..b {
             let leaf = &nets.leaves[l];
+            // A null leaf (a null field) has no edge and no element: it is the actual's leaf at
+            // its place among the others, found below.
+            if leaf.ty.len == 0 && edge[l] == usize::MAX && !excluded[l] {
+                targets.push(None);
+                continue;
+            }
             let ok = !excluded[l]
                 && edge[l] != usize::MAX
                 && leaf.guard.is_none()
@@ -201,8 +207,26 @@ pub(crate) fn ports(
             }) else {
                 break;
             };
-            targets.push(e.actual);
+            targets.push(Some(e.actual));
         }
+        let first = targets
+            .iter()
+            .enumerate()
+            .find_map(|(k, t)| t.map(|t| (k, t.0.0)));
+        let targets: Vec<(LeafId, Range)> = match first {
+            Some((k0, t0)) if targets.len() == b - a && t0 as usize >= k0 => (targets.iter())
+                .enumerate()
+                .map_while(|(k, t)| match t {
+                    Some(t) => Some(*t),
+                    None => {
+                        let id = t0 as usize - k0 + k;
+                        let null = nets.leaves.get(id).is_some_and(|x| x.ty.len == 0);
+                        null.then_some((LeafId(id as u32), Range::new(0, 0)))
+                    }
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         let one_range = targets.len() == b - a
             && targets.iter().enumerate().all(|(k, t)| {
                 t.0.0 == targets[0].0.0 + k as u32

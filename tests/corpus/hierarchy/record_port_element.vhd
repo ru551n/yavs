@@ -2,9 +2,10 @@
 -- Record ports on elements of an array of records, one lane per generate iteration through a
 -- component: an `in` record (nested) on `ch(i)`, an `out` record on `ch(i + 1)` that is the
 -- only source of that element, an `out` copy of a sub-record on an array of sub-records, a
--- `buffer` read inside, an `out` record with a null field (it keeps its edges), and a lane
--- whose `out` element has a second driver of a resolved field (it keeps its edges). The 24-bit
--- data field puts lanes across the 64-element words of the leaf. Read through the formal and
+-- `buffer` read inside, an `out` record with a null field (it collapses too, its null leaf
+-- onto the actual's), and a lane whose `out` element has a second driver of a resolved field
+-- (it keeps its edges). The 24-bit data field puts lanes across the 64-element words of the
+-- leaf. Read through the formal and
 -- the actual: values, 'event, 'active, 'last_value, 'driving and 'driving_value, the formal's
 -- default against the actual's initial value (the actual starts at the formal's; 'last_value
 -- before the first event is left out: the references differ there). Same-cycle reports of
@@ -22,7 +23,7 @@ package record_port_element_pkg is
     n : integer;
     k : bit_vector(2 downto 0);
   end record;
-  -- A record with a null field: that field has no port edge, so the port keeps its edges.
+  -- A record with a null field: that field has no port edge and no element.
   type null_t is record
     a : bit;
     z : std_logic_vector(0 downto 1);

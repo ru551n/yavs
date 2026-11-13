@@ -1438,6 +1438,14 @@ a note and a help suggesting an access type, as the reference simulators reject 
   `inout_port_collapse_force`, `inout_port_collapse_parts`, `inout_port_collapse_external`,
   `inout_port_defaults`; perf designs `port_inout_record`, `port_inout_default`; unit test
   `inout_ports_collapse_into_their_actuals`.
+- **A null field does not keep a record port apart** (proposed on perf/skid-inout, 2026-11-13, awaiting
+  the maintainer; extends the entries above): a formal leaf with no element (a null field, such as an
+  unconstrained `user` field of width 0) has no port edge, so a formal with one failed the per-leaf
+  conditions and kept every other leaf's edges too. Such a leaf now takes the actual's leaf at its place
+  among the formal's other leaves (consecutive leaves of one object, and that leaf null as well); it has
+  no element, so no value, event, source or driving value to keep. Tests: corpus
+  `hierarchy/record_port_element` (its null-field lane collapses now), unit test
+  `record_ports_with_a_null_field_collapse`, perf design `port_null_record`.
 
 - **The elaboration-time session grows one program** (#383, elab agent, 2026-10-19): a function
   that uses package state and is called for the first time is lowered into the session's

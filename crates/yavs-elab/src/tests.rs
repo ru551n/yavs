@@ -2726,6 +2726,46 @@ end;
     assert!(edged(&e, ":top:f:b"));
 }
 
+/// A record with a null field (an unconstrained `user` of width 0) collapses: the null leaf is
+/// the actual's null leaf at its place, with no edge and no element.
+#[test]
+fn record_ports_with_a_null_field_collapse() {
+    let src = "library ieee; use ieee.std_logic_1164.all;
+package p is
+  type rec_t is record v : std_logic; u : std_logic_vector; d : std_logic_vector(3 downto 0); end record;
+  type rec_arr_t is array (natural range <>) of rec_t;
+end;
+library ieee; use ieee.std_logic_1164.all; use work.p.all;
+entity stage is port (s : in rec_t; m : out rec_t; io : inout rec_t); end;
+architecture a of stage is begin
+  m.v <= s.v; m.d <= s.d; io.v <= 'Z'; io.d <= s.d;
+end;
+library ieee; use ieee.std_logic_1164.all; use work.p.all;
+entity top is end;
+architecture t of top is
+  signal ch : rec_arr_t(0 to 2)(u(1 to 0));
+  signal x : rec_arr_t(0 to 1)(u(1 to 0));
+begin
+  g : for i in 0 to 1 generate
+    u : entity work.stage port map (ch(i), ch(i + 1), x(i));
+  end generate;
+end;
+";
+    let obj = |e: &Elaborated, path: &str| {
+        let k = sig_paths(e).iter().position(|p| p == path).expect(path);
+        let o = &e.nets.objs[k];
+        (o.leaves, o.parts.clone())
+    };
+    let (_, e) = elab("nullcollapse", src, "top", &[]);
+    let (ch, _) = obj(&e, ":top:ch");
+    let parts = vec![Range::new(1, 1), Range::new(0, 0), Range::new(4, 4)];
+    assert_eq!(obj(&e, ":top:g(0):u:m"), (ch, parts.clone()));
+    assert_eq!(obj(&e, ":top:g(1):u:s"), (ch, parts));
+    let (x, _) = obj(&e, ":top:x");
+    assert_eq!(obj(&e, ":top:g(1):u:io").0, x);
+    assert!(e.nets.ports.is_empty(), "{:?}", e.nets.ports);
+}
+
 #[test]
 fn scope_vals_keep_entries_sorted_by_declaration() {
     use yavs_sem::ids::Id;

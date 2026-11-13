@@ -1109,6 +1109,20 @@ case!(
         ("process_runs", Max(1448)),
     ]
 );
+// The lanes of `port_elem_record` with a null field (`tuser` of width 0) in the record: the null
+// leaf has no edge, and the formal is still an alias of its element (149 signals, 11230 events
+// and 80 general updates when a null field kept every formal of the record apart).
+case!(
+    port_null_record,
+    "sum=F54E",
+    &[],
+    [
+        ("signals", Max(22)),
+        ("events", Max(3640)),
+        ("update_general", Max(0)),
+        ("process_runs", Max(760)),
+    ]
+);
 case!(
     out_port,
     "q=",

@@ -697,6 +697,9 @@ fn ieee_paths() {
     ieee_paths_check(&r, b);
 }
 case!(elem_loops, "acc=", &[], [("ops", Max(27715))]);
+// Predefined `/=` of logic vectors is one word-wise compare (`LEq`), as `=` is: a bit loop cost
+// six operations per bit of each element scanned.
+case!(zero_ne, "n=", &[], [("ops", Max(6200))]);
 case!(wide_vec, "wide=0", &[], [("ops", Max(1997254))]);
 case!(
     licm_loop,

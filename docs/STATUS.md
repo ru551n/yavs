@@ -1957,7 +1957,8 @@ load 10 to 30, so read the ratios):
    markers that free nothing, merges equal constants and renumbers registers densely (`opt.rs`, decisions.md
    "Variables in registers"). Executed instructions of design 3: 640 million to 391 million.
 3. `LFill` (a run of logic elements set a plane word at a time) for defaults and `others` choices; array equality of
-   logic arrays (`case` choices, `=`) by `LEq`; array literals read in place from the constant pool.
+   logic arrays (`case` choices, `=`, and `/=` as its complement since 2026-11-13: it was a bit-by-bit loop) by
+   `LEq`; array literals read in place from the constant pool.
 
 | Benchmark (yavs interp) | main before the changes | after | ratio | reference `--jit` | yavs / reference |
 |---|---|---|---|---|---|

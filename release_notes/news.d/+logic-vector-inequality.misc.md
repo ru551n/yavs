@@ -1,0 +1,1 @@
+`/=` between two `std_logic_vector` (or other logic vector) values now compares the vectors a word at a time, as `=` does, so loops that check memories or buses for a value, such as zeroization checks, simulate faster.

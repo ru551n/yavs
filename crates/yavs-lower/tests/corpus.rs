@@ -52,6 +52,7 @@ const PASS: &[&str] = &[
     "composite/record_lengths_equal",
     "composite/record_lengths_equal_target",
     "composite/aggregate_operand_direction",
+    "composite/logic_vector_ne",
     "hierarchy/package_own_name",
     "protected/access_method_call_2019",
     "textio/file_in_subprogram",

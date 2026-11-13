@@ -1,0 +1,2 @@
+exit	0
+diag	note	0	0	:logic_vector_ne:_p0	logic_vector_ne ne=10101101001101101101100011101101111 cases=35 bad=0

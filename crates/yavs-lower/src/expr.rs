@@ -4136,8 +4136,9 @@ impl<'a> Fx<'a, '_> {
         let la = self.dope_len(ap);
         let lb = self.dope_len(bp);
         let r = self.reg(RegTy::I64);
-        if op == CmpOp::Eq && logic {
-            // Equal when the lengths are and the planes are, word by word.
+        if matches!(op, CmpOp::Eq | CmpOp::Ne) && logic {
+            // Equal when the lengths are and the planes are, word by word (predefined equality
+            // compares the element codes, so 'U' /= '0' and no metavalue is special).
             let same = self.cmp(CmpOp::Eq, la, lb);
             let (go, no, j) = (self.block(), self.block(), self.block());
             self.branch(same, go, no);
@@ -4153,7 +4154,7 @@ impl<'a> Fx<'a, '_> {
             self.emit(Inst::Const { dst: r, v: 0 });
             self.jump(j);
             self.at(j);
-            return Ok(r);
+            return Ok(if op == CmpOp::Ne { self.not(r) } else { r });
         }
         if !logic && matches!(op, CmpOp::Eq | CmpOp::Ne) {
             // Equal when the lengths are and the bytes are (elements here are integers and

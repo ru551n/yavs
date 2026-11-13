@@ -113,7 +113,7 @@ fn check_bounds(design: &str, r: &Run, bounds: &[(&str, Bound)]) {
     for &(name, bound) in bounds {
         let Some(&v) = r.counters.get(name) else {
             // A plain release build without `op-census` collects no `ops`, `wake_sole_left`,
-            // `lean_late` or `cb_*` counters; those bounds are skipped there. In a debug build they are
+            // `lean_late`, `resolutions` or `cb_*` counters; those bounds are skipped there. In a debug build they are
             // collected, so a missing counter is a failure, not a vacuous pass (#732).
             if cfg!(debug_assertions) {
                 panic!("design `{design}`: no counter `{name}` in {:?}", r.counters);
@@ -123,6 +123,7 @@ fn check_bounds(design: &str, r: &Run, bounds: &[(&str, Bound)]) {
                     || name == "ops_elab"
                     || name == "wake_sole_left"
                     || name == "lean_late"
+                    || name == "resolutions"
                     || name.starts_with("cb_"),
                 "design `{design}`: no counter `{name}` in {:?}",
                 r.counters
@@ -931,6 +932,15 @@ case!(
         ("wake_plans", Min(165)),
         ("wake_scans", Max(3)),
     ]
+);
+// Resolved signals whose many drivers all assign every clock (two std_logic signals of 16
+// drivers, an integer with a resolution function of 12): the parts resolved from their sources
+// in the update (`resolutions`, debug and `op-census` builds).
+case!(
+    resolve_many,
+    "sum=46413",
+    &[],
+    [("resolutions", Max(2203)), ("cycles", Max(301))]
 );
 // Implicit signals in the design do not take the other signals off the fast update paths: only
 // the updates in which a source of an implicit signal has activity, or one is due, run the general

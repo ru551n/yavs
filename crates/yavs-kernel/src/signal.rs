@@ -892,6 +892,10 @@ pub(crate) struct Signal {
     /// Runs `commit_whole` took (debug and `op-census` builds; `Stats::whole_commits`).
     #[cfg(any(debug_assertions, feature = "op-census"))]
     pub(crate) whole_commits: u64,
+    /// Runs of elements resolved from their sources by `compute_driving` (debug and `op-census`
+    /// builds; `Stats::resolutions`).
+    #[cfg(any(debug_assertions, feature = "op-census"))]
+    pub(crate) resolutions: u64,
     /// Elements whose driving value a direct transaction wrote for the next update
     /// (`commit_code`, `commit_planes`),
     /// one bit each (made at the first one), and the words with a bit set.
@@ -1235,6 +1239,8 @@ impl Signal {
             nruns: 0,
             #[cfg(any(debug_assertions, feature = "op-census"))]
             whole_commits: 0,
+            #[cfg(any(debug_assertions, feature = "op-census"))]
+            resolutions: 0,
             pend: Vec::new(),
             pend_words: Vec::new(),
             pend_one: false,
@@ -1566,6 +1572,10 @@ impl Signal {
                     return Err(ErrorKind::Internal(msg));
                 }
                 (Some(res), ds) => {
+                    #[cfg(any(debug_assertions, feature = "op-census"))]
+                    {
+                        self.resolutions += 1;
+                    }
                     // An unguarded signal has the one run of all its sources: no list of runs.
                     if self.guard.is_none() {
                         resolve_run(

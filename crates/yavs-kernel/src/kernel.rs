@@ -310,6 +310,9 @@ pub struct Stats {
     /// Waiters the commit of a wait registered (`Waiters::add` in `commit_rest`); a resident
     /// wait (`ProcMeta::perm`) registers none.
     pub waiters_added: u64,
+    /// Parts of signals resolved from their sources in the update (`Signal::compute_driving`;
+    /// debug and `op-census` builds only, else 0).
+    pub resolutions: u64,
 }
 
 /// A pending observer wake-up (`Hook::wake_at`). Ordered by time, then registration.
@@ -2114,6 +2117,8 @@ impl SimControl {
             image_bytes: self.images.memory().1,
             #[cfg(any(debug_assertions, feature = "op-census"))]
             whole_commits: self.signals.iter().map(|s| s.whole_commits).sum(),
+            #[cfg(any(debug_assertions, feature = "op-census"))]
+            resolutions: self.signals.iter().map(|s| s.resolutions).sum(),
             ..self.stats
         }
     }

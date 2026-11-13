@@ -11321,3 +11321,17 @@ A specialised copy calls a copy of a subprogram made for the descriptors of reco
 ## `--yavs-jobserver` with `-p 0`, and the cores of `--tier-compile=wait` (vunit-yavs, yavs, #1141, 2026-11-13)
 
 `-p 0` (one job per CPU) left the token server off: `from_args` tested the raw 0. It now resolves 0 with `multiprocessing.cpu_count()`, as the test runner does. Tests: `test_interface.py` (`-p 0` with 6 and with 1 CPU), `test_fake_e2e.py` (`--threads=auto` and the token calls for `-p 0`, 1, 4 with and without the flag). The docs said `--tier-compile=wait` keeps no more cores busy than `--threads`; the tier-up thread still prepares functions alongside the run (measured on a full suite at `-p 0`: about a tenth of a process's CPU, up to 30 percent in a short test) and a process has a sampler and a signal thread, so `--help`, `cli-reference.rst`, `running-faster.rst`, `threads.rst`, `parallel.md`, `vunit.rst`, `vunit-yavs.rst` and `cli-contract.md` now say that. No behaviour changed.
+
+## A repeated drive in one activation takes over its pending entry (2026-11-13)
+
+Two zero-delay assignments to one driver in one activation are one transaction with the last value (LRM 10.5.2.2). The
+direct drive paths made one entry per assignment and committed each (a default then an override, a loop of drives to one
+element, a register assigned twice); compiled code was worse off, since every batch of kept drives after the first went
+element by element through the general entry. Now a later drive of an element takes over the driver's latest entry for
+it (`process.rs` `redrive_out`, `redrive_outb`, `redrive_outv`), and `assign_codes_now` folds a later batch into the last
+vector entry (crate `AGENTS.md`, `DESIGN.md` "commit protocol"). Instructions per repeated `std_logic` drive: interpreter
+319 -> 243, compiled 642 -> 116; integer 422 -> 318 and 312 -> 198. The cost where the lookup always fails (a loop over the
+elements of a vector, each driven once): about 2 percent more per element drive in the interpreter, and an exact
++0.7 to +0.8 percent of interpreter instructions on two bench designs with one drive per activation (`rtl_chain`,
+`rec_pair`), accepted. Tests: `direct_paths` `repeated_drives_of_an_element_match_the_general_path`, corpus
+`sigassign/redrive_values`, `redrive_active`, `redrive_after`, perf design `redrive`.

@@ -16212,3 +16212,37 @@ Amends "Stage entries of a design that loads units late" (#671).
 - **Known gap**: after its first runs Windows settles at more compiles per run than Linux (11 to 51 against 2 to 8 for
   the same test). Not established why; the cycle clock counts kernel-mode time, which Windows runs spend more of in the
   heap and in page faults, so functions may look hotter there. No trace of the policy on Windows was taken.
+
+## Fewer file operations per cache entry (yavs-cache `try_put_new`, `map::refresh`, yavs-clift `First::cache_flush`, user, 2026-11-13)
+
+- **Finding** (agent). A cold run of one test (analysis and a long simulation) made 2806 file operations in the
+  compilation cache on Linux, 500 renames among them: every compiled function rewrote the list of compiled functions and
+  the routes entry (over 150 times each), every compiled-code entry was a temporary file and a rename, every read of an
+  entry refreshed its time (412 `utimensat`); on Windows every analysed unit took the rename path too and every refresh
+  opened the entry once more for writing. On Windows with real-time antivirus each is a scan.
+- **Decision**: (1) the compiled-code store creates entries under their own name like the analysed units, and both
+  do so on Windows too (a name that exists is replaced by rename, as before); (2) the list and the routes are kept in
+  memory and stored by `Generator::cache_flush` between compiles and after waits for work (at most every 200 ms) and
+  when the compile thread ends; (3) a read refreshes an entry's time only when it is older than 2 s (`TOUCH_AFTER`, a fifth of `IN_USE`), on
+  Windows through a handle with the right to set attributes only. The entry format is unchanged: old caches read as
+  before. Not done: one pack file per run with an index (a far larger change to pruning and concurrency; the count of
+  files is now about one per compiled function).
+- **Why it is safe**: a half-written or cut-short entry fails the length or checksum check and is a miss, which a
+  later put heals by rename (already the units' rule, #747); writers never write a name in place once it exists. A run
+  killed while compiling, or ended by `exit_now` during a compile, loses the list and route lines of the compiles since
+  the last store (at most `FLUSH_EVERY` plus the compile in flight); the compiled code itself is stored at once, so
+  the next run links those functions when the policy asks for them, and compiles only what was not stored.
+  `tests/processes.rs`: six processes sharing one store, writers killed at any point. Checked on Linux (landing,
+  2026-11-13) on a compile-heavy testbench (`--tier-heat=1,0,0`, 324 functions): killed at 10 points (after 1 to 250
+  compiles, 0.5 to 3 s), under `--tier-compile=wait` and `background`, the next run printed the same output as the
+  interpreter, read no damaged entry and compiled only the bodies not stored, the run after it compiled none; with
+  five compiled-code entries and the list and route entries cut in half by hand, the next run found 14 damaged reads,
+  compiled 5 bodies, same output, and the run after it none. A first version stored the lists only when the compile
+  thread waited for work: under `background` the thread of a busy first run never waited and the run kept no list at
+  all; it now stores between compiles too.
+- **Measured**: Windows runner, xperf file events of the yavs processes in one cold run of the long test
+  (analysis and simulation): creates 7839 to 3846, renames 963 to 22, set-information calls 537 to 4; a warm run
+  creates 3329 to 2596, renames 119 to 32. The 24-test suite with this and the clock change above, real-time scanning on and no
+  exclusions: cold `-p 1` 66.1 to 51.3 s, `-p 4` 44.9 to 28.3 s, `-p 16` 63.0 to 32.0 s, warm 55.2 to 46.6, 29.4 to
+  23.4, 35.3 to 24.6 s (yavs/sim2 cold `-p 16` 2.05 to 1.04); with the runner's exclusions 7 to 13 percent faster.
+  Linux runner: level within run-to-run noise (cold 25.4/12.6/16.0 s before, 25.5/12.5/15.6 after).

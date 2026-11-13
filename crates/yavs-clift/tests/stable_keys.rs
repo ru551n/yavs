@@ -61,12 +61,13 @@ fn program(step: i64) -> (Program, FuncId, FuncId) {
     (pb.finish().expect("verified"), caller, inc)
 }
 
-/// A run's compile of `caller` with `tree`.
+/// A run's compile of `caller` with `tree`, and the run's end (its routes are stored then).
 fn compile(prog: &Program, caller: FuncId, tree: &[FuncId]) {
     let mut g = First::new().expect("a code generator");
     g.tree(tree);
     let f = prog.func(caller).expect("the function");
     g.compile(prog, caller, f, Part::Native).expect("compiled");
+    g.cache_flush();
 }
 
 fn compiled(dir: &Path) -> usize {

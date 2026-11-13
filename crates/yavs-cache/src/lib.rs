@@ -9,8 +9,9 @@
 //!
 //! Writes are a temporary file plus an atomic rename, so concurrent readers and writers (parallel
 //! test runs sharing a library) never see a half-written entry and need no lock. The analysed
-//! units (`Store::units_of_library`) are created under their own name instead, to save the rename:
-//! a reader that meets one half written finds its length or checksum wrong, which is a miss.
+//! units (`Store::units_of_library`) and the compiled code (`Store::objects_of_library`) are
+//! created under their own name instead, to save the rename: a reader that meets one half written
+//! finds its length or checksum wrong, which is a miss.
 
 #[allow(unsafe_code)]
 mod map;
@@ -45,6 +46,12 @@ pub const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(3600
 /// Removing the design that just finished keeps the rest warm, and the later test cases of the
 /// running design still find its entries. With nothing older than this, the new entry is not stored.
 pub const IN_USE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A read refreshes the time of an entry only when it is older than this: a suite reads the same
+/// entries again and again, and every refresh is a system call (on Windows an open for writing
+/// more). An entry in use then looks unused for at most this much longer than it is, far below
+/// [`IN_USE`] and [`STALE_AFTER`].
+const TOUCH_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The subdirectory of [`DIR`] that holds the compiled code of the LLVM tier
 /// ([`Store::objects_of_library`]): many small entries, one per compiled module, under limits of
@@ -247,8 +254,8 @@ pub struct Store {
     /// `get` refreshes the time of the entry it reads (not for the analysed units: a run reads
     /// a hundred of them, and a library keeps them all).
     touch: bool,
-    /// `put` creates an entry under its own name (the analysed units: a hundred or more small
-    /// entries per call), not through a temporary file and a rename.
+    /// `put` creates an entry under its own name (the analysed units and the compiled code: a
+    /// hundred or more small entries per call), not through a temporary file and a rename.
     direct: bool,
     /// The `.img` entries of the directory as this process counts them: read once, then one per
     /// put (a batch of puts must not list the directory every time); [`UNKNOWN`] until the first
@@ -295,7 +302,7 @@ impl Store {
             dir: lib.join(DIR).join(OBJ_DIR),
             limits: (OBJ_MAX_ENTRIES, OBJ_MAX_BYTES),
             touch: true,
-            direct: false,
+            direct: true,
             count: unknown(),
         }
     }
@@ -345,18 +352,12 @@ impl Store {
     /// The entry, or `None` for anything that is not a complete, intact entry for this key.
     pub fn get(&self, kind: &str, key: &Key) -> Option<Entry> {
         let path = self.file(kind, key);
+        // (Recently used entries survive pruning: `open` refreshes the entry's time when it is
+        // older than `TOUCH_AFTER`.)
         let bytes = map::open(&path, self.touch)?;
         if !check(&bytes, key) {
             debug(format!("{} is not a valid entry", path.display()));
             return None;
-        }
-        // Recently used entries survive pruning; failing to say so is harmless. (Unix: `open`
-        // did it, through the file it had open.)
-        #[cfg(not(unix))]
-        if self.touch
-            && let Ok(f) = fs::File::options().write(true).open(&path)
-        {
-            let _ = f.set_modified(std::time::SystemTime::now());
         }
         Some(Entry { data: bytes })
     }
@@ -431,10 +432,10 @@ impl Store {
     }
 
     /// Creates the entry under its own name (no temporary file and rename: a rename costs a
-    /// twentieth of a cold analysis). A reader that meets it half written finds the length or the
-    /// checksum wrong, which is a miss. `false`: the name exists (a damaged or racing entry), the
-    /// caller replaces it by rename.
-    #[cfg(unix)]
+    /// twentieth of a cold analysis, and on Windows each file operation more costs a scan of a
+    /// real-time antivirus). A reader that meets it half written finds the length or the checksum
+    /// wrong, which is a miss. `false`: the name exists (a damaged or racing entry, or an older
+    /// version), the caller replaces it by rename.
     fn try_put_new(&self, kind: &str, key: &Key, payload: &[u8]) -> std::io::Result<bool> {
         let path = self.file(kind, key);
         let mut opts = fs::OpenOptions::new();
@@ -462,11 +463,6 @@ impl Store {
             return Err(e);
         }
         Ok(true)
-    }
-
-    #[cfg(not(unix))]
-    fn try_put_new(&self, _: &str, _: &Key, _: &[u8]) -> std::io::Result<bool> {
-        Ok(false)
     }
 
     fn note_file(&self, kind: &str, key: &Key) -> PathBuf {
@@ -1109,6 +1105,64 @@ mod tests {
             .modified()
             .unwrap();
         assert!(t.elapsed().unwrap() < std::time::Duration::from_secs(60));
+    }
+
+    /// A read leaves the time of an entry used a moment ago as it is (no system call), and
+    /// refreshes an older one.
+    #[test]
+    fn a_read_refreshes_only_an_entry_not_used_lately() {
+        assert!(TOUCH_AFTER * 4 <= IN_USE);
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::objects_of_library(d.path());
+        s.put("t", &key("a"), b"x");
+        let set = |t| {
+            fs::File::options()
+                .write(true)
+                .open(s.file("t", &key("a")))
+                .unwrap()
+                .set_modified(t)
+                .unwrap();
+        };
+        let mtime = || {
+            fs::metadata(s.file("t", &key("a")))
+                .unwrap()
+                .modified()
+                .unwrap()
+        };
+        let recent = std::time::SystemTime::now() - TOUCH_AFTER / 4;
+        set(recent);
+        assert!(s.get("t", &key("a")).is_some());
+        assert_eq!(mtime(), recent, "not refreshed");
+        set(std::time::SystemTime::now() - 2 * TOUCH_AFTER);
+        assert!(s.get("t", &key("a")).is_some());
+        assert!(mtime().elapsed().unwrap() < TOUCH_AFTER, "refreshed");
+    }
+
+    /// Compiled code is created in place as the units are: no temporary file, and a cut-short
+    /// entry is a miss that the next put replaces.
+    #[test]
+    fn compiled_code_is_created_in_place() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::objects_of_library(d.path());
+        let k = key("a");
+        s.put("clif", &k, b"code bytes");
+        let p = s.file("clif", &k);
+        let good = fs::read(&p).unwrap();
+        fs::write(&p, &good[..good.len() - 2]).unwrap();
+        assert_eq!(s.get("clif", &k), None);
+        s.put("clif", &k, b"code bytes");
+        assert_eq!(s.get("clif", &k).as_deref(), Some(&b"code bytes"[..]));
+        // A new version of an entry under the same key replaces it whole.
+        s.put("clif", &k, b"other bytes");
+        assert_eq!(s.get("clif", &k).as_deref(), Some(&b"other bytes"[..]));
+        assert!(
+            fs::read_dir(s.dir()).unwrap().all(|e| !e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".tmp")),
+            "no temporary file is left"
+        );
     }
 
     #[test]

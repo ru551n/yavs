@@ -1021,6 +1021,14 @@ struct Pending {
 /// Looks sent together: the compile thread wakes once per this many.
 const BATCH: usize = 8;
 
+/// The compile thread stores what its compiles add to the cache's lists (`Generator::cache_flush`)
+/// between compiles and after a wait for work once this long has passed since the last time, and
+/// when it ends: a cold run compiles hundreds of functions, and a store per compile wrote the two
+/// lists hundreds of times. A run that ends while a compile is running (`exit_now`), or is killed,
+/// loses the lines of the compiles since the last store: this long at most, plus the compile in
+/// flight (the next run links those functions once the policy asks for them).
+const FLUSH_EVERY: Duration = Duration::from_millis(200);
+
 /// What the tier and its compile thread share.
 #[derive(Default)]
 struct Shared {
@@ -4409,6 +4417,7 @@ impl AutoTier {
                     let mut lowered = false;
                     // `--tier-compile=wait` paces the compiles (below): wait for the next looks.
                     let mut paced = false;
+                    let mut flushed = std::time::Instant::now();
                     loop {
                         while let Ok(m) = rx.try_recv() {
                             route(m, &mut pending, &mut inbox);
@@ -4432,6 +4441,12 @@ impl AutoTier {
                         pending.asked.extend(free);
                         w.guard();
                         loop {
+                            // Between compiles and after a wait for work (the simulation is not
+                            // held here): a thread that never waits (`background`) stores too.
+                            if flushed.elapsed() >= FLUSH_EVERY {
+                                w.generator.cache_flush();
+                                flushed = std::time::Instant::now();
+                            }
                             publish(&w);
                             while let Ok(m) = rx.try_recv() {
                                 route(m, &mut pending, &mut inbox);
@@ -4657,6 +4672,7 @@ impl AutoTier {
                             sh.read_cpu_us.load(Ordering::Relaxed),
                         ));
                     }
+                    w.generator.cache_flush();
                     *sh.generator.lock().unwrap_or_else(PoisonError::into_inner) =
                         Some(w.generator);
                     sh.busy.store(false, Ordering::SeqCst);

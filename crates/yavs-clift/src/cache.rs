@@ -457,21 +457,30 @@ pub(crate) fn compiled_list() -> std::collections::HashSet<(String, u32)> {
         .collect()
 }
 
-/// Put `name` (of `len` IR instructions) in front of the list of `compiled_list`.
-pub(crate) fn add_compiled(name: &str, len: u32) {
-    let Some(store) = store() else {
+/// Put `names` (with their IR instruction counts, oldest first) in front of the list of
+/// `compiled_list`, the newest first.
+pub(crate) fn add_compiled(names: &[(String, u32)]) {
+    let Some(store) = store().filter(|_| !names.is_empty()) else {
         return;
     };
-    let line = format!("{len}\t{name}\n");
-    let mut text = line.clone();
+    let mut lines: Vec<String> = names
+        .iter()
+        .rev()
+        .map(|(name, len)| format!("{len}\t{name}\n"))
+        .collect();
     if let Some(old) = store.get(LIST, &list_key()) {
-        let old = String::from_utf8_lossy(&old);
-        for l in old.split_inclusive('\n').take(LIST_MAX - 1) {
-            if l != line {
-                text += l;
-            }
-        }
+        lines.extend(
+            String::from_utf8_lossy(&old)
+                .split_inclusive('\n')
+                .map(str::to_string),
+        );
     }
+    let mut seen = std::collections::HashSet::new();
+    let text: String = lines
+        .into_iter()
+        .filter(|l| seen.insert(l.clone()))
+        .take(LIST_MAX)
+        .collect();
     store.put(LIST, &list_key(), text.as_bytes());
 }
 

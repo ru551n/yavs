@@ -76,6 +76,15 @@ system does not allow it, and nothing has to be set.
   ``glibc.malloc.hugetlb=1`` (glibc 2.35 and later) gives the effect for the whole heap, and is not needed otherwise. Other tunables change nothing here.
 * Other systems (musl, macOS, Windows) run as before, on ordinary pages.
 
+Antivirus on Windows
+--------------------
+
+On Windows a real-time antivirus scanner looks at every file yavs creates or changes in ``yavs-cache/``, and a run that
+compiles a lot creates many: cold runs, and many tests run in parallel, are slowed the most. Excluding the directory that
+holds the work libraries (the output directory of your test runner), or the ``yavs.exe`` process, from real-time scanning
+removes most of that cost. Exclusions are a security setting: on a managed machine, ask whoever manages it. Warm runs read
+what is stored and create few files, so they gain less.
+
 Threads
 -------
 

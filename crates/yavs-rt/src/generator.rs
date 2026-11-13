@@ -69,8 +69,14 @@ pub trait Generator: Send {
         Default::default()
     }
 
-    /// Record that `name` (with `len` IR instructions) was compiled, for `cache_list`.
-    fn cache_note(&self, _name: &str, _len: u32) {}
+    /// Record that `name` (with `len` IR instructions) was compiled, for `cache_list`; kept until
+    /// `cache_flush`.
+    fn cache_note(&mut self, _name: &str, _len: u32) {}
+
+    /// Store what the compiles since the last call add to the cache's lists (`cache_note`, the
+    /// routes): the compile thread calls it between compiles and after waits for work, at most every
+    /// `FLUSH_EVERY`, and when it ends, not after every compile (each store is a file written).
+    fn cache_flush(&mut self) {}
 
     /// Until switched off, `compile` links what the cache has and compiles nothing.
     fn cached_only(&mut self, _on: bool) {}

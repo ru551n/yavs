@@ -32,19 +32,20 @@ impl std::ops::Deref for Data {
 }
 
 /// The file's bytes, or `None` when it cannot be opened. A file that cannot be mapped (an empty
-/// one, a file system without mapping) is read instead. With `touch` (Unix) the entry's time is
-/// refreshed through the open file (the old way opened it again for writing: three system calls);
-/// failing is harmless.
+/// one, a file system without mapping) is read instead. With `touch` the entry's time is refreshed
+/// when it is older than `TOUCH_AFTER` (`refresh`); failing is harmless.
 pub(crate) fn open(path: &Path, touch: bool) -> Option<Data> {
     let mut f = fs::File::open(path).ok()?;
-    // One question to the system serves the length of the mapping.
+    // One question to the system serves the length of the mapping and the age of the entry.
     let meta = f.metadata().ok()?;
-    #[cfg(unix)]
-    if touch {
-        let _ = f.set_modified(std::time::SystemTime::now());
+    let recent = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < crate::TOUCH_AFTER);
+    if touch && !recent {
+        refresh(&f, path);
     }
-    #[cfg(not(unix))]
-    let _ = touch;
     // SAFETY: entries are never written in place: a writer fills a temporary file and renames it
     // over the entry, a prune or clean removes the name, and an open mapping keeps its pages
     // either way (Unix; on Windows removing a mapped file fails and is ignored). The bytes a
@@ -63,6 +64,28 @@ pub(crate) fn open(path: &Path, touch: bool) -> Option<Data> {
     let mut v = Vec::new();
     f.read_to_end(&mut v).ok()?;
     Some(Data::Read(v))
+}
+
+/// Set the entry's time to now. Unix: through the open file (the old way opened it again for
+/// writing: three system calls).
+#[cfg(unix)]
+fn refresh(f: &fs::File, _: &Path) {
+    let _ = f.set_modified(std::time::SystemTime::now());
+}
+
+/// Windows: a file opened for reading cannot take a new time, so it is opened once more with the
+/// right to set attributes only, not to write (a writer's handle makes a real-time antivirus scan
+/// the file again when it is closed).
+#[cfg(windows)]
+fn refresh(_: &fs::File, path: &Path) {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    const FILE_WRITE_ATTRIBUTES: u32 = 0x100;
+    if let Ok(f) = fs::OpenOptions::new()
+        .access_mode(FILE_WRITE_ATTRIBUTES)
+        .open(path)
+    {
+        let _ = f.set_modified(std::time::SystemTime::now());
+    }
 }
 
 /// Give the memory the allocator holds but the program no longer uses back to the system.

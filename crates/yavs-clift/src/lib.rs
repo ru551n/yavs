@@ -98,6 +98,8 @@ pub struct First {
     jit: Jit,
     /// Functions whose native-frame code was reported already.
     reported: std::collections::HashSet<FuncId>,
+    /// `cache_note`s not stored yet, oldest first.
+    noted: Vec<(String, u32)>,
 }
 
 #[cfg(feature = "clift")]
@@ -106,6 +108,7 @@ impl First {
         Ok(First {
             jit: Jit::new()?,
             reported: Default::default(),
+            noted: Vec::new(),
         })
     }
 }
@@ -132,8 +135,13 @@ impl yavs_rt::Generator for First {
         cache::compiled_list()
     }
 
-    fn cache_note(&self, name: &str, len: u32) {
-        cache::add_compiled(name, len);
+    fn cache_note(&mut self, name: &str, len: u32) {
+        self.noted.push((name.to_string(), len));
+    }
+
+    fn cache_flush(&mut self) {
+        cache::add_compiled(&std::mem::take(&mut self.noted));
+        self.jit.flush_routes();
     }
 
     fn cached_only(&mut self, on: bool) {
@@ -159,7 +167,6 @@ impl yavs_rt::Generator for First {
             return Err(lower::NOT_CACHED.into());
         }
         self.jit.finalize()?;
-        self.jit.flush_routes();
         let mut out = yavs_rt::native::Compiled {
             run: frame.map(|(cid, _)| self.jit.entry(cid)),
             nregs: f.reg_ty.len(),

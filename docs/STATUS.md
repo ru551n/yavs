@@ -8145,11 +8145,12 @@ actual that no process owns (`Builder::constant_source`). A formal on a guarded,
 or with a user resolution function, keeps its edges. Record ports with a null field collapse too. Measured on a chain of
 stream stages with one `inout` record per interface (`tready` inside), interpreter instructions per stage and clock:
 4.2-4.4 times the two-record `in`/`out` form before, 1.5-1.65 after (the rest is the general drive path of leaves with two
-sources); a shared bus of 256 `inout` slaves: 28.6 G to 24.5 G instructions, and 3.1 G with resolution once per update
-(#1139) against 7.3 G without the collapse. Checked: differential corpus (695) at 1 and 4 threads shuffled on the
+sources); a shared bus of 256 `inout` slaves: 7.3 G to 3.1 G instructions (the `out` form: 2.8 G). Checked: differential
+corpus (704) at 1 and 4 threads shuffled on the
 interpreter, the default tier, `yavs-clift-check` and `yavs-auto-warm`, and with `--no-collapse-ports`; GRLIB leon3mp and
 Microwatt CoreMark whole runs equal to main; new corpus tests `hierarchy/inout_port_collapse`, `inout_record_lanes`,
-`inout_port_collapse_force`, `inout_port_collapse_parts`, `inout_port_collapse_external`, `inout_port_defaults`; perf designs
+`inout_port_collapse_force`, `inout_port_collapse_parts`, `inout_port_collapse_external`, `inout_port_defaults`,
+`inout_port_default_slices`, `inout_port_conv_read`, `inout_port_user_resolution`; perf designs
 `port_inout_record`, `port_inout_default`, `port_null_record`. Not covered: conversions in port maps, partial (per-field)
 association, mode-view ports.
 

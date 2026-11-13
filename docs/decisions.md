@@ -1418,7 +1418,9 @@ a note and a help suggesting an access type, as the reference simulators reject 
   formal keeps the formal's default as its initial value where it differs from the actual's
   (`DriverDecl::init`, kernel `Builder::driver_init`), and the elements of the formal without a source
   of their own (no driver, no deeper port) keep contributing the formal's default as a source of the
-  actual that no process owns (`NetGraph::consts`, kernel `Builder::constant_source`). Why it keeps
+  actual that no process owns (`NetGraph::consts`, kernel `Builder::constant_source`). The actual of a
+  converted `in` port inside reads the formal and is no source of it (`collapse.rs` `conv_reads`):
+  counting it as one dropped the default of a formal read only through such a conversion. Why it keeps
   every result: the effective value of an `inout` port is its actual's (LRM 14.7.3.3), so values,
   events, `'last_value` and the delta of each change are the actual's either way, and a formal is
   active when its actual is (14.7.3.1), so activity and `'transaction` are too; the actual's driving
@@ -1436,7 +1438,8 @@ a note and a help suggesting an access type, as the reference simulators reject 
   collapsed it costs what the two-record `in`/`out` form costs. `--no-collapse-ports`, `--dap` and
   `--vhpi` keep every port apart. Tests: `hierarchy/inout_port_collapse`, `inout_record_lanes`,
   `inout_port_collapse_force`, `inout_port_collapse_parts`, `inout_port_collapse_external`,
-  `inout_port_defaults`; perf designs `port_inout_record`, `port_inout_default`; unit test
+  `inout_port_defaults`, `inout_port_default_slices`, `inout_port_conv_read`,
+  `inout_port_user_resolution` (a mean resolution that keeps its edges); perf designs `port_inout_record`, `port_inout_default`; unit test
   `inout_ports_collapse_into_their_actuals`.
 - **A null field does not keep a record port apart** (proposed on perf/skid-inout, 2026-11-13, awaiting
   the maintainer; extends the entries above): a formal leaf with no element (a null field, such as an

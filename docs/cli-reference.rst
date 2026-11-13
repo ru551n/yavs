@@ -267,7 +267,7 @@ Arguments:
 
 .. option:: --no-collapse-ports
 
-   Keep every ``in`` port its own signal instead of an alias of its actual (to compare against the default).
+   Keep every port its own signal instead of an alias of its actual (to compare against the default).
 
 .. option:: -g NAME=VALUE
 
@@ -356,7 +356,7 @@ Arguments:
 
 .. option:: --no-collapse-ports
 
-   Keep every ``in`` port its own signal instead of an alias of its actual (to compare against the default).
+   Keep every port its own signal instead of an alias of its actual (to compare against the default).
 
 .. option:: -g NAME=VALUE
 

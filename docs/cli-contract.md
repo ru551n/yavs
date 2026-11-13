@@ -480,12 +480,16 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   - `--shuffle[=SEED]` (seed 1 without a value) prints ``note: process order is shuffled with seed N;
     replay it with `--shuffle=N` `` on stderr at the start, and the runtime diagnostics of a shuffled
     run repeat the seed. That is the only run-time randomness; there is no time-based seed.
-- `--no-collapse-ports` (`run` and `elab`): keep every `in` port its own signal. By default the
-  formal of an `in` port whose actual is a signal name (a whole signal, record elements, an
-  element or a slice), with no conversion and no force or release of the port, is an alias of its actual: no separate signal
-  and no copy per delta. Output, waves and `'path_name` are the same either way; a forced port,
-  and every port under `--dap` or `--vhpi` (a debugger or plugin may force or deposit any port),
-  stay apart. For comparing against the uncollapsed design.
+- `--no-collapse-ports` (`run` and `elab`): keep every port its own signal. By default the
+  formal of a port whose actual is a signal name (a whole signal, record elements, an element or a
+  slice), with no conversion and no force or release of the port, is an alias of its actual: no
+  separate signal and no copy per delta. That holds for `in` ports, for `out` and `buffer` ports
+  that are the only source of their actual, and for `inout` ports (their drivers drive the actual;
+  an element without a driver keeps the port's default as a source); a port with a user resolution
+  function or on a guarded, forced or whole-resolved actual stays apart. Output, waves and
+  `'path_name` are the same either way; a forced port, and every port under `--dap` or `--vhpi` (a
+  debugger or plugin may force or deposit any port), stay apart. For comparing against the
+  uncollapsed design.
 - `--time-report`: when the simulation ends (any outcome after elaboration) print the wall and
   CPU seconds of each phase to standard error, one line per phase and a total:
   `time-report: PHASE wall=S cpu=S`, with PHASE one of `analyze` (library loading, parsing and

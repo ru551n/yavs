@@ -946,6 +946,19 @@ case!(
     &[],
     [("resolutions", Max(158)), ("cycles", Max(301))]
 );
+// Direct drivers assigned again in one activation (a default then an override, loops of drives
+// to one element, an integer register twice, a vector whole twice then one element of it).
+case!(
+    redrive,
+    "sum=4017",
+    &[],
+    [
+        ("direct_codes", Max(4966)),
+        ("direct_planes", Max(149)),
+        ("direct_bytes", Max(199)),
+        ("general_assigns", Max(0)),
+    ]
+);
 // Implicit signals in the design do not take the other signals off the fast update paths: only
 // the updates in which a source of an implicit signal has activity, or one is due, run the general
 // path (1342 of 1342 without this); the implicit signals still see every event of their sources.
@@ -1807,6 +1820,19 @@ mod clift {
             ("cb_drive", Min(900)),
             ("cb_wait", Max(19)),
             ("cb_wait_same", Max(1018)),
+        ]
+    );
+    // The design of `redrive` compiled: the drives of one activation kept by compiled code reach
+    // the kernel together (`TierHost::drive_bits`).
+    clift_case!(
+        redrive,
+        "redrive",
+        "sum=4017",
+        [
+            ("direct_codes", Max(316)),
+            ("direct_planes", Max(366)),
+            ("direct_bytes", Max(199)),
+            ("general_assigns", Max(0)),
         ]
     );
     clift_case!(

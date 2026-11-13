@@ -1,7 +1,7 @@
 -- An adder-tree stage as a function on an unconstrained array of vectors (passed as data and
 -- bounds, `Param::flat`), declared in the process, its result sized from the argument's length:
--- a process copy calls a copy of the function for the bounds it passes (#1122), which folds what
--- they fix.
+-- a process copy calls a copy of the function for the bounds it passes (#1122), which folds the
+-- lengths, the local's descriptor and the positions.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;

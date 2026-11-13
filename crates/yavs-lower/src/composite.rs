@@ -431,12 +431,10 @@ impl Fx<'_, '_> {
                             // Element and field constraints too (#637).
                             self.check_index_range(indexes.as_deref(), k, rc, r, span)?;
                             let d = self.dir_reg(r.dir);
+                            // One `MakeDope`: the optimiser knows the words it wrote.
                             let at = self.offset(dst, 24 * k as u32);
-                            self.store(at, r.left, Width::B8);
-                            let at = self.offset(dst, 24 * k as u32 + 8);
-                            self.store(at, r.right, Width::B8);
-                            let at = self.offset(dst, 24 * k as u32 + 16);
-                            self.store(at, d, Width::B8);
+                            let parts = self.fb.regs(&[r.left, r.right, d]);
+                            self.emit(Inst::MakeDope { at, parts });
                         }
                     }
                     _ => {

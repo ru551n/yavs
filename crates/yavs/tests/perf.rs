@@ -1301,7 +1301,7 @@ fn spec_record_var() {
 
 /// A function on an unconstrained array of vectors, declared in the process and called with the
 /// bounds of static signals: a process copy calls a copy of it for those bounds (#1122), which
-/// folds what they fix: the same report, fewer ops.
+/// folds the lengths, the descriptor of its local and the positions: the same report, fewer ops.
 #[test]
 fn sub_flat_bounds() {
     let d = tempdir("sub_flat_bounds");
@@ -1317,7 +1317,7 @@ fn sub_flat_bounds() {
     check_bounds(
         "sub_flat_bounds",
         &copies,
-        &[("spec_subs", Min(2)), ("ops", Max(283700))],
+        &[("spec_subs", Min(2)), ("ops", Max(269800))],
     );
 }
 

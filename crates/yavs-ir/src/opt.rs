@@ -1439,6 +1439,9 @@ struct Opt<'a> {
     /// Registers that point into the descriptor of a heap object whose bytes are known: the
     /// bytes and the pointer's offset in them.
     rdesc: FxMap<Reg, (Rc<[u8]>, u32)>,
+    /// The `NewFrame` objects whose descriptor bytes the code only reads (`frame_descs_read`),
+    /// worked out once per walk when first asked.
+    nf_read: Option<FxMap<Reg, ()>>,
     code: Vec<Inst>,
     operands: Vec<Reg>,
     blocks: Vec<(u32, u32)>,
@@ -1553,6 +1556,7 @@ impl<'a> Opt<'a> {
             wf: None,
             fid: None,
             rdesc: FxMap::default(),
+            nf_read: None,
             code,
             operands,
             blocks: f.blocks.values().iter().map(|b| (b.start, b.end)).collect(),
@@ -3822,6 +3826,7 @@ impl<'a> Opt<'a> {
         let mut work: Vec<Step> = Vec::new();
         self.mval.clear();
         self.rdesc.clear();
+        self.nf_read = None;
         self.lin.clear();
         self.pend = None;
         // The declarative part of a process runs once: its blocks come before the body.
@@ -4855,9 +4860,17 @@ impl<'a> Opt<'a> {
         let Inst::Pos { what, .. } = self.code[pc] else {
             return false;
         };
-        let Opn::A(AddrSpace::Inst, _) = self.opn(dope) else {
-            return false;
+        // Instance data in a copy; in a copy of a subprogram also bounds it was made for and a
+        // local's descriptor of known bytes (so no `Pos` reads them from the frame).
+        let known = match self.opn(dope) {
+            Opn::A(AddrSpace::Inst, _) => true,
+            Opn::A(AddrSpace::Frame, _) => self.f.kind != FuncKind::Process,
+            Opn::R(r) => self.f.kind != FuncKind::Process && self.rdesc.contains_key(&r),
+            _ => false,
         };
+        if !known || self.inst.is_none() {
+            return false;
+        }
         let Some((l, r, d)) = self.const_dim(self.opn(dope), dim) else {
             return false;
         };
@@ -4906,6 +4919,101 @@ impl<'a> Opt<'a> {
         self.split = true;
         self.simplify(pc);
         true
+    }
+
+    /// Whether the code only reads the descriptor of the `NewFrame` object `q`: it reaches the
+    /// first `dsize` bytes only by loads, as a descriptor operand or as the source of a `Copy`,
+    /// directly or through an `Index` by a constant inside them; any other use of `q` (a store, a
+    /// move, a call) keeps the descriptor unknown. One scan of the code answers for every object.
+    fn frame_desc_read(&mut self, q: Reg) -> bool {
+        if self.nf_read.is_none() {
+            let mut size: FxMap<Reg, u32> = FxMap::default();
+            let mut konst: FxMap<Reg, i64> = FxMap::default();
+            for i in &self.code {
+                match *i {
+                    Inst::NewFrame { dst, dsize, .. } if dsize > 0 && self.single(dst) => {
+                        size.insert(dst, dsize);
+                    }
+                    Inst::Const { dst, v } if self.single(dst) => {
+                        konst.insert(dst, v);
+                    }
+                    _ => {}
+                }
+            }
+            // Registers pointing into a descriptor: by the object they point into.
+            let mut inside: FxMap<Reg, Reg> = FxMap::default();
+            for i in &self.code {
+                if let Inst::Index {
+                    dst,
+                    base,
+                    pos,
+                    stride,
+                } = *i
+                    && let Some(&n) = size.get(&base)
+                    && let Some(&p) = konst.get(&pos)
+                    && p.checked_mul(i64::from(stride))
+                        .is_some_and(|o| o < i64::from(n))
+                    && self.single(dst)
+                {
+                    inside.insert(dst, base);
+                }
+            }
+            let mut bad: FxMap<Reg, ()> = FxMap::default();
+            for i in &self.code {
+                let reads: &[Reg] = match i {
+                    Inst::Load { addr, .. } => std::slice::from_ref(addr),
+                    Inst::DopeLen { dope, .. }
+                    | Inst::Pos { dope, .. }
+                    | Inst::SlicePos { dope, .. } => std::slice::from_ref(dope),
+                    Inst::LayoutOf { desc, .. } => std::slice::from_ref(desc),
+                    Inst::Copy { src, .. } => std::slice::from_ref(src),
+                    _ => &[],
+                };
+                let both = match *i {
+                    Inst::SubtypeCheck { dope, want, .. } => [dope, want],
+                    _ => [Reg(u32::MAX); 2],
+                };
+                let index_base = match *i {
+                    Inst::Index { dst, base, .. } if inside.contains_key(&dst) => Some(base),
+                    // Into the data: a pointer the descriptor is not reached by.
+                    Inst::Index {
+                        base, pos, stride, ..
+                    } => size.get(&base).and_then(|&n| {
+                        konst
+                            .get(&pos)
+                            .and_then(|&p| p.checked_mul(i64::from(stride)))
+                            .filter(|&o| o >= i64::from(n))
+                            .map(|_| base)
+                    }),
+                    _ => None,
+                };
+                let mut note = |r: Reg| {
+                    if reads.contains(&r) || both.contains(&r) || index_base == Some(r) {
+                        return;
+                    }
+                    if size.contains_key(&r) {
+                        bad.insert(r, ());
+                    } else if let Some(&b) = inside.get(&r) {
+                        bad.insert(b, ());
+                    }
+                };
+                i.visit(&mut |r, role, _| {
+                    if role == Role::Use {
+                        note(r);
+                    }
+                });
+                if let Some(l) = i.list() {
+                    for k in l.start..l.start + l.len {
+                        if let Some(&r) = self.operands.get(k as usize) {
+                            note(r);
+                        }
+                    }
+                }
+            }
+            let ok = size.into_keys().filter(|r| !bad.contains_key(r));
+            self.nf_read = Some(ok.map(|r| (r, ())).collect());
+        }
+        self.nf_read.as_ref().is_some_and(|m| m.contains_key(&q))
     }
 
     /// Is the first instruction after `pc` in its block that reads `r` an add, subtract or
@@ -5447,6 +5555,37 @@ impl<'a> Opt<'a> {
                     self.cse(pc, Some(dst), Key::Field(b, l, n));
                 }
             }
+            // A local's object starts with the bytes of `desc`: when all are known (a pool
+            // constant, a copy's facts, a `MakeDope` of constants), its descriptor is, since
+            // nothing writes the descriptor of a variable after it is made.
+            Inst::NewFrame {
+                dst, desc, dsize, ..
+            } if self.inst.is_some()
+                && self.single(dst)
+                && dsize > 0
+                && dsize <= 64
+                && dsize % 8 == 0
+                && self.frame_desc_read(dst) =>
+            {
+                let d = self.opn(desc);
+                let mut b = vec![0u8; dsize as usize];
+                let known = self.read_at(d, 0, &mut b)
+                    || b.chunks_mut(8).enumerate().all(|(k, w)| {
+                        match self
+                            .part_key(d, 8 * k as i64)
+                            .and_then(|key| self.tbl.get(&key))
+                        {
+                            Some(Val::K(v)) => {
+                                w.copy_from_slice(&v.to_le_bytes());
+                                true
+                            }
+                            _ => false,
+                        }
+                    });
+                if known {
+                    self.rdesc.insert(dst, (Rc::from(b), 0));
+                }
+            }
             _ => {}
         }
     }
@@ -5590,13 +5729,15 @@ impl<'a> Opt<'a> {
             // register keeps the same number.)
             let bytes = i64::from(a.w.bytes());
             // (A variable in the frame and a descriptor are also written whole, by a `Copy`; a
-            // slot whose descriptor a copy of a subprogram knows stays a load, `Opt::wf`.)
+            // slot whose descriptor or bounds a copy of a subprogram knows stays a load,
+            // `Opt::wf`.)
             if self.in_descriptor(o)
                 || (!process
-                    && self
-                        .wf
-                        .as_ref()
-                        .is_some_and(|w| u32::try_from(o).is_ok_and(|o| w.descs.contains_key(&o))))
+                    && self.wf.as_ref().is_some_and(|w| {
+                        u32::try_from(o).is_ok_and(|o| w.descs.contains_key(&o))
+                            || usize::try_from(o)
+                                .is_ok_and(|o| w.bytes.get(o).is_some_and(Option::is_some))
+                    }))
                 || f.locals.iter().any(|l| {
                     crate::is_frame_object(l)
                         && i64::from(l.slot) <= o

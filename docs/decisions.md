@@ -14813,12 +14813,38 @@ Written by Claude.
 - **Decision: a subprogram declared in a process or subprogram can have copies when its code reaches no frame around
   it** (no `AddrOf Up`; `reads` gives no keys otherwise). The copy keeps its parent, so it is called and finds its
   static link as the subprogram does. The adder-tree function is declared in its process.
+- **Decision: in a copy, a local's descriptor of known bounds is known** (yavs-lower `fill_desc`, yavs-ir `opt.rs`).
+  `fill_desc` writes each dimension's bounds with one `MakeDope` instead of three stores (every tier; the same
+  bytes), so the walk knows the words; a `NewFrame` whose descriptor bytes are all known (a pool constant, a copy's
+  facts, a `MakeDope` of constants) gives its object those bytes (`Opt::rdesc`) when the code reaches the
+  descriptor only by loads, as a descriptor operand or as a `Copy` source (`frame_desc_read`, one scan of the code
+  for every object), since nothing writes a variable's descriptor after it is made. Only in copies. So the local
+  `r : t_arr(0 to (src'length + 1) / 2 - 1)` of a copy has constant bounds: no layout, its loop bounds and the
+  result's bounds are constants.
+- **Decision: in a copy of a subprogram, a `Pos` of the bounds the copy was made for or of such a local's
+  descriptor is a `Check` and a subtraction** (`pos_to_check`, as for instance data since #519), so no `Pos` reads
+  the frame's or the object's words, and compiled code of the copy has no frame address left to register.
 - **Tests.** `sub_copies.rs`: flat arrays ascending, descending and with negative bounds, a slice of run-time bounds
   (no key), nested functions calling a sibling, a nested procedure that drives the process's signal, a nested
   function that reads the process's variable (no copy), and `an_index_error_in_a_copy_for_bounds_has_its_own_text`
   (an index out of the parameter's range and out of a local's range, ascending and descending: the same text and
   exit as the plain call on every tier). `perf.rs` `sub_flat_bounds`: `spec_subs` at least 2, `ops` 288 943 to
-  275 443.
+  275 443 with the keys, 261 943 with the local's descriptor and the positions.
+- **Numbers** (`--features clift` bench builds of `33cee310d` and this change, the issue's testbench with 16 units;
+  instructions are exact counts, slopes between 20 k and 100 k cycles or whole 1 M-cycle runs):
+
+  | | loop in the process | function before | function after | function over loop |
+  |---|---:|---:|---:|---:|
+  | interpreter, slope | 69.09 G | 77.89 G | 72.10 G | 1.127 to 1.044 |
+  | default tier, 1 M cycles, warm | 357.5 G | 398.9 G | 385.6 G | 1.116 to 1.079 |
+  | default tier, 1 M cycles, fresh library | 359.5 G | 401.4 G | 388.6 G | 1.117 to 1.081 |
+  | `--tier=clift`, slope | 28.58 G | 32.01 G | 31.94 G | unchanged (no copies) |
+
+  Cycles of the default tier, five interleaved pairs on one core of a busy host: the function form after over before
+  1.00 in the median pair (0.95 to 1.03), the loop form 1.00; the drop in instructions is not resolved in time.
+  With no copy cap (`YAVS_SPEC_CAP=0`, default tier, measured on `d5016b89c`) the function form ran as many
+  instructions as the loop (28.93 G against 28.91 G, slope): what remains at the default tier is the instances the
+  cap leaves on shared code (7 copies, 10 of 17 processes capped).
 - **Not done.** Shared code makes no copies (an optimised body without instance data must depend on the program
   alone, and copy ids are given out per run), so a process the copy cap leaves shared, and `--tier=clift`, keep the
   plain call.

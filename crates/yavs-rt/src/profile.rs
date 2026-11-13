@@ -151,6 +151,9 @@ pub(crate) struct Snapshot {
     pub lost: Vec<u32>,
     /// The functions compiled at once because of the profile.
     pub early: Vec<u32>,
+    /// Those of `early` some of whose code (a copy, a part) this run compiled rather than linked from
+    /// the cache.
+    pub fresh: Vec<u32>,
     /// The functions `Worker::unrepaid` held and that stay uncompiled, with the microseconds they
     /// were seen interpreted.
     pub held: Vec<(u32, u64)>,
@@ -160,7 +163,9 @@ pub(crate) struct Snapshot {
 
 /// The profile after a run that took `cpu` simulation CPU microseconds, from the one before it. The
 /// functions compiled early for the first time are judged by the run as a whole: it took clearly
-/// less CPU time than the run before (`better`), or they are lost. The functions a trial took back
+/// less CPU time than the run before (`better`), or they are lost; but a run that paid compiles of
+/// them rather than links (`Snapshot::fresh`) loses none of those: it carries their cost, often for
+/// some copies only, and the next run judges them again. The functions a trial took back
 /// are lost. The functions seen for a good part of the sampled time join the hot ones; the ones
 /// already there stay and add this run's seen time to theirs (#679).
 pub(crate) fn next(earlier: &Profile, snap: &Snapshot, cpu: u64) -> Profile {
@@ -191,7 +196,10 @@ pub(crate) fn next(earlier: &Profile, snap: &Snapshot, cpu: u64) -> Profile {
                 .for_each(|h| h.2 = true);
             p.base = Some(cpu);
         }
-        (false, _) => tried.iter().for_each(|&b| lose(&mut p, b)),
+        (false, _) => tried
+            .iter()
+            .filter(|b| !snap.fresh.contains(b))
+            .for_each(|&b| lose(&mut p, b)),
     }
     let floor = HOT_MIN_US.max(snap.total / HOT_DIV);
     for &(b, us) in &snap.seen {
@@ -277,6 +285,7 @@ mod tests {
             seen: seen.to_vec(),
             lost: lost.to_vec(),
             early: early.to_vec(),
+            fresh: Vec::new(),
             held: Vec::new(),
             ran: Vec::new(),
         }
@@ -334,6 +343,19 @@ mod tests {
             Some(2_000_000),
             "the run before stays the one to beat"
         );
+        // A run that compiled one of them rather than linking it does not lose that one: the next
+        // run judges it again.
+        let paid = next(
+            &one,
+            &Snapshot {
+                fresh: vec![6],
+                ..snap(&[(5, 400_000), (6, 90_000)], &[5, 6], &[])
+            },
+            2_050_000,
+        );
+        assert_eq!(paid.hot, [(6, 180_000, false)]);
+        assert_eq!(paid.lost, [5]);
+        assert_eq!(paid.base, Some(2_000_000));
         // Judged ones are not judged again; a new hot function is tried on top of them.
         let more = next(
             &kept,

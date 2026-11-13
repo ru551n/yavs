@@ -436,6 +436,9 @@ fn the_snapshot_names_the_processes_that_are_hot_and_would_gain() {
     w.early_done.push(p);
     let snap = w.snapshot();
     assert_eq!((snap.lost, snap.early), (vec![p.0], vec![p.0]));
+    assert!(snap.fresh.is_empty(), "linked, not compiled");
+    w.early_fresh.extend([p.0, p.0]);
+    assert_eq!(w.snapshot().fresh, [p.0]);
 }
 
 /// The CPU time of a look is shared by the functions running in it, and the time seen running

@@ -1375,6 +1375,8 @@ struct Worker {
     /// (a root being compiled that way, `early_root`, is charged no budget and is not held to `cold`).
     lost_bases: Vec<u32>,
     early_done: Vec<FuncId>,
+    /// The processes some of whose early compiles this run were not links from the cache.
+    early_fresh: Vec<u32>,
     early_root: bool,
     /// The count rule is on (`count_rule_on`, a run with a budget and Cranelift alone): a function
     /// the interpreter entered `COUNT` times is asked for (`Tier::asked`) and compiled unless `waits`.
@@ -1680,6 +1682,7 @@ impl Worker {
             copies_seen: Vec::new(),
             lost_bases: Vec::new(),
             early_done: Vec::new(),
+            early_fresh: Vec::new(),
             early_root: false,
             counted: false,
             waiting: Vec::new(),
@@ -3279,6 +3282,9 @@ impl Worker {
             .collect();
         early.sort_unstable();
         early.dedup();
+        let mut fresh = self.early_fresh.clone();
+        fresh.sort_unstable();
+        fresh.dedup();
         // (What an earlier run held and this one has not compiled yet stays, its run counted again.)
         let mut ids = self.unrepaid_ids.clone();
         ids.extend(self.carried.keys().filter(|b| {
@@ -3327,6 +3333,7 @@ impl Worker {
             seen,
             lost: self.lost_bases.clone(),
             early,
+            fresh,
             held,
             ran,
         }
@@ -3640,6 +3647,7 @@ impl Worker {
         let t0 = std::time::Instant::now();
         let cpu0 = self.trace.as_ref().and_then(|_| cpu_thread());
         let hits = gen_.cache_hits();
+        let stores = gen_.cache_stores();
         if self.trace.is_some() && refused.is_none() {
             in_flight(Some(format!(
                 "{id} `{}` ({} IR) {part:?}",
@@ -3684,6 +3692,9 @@ impl Worker {
                     .map_or(0, |d| d.as_micros());
                 // A module linked from the compilation cache says nothing about compile cost.
                 let hit = gen_.cache_hits() != hits;
+                // Compiled code stored means compiled, not linked (a compile whose tree hit somewhere
+                // is a `hit` all the same).
+                let fresh = gen_.cache_stores() != stores;
                 // Charged by the model, not by the time it took (#670). What the profile asked for
                 // is not charged: the budget is for what the looks find.
                 if !self.early_root {
@@ -3774,6 +3785,9 @@ impl Worker {
                 }
                 if self.early_root && !self.early_done.contains(&id) {
                     self.early_done.push(id);
+                }
+                if self.early_root && fresh {
+                    self.early_fresh.push(self.prog.base_of(id).0);
                 }
                 (self.note)(id, Ok(took));
                 true

@@ -58,6 +58,12 @@ pub trait Generator: Send {
         0
     }
 
+    /// Modules compiled and stored in its compilation cache so far (a compile that changes it made new
+    /// code).
+    fn cache_stores(&self) -> usize {
+        0
+    }
+
     /// The functions (name and IR instruction count) the cache has compiled code of.
     fn cache_list(&self) -> std::collections::HashSet<(String, u32)> {
         Default::default()

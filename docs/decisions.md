@@ -11253,7 +11253,8 @@ cache emptied), medians of 4 to 6 worlds; the Nth run is the Nth run of one worl
   run for processes of 10 percent of its time that gained nothing.
 - **Decision: the loss list is filled by the run as a whole too.** Functions compiled early for the first time are judged by the run after: at least
   3 percent less simulation CPU time than the run before (`profile::better`) keeps them (`hot` judged, `base` is this run), anything else puts them
-  on `lost` for good and keeps `base`. A trial that takes a process back (`Worker::trial`) puts it there too. One run is lost to a loser at most:
+  on `lost` for good and keeps `base` (amended by the user, 2026-11-13: a run that compiled rather than linked them loses none, see
+  "`--tier=auto`: an early compile is judged by a run that linked it"). A trial that takes a process back (`Worker::trial`) puts it there too. One run is lost to a loser at most:
   the neorv32 process above, listed after one run, was lost after the next, the run that compiled it (the old policy's trial could not have caught it,
   its share was under an eighth). A later run only adds: a function that becomes hot after the earlier ones joined is judged on top of them (hill
   climbing, one step a run; `sc5_fifo_repack` needs the third run for all six processes).
@@ -15992,3 +15993,30 @@ price first, and what the rest of the run repays" (2026-11-08) and the user ruli
   and dropped: it compiled a large callee of a scoreboard at a price nothing weighed.
 - **Test**: `auto.rs` `a_later_run_compiles_what_the_rest_of_it_repays` (a held callee is let through by its blocked
   callers' time).
+
+## `--tier=auto`: an early compile is judged by a run that linked it (yavs-rt `profile.rs`, `auto.rs`, yavs-clift, perf/skid-autopolicy, user, 2026-11-13)
+
+Amends the loss list of "`--tier=auto` run-to-run profile" (user, 2026-10-25).
+
+- **Finding** (agent). The profile judges a process compiled early for the first time by the run that compiled it: at
+  least `GAIN_PERCENT` (3) less simulation CPU than the run before keeps it, anything else loses it for good. That run
+  pays the compile, often of some copies only, and on a short run identical states differ by more than the bar, so
+  the verdict leaned toward a loss, and a lost process is never tried again: a small testbench settled in a slow
+  state in most fresh worlds.
+- **Decision** (user, 2026-11-13): a run that compiled rather than linked some of an early function's code does not
+  lose it on a verdict that is not better; it stays hot and unjudged, and the next run, which links it from the
+  cache, judges it (`Snapshot::fresh`, `Worker::early_fresh`). A compile is fresh when the generator stored a module
+  during it (`Generator::cache_stores`, Cranelift's store count), not when the cache hit count did not move: a
+  first compile of a native tree in which one callee hit moves it too. Rationale: the run that pays a compile is the
+  worst judge of it; a true loser is lost one run later. A better run keeps as before, a linked function is judged as
+  before, and the profile text is unchanged.
+- **Measured, with the rule above** (agent, `--tier=auto`, all-thread instructions, 6 fresh cache worlds per binary and
+  test, 5 runs each, bands bootstrapped over worlds against an A/A of the base): 8 tests (`hdlm_lfsr`,
+  `neorv32_dual_full`, `olo_fix_cordic_rot`, `sc5_fifo_repack`, `uvvm_axistream_vvc`, `uvvm_sb_slv`, `uvvm_util_rand`,
+  `vunit_axi_dma`), nothing outside the A/A band, settled runs and the sum of runs 1 to 5 level in the geomean. The
+  two targeted testbenches lose their slow states. Not covered: `osvvm_axi4_random` (the design `unrepaid` was tuned
+  on), GRLIB, Microwatt.
+- **Tests**: `profile.rs` `functions_compiled_early_are_judged_by_the_run_after_them` (a fresh function is not lost),
+  `policy_tests.rs` `the_snapshot_names_the_processes_that_are_hot_and_would_gain` (`fresh` deduplicated, empty for
+  links). No unit test drives a compile that stores a module (the policy's stub generator compiles nothing): `fresh`
+  from `cache_stores` is checked by the measurements only.

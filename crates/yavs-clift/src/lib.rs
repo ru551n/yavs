@@ -124,6 +124,10 @@ impl yavs_rt::Generator for First {
         cache::cache_stats().0
     }
 
+    fn cache_stores(&self) -> usize {
+        cache::cache_stats().1
+    }
+
     fn cache_list(&self) -> std::collections::HashSet<(String, u32)> {
         cache::compiled_list()
     }

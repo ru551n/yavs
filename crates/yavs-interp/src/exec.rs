@@ -441,6 +441,24 @@ fn slots_of<'a>(frames: &[Frame], root: &'a [u8], sstack: &'a [u8], i: usize) ->
     }
 }
 
+/// The 8-byte word at `off` of a frame's slots.
+#[inline(always)]
+fn slot_word(slots: &[u8], off: u32) -> Option<u64> {
+    let b = slots.get(off as usize..)?.get(..8)?;
+    Some(u64::from_le_bytes(b.try_into().ok()?))
+}
+
+/// What the last shared-roots scan of a serial process read (`Machine::publish_shared`), when it
+/// read nothing else (`valid`): the function of each frame and, at the root-map offsets of each,
+/// the words of its slots.
+#[derive(Default)]
+struct Published {
+    valid: bool,
+    funcs: Vec<u32>,
+    at: Vec<(u32, u32)>,
+    words: Vec<u64>,
+}
+
 /// The bytes of a composite variable in the root frame (`yavs_ir::FRAME_OBJECT`).
 #[inline(always)]
 fn object_of(root: &[u8], i: usize) -> Option<&[u8]> {
@@ -668,6 +686,8 @@ pub(crate) struct Machine {
     pub heap: Heap,
     /// The roots scan of the last `publish_shared`, kept for its buffers.
     rscratch: heap::Refs,
+    /// Where the roots the last `publish_shared` published were read from.
+    published: Published,
     /// A native `ieee` subprogram made a report at the stop severity: the process ends after
     /// the call, as after `Inst::Report`.
     pub ieee_stop: bool,
@@ -1386,6 +1406,7 @@ impl Machine {
             spec_at: u32::MAX,
             hot: false,
             rscratch: heap::Refs::default(),
+            published: Published::default(),
             execs: 0,
             spin: spin_range().0,
             ret_bounds: [0; 3],
@@ -2286,33 +2307,74 @@ impl Machine {
     /// At a suspension or the end of this (serial) process: publish its shared-heap roots as
     /// entry `slot` of the shared state (assigned on the first call), for the collection at
     /// the next safepoint (`crate::SharedGc`), and make the shared heap's deallocated slots
-    /// reusable that no serial process's frames still address.
+    /// reusable that no serial process's frames still address. Roots read from the same words
+    /// as the entry's are that entry: no scan (`published_same`).
+    #[inline(always)]
     pub(crate) fn publish_shared(&mut self, slot: &mut Option<usize>) {
         // Checked first: a process without the shared state builds no roots (#356).
         if self.sh.is_none() {
             return;
         }
-        // Frames whose functions have no root map and no recorded temporaries hold no roots: an
-        // entry that is empty already stays right without a scan.
         if let Some(i) = *slot
-            && self.troots.is_empty()
-            && self.rootless()
-            && let Some(sh) = self.sh.as_ref()
-            && sh
-                .procs
-                .get(i)
-                .is_some_and(|p| p.as_ref().is_some_and(ProcRoots::is_empty))
+            && self.published_same(i)
         {
             if cfg!(debug_assertions) || heap::STRESS {
-                let r = self.refs_in(false);
-                assert!(
-                    r.is_some_and(|r| r.handles.is_empty() && r.pinned(SHARED_HEAP).is_empty()),
-                    "internal error: a serial process skipped publishing roots it holds"
-                );
+                self.check_published(i);
             }
             self.recycle_shared();
             return;
         }
+        self.publish_scan(slot);
+    }
+
+    /// Whether the shared-heap roots of this suspension are those entry `i` holds: frames of the
+    /// functions of the last scan, no recorded temporary, and the same words in the slots their
+    /// root maps name (all handles or addresses, whose roots are a function of the words alone;
+    /// root maps are per function, not per pc). Only this process writes its entry.
+    #[inline(always)]
+    fn published_same(&self, i: usize) -> bool {
+        let p = &self.published;
+        p.valid
+            && self.troots.is_empty()
+            && self.frames.len() == p.funcs.len()
+            && (self.frames.iter().zip(&p.funcs)).all(|(f, &g)| f.func.0 == g)
+            && self
+                .sh
+                .as_ref()
+                .is_some_and(|sh| sh.procs.get(i).is_some_and(Option::is_some))
+            && (p.at.is_empty() || self.words_same())
+    }
+
+    /// The words of `published_same` (out of line: most serial processes have none).
+    #[inline(never)]
+    fn words_same(&self) -> bool {
+        let p = &self.published;
+        (p.at.iter().zip(&p.words))
+            .all(|(&(k, o), &w)| self.fslots(k as usize).and_then(|s| slot_word(s, o)) == Some(w))
+    }
+
+    /// Debug and `gc-stress` builds: a scan left out must find what the entry holds.
+    #[cold]
+    #[inline(never)]
+    fn check_published(&self, i: usize) {
+        let r = self.refs_in(false);
+        let mine = self.sh.as_ref().and_then(|sh| sh.procs.get(i)?.clone());
+        let same = r.zip(mine).is_some_and(|(r, mine)| {
+            let shared = r
+                .handles
+                .iter()
+                .copied()
+                .filter(|&h| heap::tag_of(h) == heap::SHARED);
+            shared.eq(mine.handles.iter().copied()) && r.pinned(SHARED_HEAP) == mine.pinned
+        });
+        assert!(
+            same,
+            "internal error: a serial process skipped publishing roots that changed"
+        );
+    }
+
+    #[inline(never)]
+    fn publish_scan(&mut self, slot: &mut Option<usize>) {
         crate::SHARED_PUBLISHES.fetch_add(1, Ordering::Relaxed);
         #[cfg(test)]
         ROOT_BUILDS.with(|c| c.set(c.get() + 1));
@@ -2347,18 +2409,39 @@ impl Machine {
             sh.procs[i] = None;
         }
         self.rscratch = r;
+        self.note_published(ok);
         self.recycle_shared();
     }
 
-    /// Whether no frame's function has a root map (the usual process: one frame).
-    #[inline(always)]
-    fn rootless(&self) -> bool {
+    /// Keep what the scan just published was read from, when that is all it read: the frames'
+    /// functions and the words of their root-map slots, every one a handle or an address.
+    fn note_published(&mut self, ok: bool) {
+        let mut p = std::mem::take(&mut self.published);
+        p.funcs.clear();
+        p.at.clear();
+        p.words.clear();
+        p.valid = ok && self.troots.is_empty() && self.note_words(&mut p);
+        self.published = p;
+    }
+
+    fn note_words(&self, p: &mut Published) -> bool {
         let prog = &self.rt.prog;
-        let none = |f: &Frame| prog.func_inline(f.func).is_some_and(|f| f.roots.is_empty());
-        match &self.frames[..] {
-            [f] => none(f),
-            fs => fs.iter().all(none),
+        for (k, fr) in self.frames.iter().enumerate() {
+            let (Some(f), Some(s)) = (prog.func(fr.func), self.fslots(k)) else {
+                return false;
+            };
+            p.funcs.push(fr.func.0);
+            for &(o, kind) in &f.roots {
+                let (yavs_ir::RootKind::Handle | yavs_ir::RootKind::Addr, Some(w)) =
+                    (kind, slot_word(s, o))
+                else {
+                    return false;
+                };
+                p.at.push((k as u32, o));
+                p.words.push(w);
+            }
         }
+        true
     }
 
     /// Make the shared heap's deallocated slots reusable that no serial process's frames still

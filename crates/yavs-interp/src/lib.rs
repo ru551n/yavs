@@ -197,12 +197,6 @@ pub(crate) struct ProcRoots {
     pub pinned: Vec<u32>,
 }
 
-impl ProcRoots {
-    fn is_empty(&self) -> bool {
-        self.handles.is_empty() && self.pinned.is_empty()
-    }
-}
-
 /// Work counters of serial processes (`YAVS_COUNTERS`): activations run by the general path
 /// (`InterpProcess::exec`, with a debugger or before the start), and shared-heap root scans of
 /// `Machine::publish_shared` (one with no roots to find is skipped).

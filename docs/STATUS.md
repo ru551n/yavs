@@ -8154,6 +8154,13 @@ Microwatt CoreMark whole runs equal to main; new corpus tests `hierarchy/inout_p
 `port_inout_record`, `port_inout_default`, `port_null_record`. Not covered: conversions in port maps, partial (per-field)
 association, mode-view ports.
 
+GRLIB leon3mp runs 4 fewer process activations with the collapse (same cycles, events per signal and output). They are
+its two testbench clock generators (`clk <= not clk after ...`, `spw_clk <= ...`) at 250, 260 and 510 ns: in those
+cycles a timed transaction of an uncollapsed pad port was due with the clock edge, so the update took the general path
+and the generators ran as processes; with the pad collapsed the cycle takes the timed fast path, where a generator's
+driver re-arms itself (`update_timed`, `rearm`) with the same transaction. Found by logging every counted run on both
+sides (a throwaway build).
+
 ## Out-port collapsing (#528, 2026-10-22)
 
 `out` and `buffer` ports that are the only source of their actual's elements collapse into the actual like `in` ports

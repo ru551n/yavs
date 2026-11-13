@@ -131,6 +131,8 @@ Each archive unpacks into one directory of the same name (without ``.tar.gz`` or
    * - ``LICENSE-IEEE``, ``LICENSE-IEEE-VITAL``, ``LICENSE-SYNOPSYS``
      - The licence and notices of the built-in ``std`` and ``ieee`` sources, the VITAL packages and the
        Synopsys packages.
+   * - ``LICENSE-MIMALLOC``
+     - Windows archives only: the licence (MIT) of the memory allocator built into ``yavs.exe``.
    * - ``README.txt``
      - A few lines on this archive: version, target, CPU variant, the files, how to start.
 

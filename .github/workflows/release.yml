@@ -170,6 +170,13 @@ jobs:
           dir="dist/$name"
           mkdir -p "$dir"
           cp LICENSE-MIT LICENSE-APACHE "$dir/"
+          # The Windows executable has the mimalloc allocator built in (MIT, crates/yavs/Cargo.toml).
+          mi=
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            cp LICENSE-MIMALLOC "$dir/"
+            mi="
+            LICENSE-MIMALLOC   the licence of the memory allocator built into the simulator"
+          fi
           cp lib/LICENSE "$dir/LICENSE-IEEE"
           cp lib/LICENSE-IEEE-VITAL lib/LICENSE-SYNOPSYS "$dir/"
           cp stage/yavs* "$dir/"
@@ -197,7 +204,7 @@ jobs:
             README.txt   this file
             LICENSE-MIT, LICENSE-APACHE   the licences of yavs, MIT or Apache-2.0 at your option
             LICENSE-IEEE, LICENSE-IEEE-VITAL, LICENSE-SYNOPSYS   the licence and notices of the built-in
-                                          std and ieee sources, the VITAL packages and the Synopsys packages
+                                          std and ieee sources, the VITAL packages and the Synopsys packages$mi
 
           Start: put this directory on PATH, then
             yavs --version

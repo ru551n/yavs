@@ -28,6 +28,10 @@ yavs-rt = { path = "../yavs-rt", optional = true }
 yavs-clift = { path = "../yavs-clift", optional = true }
 yavs-vhpi = { path = "../yavs-vhpi" }
 
+# Windows only: the allocator of the process (src/main.rs `GLOBAL`); MIT, LICENSE-MIMALLOC.
+[target.'cfg(windows)'.dependencies]
+mimalloc = { version = "0.1.52", default-features = false }
+
 [build-dependencies]
 sha2 = "0.11"
 

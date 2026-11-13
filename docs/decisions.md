@@ -16246,3 +16246,25 @@ Amends "Stage entries of a design that loads units late" (#671).
   exclusions: cold `-p 1` 66.1 to 51.3 s, `-p 4` 44.9 to 28.3 s, `-p 16` 63.0 to 32.0 s, warm 55.2 to 46.6, 29.4 to
   23.4, 35.3 to 24.6 s (yavs/sim2 cold `-p 16` 2.05 to 1.04); with the runner's exclusions 7 to 13 percent faster.
   Linux runner: level within run-to-run noise (cold 25.4/12.6/16.0 s before, 25.5/12.5/15.6 after).
+
+## The allocator on Windows (yavs `main.rs` `GLOBAL`, user, 2026-11-13: mimalloc approved as a new dependency)
+
+- **Finding** (agent, profile on a Windows and a Linux runner with the same CPU model). The system heap (`HeapAlloc`,
+  the low-fragmentation heap) took 9 to 11 percent of the CPU of a short or compiled simulation on Windows against 5
+  to 9 percent for the Linux allocator with the C library's symbols (10.0 percent of a short interpreted test against
+  6.3, 11 of a long compiled one against 5.4); the 4 to 5 percent in page faults are not the heap's (below).
+- **Decision**: mimalloc (MIT, `LICENSE-MIMALLOC`, shipped in the Windows archives) as the global allocator on
+  Windows only; Linux keeps the system allocator. Memory never crosses to a plugin's or foreign library's allocator:
+  VHPI and foreign calls pass pointers into yavs's memory, the VHPI shim allocates and frees in C. Compared with a
+  private system heap that keeps freed memory committed (tried, not kept: `RtlCreateHeap` with 1 GiB decommit thresholds), on one
+  runner (EPYC 7763, runner exclusions): allocator share of a short interpreted test 8.9 percent (system heap), 9.6
+  (kept heap), 4.1 (mimalloc); CPU of the test 3198, 3100, 2863 ms; a long compiled test 9120, 8841, 8196 ms. The
+  24-test suite on top of the clock and cache changes: mimalloc 5 to 16 percent faster in every cell (`-p 1`, 4, 16, cold
+  and warm, with and without real-time scanning; yavs/sim2 warm `-p 16` 0.76 to 0.67), the kept heap level with the
+  system heap. So the system heap's decommit is not the cost, its allocation path is. Tests on Windows: the workspace and
+  the Cranelift tests pass, the release configuration builds; the profile-guided build of the release workflow
+  (a dry run of `release.yml` on a side branch, 2026-11-13) built both Windows archives with it (x86-64-v3 and
+  `-compat`: trained on the 21 cases, the final build compiling no function the profile lacks), `LICENSE-MIMALLOC` and
+  its README line in each, the smoke test and the corpus on the archive's binary passing (721 of 721 in each of five
+  tiers); the Linux archive of the same run has neither file nor line.
+- **Not measured**: peak memory under mimalloc on a big design; a crash report now shows a second allocator's frames.

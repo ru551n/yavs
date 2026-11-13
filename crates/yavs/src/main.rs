@@ -346,6 +346,15 @@ fn guard(format: MessageFormat, color: bool, f: impl FnOnce() -> ExitCode) -> Ex
 /// Code for a file that cannot be read.
 const READ_ERROR: &str = "E0100";
 
+/// Windows: the process's allocator is mimalloc, not the system heap (`HeapAlloc`), which took 9 to 11
+/// percent of the CPU of a short or compiled simulation there (glibc's allocator 5 to 9 percent on
+/// Linux); mimalloc 4 to 5 (docs/decisions.md "The allocator on Windows"). Memory never crosses to a
+/// plugin's or a foreign library's own allocator: VHPI and foreign calls pass pointers into yavs's
+/// memory and copy into theirs.
+#[cfg(windows)]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() -> ExitCode {
     // A build that assumes x86-64-v3 (the x86_64 release archives) says why it cannot run here,
     // before any other code, instead of dying with an illegal instruction (`cpu.rs`).

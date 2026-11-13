@@ -57,6 +57,10 @@ The policy times its looks and trials on Windows x86_64 by the simulation thread
 
 Compiled code is created in the cache under its own name (like the analysed units, on every platform), the list of compiled functions and the routes are stored at most every 200 ms and when the compile thread ends instead of after every compile, and a read refreshes an entry's time only when it is older than 2 s. A cold run of one test makes about half the file creates and a fortieth of the renames; the format is unchanged. decisions.md "Fewer file operations per cache entry".
 
+### mimalloc as the allocator on Windows (2026-11-13)
+
+`yavs.exe` uses mimalloc (MIT, `LICENSE-MIMALLOC` in the Windows archives) instead of the system heap, whose allocation path took 9 to 11 percent of a short or compiled simulation's CPU there; Linux keeps the system allocator. decisions.md "The allocator on Windows".
+
 ### A lone byte register entry committed with a store (2026-11-13)
 
 The kernel's batch loop hands the one direct byte entry of an integer or enumeration register process on with a push instead of a slice copy (a `memmove` call): 7 to 9 instructions fewer per activation of such a process, nothing for logic registers. Counter `byte_moves` (moves of more than one entry), bounded at 0 on the perf design `byte_store`.

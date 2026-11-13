@@ -74,6 +74,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Decision | Why | Source |
 |---|---|---|
 | Stop at the first failed stage; never exit 0 after an error | Error motto | `docs/plan.md` "Error-handling motto", `docs/cli-contract.md` 0 |
+| Windows: the global allocator is mimalloc (`main.rs` `GLOBAL`, a `cfg(windows)` dependency), Linux keeps the system one; no memory is freed across to a plugin's or foreign library's allocator. The release workflow ships `LICENSE-MIMALLOC` in the Windows archives | The system heap took 9 to 11 percent of a short simulation's CPU on Windows, mimalloc halves it | `docs/decisions.md` "The allocator on Windows" (user, 2026-11-13) |
 | Exit codes: analyze 0/1 (file error)/2 (usage)/3 (ICE); run 0, 1 (failure, report at/above `--exit-severity`, error reported), 2 (usage, analysis or elab error), 3 (internal) | The test runner reads only zero/non-zero, humans need the class | `docs/cli-contract.md` 4, 5 |
 | `--exit-severity` default `failure`; without the option an `error` report still makes the run exit 1 at the end, unless `ClearVhdlAssert` cleared the std.env assert counts (#191); given explicitly, only reports at or above the level count (#498) | Like the reference simulators (user, 2026-10-18, 2026-10-21) | `docs/decisions.md` "Runtime: default exit severity" |
 | `std`/`ieee` are provided by yavs; mapping them is `E0102` (except `analyze --bootstrap`) | One std/ieee per design | `docs/cli-contract.md` 3 |

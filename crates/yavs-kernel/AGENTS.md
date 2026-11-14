@@ -226,6 +226,5 @@ python3 tools/difftest/difftest.py --candidate yavs  # end to end, threads 1 and
 
 - Kernel API changes ripple into `yavs-interp` (process), `yavs-elab` (builder) and the CLI;
   `docs/design/ir.md` sections 3.2 and 6 describe the seam.
-- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:kernel`): none
-  on the cycle's threading (#103 done).
-  Questions on report order vs the reference simulator: #11, #12.
+- Open issues: none (checked 2026-11-14, `gh issue list -R ru551n/yavs --label crate:kernel`;
+  #103, the cycle's threading, and the report-order questions #11 and #12 are closed).

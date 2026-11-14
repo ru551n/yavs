@@ -149,7 +149,7 @@ a call into your module in a small commit.
 | `Obj(d)` signal | `SigVal` then `SigReadScalar` (scalar) or `SigRead` into a temp |
 | `Obj(d)` loop / generate param | `Load` of its slot / instance slot |
 | `Call` implicit, scalar int/phys `add sub mul div rem mod exp neg abs pos` | checked `Add`..`Pow`, `Neg`, `Abs` (rule 7), then `Check{Range}` against the result subtype when narrower than the base |
-| `Call` implicit, real arithmetic | `FAdd`..`FPow` |
+| `Call` implicit, real arithmetic | `FBin` (`FOp::Add`..`FOp::Pow`) |
 | `Call` implicit `eq neq lt le gt ge` on scalars | `Cmp` / `FCmp` |
 | `Call` implicit `and or xor nand nor xnor not` on BOOLEAN/BIT | short-circuit `CondBr` for `and`/`or`/`nand`/`nor` (LRM 9.2.2), else `And/Or/Xor/Not` |
 | `Call` implicit `minimum maximum` scalar | `Cmp` + select |
@@ -309,11 +309,13 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
 - `&` on arrays of composites (#234): every operand is a piece of `put_pieces`, an element
   operand one row; an element subtype the type leaves open takes the left operand's (its
   element part, or the element itself), every operand checked against it.
-- Not yet: methods of
+- Not yet (statement of 2026-10-18; #71 has been closed since and this list is not re-checked): methods of
   protected types in generic package instances (generic instantiation, #71), user
   resolution of logic leaves.
 
 ### Requests from lower2 to lower
+
+(Record of 2026-10-18; #69 and #71 are closed since.)
 
 1. `textio/std_logic_textio` needs case statements over arrays (`case tri is when o"0"`,
    #69) and object aliases (`alias sv : std_ulogic_vector ... is s`) in std_logic_1164's body.
@@ -324,7 +326,7 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
 Answered (yavs-lower, 2026-10-18): 1 (`UnitIr::values`, `write_value`), 2 (ports and signals of
 outer regions are `SignalIr`s), 3 (processes in blocks and generates, generate parameters as
 values; yavs-elab keys instance data by region), 5 (array signals, element and slice targets
-and sensitivity with kernel offsets as below). Open: 4 (`'path_name`), 6 (guarded blocks).
+and sensitivity with kernel offsets as below). Open: 4 (`'path_name`), 6 (guarded blocks). (Correction 2026-11-14: both are done since; `pathname.rs` lowers `'path_name`/`'instance_name` and `Fx::guard` carries the `GUARD` signal of a guarded block; #68 and #76 are closed.)
 Added by yavs-elab (#77, 2026-10-18): `Lowerer::package_value(decl)`, a thunk returning a
 package constant's value (a cell, or a composite's fat pair), so elaboration reads a package
 constant with an impure initial value from the package data instead of evaluating it again.

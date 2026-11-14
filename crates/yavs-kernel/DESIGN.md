@@ -398,4 +398,4 @@ process code, and a panic anywhere in the kernel (a broken invariant), is caught
   queue drain, port and composite-group signals, implicit signals, the wake and the commit
   phase (the commit is small next to the update, and its waiter lists and queue cross
   processes). Parallelising port signals would need level-ordered waves over the port graph.
-- Preemption is O(elements times pending transactions) per assignment.
+- Preemption was O(elements times pending transactions) per assignment (2026-10-18). Since #519 it decides the deletions of a vector driver 64 elements at a time (`Waveform::schedule`, `split_kept`; `AGENTS.md` section 3); the cost of a scalar or small assignment is unchanged.

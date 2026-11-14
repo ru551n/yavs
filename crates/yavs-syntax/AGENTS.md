@@ -102,5 +102,5 @@ cargo run -p yavs -- parse --std 2019 --dump-ast f.vhd   # inspect the tree
 
 - `yavs-sem` is the only real consumer of AST details; check its `CONTRIBUTING.md` for requests
   addressed to the parser.
-- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:syntax`): #87 periodic fuzz and parse-corpus gate; #29 generic map on variable declarations (2019 generic
-  protected types).
+- Open issues: none (checked 2026-11-14, `gh issue list -R ru551n/yavs --label crate:syntax`; #87
+  and #29 of the snapshot of 2026-10-18 are closed).

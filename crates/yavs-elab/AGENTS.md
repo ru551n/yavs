@@ -178,9 +178,6 @@ python3 tools/difftest/difftest.py --candidate yavs
 - Requests to lowering: `crates/yavs-lower/DESIGN.md` "Requests from yavs-elab"; to sem:
   `crates/yavs-sem/CONTRIBUTING.md` "Requests from elab"; to IR/interp:
   `crates/yavs-ir/README.md` "Requests".
-- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:elab`): #41
-  `GenSelect::Index` evaluated without the generate's scope; #64 wire into `yavs run`; #68
-  guarded assignments, force/release, implicit signal attributes; #74 conversion functions and
-  non-static actuals in port maps; #76 package signals, external names, user resolution; #220
-  the rest of E2106 (null multi-dimensional aggregates, `'PATH_NAME` of named entities other than design units); #164 subprogram-local resolution functions; #93 external names. Older
-  unlabeled: #6 remaining elaboration features.
+- Open issues: none (checked 2026-11-14, `gh issue list -R ru551n/yavs --label crate:elab`; the
+  snapshot of 2026-10-18 named #41, #64, #68, #74, #76, #93, #164, #220 and the older #6, all
+  closed since).

@@ -11463,4 +11463,5 @@ both themes; only the wordmark colour changes. The files are not read by the Sph
 
 The Read the Docs site shows the logo in the sidebar header: the dark SVG from `assets/` (light wordmark, teal fin) on a dark
 header background, set in `docs/conf.py` (`html_logo`, `style_nav_header_background`). The theme has no dark mode, so
-there is one variant. No favicon yet.
+there is one variant. The landing page shows the light SVG centred above the title (the page body is white in every colour
+scheme). No favicon yet.

@@ -10,7 +10,6 @@
   colour scheme, so the landing page uses the light variant (dark wordmark) as a plain image: a `prefers-color-scheme` switch
   there would put the light wordmark of the dark variant on a white page. No favicon is generated: the
   artwork is not cropped or altered.
-- The sidebar shows only the logo, not the text "yavs" beside it (`logo_only` in `docs/conf.py`). user, 2026-11-14.
 
 ## README logo (user, 2026-11-14)
 

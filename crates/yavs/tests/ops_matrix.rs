@@ -189,7 +189,7 @@ const SCALAR_INLINE: &str = "a scalar operation in line; no row yet";
 /// The decision for the family `f` on operands of the class `c`.
 fn cell(f: Family, c: TypeClass) -> Vec<Item> {
     use Family::*;
-    use Item::{Later, NotApplicable as Na, Pending};
+    use Item::{NotApplicable as Na, Pending};
     use TypeClass::*;
     let rows = |r: Vec<Row>| {
         r.into_iter()
@@ -310,20 +310,17 @@ fn cell(f: Family, c: TypeClass) -> Vec<Item> {
             )]
         }
         (MEq | MNeq, BitArray) => rows(match_rows(f, c)),
-        (MEq | MNeq, LogicArray) => vec![
-            Pending("std_ulogic_vector: the ieee `MatchEq` native, guarded by `ieee_paths`"),
-            Later(
-                5,
-                "numeric_std `?=` above 1024 elements: the general path on the heap",
-            ),
-        ],
+        (MEq | MNeq, LogicArray) => {
+            let mut v = vec![Pending(
+                "std_ulogic_vector: the ieee `MatchEq` native, guarded by `ieee_paths`",
+            )];
+            v.extend(rows(nstd_match_rows(f)));
+            v
+        }
         (MLt | MLe | MGt | MGe, Bit | StdULogic) => {
             vec![Pending("a scalar native (a fixed cost); no row yet")]
         }
-        (MLt | MLe | MGt | MGe, LogicArray) => vec![Later(
-            5,
-            "numeric_std `?<` and the like above 1024 elements: the general path on the heap",
-        )],
+        (MLt | MLe | MGt | MGe, LogicArray) => rows(nstd_match_rows(f)),
         (MEq | MNeq, Boolean | Int | Real | Phys | Enum | Char | Access | File)
         | (MLt | MLe | MGt | MGe, Boolean | Int | Real | Phys | Enum | Char | Access | File)
         | (
@@ -1020,6 +1017,51 @@ fn cat_rows(c: TypeClass) -> Vec<Row> {
         )
     };
     (r.ops1, r.ops0) = (ops("b1"), ops("b0"));
+    vec![r]
+}
+
+/// The matching relations of numeric_std on `unsigned` ('0'/'1' data: `?=` and `?/=` against the
+/// fold's results, the ordering ones against `lex`), both ways round: one `ieee` native each.
+fn nstd_match_rows(f: Family) -> Vec<Row> {
+    let (op, swap) = match f {
+        Family::MEq => ("?=", "?="),
+        Family::MNeq => ("?/=", "?/="),
+        Family::MLt => ("?<", "?>"),
+        Family::MLe => ("?<=", "?>="),
+        Family::MGt => ("?>", "?<"),
+        _ => ("?>=", "?<="),
+    };
+    // The relation of `a` and `{b}` from `lex` (`{e}`), as '0' or '1'.
+    let rel = match f {
+        Family::MEq => "{e} = 0",
+        Family::MNeq => "{e} /= 0",
+        Family::MLt => "{e} < 0",
+        Family::MLe => "{e} <= 0",
+        Family::MGt => "{e} > 0",
+        _ => "{e} >= 0",
+    };
+    let name = format!("nstd_{}", f.as_str());
+    let (mut r, t) = native_row(&name, "nstd_match", TypeClass::LogicArray);
+    r.native = false;
+    r.uses = "use ieee.numeric_std.all;";
+    r.setup = r
+        .setup
+        .replace(t.elem, "'1' when i mod 3 = 0 else '0'")
+        .replace(&t.toggle.replace("{x}", "b1(b1'right)"), "not b1(b1'right)");
+    r.vars = r.vars.replace("std_ulogic_vector(", "unsigned(");
+    r.vars = r
+        .vars
+        .replace("x, y : std_ulogic_vector", "x, y : unsigned");
+    r.vars += "\n    variable q0, q1 : std_ulogic;";
+    r.setup += &format!(
+        "\n    q1 := '1' when {} else '0'; q0 := '1' when {} else '0';",
+        rel.replace("{e}", "e1"),
+        rel.replace("{e}", "0")
+    );
+    let ops = |b: &str, q: &str| {
+        format!("check((a {op} {b}) = {q}, true); check(({b} {swap} a) = {q}, true);")
+    };
+    (r.ops1, r.ops0) = (ops("b1", "q1"), ops("b0", "q0"));
     vec![r]
 }
 

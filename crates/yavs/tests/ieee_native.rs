@@ -2913,6 +2913,69 @@ fn native_wide_matches_bodies() {
     diff_run("wide", &tb(&g.out), "t", "2008", 1000 / scale());
 }
 
+/// The matching relations, `std_match`, the predefined `?=` and the relations of vectors around and
+/// above the 1024 elements of the word buffers (the paths that walk the planes in place), every
+/// element kind, the integer forms, against the bodies.
+#[test]
+fn native_long_matching_matches_bodies() {
+    let mut g = Gen {
+        rng: Rng(91),
+        out: String::new(),
+        n: 0,
+    };
+    const LENS: [usize; 7] = [1000, 1023, 1024, 1025, 1100, 2048, 2049];
+    fn long(g: &mut Gen, ty: &str, len: usize, base: &str) -> String {
+        let kind = g.rng.below(6);
+        let s: String = base
+            .chars()
+            .chain(std::iter::repeat('0'))
+            .take(len)
+            .enumerate()
+            .map(|(i, c)| match kind {
+                // One element changed, near either end or in the middle.
+                0 if i == [0, len / 2, len - 1][g.rng.below(3) as usize] => {
+                    b"01LHUXZW-"[g.rng.below(9) as usize] as char
+                }
+                1 => b"01LH"[g.rng.below(4) as usize] as char,
+                2 if g.rng.below(500) == 0 => b"UXZW-"[g.rng.below(5) as usize] as char,
+                _ => c,
+            })
+            .collect();
+        let (l, asc) = (g.rng.below(9) as i64 + 3000, g.rng.below(2) == 0);
+        format!("{ty}(\"{s}\", {l}, {asc})")
+    }
+    for _ in 0..iters(6) {
+        let n = LENS[g.rng.below(LENS.len() as u64) as usize];
+        let m = if g.rng.below(3) == 0 {
+            LENS[g.rng.below(LENS.len() as u64) as usize]
+        } else {
+            n
+        };
+        let base: String = (0..n.max(m))
+            .map(|_| b"01"[g.rng.below(2) as usize] as char)
+            .collect();
+        for (ty, nat) in [("uv", true), ("gv", false)] {
+            let (a, b) = (long(&mut g, ty, n, &base), long(&mut g, ty, m, &base));
+            for op in [
+                "?=", "?/=", "?<", "?<=", "?>", "?>=", "<", "<=", ">", ">=", "=", "/=",
+            ] {
+                g.case(&format!("{a} {op} {b}"), "img");
+                g.case(&format!("{a} {op} {a}"), "img");
+                let i = if nat { "70000" } else { "(-70000)" };
+                g.case(&format!("{a} {op} {i}"), "img");
+                g.case(&format!("{i} {op} {a}"), "img");
+            }
+            let c = long(&mut g, ty, n, &base);
+            g.case(&format!("std_match({a}, {c})"), "img");
+        }
+        let (a, b) = (long(&mut g, "sv", n, &base), long(&mut g, "sv", n, &base));
+        g.case(&format!("{a} ?= {b}"), "img");
+        g.case(&format!("{a} ?/= {b}"), "img");
+        g.case(&format!("std_match({a}, {b})"), "img");
+    }
+    diff_run("long", &tb(&g.out), "t", "2008", 200 / scale());
+}
+
 /// Dividends and divisors of `n` elements: zero, all ones, the most negative value, one, an
 /// alternating pattern, weak bits and weak signs, metavalues. A divisor that is zero (no `1` or
 /// `H`, no metavalue) is the body's error and ends the run, so it is not in the second list.

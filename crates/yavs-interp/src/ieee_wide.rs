@@ -214,9 +214,9 @@ pub(crate) fn minmax(m: &mut Machine, a: &[u64], max: bool, signed: bool, form: 
     emit(m, if less == max { &y } else { &x }, n, Bounds::Down)
 }
 
-/// The element count and plane blocks (32 bytes each) of the array operand at cell `i`, up to
-/// [`MAX_BITS`] elements; `None` for a null or longer one.
-fn planes<'a>(m: &'a Machine, a: &[u64], i: usize) -> Option<(usize, &'a [u8])> {
+/// The element count and plane blocks (32 bytes each) of the array operand at cell `i`, of any
+/// length (the paths that walk the blocks in place); `None` for a null one.
+fn planes_any<'a>(m: &'a Machine, a: &[u64], i: usize) -> Option<(usize, &'a [u8])> {
     let &[data, left, right, d] = a.get(i..i + ARRAY_REGS)? else {
         return None;
     };
@@ -224,7 +224,6 @@ fn planes<'a>(m: &'a Machine, a: &[u64], i: usize) -> Option<(usize, &'a [u8])> 
     let n = usize::try_from((hi as i64).checked_sub(lo as i64)?)
         .ok()?
         .checked_add(1)?;
-    (n <= MAX_BITS).then_some(())?;
     Some((n, m.rd(data, n.div_ceil(64) as u64 * 32).ok()?))
 }
 
@@ -233,11 +232,11 @@ fn block(b: &[u8], k: usize) -> [u64; 4] {
     [le(&c[0..8]), le(&c[8..16]), le(&c[16..24]), le(&c[24..32])]
 }
 
-/// `std_match` of two vectors of one length over 64 elements (up to [`MAX_BITS`]): an element
-/// matches when either side is `-` or both are `0 1 L H` with the same value. Unequal lengths and
-/// null arrays take the general path.
+/// `std_match` of two vectors of one length over 64 elements (any length: the blocks in place): an
+/// element matches when either side is `-` or both are `0 1 L H` with the same value. Unequal
+/// lengths and null arrays take the general path.
 pub(crate) fn std_match(m: &Machine, a: &[u64]) -> Option<u64> {
-    let ((n, p), (k, q)) = (planes(m, a, 0)?, planes(m, a, A1)?);
+    let ((n, p), (k, q)) = (planes_any(m, a, 0)?, planes_any(m, a, A1)?);
     if n != k {
         return None;
     }
@@ -310,10 +309,10 @@ pub(crate) fn and_code(w: [u64; 3]) -> u64 {
     }
 }
 
-/// The predefined `?=` of two vectors of one length (up to [`MAX_BITS`]): the code of
-/// [`and_code`]; unequal lengths take the general path.
+/// The predefined `?=` of two vectors of one length (any length): the code of [`and_code`];
+/// unequal lengths take the general path.
 pub(crate) fn match_eq(m: &Machine, a: &[u64]) -> Option<u64> {
-    let ((n, p), (k, q)) = (planes(m, a, 0)?, planes(m, a, A1)?);
+    let ((n, p), (k, q)) = (planes_any(m, a, 0)?, planes_any(m, a, A1)?);
     if n != k {
         return None;
     }
@@ -329,24 +328,24 @@ pub(crate) fn match_eq(m: &Machine, a: &[u64]) -> Option<u64> {
     Some(and_code(acc))
 }
 
-/// `?=` of `numeric_std` where a vector is longer than 64 elements (forms as in [`add`]): the
-/// code of [`qeq_code`]. Any element value is taken; null arrays, an integer that does not fit
-/// and more than [`MAX_BITS`] elements take the general path.
+/// `?=` of `numeric_std` where a vector is longer than 64 elements (forms as in [`add`]; any
+/// length, the blocks in place): the code of [`qeq_code`]. Any element value is taken; null
+/// arrays and an integer that does not fit take the general path.
 pub(crate) fn qeq(m: &Machine, a: &[u64], signed: bool, form: u8) -> Option<u64> {
-    // The integer operand as `n`-element words (a vector over 64 elements always holds it).
-    let int = |i: u64, n: usize| Some(int_words(int_operand(i, signed)?, n, signed));
+    // The integer operand (a vector over 64 elements always holds it), as words: `int_word`.
+    let int = |i: u64| int_operand(i, signed);
     let (n, p, k, q, iw) = match form {
         0 => {
-            let ((n, p), (k, q)) = (planes(m, a, 0)?, planes(m, a, A1)?);
+            let ((n, p), (k, q)) = (planes_any(m, a, 0)?, planes_any(m, a, A1)?);
             (n, p, k, q, None)
         }
         1 => {
-            let (n, p) = planes(m, a, 0).filter(|v| v.0 > 64)?;
-            (n, p, n, p, Some(int(*a.get(A1)?, n)?))
+            let (n, p) = planes_any(m, a, 0).filter(|v| v.0 > 64)?;
+            (n, p, n, p, Some(int(*a.get(A1)?)?))
         }
         _ => {
-            let (n, q) = planes(m, a, 1).filter(|v| v.0 > 64)?;
-            (n, q, n, q, Some(int(*a.first()?, n)?))
+            let (n, q) = planes_any(m, a, 1).filter(|v| v.0 > 64)?;
+            (n, q, n, q, Some(int(*a.first()?)?))
         }
     };
     let size = n.max(k);
@@ -355,18 +354,20 @@ pub(crate) fn qeq(m: &Machine, a: &[u64], signed: bool, form: u8) -> Option<u64>
         let s = block(x, (c - 1) / 64);
         s.map(|w| 0u64.wrapping_sub(w >> ((c - 1) % 64) & 1))
     };
-    let ext = |x: &[u8], c: usize, b: usize, valid: u64| {
-        let raw = if b * 64 < c { block(x, b) } else { [0; 4] };
-        let keep = low(c.saturating_sub(b * 64));
-        ext_block(raw, keep, valid & !keep, signed.then(|| sign(x, c)))
-    };
+    let (sp, sq) = (signed.then(|| sign(p, n)), signed.then(|| sign(q, k)));
     let mut acc = [0u64; 3];
     for b in 0..size.div_ceil(64) {
         let valid = low(size - b * 64);
         let (x, y) = match (form, iw) {
-            (0, _) => (ext(p, n, b, valid), ext(q, k, b, valid)),
-            (1, Some(w)) => (ext(p, n, b, valid), [w[b], valid, 0, 0]),
-            (_, Some(w)) => ([w[b], valid, 0, 0], ext(q, k, b, valid)),
+            (0, _) => (ext_at(p, n, b, valid, sp), ext_at(q, k, b, valid, sq)),
+            (1, Some(i)) => (
+                ext_at(p, n, b, valid, sp),
+                [int_word(i, b, signed), valid, 0, 0],
+            ),
+            (_, Some(i)) => (
+                [int_word(i, b, signed), valid, 0, 0],
+                ext_at(q, k, b, valid, sq),
+            ),
             _ => return None,
         };
         for (t, v) in acc.iter_mut().zip(qeq_block(x, y, valid)) {
@@ -377,13 +378,13 @@ pub(crate) fn qeq(m: &Machine, a: &[u64], signed: bool, form: u8) -> Option<u64>
 }
 
 /// The ordering relations `?<` ... of `numeric_std` (forms as in [`add`]) on an operand with a
-/// metavalue other than `-`: the body returns `X` without a report. A `-`, a null array, an
-/// integer that does not fit and more than [`MAX_BITS`] elements take the general path.
+/// metavalue other than `-` (any length): the body returns `X` without a report. A `-`, a null
+/// array and an integer that does not fit take the general path.
 pub(crate) fn order_meta(m: &Machine, a: &[u64], signed: bool, form: u8) -> Option<u64> {
     let (i, ops) = match form {
-        0 => (None, [planes(m, a, 0)?, planes(m, a, A1)?].to_vec()),
-        1 => (Some(*a.get(A1)?), vec![planes(m, a, 0)?]),
-        _ => (Some(*a.first()?), vec![planes(m, a, 1)?]),
+        0 => (None, [planes_any(m, a, 0)?, planes_any(m, a, A1)?].to_vec()),
+        1 => (Some(*a.get(A1)?), vec![planes_any(m, a, 0)?]),
+        _ => (Some(*a.first()?), vec![planes_any(m, a, 1)?]),
     };
     if let Some(i) = i {
         let n = ops[0].0;
@@ -403,6 +404,82 @@ pub(crate) fn order_meta(m: &Machine, a: &[u64], signed: bool, form: u8) -> Opti
         }
     }
     meta.then_some(1)
+}
+
+/// Block `b` of the `c`-element operand `x` extended to the elements `valid` covers: zeros, or
+/// copies of its sign element (`sign`, its plane masks).
+#[inline(always)]
+fn ext_at(x: &[u8], c: usize, b: usize, valid: u64, sign: Option<[u64; 4]>) -> [u64; 4] {
+    let raw = if b * 64 < c { block(x, b) } else { [0; 4] };
+    let keep = low(c.saturating_sub(b * 64));
+    ext_block(raw, keep, valid & !keep, sign)
+}
+
+/// Word `b` of the integer `i` extended to a vector's length (its sign above the first word).
+fn int_word(i: i64, b: usize, signed: bool) -> u64 {
+    match b {
+        0 => i as u64,
+        _ if signed && i < 0 => !0,
+        _ => 0,
+    }
+}
+
+/// [`compare`] of operands of `0 1 L H` where a vector is longer than [`MAX_BITS`] elements,
+/// word by word on the planes in place, both extended to the longer length; a metavalue, a null
+/// array or a negative `natural` takes the general path.
+fn compare_long(m: &Machine, a: &[u64], cmp: Cmp, signed: bool, form: u8) -> Option<u64> {
+    // A vector as its length and planes, an integer as `(0, i)`.
+    let vec = |i: usize| {
+        planes_any(m, a, i)
+            .filter(|v| v.0 > 0)
+            .map(|(n, p)| (n, p, 0))
+    };
+    let int = |c: u64| int_operand(c, signed).map(|i| (0, &[][..], i));
+    let (x, y) = match form {
+        0 => (vec(0)?, vec(A1)?),
+        1 => (vec(0)?, int(*a.get(A1)?)?),
+        _ => (int(*a.first()?)?, vec(1)?),
+    };
+    let size = x.0.max(y.0);
+    if size <= MAX_BITS {
+        return None;
+    }
+    // Every element of each vector `0 1 L H` (planes 1 without 3), before any word is compared.
+    for &(n, p, _) in [&x, &y] {
+        for b in 0..n.div_ceil(64) {
+            let (w, valid) = (block(p, b), low(n - b * 64));
+            if w[1] & !w[3] & valid != valid {
+                return None;
+            }
+        }
+    }
+    // Word `b` of an operand's value extended to `size`: zeros, or its sign element.
+    let word = |&(n, p, i): &(usize, &[u8], i64), b: usize| {
+        if n == 0 {
+            return int_word(i, b, signed);
+        }
+        let neg = signed && block(p, (n - 1) / 64)[0] >> ((n - 1) % 64) & 1 == 1;
+        if b * 64 >= n {
+            return if neg { !0 } else { 0 };
+        }
+        let valid = low(n - b * 64);
+        let v = block(p, b)[0] & valid;
+        if neg { v | !valid } else { v }
+    };
+    let top = (size - 1) / 64;
+    let mut ord = std::cmp::Ordering::Equal;
+    for b in (0..=top).rev() {
+        let (u, v) = (word(&x, b), word(&y, b));
+        ord = if b == top && signed {
+            (u as i64).cmp(&(v as i64))
+        } else {
+            u.cmp(&v)
+        };
+        if ord.is_ne() {
+            break;
+        }
+    }
+    Some(u64::from(holds(cmp, ord)))
 }
 
 /// An integer operand: a NATURAL one (`unsigned`) must not be negative.
@@ -430,8 +507,12 @@ fn cmp_words(x: &W, y: &W, n: usize, signed: bool) -> std::cmp::Ordering {
 }
 
 /// The comparison `cmp` of `numeric_std` (forms as in [`add`]); `None` unless at least one vector
-/// is longer than 64 elements.
+/// is longer than 64 elements. Above [`MAX_BITS`] elements [`compare_long`].
 pub(crate) fn compare(m: &Machine, a: &[u64], cmp: Cmp, signed: bool, form: u8) -> Option<u64> {
+    compare_words(m, a, cmp, signed, form).or_else(|| compare_long(m, a, cmp, signed, form))
+}
+
+fn compare_words(m: &Machine, a: &[u64], cmp: Cmp, signed: bool, form: u8) -> Option<u64> {
     let (n, x, y) = match form {
         0 => {
             let (l, r) = (wide_of(m, a, 0, false)?, wide_of(m, a, A1, false)?);

@@ -224,10 +224,7 @@ fn cell(f: Family, c: TypeClass) -> Vec<Item> {
         (Minimum | Maximum, ArrayOfArrays | Record | Access | File) => vec![Na],
         // Strings (LRM 5.7).
         (ToString, scalars!()) => vec![Pending("the std image natives; no row yet")],
-        (ToString, LogicArray | BitArray) => vec![Later(
-            5,
-            "`to_string` of a vector: through `read_arr`, about 85 instructions per element",
-        )],
+        (ToString, LogicArray | BitArray) => rows(tostr_rows(c)),
         (ToString, ByteArray) => vec![Pending(
             "arrays of a character-literal enumeration other than BIT; no row yet",
         )],
@@ -940,6 +937,38 @@ fn radix_rows(f: Family) -> Vec<Row> {
     r.ops1 = format!("check({name}(b1) = h1, true); check({name}(a) = h0, true);");
     r.ops0 = format!("check({name}(b0) = h0, true); check({name}(a) = h0, true);");
     vec![r]
+}
+
+/// `to_string` of a std_ulogic_vector (every value, and '0'/'1' only) and of a bit_vector, against
+/// strings spelled by an element loop from each element's `'image`.
+fn tostr_rows(c: TypeClass) -> Vec<Row> {
+    let one = |name: &str, binary: bool| {
+        let (mut r, t) = native_row(name, "to_string", c);
+        if binary {
+            r.setup = r
+                .setup
+                .replace(t.elem, "'1' when i mod 3 = 0 else '0'")
+                .replace(&t.toggle.replace("{x}", "b1(b1'right)"), "not b1(b1'right)");
+        }
+        let et = if c == TypeClass::BitArray {
+            "bit"
+        } else {
+            "std_ulogic"
+        };
+        r.vars += "\n    variable s0, s1 : string(1 to W);\n    variable p : positive;";
+        r.setup += &format!(
+            "\n    p := 1;
+    for i in a'range loop s0(p) := {et}'image(a(i))(2); s1(p) := {et}'image(b1(i))(2); p := p + 1; end loop;"
+        );
+        r.ops1 = "check(to_string(b1) = s1, true); check(to_string(a) = s0, true);".into();
+        r.ops0 = "check(to_string(b0) = s0, true); check(to_string(a) = s0, true);".into();
+        r
+    };
+    let mut v = vec![one("to_string", false)];
+    if c == TypeClass::LogicArray {
+        v.push(one("to_string_01", true));
+    }
+    v
 }
 
 /// The std_logic_1164 gates of a std_ulogic_vector and a std_ulogic, both sides ('0'/'1' data:

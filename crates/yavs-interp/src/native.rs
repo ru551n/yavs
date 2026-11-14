@@ -903,6 +903,7 @@ fn composite_text(
             // A string-like row of scalars (the usual `to_string` and `'image` of a vector or
             // a string) is spelled straight from the element codes, with no per-element text.
             if let (1, Some(lits), true) = (nd, chars, scalar) {
+                crate::census::implicit_elems(row);
                 let n = et.elem_size().unwrap_or(el.size) as usize;
                 let mut s = Vec::with_capacity(row as usize + 2);
                 if image {

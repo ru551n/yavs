@@ -11,7 +11,8 @@ a build with a compiled tier, Cranelift as a second generator, port collapsing, 
 processes); `docs/STATUS.md` has the outcome per item. The "measured gap" in section 0 below is the
 2026-10-19 figure and no longer holds: the current comparison with conditions is `docs/performance.md`.
 Statements below that say "no cache", "interpreter only by default" or "LLVM only" describe the state
-of that day.
+of that day. Correction (2026-11-14): the LLVM tier was removed on 2026-11-08 (`docs/decisions.md` "LLVM tier removed") and its
+crate is now `yavs-rt`; every "LLVM tier" and `--tier=llvm` below is the history of that tier, and Cranelift is the compiled tier.
 
 ## 0. Scope, method, caveats
 

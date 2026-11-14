@@ -3,6 +3,11 @@
 For the user to approve before M2 lowering and elaboration rely on it (plan.md M1: "the type
 and constraint model (rule 1) is reviewed before M2 starts"). Issue #96.
 
+Update (2026-11-14): the issues of all eight findings (#98, #100, #102, #104, #106, #108, #109, #111) are closed (all on
+2026-10-18, the day of the review), and no test in `crates/yavs-sem/tests/rule1.rs` is `ignore`d any more: the findings F1 to F7 run as
+ordinary tests (`f1_...` to `f7_...`), so "5 ignored finding tests" below is the state of the review day. The outcome of F8 (#111, a
+decision) is not recorded in this file. The rest of the file is the review as written.
+
 Rule 1 (plan.md): constraints are runtime data on every composite; there is one subtype
 representation and no "maybe static" path. sem.md section 2 makes it concrete: a `SubtypeDef`
 carries one effective, already merged `Constraint`; range bounds are HIR expressions whose folded
@@ -34,8 +39,8 @@ The tests print subtypes in a compact form, built only from public HIR data:
 - Objects: `role class: subtype, bounds from Subtype | Initializer | Actual`.
 
 "M2 gets the bounds from" says where lowering and elaboration must read them at run time. The
-simulator columns are analysis (and elaboration plus run where a top exists) with reference simulators 1, 2 and 3 (versions 1.23-devel,
-7.0.0-dev and 2025.3 (2008 mode)), each under
+simulator columns are analysis (and elaboration plus run where a top exists) with reference simulators 1, 2 and 3 (versions 1.23-devel and
+7.0.0-dev; sim3 in 2008 mode), each under
 `timeout 60 systemd-run --user --scope -p MemoryMax=1G`. The VHDL in the test file is the input
 of those runs.
 

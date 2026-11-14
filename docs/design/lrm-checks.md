@@ -12,7 +12,7 @@ question U-n is resolved below under that policy ("Decisions").
 The verdict of each simulator per construct, with a reproducer, is in
 `docs/design/simulator-discrepancies.md`.
 
-The third reference simulator Starter 2025.3 (2008 and 2019 modes) was added as a third black box after the first pass;
+The third reference simulator (sim3; 2008 and 2019 modes) was added as a third black box after the first pass;
 A commercial simulator was not available.
 
 ## Method and sources
@@ -64,7 +64,7 @@ LCS text was read.
 | L22 | generic subprogram instances whose actuals share a base type (`t => std_ulogic` and `t => std_logic`) | 12.3, 4.5.1 | clear (on the reduced case `tests/discrepancies/homograph-subprogram-instances` sim1 rejects "homograph" and sim2, sim3 and sim4 accept; sim2 rejects the corpus file only because it cannot resolve the reused name in the second instantiation) | homographs in one region: `E1101` (#179, vhdl-ideas `sim/frequency.vhdl` is a design error) |
 | L23 | `open` actuals for sub-elements in an individual association | 6.5.7.1, LCS-2016-001 (2019) | clear; the reference simulator agrees | 2008: `E1311` (the reference simulators reject); 2019: the sub-element stays unassociated, except a port of mode `in` without a default (`E1311`, as the reference simulator) (#178) |
 | L40 | attribute specification of a port in the architecture (#167) | 7.2, 12.1 | unclear, **permissive** | a port or generic of the entity may be decorated in the architecture's declarative part (the reference simulators accept) |
-| L41 | attribute specification of a statement label (#167) | 7.2 | confirmed | written in the declarative part of the construct whose statement part holds the label; applied when the label is declared, `E1100` at the end of the statement part if none is; sequential-statement labels not yet |
+| L41 | attribute specification of a statement label (#167) | 7.2 | confirmed | written in the declarative part of the construct whose statement part holds the label; applied when the label is declared, `E1100` at the end of the statement part if none is; sequential-statement labels: in a process or subprogram the specification names the label of a statement of its body (#645, 2026-10-23, 7ad2163c; not supported before) |
 | L42 | names in the formal part of a sub-element association (#168, #210) | 6.5.7.1 | confirmed | the formal designator names the formal; its index and range expressions are evaluated in the instantiating region (for a subprogram call: the calling region, per overload candidate); a non-static index or range in it is `E1410` |
 | L43 | `'left` and friends of an object of a locally static subtype (#169) | 9.4.2 | confirmed | locally static (so `(buf'left => '0', others => '1')` is legal for `bit_vector(9 downto 0)`); with generic bounds it stays `E1326` (the reference simulators reject too) |
 | L44 | sources of an element of a `std_logic_vector` signal (#170) | 4.6, 14.7.3 | confirmed | a part is resolved when its own subtype or that of an enclosing part is (element resolution of `(resolved) std_ulogic_vector`) |
@@ -697,6 +697,11 @@ The user kept these rows rejected (user, 2026-10-19: keep reject): `overload-by-
 2019 named return value of an access type, `return r of t` (L77, `E1233`).
 
 ## Changes to code paths
+
+Record (2026-11-14): this section was written on 2026-10-18 against the skeleton commit. The listed changes are done
+(`attr.rs` has `record` and `value` on range prefixes and `image` on objects, `RANGE_DIRECTION` is in `lib/std/2019/standard.vhdl` and
+`WellKnown`), and `yavs-sem` has been implemented since (`docs/STATUS.md`); what each future path became is in its item row, not
+re-checked one by one here.
 
 `crates/yavs-sem` on main (skeleton commit `e7c0491`, read only here) has no base range,
 universal preference, aggregate or visibility logic yet. One implemented item is affected:

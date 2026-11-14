@@ -1,6 +1,9 @@
 # M1 design: semantic analysis (`yavs-sem`)
 
 Status: design, binding for M1 once the user has answered the open questions in section 11.
+Record (2026-11-14): `yavs-sem` is implemented and in use (`docs/STATUS.md`, `crates/yavs-sem/AGENTS.md`); this file is the M1 design as
+written on 2026-10-18 and is not kept in step with the code (the checks the code makes are in `lrm-checks.md`, the module map is
+`crates/yavs-sem/AGENTS.md`). Section 9.1 and section 10 are the original plan; see the notes there.
 Inputs: `docs/plan.md` (rules 1, 2, 4, 7, 8, 12, 13, the error-handling motto, 2008+2019
 together, on-demand analysis), `docs/decisions.md`, `lib/README.md`, `lib/NATIVE.md`,
 `crates/yavs-diag`, and the M0 AST (`yavs-syntax`, `ast.rs` on the M0 branch).
@@ -1376,6 +1379,9 @@ Q6 asks the user to confirm the list.
 
 ### 9.1 Positive corpora (zero diagnostics, both revisions where the source allows)
 
+Record (2026-11-14): the compile-order lists named below as `tests/corpus/*.order` are not in the repository under those names; the analysis
+corpora are the manifests and `.expected` files of `tools/corpus/` (`tools/corpus/AGENTS.md`), gated by the CI `corpus` job.
+
 | Corpus | Where | How |
 |---|---|---|
 | std, ieee 2008 and 2019 | `lib/` | `lib/ORDER.md` blocks, analyzed in order; plus on-demand (analyze `ieee.float_pkg` alone and let it pull its deps) |
@@ -1407,6 +1413,8 @@ Revision is chosen by a `-- yavs: --std=2019` first line.
 - A structure-aware mutator on the AST is out of scope for M1 (add when byte fuzzing plateaus).
 
 ## 10. Implementation order (each slice ends green: `cargo test`, `clippy -D warnings`)
+
+Record (2026-11-14): S1 to S8 are done; the order is kept as written.
 
 | Slice | Content | Green when |
 |---|---|---|

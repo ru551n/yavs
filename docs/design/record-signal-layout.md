@@ -1,6 +1,6 @@
 # Record signal layout: packs of leaves in one kernel signal
 
-Status: design, 2026-10-24, #686; option A chosen (user, 2026-10-24); steps 1, 2 and 4 implemented (step 4 without `Ctx::codes` and the whole-record wait). Phase 1 of the "struct layout for
+Status: design, 2026-10-24, #686; option A chosen (user, 2026-10-24); steps 1, 2 and 4 implemented (step 4 without `Ctx::codes` and the whole-record wait). Update 2026-11-14 (`docs/decisions.md` "Record signals as packs of leaves"): step 3 (port leaves in packs) was measured and not landed (+2 percent instructions on `grlib_leon3mp`), step 5 was measured and the 64-element cap stays, step 6 (byte leaves) is not done (not found in the code or decisions.md). Phase 1 of the "struct layout for
 record signals" task: what changes, what stays, and the steps to land it.
 
 ## 1. Problem
@@ -202,7 +202,7 @@ bottleneck after step 4.
 
 Every step keeps difftest 505/505 on all tiers and the verification-library suites green, adds or moves
 `crates/yavs/tests/perf.rs` bounds, and lands only if `realbench --compare` instructions do not
-regress at `--tier=interp` and `--tier=llvm`. A switch `YAVS_PACKS=off` (like `YAVS_LEAN_EVENTS`)
+regress at `--tier=interp` and the compiled tier (`--tier=llvm` when this was written; removed 2026-11-08). A switch `YAVS_PACKS=off` (like `YAVS_LEAN_EVENTS`)
 gives the old one-leaf-per-signal layout for A/B runs and as a fallback while the steps land;
 coverage, a debugger and VHPI keep the packs (nothing observable depends on them).
 
@@ -223,7 +223,7 @@ count each saving once. Step 4 depends on #677 landing first; steps 1 to 3 do no
 ## 6. Risks
 
 - One odd leaf turning off a pack's fast paths: guarded by the rules of 3.2; `YAVS_COUNTERS`
-  gets `packs` and `packed_leaves` so perf.rs can hold a floor.
+  was to get `packs` and `packed_leaves` so perf.rs can hold a floor (not done: the work counter `signals` is what `perf.rs` bounds, decisions.md step 2).
 - Fewer `wake_sole` and `pend_one` hits (several leaves of a pack changing in one cycle take the
   word path instead): expected to be cheaper, measured per step.
 - Process sensitivity to single fields of a pack: per-element waiter lists keep it O(waiters of

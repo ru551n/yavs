@@ -1,6 +1,6 @@
 # Parallel kernel: where multi-threaded time goes, and a better design
 
-Status: analysis and design (2026-10-21, issue #481 item 3). Nothing here is implemented on `main`. The
+Status: analysis and design (2026-10-21, issue #481 item 3; what is on `main` now is in the 2026-11-14 note below). The
 prototype measured in section 5 lives on the branch `spike/mt-chunks` (instrumentation plus the run-phase
 changes, behind environment variables); it is evidence, not product code.
 
@@ -8,6 +8,12 @@ Status (2026-10-28, #497, #481): steps 1 and 2 (section 7) are on `main`: the in
 work (4.1), with a threshold that rises when pooled batches do not gain, and the run phase in pieces of the slot array
 with the early commit in the worker (4.2; every pooled batch, serial processes after the join, `threads - 1` workers).
 Measured in `docs/STATUS.md` "Parallel kernel, step 1" and "step 2". Step 3 (4.5): see `docs/decisions.md`.
+
+Status (2026-11-14): steps 1 and 2 are on `main`. Step 3: the many-small-signals half was measured and does not pay, the
+element-range split of one wide signal is not done (`docs/decisions.md` "Step 3 (parallel update, design 4.5)"; the pooled
+batch's join spins since #884). Step 5 is done: the token pool in `MAKEFLAGS` (#801, section 6.4) and `--threads=auto`
+(#884, `crates/yavs-kernel/src/kernel/auto.rs`, `crates/yavs/src/threads.rs`). Not checked against the code: steps 4 and 6.
+The branch `spike/mt-chunks` still exists. `PAR_BATCH` and `YAVS_MT_*` exist only on that branch.
 
 Status check (2026-10-28, source at `ac2c94ff`, before step 1): still true. `PAR_BATCH` is a fixed 32, the parallel update cut-off a
 fixed 256, the pooled path partitions serial and parallel processes and the kernel thread then locks and commits every
@@ -24,7 +30,7 @@ Sources: the kernel (`crates/yavs-kernel/src/kernel.rs`: `cycle`, `update`, `upd
 `order`, `run_batch`, `commit`), the process interface (`process.rs`: `Ctx`, `ProcState`), the interpreter's
 process and shared state (`crates/yavs-interp/src/lib.rs`: `InterpProcess::run`, `exec`, `SharedState`,
 `SharedGc`), the serial classification (`crates/yavs-ir/src/build.rs` `propagate`, `touches_files`;
-`Program::is_serial`), the LLVM tier's compile thread (`crates/yavs-rt/src/auto.rs`), the earlier
+`Program::is_serial`), the tier-up compile thread (`crates/yavs-rt/src/auto.rs`), the earlier
 scaling measurement (`docs/STATUS.md` "Multi-threaded scaling, measurement", the #481 item 3 comment), the plan
 (`docs/plan.md` "Parallel kernel design") and `docs/decisions.md` (kernel rounds 2 to 9, "Process order
 within a cycle", "Resolution functions that touch shared state", "Shared heap collection").
@@ -438,7 +444,8 @@ mechanism beyond 4.2's serial overlap.
 
 Outside the current scope; noted for completeness. Analysis of independent design units and libraries can
 run in parallel (the library lock already makes concurrent `analyze` processes safe); elaboration of
-independent instance subtrees could, but elaboration is a small share of most runs. The LLVM tier compiles
+independent instance subtrees could, but elaboration is a small share of most runs. The compiled tier (LLVM when this was
+written, Cranelift only since 2026-11-08) compiles
 on one background thread (`yavs-tier-up`); at `--threads 1` pinned to one core that thread competes with
 the simulation, which is why `--tier=auto` at one pinned core is slower than the interpreter on short
 runs.
@@ -452,9 +459,12 @@ LLVM crate) it would be deterministic. At 4 threads the tier changes little (sof
 4.13 s interpreted with `main`'s pool; rtl_fan 0.36 s with mode 3): the compile thread then shares the
 pool's cores.
 
+(2026-11-14: since #681 the compile thread stays inside the CPUs the process was started with and no longer
+moves itself off them, so the pinned-core run above is the case that remains; `docs/decisions.md`.)
+
 ### 6.4 The token pool (#481 item 7)
 
-The design in the #481 comment stands. Two additions from this study: the kernel should ask for extra
+Landed (#801, 2026-10-28; `docs/decisions.md` "Thread budget: a token pool in `MAKEFLAGS`"). The design in the #481 comment stands. Two additions from this study: the kernel should ask for extra
 tokens only for batches whose estimated work passes the pooling threshold (4.1), so a test whose batches
 never pool never takes a token; and the pool must be resizable between deltas, which the piece split
 (4.2) makes trivial (k is read per batch).

@@ -140,5 +140,8 @@ Correction 2026-10-28: the counts above are from 2026-10-23 and are superseded b
 (the `analyzer_failure` group: 61 of 1490 are not rejected with a proper diagnostic, which includes runs that stop with `E2001`, `E9999` or a crash) and the missing S13 enforcement (#814).
 Update 2026-10-28 (#808 in part, #809, #811, #813 tc3058, #814, #815, #821, #822, #823, #824): 3651 of 3694; `analyzer_failure` 1457 of 1490, `simulator_failure`
 38 of 38, billowitch compliant 1608 of 1612.
+Update 2026-11-14 (`docs/conformance.md`, generated): `vests-1993` 1939 of 1939 and `grlib-1993` 454 of 454 analysis; the 1993 language suite
+simulated at `--std=93` is 3694 of 3694 (44 not counted), `analyzer_failure` 1490 of 1490, `simulator_failure` 38 of 38, billowitch compliant
+1612 of 1612, so the failure lists above are closed; the counts above stay as the dated record.
 `std93/` in `tests/corpus` has 6 testbenches that pass at 1 and 4 threads (observed 2026-10-28), and the `v93-*` cases of
 `tests/discrepancies` pass.

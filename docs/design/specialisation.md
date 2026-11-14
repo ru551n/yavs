@@ -350,7 +350,7 @@ section 9 as proposed there. What exists, and where it differs from the prototyp
   process stays shared (`spec_capped`). It bound on two designs at 1.5 and binds on one of the realbench
   set at 2.5 (`poc_arith_addw`: 244 of 312 candidates; section 12, "The cap raised").
 - **Shared code is kept** under `--dap` and anything that keeps variables (`keep_variables`), with
-  `--vhpi` and `--wave-variables` (`external_variables`), under `--tier=llvm` (the whole program is compiled before a copy exists),
+  `--vhpi` and `--wave-variables` (`external_variables`), under `--tier=llvm` (the whole program was compiled before a copy exists; the tier was removed 2026-11-08),
   with `YAVS_NO_IROPT`, and for serial processes (shared variables, protected objects).
 - **Tiers.** Under `--tier=auto` on Cranelift the count rule asks for a copy after half of its count, the process having switched after the other half (`docs/decisions.md` "`--tier=auto`: the count rule"). Under `--tier=auto` a copy is a function with its own id: the sampler sees it and the
   policy compiles it like any function, but every decision about it is the process's (#661, 2026-10-24):
@@ -385,7 +385,7 @@ section 9 as proposed there. What exists, and where it differs from the prototyp
   runs every design of `crates/yavs/tests/perf/` with copies off and with every process
   switching at its second activation, on one and four threads, and requires the same output
   byte for byte (the shadow check), plus the stage cache and the auto tier (under the heat mode
-  `--tier-heat=1,0,0`, which waits for every compile, with Cranelift and, where built, LLVM).
+  `--tier-heat=1,0,0`, which waits for every compile, with Cranelift; the LLVM leg went with the tier, 2026-11-08).
   The copies a run loses silently are caught at a design's size by
   `crates/yavs/tests/clift_spec_after_decline.rs` `copies_are_not_lost_at_scale`: 24 clocked
   instances and a declined function, no `YAVS_SPEC_AFTER`, every function compiled on entry
@@ -496,8 +496,8 @@ comes from the #634 commits, #663). `tools/realbench/run.py --compare` (medians 
 timing-driven cells move by 5 to 10 percent): interpreter instructions equal within 0.1 % on all ten tests (the change touches
 `--tier=auto` only), peak RSS equal within 2 MB.
 
-Unit test: `tests/objcache.rs` compiles the copies of one process for `G = 3, 4` and then `G = 4, 3` (so with swapped function ids) and
-requires that the second compile stores nothing (it fails with the id in the symbol names: 8 stored against 6).
+Unit test (of the LLVM tier's object cache; `tests/objcache.rs` went with the tier on 2026-11-08, the Cranelift cache names copies by `Program::copy_tag`, section 11): it compiled the copies of one process for `G = 3, 4` and then `G = 4, 3` (so with swapped function ids) and
+required that the second compile stored nothing (it failed with the id in the symbol names: 8 stored against 6).
 
 ### Wider specialisation, measured and not landed (2026-10-24)
 

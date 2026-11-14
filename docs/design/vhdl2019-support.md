@@ -137,3 +137,6 @@ The matrix above is the 2026-10-19 audit and is kept as written. These rows were
 - **Rows that now have regression testbenches** (the matrix says "probes were not added"): 011, 012, 014, 016, 034, 036a, 045, 047, 049, 072b, 075,
   094a and I03 run in `tests/corpus` (`*_2019*`, `hierarchy/mode_view_*`, `protected/`, `generics/`, `process/`). All 544 corpus testbenches pass
   at 1 and 4 threads with the interpreter on this commit.
+
+Check 2026-11-14: no row was probed again. The PSL state natives of the row 050 note are still not implemented
+(`crates/yavs-interp/src/native.rs` lookup test, `lib/NATIVE.md`), and the tests named in the 2026-10-28 corrections still exist.

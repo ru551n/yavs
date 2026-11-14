@@ -90,15 +90,18 @@ foreign entries are misses, and `--no-cache` neither reads nor writes. The behav
 
 ### Parallel kernel (implemented, and what is not)
 
-Implemented: a rayon pool of `--threads` workers evaluates the processes of a delta cycle when the batch
-has at least 32 processes (`PAR_BATCH`), serial processes run afterwards on the kernel thread, the
-update phase is parallel from 256 independent signals, and the commit order is fixed so output does
-not depend on the thread count. Not implemented: a work-based inline or pooled choice, in-worker commit,
-a shared thread budget (`docs/design/parallel-kernel.md`, `docs/parallel.md`).
+Implemented (corrected 2026-11-14; the 2026-10-28 text described the kernel before steps 1 and 2): a rayon pool of
+`--threads` workers evaluates the processes of a delta cycle in pieces of the slot array, pooled only when the estimated
+splittable work of the batch passes a threshold (`POOL_WORK_NS`, raised by pooled batches that lost), the early commit
+runs in the worker, serial processes run after the join, the update phase is parallel from 256 independent signals, and
+the commit order is fixed so output does not depend on the thread count. A shared thread budget (a token pool in
+`MAKEFLAGS`, #801) and `--threads=auto` (#884) are on `main`. Not implemented: the element-range parallel update
+(`docs/design/parallel-kernel.md` 4.5, `docs/parallel.md`).
 
 ### Design intent and future work (not implemented)
 
-* `--threads auto`, a token pool across test runs, element-range parallel update (parallel-kernel.md sections 6.4, 7).
+* Element-range parallel update (parallel-kernel.md sections 4.5, 7). `--threads=auto` and the token pool across test runs
+  were future work here and landed (#884, #801).
 * A tier-up protocol based on resumption counters (section 5 below): superseded by the sampled-time policy.
 
 ## 0. Assumptions about the HIR (to reconcile with sem.md)
@@ -149,7 +152,7 @@ pub struct Func {
     pub loc: Vec<StmtId>,                  // parallel to `code`: statement of each instruction
     pub resume: Vec<InstIdx>,              // resume points (after each Wait / suspending call)
     pub flags: FuncFlags,                  // MAY_SUSPEND, TOUCHES_SHARED, PURE, HAS_COVER
-    pub size: u32,                         // instruction count, for the LLVM threshold
+    pub size: u32,                         // instruction count, for the compiled-tier threshold
 }
 
 pub struct StmtInfo { pub span: Span, pub func: FuncId, pub kind: StmtKind, pub parent: Option<StmtId> }
@@ -182,7 +185,7 @@ to span, statement kind and enclosing subprogram without any other table.
   safepoint (#422).
 - Every pass is one walk over blocks in order: verifier (types, invariant above, every instruction
   has a `StmtId`), `MAY_SUSPEND` and `TOUCHES_SHARED` propagation (worklist over the reverse call
-  graph, each edge visited once), coverage numbering. No pass is quadratic; a unit over the LLVM
+  graph, each edge visited once), coverage numbering. No pass is quadratic; a unit over the compiled-tier
   size limit (5) is still lowered and run in linear time (rule 5).
 
 ### 1.3 Types and value layout
@@ -591,7 +594,8 @@ SignalBreak::watches(&self) -> Watches   // the shared watch list, changed while
 
 The interpreter also runs `FuncKind::Elab` and `Thunk` functions without a kernel: an
 `ElabCtx` implements the same signal-free subset (no `Wait`, no signal reads; using one is a
-"signal read during elaboration" diagnostic). Generic actuals, generate ranges, port-map
+"signal read during elaboration" diagnostic). As built there is no `ElabCtx` type: the interpreter runs these
+functions with no kernel `Ctx` (`ctx: None`) and the signal operations raise that error (checked 2026-11-14). Generic actuals, generate ranges, port-map
 expressions, constant declarations, subtype descriptors and signal initial values are all
 computed this way, so elaboration and simulation share one evaluator (rule 4, rule 5).
 Calls that use package state run against the elaborated packages, in elaboration order, and
@@ -694,7 +698,7 @@ pub struct SubElemMap;                    // (ObjId, &[Sel]) <-> Vec<(LeafId, Ra
 - **Element order** (implemented in `yavs_elab::NetGraph::select`): a leaf's elements are row
   major, leftmost first; logic leaves mirror it (kernel offset `n - 1 - p`), since yavs-logic's
   element 0 is the rightmost.
-- `SubElemMap` is the one mapping from a VHDL name (object plus static index/field selectors) to
+- `SubElemMap` (the design's name; as built `yavs_elab::NetGraph::select` and `kref`) is the one mapping from a VHDL name (object plus static index/field selectors) to
   `(leaf, element range)` pairs, and back. Drivers, force/deposit, VHPI handles, waves, coverage
   toggles and DAP all go through it.
 - **Mode views (2019):** a port with a mode view is split per field (H10), each field getting its
@@ -707,6 +711,12 @@ are VHPI's object identity, the wave hierarchy's order, coverage's path (plus sp
 and the DAP variable references.
 
 ## 5. JIT tier seam (M6)
+
+*Record, 2026-11-14:* this section is the design and first implementation of the LLVM tier, which was removed on
+2026-11-08. `yavs_rt_call_interp`, `RtCtx` and a `Func.native` pointer no longer exist, and `--tier=llvm` is
+not accepted. What stays: the `yavs-rt` crate (renamed from `yavs-llvm` on 2026-11-10), `TierHost`, `TierFrame`,
+`TIER_UNWIND`, `--tier=auto` and the Cranelift tier (`yavs-clift`) that implement the same compiled-code contract; the
+details are in `crates/yavs-rt/AGENTS.md` and `crates/yavs-clift/AGENTS.md`.
 
 What the spike (`yavs-rt`, docs/STATUS.md, decisions.md) fixes:
 
@@ -739,7 +749,7 @@ a `yavs_rt_step` callback, calls and natives included: a callee with compiled co
 on the frame the interpreter pushed (#336). It returns to the interpreter at returns,
 suspensions, failing inline instructions and calls of functions without compiled code
 (`TIER_UNWIND`: the frames are the interpreter's from there); memory instructions reach other
-objects through the interpreter's own lookup (`TierHost::object`). `--tier=llvm` compiles
+objects through the interpreter's own lookup (`TierHost::object`). `--tier=llvm` (removed) compiled
 everything before time 0. `--tier=auto` (#125) is the tier-up protocol above with these
 differences: hotness is the interpreted time the compile thread samples per function (#432), the
 side table is a per-function `OnceLock` in the tier, and the swap happens at the next call,
@@ -752,9 +762,9 @@ compiled-code contract and the same `--tier=auto` policy (`yavs-rt` `AutoTier` w
 `Generator`); the release archives use it. The hot-function size cap and the `--tier-max-size`
 option apply to both.
 
-**Identical semantics:** the interpreter is the reference (rule 5). CI runs every difftest group
-`--tier interp` and `--tier llvm` (everything compiled, threshold ignored except over-size) and
-requires identical canonical output.
+**Identical semantics:** the interpreter is the reference (rule 5). CI runs the difftest corpus
+at `--tier interp` and at the compiled configurations (`--tier=clift`, `clift-auto`, `auto`; `.github/workflows/ci.yml`; at the time of
+writing `--tier llvm`, everything compiled) and requires identical canonical output.
 
 ## 6. Interfaces: kernel, event bus, VHPI, waves, DAP
 
@@ -780,9 +790,12 @@ A leaf is stored at `NetGraph::loc[leaf]`: a kernel signal and the element its r
 | K4 | `Ctx::driving(DriverId)` and null transactions (`disconnect`) | guarded signals, M3 |
 | K5 | Null-range signals (`len == 0`) accepted as empty | null arrays as signals, M3 |
 | K6 | Buffered writes to user files (stream ids beyond `OUTPUT`): dropped (#82), disk files are direct and their callers serial | textio, M3 |
-| K7 | Logic leaves stored as yavs-logic planes (`SignalType` variant), element `Range` copies, resolution and events on planes | slice 2 (in progress, kernel agent) |
+| K7 | Logic leaves stored as yavs-logic planes (`SignalType` variant), element `Range` copies, resolution and events on planes | slice 2 (landed; K1 to K7 are tested in `crates/yavs-kernel/tests/kernel_asks.rs`, K6 dropped) |
 
 ## 7. M2 implementation order
+
+Record (2026-11-14): all five slices and the M2 exit criterion are done; the order is kept as written. `--collapse-ports` is now
+`--no-collapse-ports` (Q2).
 
 Each slice ends with `cargo test`, `clippy -D warnings`, and the listed difftest groups green
 against the reference simulator at `--threads 1` and `--threads 4` (`tools/difftest/difftest.py --candidate yavs
@@ -813,7 +826,7 @@ range, division by zero and the delta limit.
 | Q1 | Logic array layout | Bit-planes everywhere now, signals included (1.3, K7). Transposes only at waves, VHPI, DAP, foreign calls and string conversion. |
 | Q2 | Port collapsing default | Off in M2; every difftest group runs collapsed and uncollapsed. Superseded 2026-10-19: on by default, `--no-collapse-ports` to keep ports apart (`docs/decisions.md`). |
 | Q3 | Protected types under `--threads N` | All protected callers serial through M3; per-instance locks later only if benchmarks ask for it. |
-| Q4 | Generic types | Shared code with runtime descriptors; specialisation is a later LLVM-tier option. |
+| Q4 | Generic types | Shared code with runtime descriptors; specialisation is a later LLVM-tier option. Landed 2026-10-23 differently: per-instance copies of process bodies at IR level (#651, `docs/design/specialisation.md`), for every tier. |
 | Q5 | VHPIDIRECT calls | No libffi: own per-ABI trampolines in `yavs-ffi` (1.7), tested on SysV x86_64, AAPCS64 and Win64. |
 | Q6 | Tier-up threshold | Sampled interpreted time of about twice the O0 compile time: 2 ms plus 40 us per IR instruction of the function, one sample a millisecond (`--tier=auto`, #125, #432; hidden `--tier-heat` for tests). |
 | Q7 | Kernel asks | K1 to K7 handed to the kernel agent. |

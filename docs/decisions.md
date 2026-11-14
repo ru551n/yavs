@@ -16622,7 +16622,9 @@ compares from one run to the next.
   when they pass, are recorded with `project.update`; then `Compile failed` and `CompileError`. With it, everything
   independent is compiled, the skipped files are listed at the end, and the method returns. Printing and
   `project.update` run only in the main thread, one finished call at a time, so output is never interleaved. A file that
-  is not VHDL fails as in VUnit ("File type not supported").
+  is not VHDL fails as in VUnit ("File type not supported"). Output is written with what the console's encoding cannot
+  hold replaced (`_printable`): a Windows console in a code page could not print yavs's U+240D (#1151), and VUnit's
+  own loop raises `UnicodeEncodeError` there (found by the Windows CI job, 2026-11-14).
 - **Only public API of VUnit's project (agent, 2026-11-14):** `create_dependency_graph`, `get_files_in_compile_order`,
   `get_minimal_file_set_in_compile_order`, `DependencyGraph.get_direct_dependencies` and `get_dependent`, `update`, and
   `vunit.sim_if.check_output`; a direct dependency outside the list is up to date, since VUnit lists every file that

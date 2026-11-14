@@ -986,6 +986,7 @@ class TestYavsInterface(unittest.TestCase):
         ):
             YavsInterface.from_args(args, self.output_path)
 
+    @NEEDS_FAKE_BIN
     def test_from_args_takes_the_compile_jobs(self):
         self.assertEqual(self._from_args()._compile_jobs, 1)  # pylint: disable=protected-access
         simif = self._from_args(yavs_jobs=6, num_threads=2)
@@ -1206,6 +1207,25 @@ class TestCompileSchedule(unittest.TestCase):
         self.assertEqual(len(spans), 2)
         self.assertLessEqual(spans[0][1], spans[1][0])
         self.assertGreaterEqual(fake.most_at_once, 3)
+
+    def test_output_the_console_cannot_encode_is_replaced(self):
+        # yavs shows a carriage return of a source line as U+240D, which a Windows code page lacks
+        def fails_with_a_symbol(cmd, env=None):  # pylint: disable=unused-argument
+            if any(arg.endswith("pkg_a.vhd") for arg in cmd):
+                raise subprocess.CalledProcessError(1, "yavs", output="error: bad \u240d line")
+            return "note: \u240d\n"
+
+        console = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", newline="\n")
+        simif = YavsInterface(prefix="prefix", output_path=self._tempdir.name)
+        with (
+            mock.patch("vunit.sim_if.check_output", side_effect=fails_with_a_symbol),
+            contextlib.redirect_stdout(console),
+        ):
+            simif.compile_project(self.project, continue_on_error=True)
+        console.flush()
+        text = console.buffer.getvalue().decode("cp1252")
+        self.assertIn("=== Command output: ===\nerror: bad ? line\n", text)
+        self.assertIn("note: ?\n", text)
 
     def test_a_file_that_is_not_vhdl_fails_as_in_vunit(self):
         write_file("mod.v", "module m; endmodule\n")

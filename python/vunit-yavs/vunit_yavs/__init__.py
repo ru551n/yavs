@@ -1032,6 +1032,12 @@ def check_interactive_args(args, debug_port):
         )
 
 
+def _printable(text):
+    """text with what the console cannot encode replaced: a Windows code page lacks the symbols of yavs output"""
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    return text.encode(encoding, "replace").decode(encoding)
+
+
 def _batch_key(source_file):
     """Files of one key can share a yavs analyze call: one library, standard and set of flags"""
     return (
@@ -1167,7 +1173,7 @@ class _Compile:
                 self._status(source_file, "passed", "gi")
                 self._project.update(source_file)
                 self._done.add(source_file)
-            self._printer.write(output)
+            self._printer.write(_printable(output))
             return True
         if len(files) > 1:
             # Repeated one file per call, which names the failing file; the files before it pass again
@@ -1179,8 +1185,8 @@ class _Compile:
         if cmd is None:
             self._printer.write(output)
         else:
-            self._printer.write(f"=== Command used: ===\n{subprocess.list2cmdline(cmd)!s}\n\n")
-            self._printer.write(f"=== Command output: ===\n{output!s}\n")
+            self._printer.write(_printable(f"=== Command used: ===\n{subprocess.list2cmdline(cmd)!s}\n\n"))
+            self._printer.write(_printable(f"=== Command output: ===\n{output!s}\n"))
         self._failures.append(source_file)
         self._skipped.update(self._graph.get_dependent([source_file]))
         self._left = [left for left in self._left if left not in self._skipped]

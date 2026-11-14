@@ -11458,3 +11458,9 @@ the decision on persistent per-process machine state, #634).
 The README opens with the yavs logo: a swept shark fin with a delta cutout and a lowercase wordmark, as transparent SVGs in
 `assets/` (`yavs-logo-light.svg`, `yavs-logo-dark.svg`) shown through a theme-aware `<picture>`. The fin is the same teal in
 both themes; only the wordmark colour changes. The files are not read by the Sphinx site, the crates or the release archives.
+
+## Documentation site logo (2026-11-14)
+
+The Read the Docs site shows the logo in the sidebar header: the dark SVG from `assets/` (light wordmark, teal fin) on a dark
+header background, set in `docs/conf.py` (`html_logo`, `style_nav_header_background`). The theme has no dark mode, so
+there is one variant. No favicon yet.

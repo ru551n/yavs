@@ -1,5 +1,13 @@
 # Decisions
 
+## Documentation site logo (user, 2026-11-14)
+
+- The Read the Docs site shows the README logo in the sidebar header (`html_logo` in `docs/conf.py`), referencing the one copy
+  in `assets/` instead of a second one in `docs/`.
+- The header is dark in every colour scheme of the theme (no dark mode switch), so it uses the dark variant (light wordmark)
+  on a `#0d1117` header background, which keeps the teal fin `#008F83` unchanged and legible. No favicon is generated: the
+  artwork is not cropped or altered.
+
 ## README logo (user, 2026-11-14)
 
 - Use the swept shark fin with a delta cutout and lowercase yavs wordmark.

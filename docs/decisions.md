@@ -16504,6 +16504,65 @@ run-to-run profile (user, 2026-11-09).
   it; fails without the change), `profile.rs` round trip with `made` lines and format 5 read as no profile. Not in
   the suite: an end-to-end run with a deleted list entry (the stub generator stores no code); `c03_big` above.
 
+## `--tier=auto`: the run-to-run profile judges by work, and a program found long stays long (yavs-rt `auto.rs` `run_work`, `long_before`, `COUNT_GATE_RUN`, `profile.rs` format 7, perf/settle3, 2026-11-14, agent, landed under the standing rule)
+
+Amends the warm gate of "`--tier=auto`: the count rule" (`COUNT_GATE_CPU`), the verdict of "`--tier=auto` run-to-run
+profile" and "`--tier=auto` under `--threads`: the simulation CPU is the kernel thread's" (#884) for what the profile
+compares from one run to the next.
+
+- **Finding** (agent, settle3). Each decision the profile carried to the next run compared CPU time: whether a warm run
+  waits for the count gate for what the cache lists (`Profile::base`, the last run's simulation CPU, against 400 ms),
+  the verdict on an early compile (`better`, 3 percent less CPU than the run before) and whether a run is written at all
+  (100 ms). A loaded host stretches CPU time and not instructions. Under a busy SMT sibling the same programs on the same
+  caches decided otherwise: 10 fresh worlds x 12 runs each of `sc5_timestamp` and `osvvm_axi4_random` read the gate as
+  long in 4 and 5 of 120 runs on a quiet core and in 110 of 120 with the sibling busy, and `osvvm_axi4_random` then did
+  4.74 against 4.22 G instructions a run. Near the bar the gate also undid itself: `sc5_timestamp` (0.32 to 0.41 s)
+  linked early only after a run of 400 ms or more, and the run that linked early was the shorter one, so the state
+  alternated with the load.
+- **Decision** (agent, maintainer direction 2026-11-14: judge by work, add hysteresis). The profile keeps the work of a run
+  next to its CPU time (`work` line, format 7): the kernel thread's user-mode instructions between two readings of its
+  counter, in the looks' microseconds (`run_work`, `work::INSTR_PER_US`; where the counters are refused its CPU time at a
+  warm run's rate, `work::WARM_IPUS`, so the bar stays 400 ms there).
+  The verdicts read the work: from `COUNT_GATE_RUN` (313 000) of work a program is long (`long` line) and a warm run
+  links what the cache lists without waiting for the count gate (`long_before`); a long program stays long while its
+  runs do half of that (the run that links early does less than the run that found the program long); `better` and the
+  judge minimum compare work. `base` stays CPU time for `unrepaid`, whose prices are CPU time.
+- **Why 313 000.** The bar was 400 ms of CPU, chosen on library suites (half of it let more short suite tests link what
+  they do not get back). `INSTR_PER_US` (16 000) is the interpreter's rate; a settled warm run of realbench retires 8 200 to
+  18 400 instructions per CPU microsecond (19 tests of 0.1 s or more, median 12 540), so 400 ms at 16 000 (400 000) raised
+  the bar for every design and most for the slowest ones; 400 ms at the median (`work::WARM_IPUS`) is 313 000. The judge
+  minimum is 100 ms at the same rate (78 375). Any bar from about 255 000 to 366 000 gives the same decisions on all 40
+  realbench tests (the nearest are `osvvm_axi4_random`, 239 000 to 254 000 of work a run, and `sc5_timestamp`, 366 000
+  to 374 000); the value is the maintainer's to confirm. Measured both: at 400 000
+  `sc5_timestamp` stays in its slow state for good (+0.6 percent over 12 runs against the base in that sitting, +3.9 in one
+  where load gave the base more fast runs); at 313 000 it is long from run 2 and settled fast (-12 percent). `sc5_timestamp`
+  was in view when the bar was set, so it does not validate it; no other realbench test is between the two bars.
+- **What stays timing dependent.** `unrepaid` predicts the rest of a run from the last run's CPU time; the trials compare
+  progress per CPU second within a run (their windows alternate, so a steady load cancels, but a taking back near 1.0
+  becomes a `lost` line); under `--threads` the kernel thread's join spin retires instructions that follow the load; where
+  the counters are refused everything is CPU time as before. The hysteresis can latch: a program whose first, colder runs
+  pass the bar and whose settled runs fall between half and the bar keeps linking early for good, where before it
+  stopped once settled; no realbench test does that (`osvvm_axi4_random`, nearest, stays under the bar from run 1, and
+  linking early there costs it about 10 percent). A profile of format 6 is no profile: each program's next run
+  after the update reads none, once.
+- **Measured** (agent, `--tier=auto`, all-thread user instructions, fresh cache worlds, timing cores from `tools/claim core`,
+  base b0f0fbf9d): 10 worlds x 12 runs, sum of the 12 runs against the base: `sc5_timestamp` 0.879, `osvvm_axi4_random`
+  0.965, `olo_fix_cordic_rot` 0.985, `neorv32_dual_full` 0.998, `uvvm_sb_slv` 1.003, `uvvm_axistream_vvc` 1.007 (its two
+  binaries at 400 000 and 313 000 differ by 1 percent there, where the gate cannot matter: noise), `osvvm_axis_random` and
+  `poc_arith_scaler` 1.00 to 1.01 (earlier series). Load test (10 worlds x 12 runs, a busy loop on the SMT sibling of each
+  run's core against none): the sequence of gate decisions is identical world by world for the change, different in all
+  10 worlds for the base. realbench, all 40 tests, 3 fresh worlds x 10 runs: geomean of the sums 0.996, of the steady
+  runs 0.996, outputs equal; the four tests above 1.005 there (`neorv32_dual_full` 1.030, `sc5_fifo_repack`,
+  `hdlm_axi_crossbar`, `uvvm_sb_slv`) read 0.991 to 1.003 on 10 worlds. Bench `--compare` (first runs) 1.004 over 31,
+  `--learn` 0.987, 0.996, 0.987; VUnit cells (8 worlds x 10) level. Tried and dropped: skipping the verdict for a
+  function the run before made by its own rules (an unjudged function is tried again every run, so `uvvm_axistream_vvc`
+  lost `axistream_expect` in 8 of 10 worlds against 1); rebasing `unrepaid` on work (it then mixed work with CPU time).
+- **Tests**: `auto.rs` `the_warm_gate_follows_the_work_of_the_runs_not_their_cpu_time` (through the profile's text, stub
+  readings of both clocks: the same work at 0.3, 0.45 and 0.6 s of CPU decides the same, a lighter linked run keeps the
+  program long, half the bar drops it, and the work is the difference of two counter readings; fails when the CPU
+  time is the measure), `profile.rs` `a_program_found_long_stays_long_while_its_runs_do_half_the_gate` (fails without the
+  hysteresis), `a_run_is_better_by_its_work`, the round trip with `work` and `long` lines and format 6 read as none.
+
 ## Locals of arrays of logic arrays made from their aggregate (yavs-lower `composite.rs`, 2026-11-13)
 
 - **Finding**: `variable r : t_arr(0 to N - 1) := (others => (others => '0'))` (an array of `signed`) wrote its value three

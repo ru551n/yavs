@@ -687,7 +687,7 @@ fn a_candidate_short_of_its_price_compiles_once_the_runs_together_repay_it() {
                 picked = true;
             }
         }
-        let next = super::profile::next(earlier, &w.snapshot(), 1_000_000);
+        let next = super::profile::next(earlier, &w.snapshot(), 1_000_000, 1_000_000, u64::MAX);
         (
             cand,
             picked,

@@ -619,6 +619,19 @@ fn sim_cpu(_: Clock) -> Option<Duration> {
     None
 }
 
+/// The work of a run as the run-to-run profile keeps it, in the looks' microseconds: the kernel
+/// thread's instructions retired between the two readings of its counter (`instr0`, `None` before the
+/// counter opened, and `instr`; `work::work_us`), its CPU time over the run (`cpu_us`, at
+/// `work::WARM_IPUS`) where the counters are refused. A loaded host changes the second, not the first
+/// (`work.rs`). The two readings come from the same clock: a counter not open yet at the start counts
+/// from its opening.
+fn run_work(instr0: Option<u64>, instr: Option<u64>, cpu_us: u64) -> u64 {
+    match instr {
+        Some(n) => crate::work::work_us(n.saturating_sub(instr0.unwrap_or(0))),
+        None => crate::work::cpu_as_work(cpu_us),
+    }
+}
+
 /// The CPU clock of the calling thread, for another thread to read (0 where there is none).
 #[cfg(target_os = "linux")]
 fn own_cpu_clock() -> Clock {
@@ -1074,7 +1087,11 @@ struct ProfileJob {
     /// The ids in identity order (`objcache::profile_key`): the stored profile names ranks.
     order: Vec<u32>,
     earlier: Profile,
+    /// `sim_cpu` and the kernel thread's instructions when the profile was read (`run_work`), and
+    /// `Worker::gate_run`.
     cpu0: u64,
+    instr0: Option<u64>,
+    gate: u64,
     snap: Snapshot,
 }
 
@@ -1276,10 +1293,13 @@ const COUNT: u32 = 100;
 /// The work the simulation threads did, in the looks' microseconds (`work::per_us`), before the count
 /// rule compiles anything: a test of a few hundred milliseconds does not get a compile back.
 const COUNT_GATE: u64 = 160_000;
-/// The CPU time of its last run from which a program does not wait for that gate (microseconds, as the
-/// run-to-run profile has it): the gate's work is about half of this, and half of this lets more short
-/// suite tests link what they do not get back (OSVVM warm 1.14 against 1.09 in sum).
-const COUNT_GATE_CPU: u64 = 400_000;
+/// The work of its last run (the kernel thread's, `run_work`, as the run-to-run profile has it) from
+/// which a program does not wait for that gate; a program found that long stays so while its runs keep
+/// half of it (`profile::next`: linking early shortens the run that judges it). It was 400 ms of the
+/// kernel thread's CPU time (half of that let more short suite tests link what they do not get back:
+/// OSVVM warm 1.14 against 1.09 in sum); this is 400 ms at the rate of a warm run, `work::WARM_IPUS`,
+/// which is below `work::INSTR_PER_US`, the interpreter's (where the counters are refused, 400 ms).
+const COUNT_GATE_RUN: u64 = 313_000;
 
 /// The part of its price a function must be seen interpreted before a run that stops for its
 /// compiles (`--tier-compile=wait`) compiles it for the count (`Worker::unpaid`);
@@ -1544,10 +1564,10 @@ struct Worker {
     /// (`publish`): what compiling the callee lets run compiled, which its own seen time does not show.
     blocked: Vec<u64>,
     /// The sampled work before anything is compiled by the count (`COUNT_GATE`), the count, and the
-    /// CPU time of the last run from which a warm run does not wait (`COUNT_GATE_CPU`).
+    /// work of a run from which the run after it does not wait (`COUNT_GATE_RUN`).
     gate: u64,
     count: u32,
-    gate_cpu: u64,
+    gate_run: u64,
     /// `Shared::sim_clock`: the clock of the trials' windows.
     sim_clock: Clock,
     /// `Worker::guard`: the work at its last look, per function the frames it left by then and whether
@@ -1841,7 +1861,7 @@ impl Worker {
             blocked: vec![0; nfuncs],
             gate: 0,
             count: 0,
-            gate_cpu: COUNT_GATE_CPU,
+            gate_run: COUNT_GATE_RUN,
             sim_clock: 0,
             guard_at: 0,
             left_seen: vec![0; nfuncs],
@@ -2225,9 +2245,9 @@ impl Worker {
         self.earlier.base.is_some() && !self.early.is_empty()
     }
 
-    /// The last run of this program (`Profile::base`, CPU microseconds) passed the gate.
+    /// The earlier runs of this program found it long (`Profile::long`, from their work).
     fn long_before(&self) -> bool {
-        self.earlier.base.is_some_and(|b| b >= self.gate_cpu)
+        self.earlier.long
     }
 
     /// The functions that wait no more, and the callees `publish` wants.
@@ -4377,7 +4397,7 @@ impl AutoTier {
             .ok()
             .and_then(|v| v.parse().ok())
         {
-            w.gate_cpu = n;
+            w.gate_run = n;
         }
         (w.guard_share, w.guard_calls) = guard_knobs();
         let knob = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<f64>().ok());
@@ -4460,6 +4480,7 @@ impl AutoTier {
                     }
                     if let (Some(key), Some(store)) = (w.profile_key, w.store.clone()) {
                         let cpu0 = sim_cpu(sh.sim_clock).map_or(0, |c| u64::try_from(c.as_micros()).unwrap_or(0));
+                        let instr0 = crate::work::of_thread(sh.sim_tid);
                         *sh.profile.lock().unwrap_or_else(PoisonError::into_inner) =
                             Some(ProfileJob {
                                 store,
@@ -4467,6 +4488,8 @@ impl AutoTier {
                                 order: w.profile_order.clone(),
                                 earlier: w.earlier.clone(),
                                 cpu0,
+                                instr0,
+                                gate: w.gate_run,
                                 snap: Snapshot::default(),
                             });
                     }
@@ -4806,6 +4829,7 @@ impl AutoTier {
     pub fn stop(&self, wait: bool) -> bool {
         // (The simulation's CPU time first: the compile thread's clock is gone once it has ended.)
         let cpu = self.sim_cpu_now();
+        let instr = crate::work::of_thread(self.shared.sim_tid);
         self.shared.halt.store(true, Ordering::SeqCst);
         // (An empty batch wakes the compile thread, which sees `halt`.)
         if let Some(q) = self
@@ -4816,7 +4840,7 @@ impl AutoTier {
         {
             let _ = q.send(Msg::Looks(Vec::new()));
         }
-        self.write_profile(cpu);
+        self.write_profile(cpu, instr);
         if std::env::var_os("YAVS_AUTO_TRACE").is_some()
             && let Some((what, t0)) = &*IN_FLIGHT.lock().unwrap_or_else(PoisonError::into_inner)
         {
@@ -4864,29 +4888,33 @@ impl AutoTier {
 
     /// Write the profile of this run (`profile::next`) from what the compile thread published, once:
     /// from here and not from the compile thread, which may be in the middle of a compile when the
-    /// run ends. Nothing for a run whose CPU time is not known or too short to judge.
-    fn write_profile(&self, cpu: Option<u64>) {
+    /// run ends. Nothing for a run whose CPU time or work is not known, or too short to judge.
+    fn write_profile(&self, cpu: Option<u64>, instr: Option<u64>) {
         let job = self
             .shared
             .profile
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
-        let (Some(job), Some(end)) = (job, cpu) else {
+        let (Some(job), Some(cpu)) = (job, cpu) else {
             return;
         };
-        let cpu = end.saturating_sub(job.cpu0);
-        if cpu < profile::JUDGE_MIN_US {
+        let cpu = cpu.saturating_sub(job.cpu0);
+        let work = run_work(job.instr0, instr, cpu);
+        if work < profile::JUDGE_MIN_US {
             return;
         }
-        let mut p = profile::next(&job.earlier, &job.snap, cpu);
+        let mut p = profile::next(&job.earlier, &job.snap, cpu, work, job.gate);
         if std::env::var_os("YAVS_AUTO_TRACE").is_some() {
             eprintln!(
-                "trace: profile: stored {} hot ({} judged), {} lost; this run {cpu} us, last {:?} us, {} compiled early",
+                "trace: profile: stored {} hot ({} judged), {} lost; this run {cpu} us, {work} us of work, last {:?} us, {:?} us of work, long {} (was {}), {} compiled early",
                 p.hot.len(),
                 p.hot.iter().filter(|h| h.2).count(),
                 p.lost.len(),
                 job.earlier.base,
+                job.earlier.work,
+                p.long,
+                job.earlier.long,
                 job.snap.early.len()
             );
         }
@@ -5805,13 +5833,68 @@ mod tests {
         let mut w = counted(prog, u64::MAX);
         w.in_cache[caller.0 as usize].set(true).unwrap();
         assert!(w.waits(caller), "no last run");
-        w.earlier.base = Some(super::COUNT_GATE_CPU - 1);
+        w.earlier.base = Some(super::COUNT_GATE_RUN - 1);
         assert!(w.waits(caller), "a short last run");
-        w.earlier.base = Some(super::COUNT_GATE_CPU);
+        w.earlier.long = true;
         assert!(!w.waits(caller));
         w.in_cache = vec![Default::default(); w.in_cache.len()];
         w.in_cache[caller.0 as usize].set(false).unwrap();
         assert!(w.waits(caller), "not in the cache");
+    }
+
+    /// Whether a warm run waits for the gate follows the work of the runs before it, read from the
+    /// kernel thread's instructions, not from their CPU time (a loaded host stretches that), and a run
+    /// that linked early, and so did less, does not undo it. Each run here goes through the profile's
+    /// text, from stub readings of the two clocks.
+    #[test]
+    fn the_warm_gate_follows_the_work_of_the_runs_not_their_cpu_time() {
+        let (prog, caller, _) = caller_callee();
+        let per = crate::work::per_us();
+        // Waits the next run for the gate, after runs of these instructions and CPU microseconds?
+        let after = |runs: &[(u64, u64)]| {
+            let mut p = super::Profile::default();
+            for &(instr, cpu) in runs {
+                let work = super::run_work(Some(per), Some(per + instr), cpu);
+                let n =
+                    super::profile::next(&p, &Default::default(), cpu, work, super::COUNT_GATE_RUN);
+                p = super::Profile::parse(&n.render()).expect("its text");
+            }
+            let mut w = counted(prog.clone(), u64::MAX);
+            w.in_cache[caller.0 as usize].set(true).unwrap();
+            w.use_profile(p);
+            w.waits(caller)
+        };
+        let long = super::COUNT_GATE_RUN * per;
+        // The same work at 0.3, 0.45 and 0.6 s of CPU: the same decision.
+        for cpu in [300_000, 450_000, 600_000] {
+            assert!(!after(&[(long, cpu)]), "{cpu} us of CPU");
+            assert!(after(&[(long - per, cpu)]), "{cpu} us of CPU, short");
+        }
+        // A long program whose linked runs do a quarter less stays long, run after run; one that
+        // was never long is not made so by such runs.
+        let lighter = long / 4 * 3;
+        assert!(!after(&[
+            (long, 450_000),
+            (lighter, 300_000),
+            (lighter, 300_000)
+        ]));
+        assert!(after(&[(lighter, 450_000), (lighter, 450_000)]));
+        assert!(
+            after(&[(long, 450_000), (long / 2 - per, 300_000)]),
+            "half the work"
+        );
+        // Without the work clock (refused counters) the CPU time at a warm run's rate is the work:
+        // the gate is 400 ms of it, as before.
+        let w = |cpu| super::run_work(None, None, cpu);
+        assert_eq!(w(per), crate::work::WARM_IPUS);
+        assert_eq!(
+            super::run_work(Some(3 * per), None, per),
+            crate::work::WARM_IPUS
+        );
+        assert!(w(399_000) < super::COUNT_GATE_RUN && w(400_000) >= super::COUNT_GATE_RUN);
+        // The instructions between the two readings, from the counter's opening if it opened late.
+        assert_eq!(super::run_work(Some(3 * per), Some(8 * per), 7), 5);
+        assert_eq!(super::run_work(None, Some(8 * per), 7), 8);
     }
 
     /// A short last run links before the gate what its own profile named hot, and nothing else the
@@ -5822,7 +5905,7 @@ mod tests {
         let mut w = counted(prog, u64::MAX);
         w.in_cache[caller.0 as usize].set(true).unwrap();
         w.in_cache[callee.0 as usize].set(true).unwrap();
-        w.earlier.base = Some(super::COUNT_GATE_CPU - 1);
+        w.earlier.base = Some(super::COUNT_GATE_RUN - 1);
         assert!(w.waits(caller) && !w.named_hot());
         w.early.insert(caller, 1);
         assert!(!w.waits(caller), "named hot");

@@ -21,31 +21,38 @@ pub(crate) const EARLY_SPEEDUP: f64 = 1.4;
 /// is compiled early once its seen time summed over the runs repays its compile, #679.)
 pub(crate) const EARLY_RUNS: u64 = 4;
 
-/// A run is judged, and written to the profile, only when it used this much simulation CPU (the kernel
-/// thread's CPU time, `auto::sim_cpu`; microseconds): host noise is a few percent of that.
-pub(crate) const JUDGE_MIN_US: u64 = 100_000;
+/// A run is judged, and written to the profile, only when it did this much work (the kernel thread's,
+/// `auto::run_work`: its instructions in the looks' microseconds, its CPU time at a warm run's rate
+/// where the counters are refused): 100 ms of simulation CPU at that rate, as when this was CPU time.
+pub(crate) const JUDGE_MIN_US: u64 = 100_000 * crate::work::WARM_IPUS / crate::work::INSTR_PER_US;
 
 /// The names kept: the hottest functions, and the most recent losses.
 pub(crate) const HOT_MAX: usize = 48;
 pub(crate) const LOST_MAX: usize = 256;
 
-/// Functions compiled early stay on the list when the run that compiled them took this many percent
-/// less simulation CPU time than the run before (`better`). Less is no gain worth the compile and
-/// the link: they are lost.
+/// Functions compiled early stay on the list when the run that compiled them did this many percent
+/// less work than the run before (`better`). Less is no gain worth the compile and the link: they are
+/// lost.
 pub(crate) const GAIN_PERCENT: u64 = 3;
 
 /// The functions `Worker::unrepaid` held kept (the most seen first).
 pub(crate) const HELD_MAX: usize = 1024;
 
-/// Version 4 adds the `held` lines, 5 the `ran` lines, 6 the `made` lines; a profile of an earlier
-/// version is no profile (`parse`).
-const HEAD: &str = "yavs-auto-profile 6";
+/// Version 4 adds the `held` lines, 5 the `ran` lines, 6 the `made` lines, 7 the `work` and `long`
+/// lines; a profile of an earlier version is no profile (`parse`).
+const HEAD: &str = "yavs-auto-profile 7";
 
 /// What the earlier runs of a program left.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Profile {
-    /// Simulation CPU microseconds of the latest judged run.
+    /// Simulation CPU microseconds of the latest judged run (what `Worker::unrepaid` predicts the
+    /// rest of a run from: its prices are CPU time).
     pub base: Option<u64>,
+    /// The work of the same run (`auto::run_work`, microseconds): what the verdicts read.
+    pub work: Option<u64>,
+    /// The runs found the program long (`next`): the next one does not wait for the count gate for
+    /// what the cache lists (`Worker::long_before`).
+    pub long: bool,
     /// Functions to compile when first seen: id, microseconds the runs saw it (summed over the runs
     /// since it became hot, #679), and whether a run that compiled it early was judged better than
     /// the run before. The hottest first.
@@ -71,6 +78,12 @@ impl Profile {
         let mut s = format!("{HEAD}\n");
         if let Some(cpu) = self.base {
             s += &format!("base {cpu}\n");
+        }
+        if let Some(w) = self.work {
+            s += &format!("work {w}\n");
+        }
+        if self.long {
+            s += "long\n";
         }
         for (id, us, ok) in &self.hot {
             s += &format!("hot {id} {us} {}\n", if *ok { 'a' } else { 'n' });
@@ -121,6 +134,8 @@ impl Profile {
             let num = |w: &mut std::str::Split<'_, char>| w.next()?.parse::<u64>().ok();
             match w.next()? {
                 "base" => p.base = Some(num(&mut w)?),
+                "work" => p.work = Some(num(&mut w)?),
+                "long" => p.long = true,
                 "hot" => {
                     let (id, us) = (u32::try_from(num(&mut w)?).ok()?, num(&mut w)?);
                     let ok = match w.next()? {
@@ -172,15 +187,20 @@ pub(crate) struct Snapshot {
     pub made: Vec<u32>,
 }
 
-/// The profile after a run that took `cpu` simulation CPU microseconds, from the one before it. The
-/// functions compiled early for the first time are judged by the run as a whole: it took clearly
-/// less CPU time than the run before (`better`), or they are lost; but a run that paid compiles of
-/// them rather than links (`Snapshot::fresh`) loses none of those: it carries their cost, often for
-/// some copies only, and the next run judges them again. The functions a trial took back
-/// are lost. The functions seen for a good part of the sampled time join the hot ones; the ones
-/// already there stay and add this run's seen time to theirs (#679).
-pub(crate) fn next(earlier: &Profile, snap: &Snapshot, cpu: u64) -> Profile {
+/// The profile after a run that took `cpu` simulation CPU microseconds and did `work` microseconds of
+/// work (`auto::run_work`), from the one before it; the verdicts read the work. The program is long
+/// from a run of `gate` work on, and stays long while its runs do half of that: a run that links early
+/// because the program is long does less work than the one that found it long, and judged by the
+/// same bar a program near it would link early every other run. The functions compiled early for the
+/// first time are judged by the run as a whole: it did clearly less work than the run before
+/// (`better`), or they are lost; but a run that paid compiles of them rather than links
+/// (`Snapshot::fresh`) loses none of those: it carries their cost, often for some copies only, and
+/// the next run judges them again. The functions a trial took back are lost. The functions seen for a good part
+/// of the sampled time join the hot ones; the ones already there stay and add this run's seen time to
+/// theirs (#679).
+pub(crate) fn next(earlier: &Profile, snap: &Snapshot, cpu: u64, work: u64, gate: u64) -> Profile {
     let mut p = earlier.clone();
+    p.long = work >= if earlier.long { gate / 2 } else { gate };
     let lose = |p: &mut Profile, b: u32| {
         p.hot.retain(|h| h.0 != b);
         if !p.lost.contains(&b) {
@@ -198,14 +218,14 @@ pub(crate) fn next(earlier: &Profile, snap: &Snapshot, cpu: u64) -> Profile {
         .collect();
     tried.sort_unstable();
     tried.dedup();
-    match (tried.is_empty(), earlier.base) {
-        (true, _) => p.base = Some(cpu),
-        (false, Some(base)) if better(base, cpu) => {
+    match (tried.is_empty(), earlier.work) {
+        (true, _) => (p.base, p.work) = (Some(cpu), Some(work)),
+        (false, Some(base)) if better(base, work) => {
             p.hot
                 .iter_mut()
                 .filter(|h| tried.contains(&h.0))
                 .for_each(|h| h.2 = true);
-            p.base = Some(cpu);
+            (p.base, p.work) = (Some(cpu), Some(work));
         }
         (false, _) => tried
             .iter()
@@ -246,7 +266,7 @@ pub(crate) fn next(earlier: &Profile, snap: &Snapshot, cpu: u64) -> Profile {
     p
 }
 
-/// Whether a run of `now` simulation CPU microseconds took clearly less than `base`.
+/// Whether a run of `now` microseconds of work did clearly less than `base`.
 pub(crate) fn better(base: u64, now: u64) -> bool {
     u128::from(now) * 100 <= u128::from(base) * u128::from(100 - GAIN_PERCENT)
 }
@@ -255,10 +275,15 @@ pub(crate) fn better(base: u64, now: u64) -> bool {
 mod tests {
     use super::*;
 
+    /// A gate no run in these tests reaches.
+    const GATE: u64 = u64::MAX;
+
     #[test]
     fn the_text_round_trips_and_foreign_text_is_no_profile() {
         let p = Profile {
             base: Some(1_500_000),
+            work: Some(900_000),
+            long: true,
             hot: vec![(12, 900_000, true), (7, 40_000, false)],
             lost: vec![3, 9],
             held: vec![(4, 3_000, 2)],
@@ -286,6 +311,9 @@ mod tests {
             "yavs-auto-profile 4\nwarm 1 2\n",
             // Version 5 (no `made` lines) is a miss too.
             "yavs-auto-profile 5\nbase 5\n",
+            // So is version 6 (no `work` lines).
+            "yavs-auto-profile 6\nbase 5\n",
+            "yavs-auto-profile 7\nlong 1\n",
         ] {
             assert_eq!(Profile::parse(bad), None, "{bad:?}");
         }
@@ -314,9 +342,15 @@ mod tests {
             held: h.to_vec(),
             ..snap(&[], &[], &[])
         };
-        let one = next(&Profile::default(), &held(&[(3, 100), (4, 50)]), 2_000_000);
+        let one = next(
+            &Profile::default(),
+            &held(&[(3, 100), (4, 50)]),
+            2_000_000,
+            2_000_000,
+            GATE,
+        );
         assert_eq!(one.held, [(3, 100, 1), (4, 50, 1)]);
-        let two = next(&one, &held(&[(4, 70), (5, 10)]), 2_000_000);
+        let two = next(&one, &held(&[(4, 70), (5, 10)]), 2_000_000, 2_000_000, GATE);
         assert_eq!(
             two.held,
             [(4, 120, 2), (5, 10, 1)],
@@ -333,6 +367,8 @@ mod tests {
             &Profile::default(),
             &snap(&[(5, 400_000), (6, 90_000), (7, 10_000)], &[], &[]),
             2_000_000,
+            2_000_000,
+            GATE,
         );
         // 7 is under 20 ms and under a thirty-second of the run.
         assert_eq!(one.hot, [(5, 400_000, false), (6, 90_000, false)]);
@@ -342,6 +378,8 @@ mod tests {
             &one,
             &snap(&[(5, 300_000), (6, 80_000)], &[5, 6], &[]),
             1_400_000,
+            1_400_000,
+            GATE,
         );
         assert_eq!(kept.hot, [(5, 700_000, true), (6, 170_000, true)]);
         assert_eq!(kept.base, Some(1_400_000));
@@ -351,6 +389,8 @@ mod tests {
             &one,
             &snap(&[(5, 400_000), (6, 90_000)], &[5, 6], &[]),
             2_050_000,
+            2_050_000,
+            GATE,
         );
         assert!(lost.hot.is_empty());
         assert_eq!(lost.lost, [5, 6]);
@@ -368,6 +408,8 @@ mod tests {
                 ..snap(&[(5, 400_000), (6, 90_000)], &[5, 6], &[])
             },
             2_050_000,
+            2_050_000,
+            GATE,
         );
         assert_eq!(paid.hot, [(6, 180_000, false)]);
         assert_eq!(paid.lost, [5]);
@@ -377,6 +419,8 @@ mod tests {
             &kept,
             &snap(&[(5, 300_000), (6, 80_000), (8, 120_000)], &[5, 6], &[]),
             1_410_000,
+            1_410_000,
+            GATE,
         );
         assert_eq!(
             more.hot,
@@ -392,19 +436,55 @@ mod tests {
             &kept,
             &snap(&[(5, 300_000), (6, 80_000)], &[5, 6], &[6]),
             1_300_000,
+            1_300_000,
+            GATE,
         );
         assert_eq!(trial.hot, [(5, 1_000_000, true)]);
         assert_eq!(trial.lost, [6]);
         // A run that compiled nothing early adds its seen time to the hot ones' (#679).
-        let two = next(&one, &snap(&[(5, 380_000)], &[], &[]), 2_000_000);
+        let two = next(
+            &one,
+            &snap(&[(5, 380_000)], &[], &[]),
+            2_000_000,
+            2_000_000,
+            GATE,
+        );
         assert_eq!(two.hot, [(5, 780_000, false), (6, 90_000, false)]);
         // A lost function is not hot again.
-        let again = next(&lost, &snap(&[(5, 400_000)], &[], &[]), 2_000_000);
+        let again = next(
+            &lost,
+            &snap(&[(5, 400_000)], &[], &[]),
+            2_000_000,
+            2_000_000,
+            GATE,
+        );
         assert!(again.hot.is_empty());
     }
 
+    /// A program is long from a run of the gate's work on, and stays long while its runs do half of
+    /// it: the run that links early because it is long does less work than the one that found it so.
     #[test]
-    fn a_run_is_better_by_its_cpu_time() {
+    fn a_program_found_long_stays_long_while_its_runs_do_half_the_gate() {
+        let run = |p: &Profile, work: u64| {
+            let n = next(p, &snap(&[], &[], &[]), 1, work, 400_000);
+            assert_eq!(Profile::parse(&n.render()).as_ref(), Some(&n));
+            n
+        };
+        let short = run(&Profile::default(), 399_999);
+        assert!(!short.long);
+        assert!(!run(&short, 300_000).long, "not long yet: the full gate");
+        let long = run(&short, 400_000);
+        assert!(long.long);
+        assert!(run(&long, 200_000).long, "a lighter run keeps it");
+        assert!(!run(&long, 199_999).long);
+        assert!(
+            !run(&run(&long, 199_999), 300_000).long,
+            "dropped: the full gate again"
+        );
+    }
+
+    #[test]
+    fn a_run_is_better_by_its_work() {
         assert!(better(1_000_000, 900_000));
         assert!(better(1_000_000, 970_000));
         assert!(!better(1_000_000, 971_000), "less than the gain wanted");

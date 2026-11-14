@@ -17,6 +17,17 @@
 /// per CPU microsecond on the development host (about 3 instructions a cycle at 5 GHz; the median of the designs measured).
 pub(crate) const INSTR_PER_US: u64 = 16_000;
 
+/// Instructions a settled warm run of `--tier=auto` retires per CPU microsecond, compiled code
+/// included: the median of the realbench tests of 0.1 s or more (8 200 to 18 400, measured
+/// 2026-11-14). What a CPU time is in the looks' microseconds when the profile must take one for the
+/// work of a run (`cpu_as_work`), and what turned the warm gate's 400 ms into work (`COUNT_GATE_RUN`).
+pub(crate) const WARM_IPUS: u64 = 12_540;
+
+/// The work `cpu_us` CPU microseconds of a warm run stand for, where there is no counter.
+pub(crate) fn cpu_as_work(cpu_us: u64) -> u64 {
+    cpu_us.saturating_mul(WARM_IPUS) / per_us()
+}
+
 /// The microseconds of work that `instr` instructions are.
 pub(crate) fn work_us(instr: u64) -> u64 {
     instr / per_us()

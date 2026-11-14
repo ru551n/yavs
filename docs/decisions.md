@@ -16331,7 +16331,7 @@ Amends "Stage entries of a design that loads units late" (#671).
   opened the entry once more for writing. On Windows with real-time antivirus each is a scan.
 - **Decision**: (1) the compiled-code store creates entries under their own name like the analysed units, and both
   do so on Windows too (a name that exists is replaced by rename, as before); (2) the list and the routes are kept in
-  memory and stored by `Generator::cache_flush` when the compile thread is idle (at most every 200 ms) and when it
+  memory and stored by `Generator::cache_flush` when the compile thread is idle (at most every 2 s, user 2026-11-14) and when it
   ends, and, for a run that ends by a route that does not wait for the thread, once from the ending side (see "Stop
   path" below; user, 2026-11-13: the compile thread no longer stores between compiles, which the landing had added
   and the maintainer declined); (3) a read refreshes an entry's time only when it is older than 2 s (`TOUCH_AFTER`, a fifth of `IN_USE`), on
@@ -16380,7 +16380,26 @@ Amends "Stage entries of a design that loads units late" (#671).
   (scratch build, `FLUSH_EVERY` an hour): list and route renames per run, cold / next warm runs, 0 / 2 for
   `neorv32_single_min` and `uvvm_axistream_vvc` (`hdlm_fifo_sync` compiles nothing; the first store of an entry
   creates it, no rename), against 18 to 22 cold and 2 to 17 warm with it. The price is the lines of a run that is killed or crashes
-  (the next run links or recompiles). Open for the maintainer: keep the idle store, make it rarer, or drop it.
+  (the next run links or recompiles).
+- **Idle store at most every 2 s** (user, 2026-11-14, closing the open question above: keep, make rarer or drop). `FLUSH_EVERY`
+  is 2 s instead of 200 ms; the stop-path stores are unchanged. A crash or `kill -9` loses at most about 2 s of list and
+  route lines (the next run links or recompiles). Renames of list and route entries per run
+  (`strace`, `--tier-compile=wait`, runs 1 to 4 in one world, two rounds, 200 ms to 2 s):
+
+  | test, run | 200 ms | 2 s |
+  |---|---|---|
+  | `neorv32_single_min` 1 (cold) | 16, 16 | 2, 2 |
+  | `neorv32_single_min` 2 | 9, 11 | 2, 2 |
+  | `neorv32_single_min` 3 | 3, 2 | 2, 2 |
+  | `neorv32_single_min` 4 | 4, 6 | 2, 2 |
+  | `uvvm_axistream_vvc` 1 (cold) | 4, 7 | 0, 0 |
+  | `uvvm_axistream_vvc` 2 | 12, 15 | 3, 4 |
+  | `uvvm_axistream_vvc` 3 | 7, 7 | 2, 2 |
+  | `uvvm_axistream_vvc` 4 | 2, 5 | 2, 2 |
+
+  What is left is the stop-path store (one list and one route rename); the cold `uvvm_axistream_vvc` run ends before
+  anything is renamed (the first store of an entry creates it). Checked by `const` in `auto.rs` (`FLUSH_EVERY` is 2 s);
+  no test waits for the interval.
 - **Ctrl-C and SIGTERM** (user, 2026-11-13, kept): a run with a compiled tier ends on its first Ctrl-C or SIGTERM
   through yavs's own exit with status 130 and stores the lists first, also on a plain terminal (before, the default
   action ended it with the shell's 130 and the lists were lost). Stated in `docs/cli-contract.md` (console section),

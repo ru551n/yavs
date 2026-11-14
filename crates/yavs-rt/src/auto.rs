@@ -1029,7 +1029,9 @@ const BATCH: usize = 8;
 /// A thread that never idles (`--tier-compile=background`) stores nothing until the run ends:
 /// `AutoTier::stop` stores what is noted so far, from the simulation's side, when it cannot wait
 /// for a compile in flight (the next run links those functions once the policy asks for them).
-const FLUSH_EVERY: Duration = Duration::from_millis(200);
+const FLUSH_EVERY: Duration = Duration::from_secs(2);
+// A killed run loses at most this much of the lists (user, 2026-11-14: rarer than every 200 ms).
+const _: () = assert!(FLUSH_EVERY.as_millis() == 2000);
 
 /// What the tier and its compile thread share.
 #[derive(Default)]

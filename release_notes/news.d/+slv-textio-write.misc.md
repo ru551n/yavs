@@ -1,1 +1,0 @@
-`write` of a `std_ulogic_vector` or `std_logic_vector` to a textio line (and `bwrite`) is one native operation instead of a loop over the elements, so testbenches that write vectors to lines or files run faster.

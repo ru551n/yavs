@@ -1,1 +1,0 @@
-The `std_logic_1164` logical operators between a vector and a single `std_ulogic`, `to_stdulogicvector` and `to_stdlogicvector` of a `bit_vector`, `numeric_bit` negation, `abs`, `minimum` and `maximum`, and matching `case?` statements on vectors no longer work element by element, so code using them on wide vectors simulates faster.

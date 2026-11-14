@@ -1,1 +1,0 @@
-Compiled code now computes `**` and physical values times or divided by a real without handing each operation back to the interpreter, so these operators are never slower in compiled code than interpreted.

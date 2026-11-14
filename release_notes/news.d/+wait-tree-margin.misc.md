@@ -1,1 +1,0 @@
-With `--tier-compile=wait`, the first run of a testbench whose processes call large trees of procedures no longer sometimes compiles them in its last moments: those compiles move to the following runs, so the first run takes about the same time every time.

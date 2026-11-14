@@ -1,1 +1,0 @@
-Shifts, rotations, reductions and logical operators with a scalar operand of `bit_vector` and `boolean_vector`, `?=`, `?/=`, `to_hstring` and `to_ostring` of `bit_vector`, and the predefined `minimum` and `maximum` of one-dimensional arrays work on whole words instead of element by element, so wide bit vectors simulate faster.

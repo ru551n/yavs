@@ -1,0 +1,1 @@
+Compilation cache: a later run of a design takes the compiled code that earlier runs made without generating it again, so it starts sooner: this holds for the second run of a design and for testbenches that share their verification library with others of a suite, and each compiled function is hashed once instead of twice.

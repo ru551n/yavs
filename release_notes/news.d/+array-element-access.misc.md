@@ -1,0 +1,1 @@
+Array code: arrays of vectors cost less to read and write: a local array of vectors initialised with an aggregate such as `(others => (others => '0'))` is made in one step, an aggregate such as `(x'range => '0')` or `(7 downto 0 => b)` of a logic vector is filled in one step, and bounds attributes such as `mem(i)'range` no longer read the element's value.

@@ -1,1 +1,0 @@
-Under `--tier=auto`, a simulation no longer enters compiled code at a subprogram return that the interpreter runs anyway, so testbenches whose procedures wait inside compiled callers run a little faster.

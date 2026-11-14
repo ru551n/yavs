@@ -1,1 +1,0 @@
-Record ports connected to an element or a slice of an array of records, as in generate loops of stream stages, no longer copy their values every delta cycle, and elaborating many instances connected to elements of one array no longer slows down with the square of their number.

@@ -1,1 +1,0 @@
-The `numeric_std` matching relations (`?=`, `?<`, ...), `std_match`, `?=` of `std_ulogic_vector` and the relations of `unsigned` and `signed` work a word at a time on vectors of any length, not only up to 1024 elements.

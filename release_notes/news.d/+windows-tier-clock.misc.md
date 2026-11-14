@@ -1,1 +1,0 @@
-On Windows the `--tier=auto` policy measures the CPU time of the simulation, as on Linux, instead of the wall clock, so what it compiles depends less on how busy the machine is, and later runs of a design learn from the earlier ones as they do on Linux.

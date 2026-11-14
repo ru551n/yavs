@@ -1,0 +1,1 @@
+Startup: under `--tier=auto`, the first run of a testbench starts sooner: only the subprograms its processes can call are optimised ahead, and deciding which subprograms to compile no longer optimises every function of the design first, so most functions that never run are not optimised at all.

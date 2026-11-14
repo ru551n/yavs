@@ -7,6 +7,8 @@
 - `-j N` (`--jobs N`) compiles with up to N `yavs analyze` calls at once, into different libraries; a bare `-j` is one
   per CPU. Without it, one call at a time as before. Failures, skipped dependents, `--keep-compiling` and the output are
   those of VUnit's own compile loop.
+- `--yavs-jobserver` works with `-p 0` (one simulation per CPU): the token server starts with one slot per CPU and each
+  simulation runs with `--threads=auto`, as with `-p N`. It was silently off.
 
 ## 0.19.1 (2026-11-11)
 

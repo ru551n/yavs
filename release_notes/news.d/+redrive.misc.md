@@ -1,1 +1,1 @@
-A process that assigns a signal several times in one activation, such as a default followed by an override, now keeps only the last assignment instead of committing each one, so such processes run faster, most of all in compiled code.
+Kernel: a process that assigns a signal several times in one activation, such as a default followed by an override, now keeps only the last assignment instead of committing each one, so such processes run faster, most of all in compiled code.

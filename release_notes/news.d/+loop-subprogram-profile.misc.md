@@ -1,1 +1,0 @@
-Under `--tier=auto`, a subprogram that loops for a long time in one call, such as a test's set-up at time 0, is compiled early in the next run of the test, and the call running then goes on in compiled code.

@@ -1,1 +1,0 @@
-Compiled code calls a pure function without a loop directly instead of first looking its arguments up in the memo of pure calls, and a lookup in that memo costs less, so designs that call many small pure helper functions simulate a little faster.

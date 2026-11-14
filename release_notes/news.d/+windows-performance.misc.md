@@ -1,0 +1,1 @@
+Windows: yavs uses a faster memory allocator than the system heap, which makes allocation-heavy simulations faster, and the `--tier=auto` policy measures the CPU time of the simulation, as on Linux, instead of the wall clock, so what it compiles depends less on how busy the machine is and later runs of a design learn from the earlier ones.

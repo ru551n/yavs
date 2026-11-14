@@ -1,1 +1,0 @@
-Compiled code now computes `numeric_std` sums, differences and products, reductions, `is_x` and the logical operators of vectors of 65 to 128 elements, and concatenations of up to 128 elements, itself instead of calling into the interpreter, so designs with 64-bit multipliers and other wide datapaths simulate faster.

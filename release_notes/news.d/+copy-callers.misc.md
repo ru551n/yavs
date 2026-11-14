@@ -1,1 +1,0 @@
-Under `--tier=auto`, subprograms that a compiled process calls through its specialised copies are compiled too instead of staying interpreted for the whole run, so processor models that call many small procedures from one large process simulate faster from the first run.

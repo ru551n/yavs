@@ -1,0 +1,1 @@
+A run with the compiled tier (`--tier=auto`) ends on its first Ctrl-C or SIGTERM through yavs itself, with exit status 130, also on a plain terminal, after storing the compilation cache's lists of compiled functions, so an interrupted run does not lose what it compiled.

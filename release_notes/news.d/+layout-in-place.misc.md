@@ -1,1 +1,0 @@
-Compiled code now reads the layout of a record or array whose bounds are only known at run time without handing the work to the interpreter, so designs that pass such records to small functions simulate faster.

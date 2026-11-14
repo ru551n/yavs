@@ -1,1 +1,0 @@
-Bounds attributes such as `'range` and `'length` of one element of an array signal or variable, as in `mem(i)'range`, no longer read the element's value, so loops that take their bounds from memory words simulate faster.

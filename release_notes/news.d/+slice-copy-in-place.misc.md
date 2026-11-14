@@ -1,1 +1,0 @@
-Compiled code copies slices whose length is known only at run time, such as a slice a small function returns, itself instead of calling into the runtime, so designs with many small index and field helper functions simulate a little faster.

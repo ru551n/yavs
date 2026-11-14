@@ -11448,3 +11448,9 @@ usual verification-library shape shows no measurable change (the activations the
 (`shared_publishes`), corpus `protected/serial_line_roots` (shared-heap collections with roots in `line` variables). Not
 done: removing the lock (a lend per batch needs a kernel hook), a persistent per-process compiled-entry view (ruled out by
 the decision on persistent per-process machine state, #634).
+
+## README logo (2026-11-14)
+
+The README opens with the yavs logo: a swept shark fin with a delta cutout and a lowercase wordmark, as transparent SVGs in
+`assets/` (`yavs-logo-light.svg`, `yavs-logo-dark.svg`) shown through a theme-aware `<picture>`. The fin is the same teal in
+both themes; only the wordmark colour changes. The files are not read by the Sphinx site, the crates or the release archives.

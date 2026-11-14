@@ -1,5 +1,12 @@
 # Decisions
 
+## README logo (user, 2026-11-14)
+
+- Use the swept shark fin with a delta cutout and lowercase yavs wordmark.
+- Keep the fin the same teal (`#008F83`) in light and dark themes; only the lettering changes.
+- Use transparent SVG assets with outlined lettering and a theme-aware picture in the README,
+  so the logo scales cleanly and needs no installed font.
+
 ## Copyright holder (maintainer, 2026-11-01, #1039)
 
 - `yavs --version` and `-V` print `Copyright (c) 2026 Sebastian Abrahamsson` on a line after the version line (the third since 2026-11-03, after the build line). The first line keeps the shape of

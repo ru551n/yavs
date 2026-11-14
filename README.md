@@ -1,3 +1,11 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/yavs-logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/yavs-logo-light.svg">
+    <img src="assets/yavs-logo-light.svg" alt="yavs" width="420">
+  </picture>
+</p>
+
 <h1 align="center">YAVS - Yet Another VHDL Simulator</h1>
 
 [![Documentation](https://img.shields.io/readthedocs/yavs?label=documentation)](https://yavs.readthedocs.io)

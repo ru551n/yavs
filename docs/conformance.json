@@ -2196,7 +2196,7 @@
    },
    {
     "case": "positional-generic-after-type",
-    "decided": "agent, 2026-10-18 (#223, L69); confirmation pending",
+    "decided": "agent, 2026-10-18 (#223, L69); confirmed by the user, 2026-10-19",
     "kind": "LRM ambiguity",
     "lrm": "6.5.3, 6.5.7.2",
     "yavs": "OK"

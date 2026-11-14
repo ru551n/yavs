@@ -11518,3 +11518,4 @@ The Read the Docs site shows the logo in the sidebar header: the dark SVG from `
 header background, set in `docs/conf.py` (`html_logo`, `style_nav_header_background`). The theme has no dark mode, so
 there is one variant. The landing page shows the light SVG centred above the title (the page body is white in every colour
 scheme). No favicon yet.
+The sidebar shows only the logo, not the project name next to it (`logo_only` in `docs/conf.py`, sphinx_rtd_theme 3.1.0).

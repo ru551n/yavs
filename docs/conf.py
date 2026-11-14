@@ -65,6 +65,7 @@ html_theme_options = {
     "style_nav_header_background": "#0d1117",
     "prev_next_buttons_location": "both",
     "navigation_depth": 3,
+    "logo_only": True,
 }
 # The "Edit on GitHub" link of every page
 html_context = {

@@ -14,7 +14,7 @@ fn run(
     d: &std::path::Path,
     tier: &[&str],
     counters: bool,
-    helper: bool,
+    helper: Option<&str>,
 ) -> (Option<i32>, String, String) {
     let yavs = env!("CARGO_BIN_EXE_yavs");
     let work = format!("work:{}", d.join("lib").display());
@@ -26,9 +26,9 @@ fn run(
     if counters {
         c.env("YAVS_COUNTERS", "1");
     }
-    if helper {
+    if let Some(name) = helper {
         // The loops planned by the runtime helper instead of the code itself.
-        c.env("YAVS_LLVM_ELOOP_HELPER", "1");
+        c.env(name, "1");
     }
     let o = c.output().expect("run");
     (
@@ -61,18 +61,19 @@ fn element_loops_in_compiled_code_match_the_interpreter() {
         .output()
         .expect("analyze");
     assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
-    let want = run(&d, &["--tier=interp"], false, false);
+    let want = run(&d, &["--tier=interp"], false, None);
     assert!(text(&want).contains("short LLLHH000"), "{}", text(&want));
     let mut tiers = Vec::new();
     if cfg!(feature = "clift") {
-        tiers.push((vec!["--tier=clift"], 5, false));
-        tiers.push((vec!["--tier=clift-auto", "--tier-heat=1,0,0"], 1, false));
-        tiers.push((vec!["--tier=clift"], 5, true));
-        tiers.push((vec!["--tier=clift-auto", "--tier-heat=1,0,0"], 1, true));
+        let h = Some("YAVS_ELOOP_HELPER");
+        tiers.push((vec!["--tier=clift"], 5, None));
+        tiers.push((vec!["--tier=clift-auto", "--tier-heat=1,0,0"], 1, None));
+        tiers.push((vec!["--tier=clift"], 5, h));
+        tiers.push((vec!["--tier=clift-auto", "--tier-heat=1,0,0"], 1, h));
     }
     for (tier, least, helper) in tiers {
         let got = run(&d, &tier, true, helper);
-        assert_eq!(text(&got), text(&want), "{tier:?} helper {helper}");
+        assert_eq!(text(&got), text(&want), "{tier:?} helper {helper:?}");
         // The loops ran at once for the loops of enough elements (a build with callback counters).
         let calls = got
             .1
@@ -81,7 +82,46 @@ fn element_loops_in_compiled_code_match_the_interpreter() {
             .find_map(|l| l.strip_prefix("counters: cb_eloop="))
             .and_then(|n| n.parse::<u64>().ok());
         if let Some(n) = calls {
-            assert!(n >= least, "{tier:?} helper {helper}: {n} calls");
+            assert!(n >= least, "{tier:?} helper {helper:?}: {n} calls");
         }
     }
+}
+
+/// The calls of the runtime helper a run counted (`None`: no such counter line).
+fn helper_calls(r: &(Option<i32>, String, String)) -> Option<u64> {
+    r.1.lines()
+        .chain(r.2.lines())
+        .find_map(|l| l.strip_prefix("counters: cb_eloop="))
+        .and_then(|n| n.parse().ok())
+}
+
+/// `YAVS_LLVM_ELOOP_HELPER` is the old name of `YAVS_ELOOP_HELPER` and still switches the helper
+/// on (accepted for one release).
+#[test]
+fn the_old_name_of_the_helper_switch_still_works() {
+    let d = tempdir("compiled_loops_old_name");
+    std::fs::write(d.join("loops.vhd"), LOOPS).expect("write");
+    let yavs = env!("CARGO_BIN_EXE_yavs");
+    let work = format!("work:{}", d.join("lib").display());
+    let a = Command::new(yavs)
+        .current_dir(&d)
+        .args(["analyze", "--work", &work, "loops.vhd"])
+        .output()
+        .expect("analyze");
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    let tier = ["--tier=clift"];
+    let planned = run(&d, &tier, true, None);
+    let new = run(&d, &tier, true, Some("YAVS_ELOOP_HELPER"));
+    let old = run(&d, &tier, true, Some("YAVS_LLVM_ELOOP_HELPER"));
+    assert_eq!(text(&old), text(&new));
+    let (planned_n, new_n, old_n) = (
+        helper_calls(&planned).unwrap_or(0),
+        helper_calls(&new).unwrap_or(0),
+        helper_calls(&old).unwrap_or(0),
+    );
+    assert!(
+        new_n > planned_n,
+        "helper calls: {new_n} against {planned_n} planned"
+    );
+    assert_eq!(old_n, new_n, "the old name must act as the new one");
 }

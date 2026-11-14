@@ -727,8 +727,8 @@ Compiled tiers: when to compile
      - unset
      - ``run``
 
-Compiled tier: a name from the removed LLVM tier
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Compiled tier
+~~~~~~~~~~~~~
 
 .. list-table::
    :header-rows: 1
@@ -739,8 +739,13 @@ Compiled tier: a name from the removed LLVM tier
      - Values
      - Default
      - Read by
-   * - ``YAVS_LLVM_ELOOP_HELPER``
+   * - ``YAVS_ELOOP_HELPER``
      - Element loops use the helper call.
+     - any value
+     - unset
+     - ``run``
+   * - ``YAVS_LLVM_ELOOP_HELPER``
+     - The old name of ``YAVS_ELOOP_HELPER``, accepted for one more release. ``YAVS_ELOOP_HELPER`` wins when both are set.
      - any value
      - unset
      - ``run``

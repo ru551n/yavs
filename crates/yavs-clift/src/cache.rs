@@ -186,8 +186,14 @@ pub(crate) const KEYED: [&str; 14] = [
     "YAVS_CLIFT_NO_PROOFS",
     "YAVS_CLIFT_HOLD_CHECK",
     "YAVS_CLIFT_HOLD_DROP",
-    "YAVS_LLVM_ELOOP_HELPER",
+    "YAVS_ELOOP_HELPER",
 ];
+
+/// `YAVS_ELOOP_HELPER`, or its old name `YAVS_LLVM_ELOOP_HELPER` (accepted for one release; the
+/// new name wins when both are set): the value of the switch, `None` when unset.
+pub(crate) fn eloop_helper() -> Option<std::ffi::OsString> {
+    std::env::var_os("YAVS_ELOOP_HELPER").or_else(|| std::env::var_os("YAVS_LLVM_ELOOP_HELPER"))
+}
 
 /// With one of these set a run has no pre-keys: they want the code made (dumps, source locations)
 /// or make it depend on what was compiled before (`YAVS_CLIFT_NATIVE_MAX`).
@@ -327,7 +333,13 @@ pub(crate) fn pre_target(isa: &dyn TargetIsa, inlcmp: &str) -> Option<(String, S
     );
     let mut switches = format!("debug={} inlcmp={inlcmp}", cfg!(debug_assertions));
     for v in KEYED {
-        switches += &format!(" {v}={:?}", std::env::var_os(v));
+        // (By the effective value: the old name of a switch gives the same key as its new one.)
+        let value = if v == "YAVS_ELOOP_HELPER" {
+            eloop_helper()
+        } else {
+            std::env::var_os(v)
+        };
+        switches += &format!(" {v}={value:?}");
     }
     Some((target, switches))
 }
@@ -849,6 +861,8 @@ mod tests {
             "YAVS_CLIFT_PREKEY_CHECK",
             "YAVS_CLIFT_PREKEY_DROP",
             "YAVS_LOG",
+            // The old name of `YAVS_ELOOP_HELPER`, read by `eloop_helper`.
+            "YAVS_LLVM_ELOOP_HELPER",
         ];
         for (file, text) in [
             ("lower.rs", include_str!("lower.rs")),

@@ -11484,7 +11484,7 @@ it 2.6 million times; `eloop::run`, `LoopObjects::region` and `yavs_rt_eloop` we
 - **Which steps change is known when the code is made** (`eloop::invariant_steps`): `elem_loops` only accepts bases, codes
   and descriptors that do not change, and a product has one factor that does not, so a step either has change 0 (no code for
   it) or depends on the loop variable (and `step`, 1 or -1, is checked once). A program it does not accept (it accepts
-  everything `elem_loops` makes today) keeps the helper call (`Gen::eloop_call`); `YAVS_LLVM_ELOOP_HELPER=1` forces it for A/B
+  everything `elem_loops` makes today) keeps the helper call (`Gen::eloop_call`); `YAVS_ELOOP_HELPER=1` (then `YAVS_LLVM_ELOOP_HELPER`, renamed 2026-11-14) forces it for A/B
   measurements and for the test that runs the loops design both ways. The helper and `eloop::run` stay, for the shared
   runtime (#481).
 - **An address is resolved once per use, not once per step.** A base the generator knows (a held parameter region, the frame,
@@ -14418,7 +14418,7 @@ Written by Claude. A parameter's host pointer was held over a function only with
 
 ## Cranelift tier: element loops planned in the code itself (yavs-clift, 2026-11-04)
 
-- **The Cranelift lowering plans element loops as LLVM does** ("Element loops planned in the compiled code itself"; `Gen::eloop_plan`, `yavs_rt_eloop_exec`, `eloop::invariant_steps`): the helper `eloop::run` interprets the steps and finds every object through a trait object, about 2 300 instructions for a loop of eight elements, more than the eight iterations it replaces. No tunable constant. The helper stays for a shape `invariant_steps` refuses and for `YAVS_LLVM_ELOOP_HELPER`, which now keys Cranelift's code too.
+- **The Cranelift lowering plans element loops as LLVM does** ("Element loops planned in the compiled code itself"; `Gen::eloop_plan`, `yavs_rt_eloop_exec`, `eloop::invariant_steps`): the helper `eloop::run` interprets the steps and finds every object through a trait object, about 2 300 instructions for a loop of eight elements, more than the eight iterations it replaces. No tunable constant. The helper stays for a shape `invariant_steps` refuses and for `YAVS_ELOOP_HELPER`, which now keys Cranelift's code too. (2026-11-14, user: the switch lost its `LLVM` in the name, LLVM no longer being a tier. The old name `YAVS_LLVM_ELOOP_HELPER` is accepted for one more release through `cache::eloop_helper`, the new name first, and the pre-key holds the effective value under the new name, so either spelling gives the same key. No deprecation message: nothing else in the sources prints one for a variable; `docs/environment.rst` says it. Remove the old name in the release after.)
 
 ## Optimiser: an element of a logic vector read again (yavs-ir `opt.rs`, 2026-11-04)
 

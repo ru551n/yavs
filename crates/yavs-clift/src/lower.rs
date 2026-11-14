@@ -6496,7 +6496,7 @@ impl Gen<'_> {
     /// generic code after this, which also runs the last iteration.
     fn eloop(&mut self, l: &yavs_interp::ElemLoop) -> Result<(), String> {
         if let Some(inv) = yavs_rt::eloop::invariant_steps(&l.prog, l.inputs.len())
-            && std::env::var_os("YAVS_LLVM_ELOOP_HELPER").is_none()
+            && crate::cache::eloop_helper().is_none()
         {
             self.eloop_plan(l, &inv);
             return Ok(());

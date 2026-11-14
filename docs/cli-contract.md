@@ -299,7 +299,7 @@ yavs analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=alwa
 ```
 
 - One or more files per call, in dependency order (the test runner `--batch-compile` /
-  `--parallel-compile`: directly as several arguments, or as one `@filelist`
+  `--parallel-compile`, or vunit-yavs on its own with `-j`: directly as several arguments, or as one `@filelist`
   response file with a file per line, section 0). All files get the same options
   and `--std`. They are analyzed in the given order by one analysis session: each
   file is parsed once and sees the units of the files before it, even before the

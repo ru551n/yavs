@@ -17,7 +17,10 @@ import subprocess
 import sys
 import tempfile
 import re
+import threading
+import time
 import unittest
+from multiprocessing import cpu_count
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -34,6 +37,7 @@ from vunit.vhdl_standard import VHDL
 import vunit
 from vunit_yavs.console import HELP
 from vunit_yavs import YAVS_MIN_VERSION, CoverageArgs, YavsInterface, YavsVersion, check_debug_args, write_response_file
+from vunit_yavs import _library_groups
 from vunit_yavs.tokens import TokenServer
 
 FAKE_BIN = Path(__file__).parent / "fake_bin"
@@ -160,6 +164,25 @@ class TestPackage(unittest.TestCase):
             vu = self._vunit(*argv)
             vu.get_simulator_name()
             self.assertEqual(vu._args.yavs_debug, port)  # pylint: disable=protected-access
+
+    def test_jobs_argument(self):
+        for argv, jobs in [
+            ([], None),
+            (["-j", "4", "lib.tb.x"], 4),
+            (["-j3"], 3),
+            (["--jobs=2"], 2),
+            (["--jobs", "5"], 5),
+            (["lib.tb.x", "-j"], cpu_count()),
+        ]:
+            vu = self._vunit(*argv)
+            vu.get_simulator_name()
+            self.assertEqual(vu._args.yavs_jobs, jobs, argv)  # pylint: disable=protected-access
+            self.assertEqual(vu._args.num_threads, 1, argv)  # pylint: disable=protected-access
+        for bad in ("0", "-1", "x", "lib.tb.x"):
+            vu = self._vunit("-j", bad)
+            with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr, self.assertRaises(SystemExit):
+                vu.get_simulator_name()
+            self.assertIn("expected an integer of at least 1", stderr.getvalue())
 
     def test_debug_followed_by_a_test_pattern_is_a_clear_error(self):
         vu = self._vunit("--yavs-debug", "lib.tb.test")
@@ -373,9 +396,8 @@ class TestYavsInterface(unittest.TestCase):
     def test_consecutive_files_share_one_call(self, check_output):
         self.simif.compile_project(self._project("2008", "2008", "2019"))
         calls = [call[0][0] for call in check_output.call_args_list]
-        self.assertEqual([cmd[2] for cmd in calls], ["--std=2008", "--std=2019"])
-        self.assertEqual(sorted(calls[0][-2:]), ["file0.vhd", "file1.vhd"])
-        self.assertEqual(calls[1][-1], "file2.vhd")
+        names = {cmd[2]: sorted(arg for arg in cmd if arg.endswith(".vhd")) for cmd in calls}
+        self.assertEqual(names, {"--std=2008": ["file0.vhd", "file1.vhd"], "--std=2019": ["file2.vhd"]})
 
     @mock.patch("vunit.sim_if.check_output", autospec=True)
     def test_failing_call_is_repeated_file_by_file(self, check_output):
@@ -963,3 +985,233 @@ class TestYavsInterface(unittest.TestCase):
             refused(self, "--yavs-debug and --elaborate"),
         ):
             YavsInterface.from_args(args, self.output_path)
+
+    def test_from_args_takes_the_compile_jobs(self):
+        self.assertEqual(self._from_args()._compile_jobs, 1)  # pylint: disable=protected-access
+        simif = self._from_args(yavs_jobs=6, num_threads=2)
+        self.assertEqual(simif._compile_jobs, 6)  # pylint: disable=protected-access
+
+
+# Library: {file: (unit it declares, units it uses)}
+SCHEDULE_PROJECT = {
+    "a": {"pkg_a.vhd": ("pa", []), "ent_a.vhd": ("ea", ["work.pa"])},
+    "b": {"pkg_b.vhd": ("pb", []), "use_ab.vhd": ("pab", ["a.pa", "work.pb"])},
+    "c": {"c1.vhd": ("pc1", []), "c2.vhd": ("pc2", [])},
+}
+SCHEDULE_DEPS = {"ent_a.vhd": {"pkg_a.vhd"}, "use_ab.vhd": {"pkg_a.vhd", "pkg_b.vhd"}}
+
+
+class FakeAnalyze:
+    """A check_output for yavs analyze calls: records each call, takes `delay` seconds, fails on names in `fail`"""
+
+    def __init__(self, delay=0.0, fail=(), slow=()):
+        self.delay = delay
+        self.slow = set(slow)  # Calls with one of these names take 0.5 s more
+        self.fail = set(fail)
+        self.calls = []  # (library, names, start, end)
+        self.running = []
+        self.most_at_once = 0
+        self._lock = threading.Lock()
+
+    def __call__(self, cmd, env=None):  # pylint: disable=unused-argument
+        library = next(arg for arg in cmd if arg.startswith("--work=")).split("=")[1].split(":")[0]
+        names = [Path(arg).name for arg in cmd if arg.endswith(".vhd")]
+        with self._lock:
+            start = time.monotonic()
+            self.running.append(library)
+            self.most_at_once = max(self.most_at_once, len(self.running))
+            same_library = self.running.count(library)
+        time.sleep(self.delay + (0.5 if self.slow.intersection(names) else 0))
+        with self._lock:
+            self.running.remove(library)
+            self.calls.append((library, names, start, time.monotonic(), same_library))
+        bad = self.fail.intersection(names)
+        if bad:
+            raise subprocess.CalledProcessError(1, "yavs", output=f"error[E0001]: bad file {sorted(bad)[0]}")
+        return f"yavs: analyzed {' '.join(names)}\n"
+
+    def groups(self):
+        """The calls as sets of file names"""
+        return sorted(sorted(names) for _, names, *_ in self.calls)
+
+
+class TestCompileSchedule(unittest.TestCase):
+    """
+    compile_source_files on stock VUnit: dependency order, batches of ready files of one key, -j calls at once,
+    and VUnit's failure semantics
+    """
+
+    def setUp(self):
+        use_fresh_factory(self).register_simulator(YavsInterface)
+        self._tempdir = tempfile.TemporaryDirectory()  # pylint: disable=consider-using-with
+        self.cwd = os.getcwd()
+        os.chdir(self._tempdir.name)
+        self.printed = ""
+        for files in SCHEDULE_PROJECT.values():
+            for name, (unit, uses) in files.items():
+                self.write(name, unit, uses)
+        self.new_project()
+
+    def new_project(self):
+        """The project as a run script adds it"""
+        self.project = Project()
+        for library, files in SCHEDULE_PROJECT.items():
+            self.project.add_library(library, str(Path("libs") / library))
+            for name in files:
+                self.project.add_source_file(name, library, file_type="vhdl", vhdl_standard=VHDL.standard("2008"))
+
+    def tearDown(self):
+        os.chdir(self.cwd)
+        self._tempdir.cleanup()
+
+    @staticmethod
+    def write(name, unit, uses, extra=""):
+        """A package `unit` using `uses`"""
+        context = "".join(
+            f"library {use.split('.')[0]};\n" for use in uses if not use.startswith("work")
+        ) + "".join(f"use {use}.all;\n" for use in uses)
+        write_file(name, f"{context}package {unit} is\n{extra}end package;\n")
+
+    def compile(self, fake, jobs=1, continue_on_error=False):
+        """Compile the project with fake as yavs and return the printed text"""
+        simif = YavsInterface(prefix="prefix", output_path=self._tempdir.name, compile_jobs=jobs)
+        printed = io.StringIO()
+        try:
+            with mock.patch("vunit.sim_if.check_output", side_effect=fake), contextlib.redirect_stdout(printed):
+                simif.compile_project(self.project, continue_on_error=continue_on_error)
+        finally:
+            self.printed = printed.getvalue()
+        return self.printed
+
+    def assert_dependencies_done_first(self, fake):
+        ends = {name: end for _, names, _, end, _ in fake.calls for name in names}
+        for _, names, start, _, _ in fake.calls:
+            for name in names:
+                for dep in SCHEDULE_DEPS.get(name, ()):
+                    if dep not in names:
+                        self.assertLessEqual(ends[dep], start, f"{name} started before {dep} was done")
+
+    def test_without_jobs_one_call_at_a_time(self):
+        fake = FakeAnalyze()
+        out = self.compile(fake)
+        self.assertEqual(fake.most_at_once, 1)
+        # A ready file takes the later files of its key whose dependencies are done or in the call
+        self.assertEqual(
+            fake.groups(), [["c1.vhd", "c2.vhd"], ["ent_a.vhd", "pkg_a.vhd"], ["pkg_b.vhd"], ["use_ab.vhd"]]
+        )
+        self.assert_dependencies_done_first(fake)
+        for _, names, *_ in fake.calls:  # In dependency order within a call
+            if "ent_a.vhd" in names:
+                self.assertLess(names.index("pkg_a.vhd"), names.index("ent_a.vhd"))
+        self.assertEqual(len(re.findall(r"^Compiling into .* passed$", out, re.M)), 6, out)
+        self.assertRegex(out, r"Compiling into a: pkg_a\.vhd  +passed\n")
+        self.assertTrue(out.endswith("Compile passed\n"), out)
+
+    def test_jobs_run_calls_at_once_in_dependency_order(self):
+        fake = FakeAnalyze(delay=0.2)
+        out = self.compile(fake, jobs=4)
+        self.assertEqual(fake.most_at_once, 3, fake.calls)  # Libraries a, b and c
+        self.assertEqual(len(fake.calls), 4)
+        self.assert_dependencies_done_first(fake)
+        self.assertTrue(all(same == 1 for *_, same in fake.calls), "two calls into one library at once")
+        self.assertTrue(out.endswith("Compile passed\n"), out)
+        # Output of a call comes whole, after its lines
+        self.assertRegex(out, r"(c1|c2)\.vhd +passed\nyavs: analyzed (c2\.vhd c1|c1\.vhd c2)\.vhd\n")
+        self.assertRegex(out, r"use_ab\.vhd passed\nyavs: analyzed use_ab\.vhd\n")
+
+    def test_one_library_is_never_analyzed_by_two_calls_at_once(self):
+        ent_a = next(f for f in self.project.get_source_files_in_order() if f.name == "ent_a.vhd")
+        ent_a.set_compile_option("yavs.a_flags", ["-Werror"])
+        fake = FakeAnalyze(delay=0.1)
+        self.compile(fake, jobs=8)
+        self.assertTrue(all(same == 1 for *_, same in fake.calls))
+        self.assertIn(["ent_a.vhd"], fake.groups())  # Another key: a call of its own
+
+    def test_a_failing_call_names_the_file_and_stops(self):
+        fake = FakeAnalyze(fail=["pkg_a.vhd"])
+        with self.assertRaises(CompileError):
+            self.compile(fake)
+        out = self.printed
+        self.assertEqual(fake.calls[-1][1], ["pkg_a.vhd"])  # The failed call again, file by file
+        self.assertRegex(out, r"Compiling into a: pkg_a\.vhd  +failed\n=== Command used: ===\n")
+        self.assertNotIn("skipped", out)  # VUnit's loop stops at the failure
+        self.assertTrue(out.endswith("Compile failed\n"), out)
+
+    def test_a_failure_with_jobs_waits_for_the_running_calls(self):
+        fake = FakeAnalyze(fail=["pkg_a.vhd"], slow=["c1.vhd"])
+        with self.assertRaises(CompileError):
+            self.compile(fake, jobs=4)
+        out = self.printed
+        # The call into c was running at the failure: it ends, is reported and is up to date; nothing new starts
+        self.assertIn(["c1.vhd", "c2.vhd"], fake.groups())
+        self.assertNotIn("use_ab.vhd", [name for _, call, *_ in fake.calls for name in call])
+        self.assertRegex(out, r"pkg_a\.vhd +failed\n(.|\n)*c1\.vhd +passed\n(.|\n)*Compile failed\n$")
+        left = {Path(f.name).name for f in self.project.get_files_in_compile_order()}
+        self.assertNotIn("c1.vhd", left)
+        self.assertIn("pkg_a.vhd", left)
+
+    def test_keep_compiling_compiles_the_independent_files(self):
+        fake = FakeAnalyze(fail=["pkg_a.vhd"])
+        out = self.compile(fake, continue_on_error=True)
+        names = [name for _, call, *_ in fake.calls for name in call]
+        # The failed call is repeated file by file; what depends on the failing file is skipped
+        self.assertIn(["ent_a.vhd", "pkg_a.vhd"], fake.groups())
+        self.assertIn(["pkg_a.vhd"], fake.groups())
+        self.assertNotIn(["ent_a.vhd"], fake.groups())
+        self.assertNotIn("use_ab.vhd", names)
+        self.assertIn(["c1.vhd", "c2.vhd"], fake.groups())
+        self.assertIn(["pkg_b.vhd"], fake.groups())
+        self.assertRegex(out, r"Compiling into a: pkg_a\.vhd  +failed\n=== Command used: ===\n.*analyze")
+        self.assertIn("=== Command output: ===\nerror[E0001]: bad file pkg_a.vhd\n", out)
+        self.assertRegex(out, r"Compiling into a: ent_a\.vhd  +skipped\n")
+        self.assertRegex(out, r"Compiling into b: use_ab\.vhd +skipped\n")
+        self.assertTrue(out.endswith("Compile failed\n"), out)
+        # The files that passed are up to date
+        left = {Path(f.name).name for f in self.project.get_files_in_compile_order()}
+        self.assertEqual(left, {"pkg_a.vhd", "ent_a.vhd", "use_ab.vhd"})
+
+    def test_incremental_compile_analyzes_only_what_is_out_of_date(self):
+        self.compile(FakeAnalyze())
+        fake = FakeAnalyze()
+        self.assertIn("Re-compile not needed\n", self.compile(fake))
+        self.assertEqual(fake.calls, [])
+        self.write("pkg_b.vhd", "pb", [], extra="  constant k : integer := 1;\n")
+        self.new_project()
+        self.compile(fake, jobs=4)
+        self.assertEqual(fake.calls[0][1], ["pkg_b.vhd", "use_ab.vhd"])  # One library: one call, in order
+
+    def test_long_file_lists_are_split_below_the_command_line_limit(self):
+        names = [f"c{idx}.vhd" for idx in range(1, 3)]
+        limit = sum(len(name) + 1 for name in names) - 1  # Both names together do not fit
+        fake = FakeAnalyze()
+        with mock.patch("vunit_yavs.MAX_BATCH_CHARS", limit):
+            self.compile(fake)
+        self.assertIn(["c1.vhd"], fake.groups())
+        self.assertIn(["c2.vhd"], fake.groups())
+
+    def test_libraries_that_read_each_other_get_one_call_at_a_time(self):
+        # yavs would deadlock on the two libraries' locks (#1150); a library clause alone makes it read the library
+        for library, other in (("d", "e"), ("e", "d")):
+            self.project.add_library(library, str(Path("libs") / library))
+            write_file(f"{library}1.vhd", f"library {other};\npackage p{library} is\nend package;\n")
+            self.project.add_source_file(
+                f"{library}1.vhd", library, file_type="vhdl", vhdl_standard=VHDL.standard("2008")
+            )
+        groups = _library_groups(self.project, self.project.create_dependency_graph())
+        self.assertEqual(groups["d"], groups["e"])
+        self.assertEqual(len({groups[name] for name in "abcd"}), 4)  # b reads a, a does not read b
+        fake = FakeAnalyze(delay=0.2)
+        self.compile(fake, jobs=8)
+        spans = sorted((start, end) for library, _, start, end, _ in fake.calls if library in "de")
+        self.assertEqual(len(spans), 2)
+        self.assertLessEqual(spans[0][1], spans[1][0])
+        self.assertGreaterEqual(fake.most_at_once, 3)
+
+    def test_a_file_that_is_not_vhdl_fails_as_in_vunit(self):
+        write_file("mod.v", "module m; endmodule\n")
+        self.project.add_source_file("mod.v", "c", file_type="verilog")
+        fake = FakeAnalyze()
+        out = self.compile(fake, jobs=2, continue_on_error=True)
+        self.assertRegex(out, r"Compiling into c: mod\.v +failed\nFile type not supported by yavs simulator\n")
+        self.assertEqual(len(fake.calls), 4)
+        self.assertTrue(out.endswith("Compile failed\n"), out)

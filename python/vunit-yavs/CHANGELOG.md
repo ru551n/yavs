@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Compiling follows the project's dependency graph: the files of one library, standard and flags that are ready at the
+  same time, and the later ones that depend only on them, go to one `yavs analyze` call, not only consecutive files.
+- `-j N` (`--jobs N`) compiles with up to N `yavs analyze` calls at once, into different libraries; a bare `-j` is one
+  per CPU. Without it, one call at a time as before. Failures, skipped dependents, `--keep-compiling` and the output are
+  those of VUnit's own compile loop.
+
 ## 0.19.1 (2026-11-11)
 
 - Needs yavs 0.19.1 or later. All changes: the yavs 0.19.1 release notes.

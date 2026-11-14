@@ -46,8 +46,8 @@ class TestOptionPage(unittest.TestCase):
         parser = argparse.ArgumentParser()
         YavsInterface.add_arguments(parser)
         actions = parser._actions  # pylint: disable=protected-access
-        defined = {s for a in actions for s in a.option_strings if s.startswith("--yavs-")}
-        self.check("command-line flags", defined, r"``(--yavs-[a-z-]+)")
+        defined = {s for a in actions for s in a.option_strings if s not in ("-h", "--help")}
+        self.check("command-line flags", defined, r"``(--yavs-[a-z-]+|-j|--jobs)\b")
 
 
 TUTORIAL = Path(__file__).parents[3] / "docs" / "debugger-tutorial.rst"

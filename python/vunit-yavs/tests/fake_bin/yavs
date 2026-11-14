@@ -15,7 +15,8 @@ prints the two lines a real DAP server prints on stderr, without serving anythin
 'analyze' takes several files, analyzed in order, and locks the work library like yavs (plan rule 14): an exclusive
 flock on <library>/_YAVS_LIB for the whole call. It holds the library for FAKE_YAVS_ANALYZE_DELAY seconds to provoke
 overlap, and fails with exit 3 when it finds another analyze inside the same library, which only happens without the
-lock (FAKE_YAVS_NO_LOCK=1). A wait for the lock is logged as ["lock-wait", library].
+lock (FAKE_YAVS_NO_LOCK=1). A wait for the lock is logged as ["lock-wait", library], and each call, once done, as
+["analyzed", library, start, end] with the times it held the library.
 """
 
 import fcntl
@@ -133,11 +134,13 @@ def analyze(args):
         except FileExistsError:
             print(f"error: another analyze into {path} interleaved with this one")
             return 3
+        start = time.time()
         try:
             time.sleep(float(os.environ.get("FAKE_YAVS_ANALYZE_DELAY", "0")))
             return analyze_files(files, Path(path))
         finally:
             os.remove(busy)
+            log(["analyzed", str(path), start, time.time()])
     finally:
         if lock is not None:
             os.close(lock)

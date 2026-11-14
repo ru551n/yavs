@@ -83,6 +83,9 @@ out stops the run script with one ``error:`` line that says why and what to drop
      - Shows the waves of the one selected test in Surfer while it runs (``yavs run --surfer``,
        :doc:`waveforms`). Combines with ``--yavs-debug`` and ``--yavs-interactive``, where the cursor follows the stops.
        Not with ``--elaborate``, ``-p`` above 1 or more than one simulation.
+   * - ``-j N``, ``--jobs N``
+     - Compiles with up to N ``yavs analyze`` calls at once (Compiling, below). A bare ``-j`` is one call per CPU;
+       put test names before it, since a name after it is read as N. N is at least 1. Without it, one call at a time.
    * - ``--yavs-max-threads N``
      - ``yavs.max_threads`` for every test that does not set it.
    * - ``--yavs-lint``
@@ -133,14 +136,36 @@ out stops the run script with one ``error:`` line that says why and what to drop
 Without ``yavs.max_threads`` or ``--yavs-max-threads`` no thread count is passed and yavs runs
 with its default, one thread, unless the token server runs: then every simulation gets ``--threads=auto``.
 
+.. _vunit-compiling:
+
 Compiling
 ---------
 
-The package analyzes consecutive files of one library, standard and flags in one ``yavs analyze`` call. A VUnit
-release with ``--batch-compile`` and ``--parallel-compile`` (5.0.0.dev16 does not have them) does the compiling itself
-when you give those flags:
-yavs accepts compiling into one library from several processes and several files in a call, and the file
-names go on the command line.
+The package compiles in the order of the project's dependencies, as VUnit does, and only the files that are out of date.
+Files of one library, standard and flags go to ``yavs analyze`` in one call whenever their dependencies allow: a call
+takes a file that is ready and every later file of the same library whose dependencies are done or in that call. This is
+always on. A call that fails is repeated one file per call, so the failing file is the one reported.
+
+``-j N`` (or ``--jobs N``) runs up to N such calls at once, into different libraries: yavs locks a library for the whole
+of an ``analyze`` call, so calls into one library would only wait for each other, and the package does not start them.
+Libraries that read each other (a ``library`` clause or a dependency, directly or through other libraries) get one call
+at a time between them too: two calls at once into them can wait for each other's lock forever (yavs issue #1150).
+A project of many libraries gains most; one library, or a chain where each library needs the one before, gains little.
+Without ``-j`` the calls run one at a time. ``-j`` counts compile calls and ``-p`` counts simulations; neither sets the
+other.
+
+.. code-block:: sh
+
+   VUNIT_SIMULATOR=yavs python run.py -j 8 -p 8
+
+The output is VUnit's: a ``Compiling into LIB: FILE passed`` line per file, printed when its call ends, never two calls
+mixed, then ``Compile passed`` or ``Compile failed``. A failing file is reported with its command and output, and the
+files that depend on it are skipped. Without ``--keep-compiling`` no new call starts after a failure; the calls already
+running finish and are reported. With it, every file that does not depend on a failing one is compiled.
+
+A VUnit release with ``--batch-compile`` and ``--parallel-compile`` (5.0.0.dev16 does not have them) does the
+compiling itself when you give those flags, and ``-j`` then has no effect: yavs accepts compiling into one library from
+several processes and several files in a call, and the file names go on the command line.
 
 .. _vunit-coverage:
 

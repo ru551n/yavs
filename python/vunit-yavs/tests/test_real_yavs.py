@@ -236,6 +236,60 @@ class TestRealYavs(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, proc.stdout)
         self.assertEqual(report(self.xml), {PASS: "passed", COMMA: "passed", FAIL: "failed"}, proc.stdout)
 
+    def test_parallel_compile(self):
+        # -j: vunit_lib, then lib in dependency order (yavs refuses a file whose units are missing), a package of lib
+        # that needs nothing alongside; a failing file is named and with -k the rest compiles
+        extra = self.tempdir / "extra_pkg.vhd"
+
+        def compile_project(*args):
+            return subprocess.run(
+                self._command("--compile", "--no-color", "-j", "4", *args),
+                env=dict(self._env(), EXTRA_VHDL=str(extra)),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=TIMEOUT,
+                check=False,
+            )
+
+        extra.write_text("package extra_pkg is\n  constant c : integer := 1;\nend package;\n", encoding="utf-8")
+        proc = compile_project()
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertRegex(proc.stdout, r"tb_yavs\.vhd +passed")
+        self.assertIn("Re-compile not needed", compile_project().stdout)
+        extra.write_text("package extra_pkg is\n  constant c : integer := ;\nend package;\n", encoding="utf-8")
+        proc = compile_project("-k")
+        self.assertEqual(proc.returncode, 0, proc.stdout)  # VUnit's --compile with -k: the failure is in the text
+        self.assertRegex(proc.stdout, r"extra_pkg\.vhd +failed\n=== Command used: ===\n")
+        self.assertTrue(proc.stdout.rstrip().endswith("Compile failed"), proc.stdout)
+
+    def test_parallel_compile_of_libraries_that_read_each_other(self):
+        # Two calls at once into a and b would each hold their library's lock and wait for the other's (#1150)
+        src = self.tempdir / "src"
+        src.mkdir()
+        for lib, other in (("a", "b"), ("b", "a")):
+            (src / f"{lib}1.vhd").write_text(f"package {lib}1 is\n  constant c : integer := 1;\nend package;\n")
+            body = "".join(f"  constant k{i} : integer := c + {i};\n" for i in range(50000))
+            text = f"library {other};\nuse {other}.{other}1.all;\npackage {lib}2 is\n{body}end package;\n"
+            (src / f"{lib}2.vhd").write_text(text)
+        run = self.tempdir / "run.py"
+        run.write_text(
+            "from vunit import VUnit\nVU = VUnit.from_argv()\nVU.add_package('vunit-yavs', allow_setup=True)\n"
+            f"for lib in 'ab':\n    VU.add_library(lib).add_source_files(r'{src}' + f'/{{lib}}*.vhd')\nVU.main()\n",
+            encoding="utf-8",
+        )
+        proc = subprocess.run(
+            [sys.executable, str(run), "--compile", "--no-color", "-j", "2", "-o", str(self.tempdir / "out")],
+            env=self._env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertNotIn("waiting for the lock", proc.stdout)
+
     def test_lint_after_compile(self):
         def run(*args):
             return subprocess.run(

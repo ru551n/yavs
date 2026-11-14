@@ -16586,3 +16586,62 @@ compares from one run to the next.
   run-time bounds 7199 to 3587 interpreted, 2036 to 1109 compiled; static bounds 2825 to 2252 and 739 to 477; the
   same in a procedure 3022 to 2450 and 793 to 529. Work counter `perf/agg_locals` `ops` 4172 to 2163.
 
+
+## Batch and parallel compile in vunit-yavs (`python/vunit-yavs` `compile_source_files`, `_Compile`, user, 2026-11-14)
+
+- **Request (user, 2026-11-14): "implement batch compile and parallel compile in vunit-yavs"**, on the upstream VUnit
+  users install (5.0.0.dev16, whose compile loop is one file per call and serial; its master of 2026-11-06 is the same).
+- **Batch compile is always on, with no option to turn it off (user, 2026-11-14).** A call takes the first file in
+  VUnit's compile order whose dependencies are done and every later file of its library, standard and flags whose
+  dependencies are done or earlier in the same call, up to `MAX_BATCH_CHARS` (20000) characters of file names, so a
+  command line stays below the Windows limit. Before, only consecutive files shared a call. A failing call is repeated
+  one file per call (any order: none of them depends on another call's file still to come), so the failing file is
+  reported with its command and output, as VUnit's own loop reports it.
+- **Parallel compile only with `-j N`, make style, independent of VUnit's `-p` (user, 2026-11-14).** Absent: one call at a
+  time. `-j N`: up to N calls at once in worker threads; N at least 1, otherwise argparse's error names the option.
+  `-j` and `--jobs` are taken by neither VUnit (checked: the argument parsers of 5.0.0.dev16 and of its master of
+  2026-11-06, with every simulator's arguments) nor this package, so they break the `yavs-` prefix rule of the package's
+  arguments as the user asked.
+- **A bare `-j` is one call per CPU (agent, 2026-11-14, for review).** make's bare `-j` means no limit; for analyze calls
+  that is the same as the number of libraries ready at once, and one per CPU (`multiprocessing.cpu_count`, as VUnit
+  counts `-p 0`) bounds memory on a machine with many libraries. A test name right after a bare `-j` is read as N and
+  refused, so the help and docs say to put test names first, as for `--yavs-debug`. Long form `--jobs` (agent).
+- **Never two calls into one library at once (agent, 2026-11-14).** `yavs analyze` holds the work library's lock for the
+  whole call (`docs/cli-contract.md` section 4), so a second call into it would wait and hold a worker. Files of a busy
+  library wait for the next call, which then takes more of them. `-j` therefore gains with libraries that are
+  independent of each other (UVVM's verification components), not inside one library.
+- **Nor two calls at once into libraries that read each other (agent, 2026-11-14, found while testing; bug #1150).** An
+  `analyze` into `a` that reads `b` (a `library b;` clause is enough) holds `a`'s exclusive lock and blocks on `b`'s
+  shared lock; the same the other way round never ends. `_library_groups` puts libraries into one group when each
+  reaches the other through library clauses (read from the sources, comments removed) or dependencies of VUnit's graph,
+  directly or through other libraries; one call at a time per group. A deadlock needs such a cycle, so a project whose
+  libraries form no cycle loses no parallelism. Computed only with `-j` above 1. A runner's own `--parallel-compile`
+  is not protected; #1150 is the fix in yavs.
+- **VUnit's failure semantics (agent, 2026-11-14).** The skipped set is `get_dependent` of the failing file, as in
+  VUnit's loop. Without `--keep-compiling` no new call starts after a failure; running calls finish, are printed and,
+  when they pass, are recorded with `project.update`; then `Compile failed` and `CompileError`. With it, everything
+  independent is compiled, the skipped files are listed at the end, and the method returns. Printing and
+  `project.update` run only in the main thread, one finished call at a time, so output is never interleaved. A file that
+  is not VHDL fails as in VUnit ("File type not supported").
+- **Only public API of VUnit's project (agent, 2026-11-14):** `create_dependency_graph`, `get_files_in_compile_order`,
+  `get_minimal_file_set_in_compile_order`, `DependencyGraph.get_direct_dependencies` and `get_dependent`, `update`, and
+  `vunit.sim_if.check_output`; a direct dependency outside the list is up to date, since VUnit lists every file that
+  depends on a listed one. A runner that passes `batch` or `num_threads` (a VUnit with `--batch-compile` and
+  `--parallel-compile`) still gets the whole compile, and `-j` has no effect there.
+- **Measured** (2026-11-14, bench build of 45b535f9f with Cranelift, VUnit 5.0.0.dev16; VUnit's libraries, its
+  verification components and random, OSVVM through vunit-osvvm and all 25 UVVM components: 397 files in 27 libraries;
+  `run.py --compile`, the whole run pinned to cores 8-15, median of 5; cold = a fresh output directory, edit = after a
+  change to `uvvm_vvc_framework/src/ti_vvc_framework_support_pkg.vhd`, 148 files; nothing to do 0.15 to 0.17 s in every case):
+
+  | Calls | Cold | Edit |
+  |---|---|---|
+  | one file per call, serial (this scheduler capped at one file per call, the call sequence of VUnit's own loop) | 3.60 s | 1.07 s |
+  | consecutive runs, serial (before this change) | 2.27 s | 0.58 s |
+  | batches, serial (the new default) | 2.23 s | 0.51 s |
+  | one file per call, `-j 4` | 2.12 s | 0.50 s |
+  | one file per call, `-j 16` | 2.19 s | 0.40 s |
+  | batches, `-j 4` | 1.72 s | 0.34 s |
+  | batches, `-j 16` (16 calls on 8 cores) | 1.68 s | 0.31 s |
+
+  With `-j` the library groups cost about 0.07 s of that (reading the library clauses of the 397 files); no two
+  libraries of this project read each other. A first series before the groups existed gave 1.65 / 0.27 s for `-j 4`.

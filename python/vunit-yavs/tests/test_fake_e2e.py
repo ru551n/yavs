@@ -116,6 +116,28 @@ class TestFakeYavs(unittest.TestCase):
         self.assertIn(f"which needs yavs {YAVS_MIN_VERSION} or later", output)
         self.assertFalse([call for call in calls if call[0] == "analyze"])
 
+    def test_jobs_analyze_libraries_at_once(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            # A package of lib that needs nothing can be analyzed while vunit_lib is
+            extra = Path(tempdir) / "extra_pkg.vhd"
+            extra.write_text("package extra_pkg is\nend package;\n", encoding="utf-8")
+            env = {"EXTRA_VHDL": str(extra), "FAKE_YAVS_ANALYZE_DELAY": "0.3"}
+            spans = {}
+            for args in ([], ["-j", "2"]):
+                exit_code, output, _, calls = self._run("--compile", *args, env=env)
+                self.assertEqual(exit_code, 0, output)
+                self.assertNotIn("lock-wait", [call[0] for call in calls])  # Never two calls into one library
+                spans[len(args)] = sorted((call[2], call[3]) for call in calls if call[0] == "analyzed")
+        overlaps = {jobs: any(b[0] < a[1] for a, b in zip(s, s[1:])) for jobs, s in spans.items()}
+        self.assertEqual(overlaps, {0: False, 2: True})
+
+    def test_jobs_must_be_at_least_one(self):
+        exit_code, output, _, calls = self._run("-j", "0", PASS)
+        self.assertNotEqual(exit_code, 0, output)
+        self.assertIn("-j/--jobs: expected an integer of at least 1, got '0'", output)
+        self.assertNotIn("Traceback", output)
+        self.assertFalse([call for call in calls if call[0] == "analyze"])
+
     def test_max_threads(self):
         exit_code, _, _, calls = self._run("--yavs-max-threads=3", PASS)
         self.assertEqual(exit_code, 0)

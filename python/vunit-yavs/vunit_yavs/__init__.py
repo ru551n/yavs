@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import warnings
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from functools import total_ordering
 import os
 from multiprocessing import cpu_count
@@ -30,7 +31,7 @@ from pathlib import Path
 
 from vunit.color_printer import NO_COLOR_PRINTER
 from vunit.exceptions import CompileError
-from vunit.ostools import Process
+from vunit.ostools import Process, simplify_path
 from vunit import sim_if as vunit_sim_if
 from vunit.color_printer import NO_COLOR_PRINTER
 from vunit.sim_if import BooleanOption, ListOfStringOption, Option, SimulatorInterface, StringOption, check_executable, hooks
@@ -46,6 +47,8 @@ DEFAULT_DEBUG_PORT = 4711
 DAP_LISTENING = "yavs: DAP listening on "
 # The file names of one yavs analyze call: well below the Windows command line limit of 32767 characters
 MAX_BATCH_CHARS = 20000
+# The library clauses of a VHDL file, after its comments are removed
+LIBRARY_CLAUSE = re.compile(r"\blibrary\s+(\w+(?:\s*,\s*\w+)*)\s*;", re.IGNORECASE)
 # With a token server a simulation runs with --threads=auto unless told otherwise: it uses tokens only
 # while its threads gain, at most this many threads (the cap of yavs's own --threads=auto, #884)
 AUTO_MAX_THREADS = 8
@@ -87,6 +90,15 @@ def _max_threads(text):
         return text
     if not text.isdigit() or int(text) < 1:
         raise argparse.ArgumentTypeError(f"expected an integer of at least 1 or auto, got {text!r}")
+    return int(text)
+
+
+def _jobs(text):
+    """argparse type of -j/--jobs"""
+    if not text.isdigit() or int(text) < 1:
+        raise argparse.ArgumentTypeError(
+            f"expected an integer of at least 1, got {text!r}; put test names before a bare -j (one call per CPU)"
+        )
     return int(text)
 
 
@@ -316,6 +328,19 @@ class YavsInterface(SimulatorInterface):
             ),
         )
         group.add_argument(
+            "-j",
+            "--jobs",
+            dest="yavs_jobs",
+            nargs="?",
+            const=cpu_count(),
+            type=_jobs,
+            default=None,
+            metavar="N",
+            help="Compile with up to N yavs analyze calls at once, in the project's dependency order; calls into "
+            "one library wait for each other. A bare -j is one per CPU. Default: one call at a time. "
+            "Independent of -p, which counts simulations.",
+        )
+        group.add_argument(
             "--yavs-max-threads",
             type=_max_threads,
             default=None,
@@ -473,6 +498,7 @@ class YavsInterface(SimulatorInterface):
             max_threads=getattr(args, "yavs_max_threads", None) or _max_threads_from_environment(),
             tokens=tokens,
             lint=getattr(args, "yavs_lint", False),
+            compile_jobs=getattr(args, "yavs_jobs", None) or 1,
             cov_directives=getattr(args, "yavs_cov_directives", None),
             coverage=CoverageArgs(
                 enabled=_coverage_requested(args),
@@ -509,8 +535,10 @@ class YavsInterface(SimulatorInterface):
         coverage=None,
         lint=False,
         cov_directives=None,
+        compile_jobs=1,
     ):  # pylint: disable=too-many-arguments
         SimulatorInterface.__init__(self, output_path, False)
+        self._compile_jobs = compile_jobs  # -j: yavs analyze calls at once
         self._lint = lint
         self._cov_directives = cov_directives
         self._coverage = coverage or CoverageArgs()
@@ -673,34 +701,41 @@ class YavsInterface(SimulatorInterface):
         self, project, printer=NO_COLOR_PRINTER, continue_on_error=False, target_files=None, *args, **kwargs
     ):  # pylint: disable=keyword-arg-before-vararg
         """
-        Analyze consecutive files of one library, standard and flags in one yavs call: the dependencies are read
-        once. A call that fails leaves its files and all later ones to VUnit's own loop, file by file, which reports
-        the failing file and skips what depends on it.
+        Analyze the files in the project's dependency order with up to -j yavs calls at once (_Compile). The output,
+        the skipped dependents of a failing file and the stop without continue_on_error are those of VUnit's own loop.
 
         A runner with --parallel-compile or --batch-compile passes num_threads or batch: it then does all of it.
         """
         if args or kwargs.get("batch") or kwargs.get("num_threads", 1) != 1:
             return super().compile_source_files(project, printer, continue_on_error, target_files, *args, **kwargs)
+        graph = project.create_dependency_graph()
         if target_files is None:
-            files = project.get_files_in_compile_order()
+            files = project.get_files_in_compile_order(dependency_graph=graph)
         else:
             files = project.get_minimal_file_set_in_compile_order(target_files)
-        batched = False
-        for batch in _batches(files):
-            cmd = self.compile_vhdl_file_command(batch[0])[:-1] + [source_file.name for source_file in batch]
-            try:
-                output = vunit_sim_if.check_output(cmd, env=self.get_env())
-            except subprocess.CalledProcessError:
-                break
-            printer.write(output)
-            for source_file in batch:
-                printer.write(f"Compiling into {source_file.library.name}: {source_file.name} passed\n")
-                project.update(source_file)
-            batched = True
-        if batched and not project.get_files_in_compile_order():
-            printer.write("Compile passed\n", fg="gi")
-            return
-        super().compile_source_files(project, printer, continue_on_error, target_files)
+        if not files:
+            printer.write("Re-compile not needed\n")
+            return None
+        groups = _library_groups(project, graph) if self._compile_jobs > 1 else {}
+        failures = _Compile(self, project, printer, graph, files, groups).run(self._compile_jobs, continue_on_error)
+        if failures:
+            printer.write("Compile failed\n", fg="ri")
+            if continue_on_error:
+                return None
+            raise CompileError
+        printer.write("Compile passed\n", fg="gi")
+        return None
+
+    def _analyze(self, files):
+        """Run one yavs analyze call on files (one key) and return (command, passed, output); in a worker thread"""
+        try:
+            cmd = self.compile_source_file_command(files[0])[:-1] + [source_file.name for source_file in files]
+        except CompileError:
+            return None, False, f"File type not supported by {self.name!s} simulator\n"
+        try:
+            return cmd, True, vunit_sim_if.check_output(cmd, env=self.get_env())
+        except subprocess.CalledProcessError as err:
+            return cmd, False, err.output
 
     def compile_vhdl_file_command(self, source_file):
         """
@@ -997,30 +1032,168 @@ def check_interactive_args(args, debug_port):
         )
 
 
-def _batches(source_files):
+def _batch_key(source_file):
+    """Files of one key can share a yavs analyze call: one library, standard and set of flags"""
+    return (
+        source_file.library.name,
+        source_file.get_vhdl_standard(),
+        tuple(source_file.compile_options.get("yavs.global_flags", [])),
+        tuple(source_file.compile_options.get("yavs.a_flags", [])),
+    )
+
+
+def _library_groups(project, graph):
     """
-    The runs of two or more consecutive VHDL files that can share a yavs call, each short enough for a command line
-    on any platform. Single files stay with VUnit's own loop. Stops at a file that is not VHDL: order must hold.
+    {library: its group}: libraries that read each other, directly or through others, share a group. Two calls at once
+    into one group could each hold their own library's lock and wait for the other's (#1150).
     """
-    runs = []
-    key = None
-    length = 0
-    for source_file in source_files:
-        if not source_file.is_vhdl:
-            break
-        file_key = (
-            source_file.library.name,
-            source_file.get_vhdl_standard(),
-            tuple(source_file.compile_options.get("yavs.global_flags", [])),
-            tuple(source_file.compile_options.get("yavs.a_flags", [])),
+    names = {library.name.lower() for library in project.get_libraries()}
+    reads = {name: set() for name in names}
+    for source_file in project.get_source_files_in_order():
+        mine = reads[source_file.library.name.lower()]
+        mine.update(dep.library.name.lower() for dep in graph.get_direct_dependencies(source_file))
+        if source_file.is_vhdl:
+            text = re.sub(r"--[^\n]*", "", Path(source_file.name).read_text(encoding="latin-1"))
+            for clause in LIBRARY_CLAUSE.findall(text):
+                mine.update(name.strip().lower() for name in clause.split(",") if name.strip().lower() in names)
+    reach = {}
+    for name in names:
+        seen, todo = set(), [name]
+        while todo:
+            for other in reads[todo.pop()] - seen:
+                seen.add(other)
+                todo.append(other)
+        reach[name] = seen
+    return {name: min({name} | {other for other in reach[name] if name in reach[other]}) for name in names}
+
+
+class _Compile:
+    """
+    One compile in yavs analyze calls, up to `jobs` at once. A call starts at a ready file of a library group no call
+    holds (yavs locks a library per call) and takes the later files of its key whose dependencies are done or in it.
+    Printing and project.update stay in the main thread (docs/decisions.md "Batch and parallel compile in vunit-yavs").
+    """
+
+    def __init__(self, simif, project, printer, graph, files, groups):  # pylint: disable=too-many-arguments
+        self._groups = groups  # {library: group}; a library outside is a group of its own
+        self._simif = simif
+        self._project = project
+        self._printer = printer
+        self._graph = graph
+        self._order = {source_file: idx for idx, source_file in enumerate(files)}
+        # Dependencies outside the list are up to date: VUnit lists everything that depends on a listed file
+        self._deps = {
+            source_file: graph.get_direct_dependencies(source_file) & self._order.keys() for source_file in files
+        }
+        self._left = list(files)  # Not started, in compile order
+        self._done = set()
+        self._alone = set()  # Files of a failed call, repeated one per call
+        self._skipped = set()
+        self._failures = []
+        self._width_library = max(len(source_file.library.name) for source_file in files) + 1
+        self._width_name = max(len(simplify_path(source_file.name)) for source_file in files)
+
+    def run(self, jobs, continue_on_error):
+        """Compile everything that can be compiled and return the files that failed"""
+        busy = set()  # Libraries a running call holds
+        stop = False
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            running = {}
+            while True:
+                while not stop and len(running) < jobs:
+                    files = self._next_call(busy)
+                    if not files:
+                        break
+                    busy.add(self._group(files[0]))
+                    running[pool.submit(self._simif._analyze, files)] = files  # pylint: disable=protected-access
+                if not running:
+                    break
+                finished, _ = wait(running, return_when=FIRST_COMPLETED)
+                for future in sorted(finished, key=lambda future: self._order[running[future][0]]):
+                    files = running.pop(future)
+                    busy.discard(self._group(files[0]))
+                    if not self._finish(files, *future.result()) and not continue_on_error:
+                        stop = True
+                    sys.stdout.flush()
+        if stop:
+            return self._failures
+        if self._left:
+            raise RuntimeError(f"internal error in vunit-yavs: no call can start for {self._left[0].name}")
+        for source_file in self._order:
+            if source_file in self._skipped and source_file not in self._failures:
+                self._status(source_file, "skipped", "rgi")
+        return self._failures
+
+    def _next_call(self, busy):
+        """The files of the next call, taken out of the files left, or None when none can start now"""
+        call = []
+        taken = set()
+        names = 0
+        key = None
+        for source_file in self._left:
+            if not call:
+                if self._group(source_file) in busy or not self._deps[source_file] <= self._done:
+                    continue
+                call = [source_file]
+                taken = {source_file}
+                if not source_file.is_vhdl or source_file in self._alone:
+                    break
+                key = _batch_key(source_file)
+                names = len(source_file.name) + 1
+                continue
+            if not source_file.is_vhdl or source_file in self._alone or _batch_key(source_file) != key:
+                continue
+            if not all(dep in self._done or dep in taken for dep in self._deps[source_file]):
+                continue
+            names += len(source_file.name) + 1
+            if names > MAX_BATCH_CHARS:
+                break
+            call.append(source_file)
+            taken.add(source_file)
+        if not call:
+            return None
+        self._left = [source_file for source_file in self._left if source_file not in taken]
+        return call
+
+    def _group(self, source_file):
+        """The library group of source_file: one call at a time into it"""
+        name = source_file.library.name.lower()
+        return self._groups.get(name, name)
+
+    def _finish(self, files, cmd, passed, output):
+        """Report a finished call and return False when a file failed"""
+        if passed:
+            for source_file in files:
+                self._status(source_file, "passed", "gi")
+                self._project.update(source_file)
+                self._done.add(source_file)
+            self._printer.write(output)
+            return True
+        if len(files) > 1:
+            # Repeated one file per call, which names the failing file; the files before it pass again
+            self._alone.update(files)
+            self._left = sorted(self._left + files, key=self._order.get)
+            return True
+        source_file = files[0]
+        self._status(source_file, "failed", "ri")
+        if cmd is None:
+            self._printer.write(output)
+        else:
+            self._printer.write(f"=== Command used: ===\n{subprocess.list2cmdline(cmd)!s}\n\n")
+            self._printer.write(f"=== Command output: ===\n{output!s}\n")
+        self._failures.append(source_file)
+        self._skipped.update(self._graph.get_dependent([source_file]))
+        self._left = [left for left in self._left if left not in self._skipped]
+        return False
+
+    def _status(self, source_file, status, color):
+        """VUnit's line for one file"""
+        self._printer.write(
+            f"Compiling into {(source_file.library.name + ':').ljust(self._width_library)!s} "
+            f"{simplify_path(source_file.name).ljust(self._width_name)!s} "
         )
-        length += len(source_file.name) + 1
-        if file_key != key or length > MAX_BATCH_CHARS:
-            runs.append([])
-            key = file_key
-            length = len(source_file.name) + 1
-        runs[-1].append(source_file)
-    return [run for run in runs if len(run) > 1]
+        self._printer.write(status, fg=color)
+        self._printer.write("\n")
 
 
 def check_surfer_args(args):

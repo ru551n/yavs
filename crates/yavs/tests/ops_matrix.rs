@@ -49,9 +49,10 @@ const WIDTHS: [u32; 3] = [1, 64, 2048];
 
 /// The steps of the operator plan that have landed: 1 array ordering, 2 compiled code without
 /// host steps for `**` and `time * real`, 3 the `yavs.implicit` array natives on planes, 4 the
-/// missing natives; 5 (not started) the fixed costs of the word-wise operations (a temporary and
-/// a copy per operation, a native callback per call from compiled code) and the general paths.
-const LANDED: u8 = 4;
+/// missing natives, 5 the fixed costs and general paths left (`to_string` and textio `write` of
+/// vectors, copies above 512 elements in compiled code, the numeric_std matching relations above
+/// 1024 elements).
+const LANDED: u8 = 5;
 
 /// Designs run at once (each a `yavs` process).
 const JOBS: usize = 4;
@@ -155,7 +156,9 @@ enum Item {
     NotApplicable,
     /// Not guarded yet, and why.
     Pending(&'static str),
-    /// A step of the plan covers it: guarded by rows once that step lands.
+    /// A step of the plan covers it: guarded by rows once that step lands. (Every step of the
+    /// plan has landed: none is used until the next plan names its items.)
+    #[allow(dead_code)]
     Later(u8, &'static str),
 }
 
@@ -419,7 +422,7 @@ fn cell(f: Family, c: TypeClass) -> Vec<Item> {
 
 /// Operations no implicit family names: `ieee` subprograms and statements.
 fn constructs() -> Vec<Item> {
-    use Item::{Later, Pending};
+    use Item::Pending;
     let mut v: Vec<Item> = [tosulv_row(), caseq_row(), write_row()]
         .into_iter()
         .chain(nbit_rows())
@@ -430,10 +433,11 @@ fn constructs() -> Vec<Item> {
             "numeric_bit reductions: the body calls the predefined reduction of bit_vector, a \
              native on planes; no row of its own",
         ),
-        Later(
-            5,
-            "`ieee` natives of 65 to 1024 elements from compiled code: a native callback each \
-             (about 200 instructions more than the interpreter's call)",
+        Pending(
+            "`ieee` natives of 65 to 1024 elements from compiled code: a native callback each; \
+             measured (2026-11-14, `+` of two 512-element `unsigned`, compiled): the callback \
+             (`yavs_rt_native`, `native_frame`) 5 percent of the run, the native's own word \
+             path (`wide_of`, `emit`, `extend`, `add_words`) 31: no direct call worth its ABI",
         ),
         Pending("textio `read` of std_ulogic_vector: the body, per character"),
     ]);

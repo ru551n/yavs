@@ -48,6 +48,7 @@ Module-local decisions go here, in this section, in the same commit (root `AGENT
 
 ## 4. Invariants and pitfalls
 
+- A snippet shows no `\r`: a CRLF line ends before it and a lone `\r` is a blank (`visible_lines`), as the lexer reads it (#1151). Lines are counted by `\n` only.
 - `render` must never panic on a span outside the file (fuzzing renders every parser error);
   `line_col` clamps.
 - Snapshot output is part of review: any change in human or JSON text changes

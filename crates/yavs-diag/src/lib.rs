@@ -40,6 +40,7 @@ pub mod yaml;
 pub use path::{colons, depth, dotted, parent};
 pub use shared::{Buffer, Slice, sharing};
 
+use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::io::IsTerminal;
 
@@ -708,9 +709,13 @@ fn render_human(sources: &SourceMap, diag: &Diagnostic, color: bool) -> String {
             .unwrap_or(0)
             .max(lo);
         let lo = src.text()[..lo].rfind('\n').map_or(0, |i| i + 1);
-        let hi = src.text()[hi..].find('\n').map_or(len, |i| hi + i);
+        let mut hi = src.text()[hi..].find('\n').map_or(len, |i| hi + i);
+        // A CRLF line ends before its carriage return (the snippet would show it as U+240D).
+        if hi > lo && src.text().as_bytes()[hi - 1] == b'\r' {
+            hi -= 1;
+        }
         let first_line = src.line_starts.partition_point(|&s| s as usize <= lo);
-        let mut snippet = Snippet::source(&src.text()[lo..hi])
+        let mut snippet = Snippet::source(visible_lines(&src.text()[lo..hi]))
             .line_start(first_line)
             .path(src.path.as_str());
         let clamp = |s: Span| {
@@ -767,6 +772,22 @@ fn render_human(sources: &SourceMap, diag: &Diagnostic, color: bool) -> String {
     let mut out = renderer.render(&[group]);
     out.push_str("\n\n");
     out
+}
+
+/// The snippet text with every carriage return that is not part of a CRLF as a blank, as the
+/// lexer reads it; the same length, so offsets hold.
+fn visible_lines(s: &str) -> Cow<'_, str> {
+    let b = s.as_bytes();
+    if !(0..b.len()).any(|i| b[i] == b'\r' && b.get(i + 1) != Some(&b'\n')) {
+        return Cow::Borrowed(s);
+    }
+    let mut v = b.to_vec();
+    for i in 0..v.len() {
+        if v[i] == b'\r' && v.get(i + 1) != Some(&b'\n') {
+            v[i] = b' ';
+        }
+    }
+    Cow::Owned(String::from_utf8(v).expect("a blank replaces one ASCII byte"))
 }
 
 fn non_empty(s: &str) -> Option<&str> {
@@ -877,6 +898,53 @@ mod tests {
             .with_secondary(Span::new(f, 7, 8), "entity declared here")
             .with_help("use `end entity e;`");
         (sm, d)
+    }
+
+    /// #1151: a CRLF source renders as its LF twin: no U+240D, the same carets and columns.
+    #[test]
+    fn crlf_source_renders_like_lf() {
+        let lf = "package p is\n  constant c : integer := ;\n  constant d : integer := 1;\nend package;\n";
+        let crlf = lf.replace('\n', "\r\n");
+        // Mid-line, at the end of the line (the position of the line ending), and over two lines:
+        // the offsets in the LF file, then in the CRLF file.
+        for (a, b, ca, cb) in [(35, 36, 36, 37), (40, 40, 41, 41), (22, 56, 23, 58)] {
+            let mut out = Vec::new();
+            for (text, a, b) in [(lf, a, b), (crlf.as_str(), ca, cb)] {
+                let mut sm = SourceMap::default();
+                let f = sm.add("a.vhd", text);
+                let d = Diagnostic::error("E0001", "bad").with_primary(Span::new(f, a, b), "here");
+                for fmt in [
+                    MessageFormat::Human,
+                    MessageFormat::Short,
+                    MessageFormat::Json,
+                ] {
+                    out.push(render(&sm, &d, fmt, false));
+                }
+            }
+            let (l, c) = out.split_at(3);
+            assert!(c.iter().all(|r| !r.contains('\u{240d}')), "{c:?}");
+            assert_eq!(l[0], c[0]);
+            assert_eq!(l[1], c[1]);
+            // The JSON differs only in the byte offsets of the file on disk.
+            let bytes = |j: &str| {
+                let (x, y) = (
+                    j.find("\"byte_start").unwrap(),
+                    j.find("\"line_start").unwrap(),
+                );
+                format!("{}{}", &j[..x], &j[y..])
+            };
+            assert_eq!(bytes(&l[2]), bytes(&c[2]));
+        }
+    }
+
+    /// A lone carriage return is a blank, as in the lexer, and keeps the offsets.
+    #[test]
+    fn lone_carriage_return_is_a_blank() {
+        let mut sm = SourceMap::default();
+        let f = sm.add("a.vhd", "a\rb c\r\nd\r");
+        let d = Diagnostic::error("E0001", "bad").with_primary(Span::new(f, 4, 5), "here");
+        let r = render(&sm, &d, MessageFormat::Human, false);
+        assert!(!r.contains('\u{240d}') && r.contains("1 | a b c\n"), "{r}");
     }
 
     #[test]

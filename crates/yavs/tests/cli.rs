@@ -3157,3 +3157,49 @@ end;
     assert!(!out.contains("_p"), "{out}");
     assert_eq!(run(&["--threads=1"]), run(&["--threads=4"]));
 }
+
+/// #1151: a source with Windows line endings renders as its LF twin: no U+240D, same carets and
+/// positions, for an error mid-line, one at the end of a line and a lone carriage return.
+#[test]
+fn crlf_source_diagnostics_match_lf() {
+    let sources = [
+        "package p is\n  constant c : integer := ;\nend package;\n",
+        "package p is\n  constant c : integer := 1\nend package;\n",
+        "package p is\n  constant c : integer\r := ;\nend package;\n",
+    ];
+    for src in sources {
+        let run = |text: String, format: &str| {
+            let tmp = tempdir("crlf_diag");
+            std::fs::write(tmp.join("p.vhd"), text).unwrap();
+            let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+                .args([
+                    "--color",
+                    "never",
+                    "analyze",
+                    "--std=2008",
+                    "--std-cache=off",
+                ])
+                .arg(format!("--work=w:{}/lib", tmp.display()))
+                .arg(format!("--message-format={format}"))
+                .arg("p.vhd")
+                .current_dir(&*tmp)
+                .output()
+                .expect("run yavs");
+            assert_eq!(o.status.code(), Some(1));
+            String::from_utf8(o.stderr)
+                .unwrap()
+                .replace(&tmp.display().to_string(), "$TMP")
+        };
+        for format in ["human", "short"] {
+            let lf = run(src.to_string(), format);
+            let crlf = run(src.replace('\n', "\r\n"), format);
+            assert!(lf.contains("p.vhd"), "{lf}");
+            assert!(!crlf.contains('\u{240d}'), "{crlf}");
+            assert_eq!(lf, crlf);
+            // A lone carriage return reads as a blank, as in the lexer.
+            if format == "human" && src.contains("\r :") {
+                assert!(crlf.contains("constant c : integer  := ;"), "{crlf}");
+            }
+        }
+    }
+}

@@ -1522,3 +1522,29 @@ fn a_recorded_file_named_through_a_symlink_keeps_its_standard() {
         assert!(!said.contains("E0002"), "{file}: {said}");
     }
 }
+
+/// #1151: a source with Windows line endings is linted as its LF twin: no U+240D, the same
+/// report, carets and columns.
+#[test]
+fn crlf_source_reports_match_lf() {
+    let text = std::fs::read_to_string(case("latches.vhd")).unwrap();
+    let cfg = "rule:\n  lint_600:\n    disable: false\n";
+    let run = |text: String, format: &str| {
+        let dir = tempdir("lint_crlf");
+        std::fs::write(dir.join("yavs-lint.yaml"), cfg).unwrap();
+        std::fs::write(dir.join("l.vhd"), text).unwrap();
+        let o = yavs(
+            &dir,
+            &["lint", &format!("--message-format={format}"), "l.vhd"],
+        );
+        assert_eq!(status(&o), 1, "{}", stderr(&o));
+        stderr(&o)
+    };
+    for format in ["human", "short"] {
+        let lf = run(text.clone(), format);
+        let crlf = run(text.replace('\n', "\r\n"), format);
+        assert!(lf.contains("lint_600"), "{lf}");
+        assert!(!crlf.contains('\u{240d}'), "{crlf}");
+        assert_eq!(lf, crlf);
+    }
+}

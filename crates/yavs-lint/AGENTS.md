@@ -10,7 +10,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 - Does not: parse or analyze (`yavs-sem`), choose the files (it expands the entries of `file_list`, the CLI decides what is read), render console output (`yavs-diag`
   through the CLI), run a rule during `analyze`, `elab` or `run`. `machines` (detection only) runs
   for `yavs-cov` under `--cov-kind=fsm`.
-- Depends on: `yavs-diag`, `yavs-sem`, `yavs-syntax` (lint_005), `regex` (`re:` in lint_602, lint_603), `serde_json`; the YAML reader and schema check are `yavs_diag::yaml`. Called by: `yavs`, `yavs-cov`.
+- Depends on: `yavs-diag`, `yavs-sem`, `yavs-syntax` (lint_005), `regex` (`re:` in lint_602, lint_603), `serde_json`; the YAML reader and schema check are `yavs_diag::yaml`. Called by: `yavs`, `yavs-cov`, `yavs-lower` (`machines`, for `--cov-kind=fsm`).
 - The rules and their test cases come from the owner's project of the same licence, MIT OR
   Apache-2.0 (licence note; copied once, not kept in sync, maintainer 2026-10-30).
 
@@ -45,7 +45,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 - A finding outside the files of the given units is dropped by `check`: a walk of a package body
   also walks its package's region, where a subprogram with a spec is declared.
 - A spec's declaration holds the body; the body's own declaration is not in any region. Name a
-  place with `body_place`.
+  place with `body_name` (the span of the body's own name).
 - The HIR never has poison here: a file that failed analysis has no units in `lint`'s list.
 
 ## 5. How to work here

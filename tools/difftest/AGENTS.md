@@ -72,5 +72,5 @@ tools/difftest/report.sh                                    # tests/corpus/RESUL
 
 ## 6. Coordination
 
-- Open issues (snapshot 2026-10-18): #65 reach the M2 check; #107 `--threads N` determinism across
-  the difftest; #11 report order within a cycle; #12 default assert message path.
+- Open issues: none tracked here on 2026-11-14. The snapshot of 2026-10-18 (#65 reach the M2 check, #107 `--threads N` determinism across
+  the difftest, #11 report order within a cycle, #12 default assert message path) is closed; the two differences named in section 4 were not re-checked.

@@ -97,5 +97,4 @@ yavs run --work=lib:out/lib tb --dap=4711       # then attach an editor to 127.0
 
 ## 6. Open issues
 
-#389 VHPI plugin stdout under `--dap=stdio`; #364 conditions with function calls (other than `to_integer`) and attributes
-(forcing parts is done; indices of enumeration-indexed arrays are not parsed in a part); #396 and #397 (structured stops, source locations: requested by the removed GUI, still useful to any client).
+`gh issue list -R ru551n/yavs --label crate:dap`: none open on 2026-11-14 (#389, #364, #396 and #397 are closed). Gaps that remain, per `src/cond.rs`: breakpoint conditions take no function call other than `to_integer`, no attributes and no overloaded operators; the note that indices of enumeration-indexed arrays are not parsed in a part of a signal comes from the #364 time and was not re-checked on 2026-11-14.

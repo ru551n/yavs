@@ -6,7 +6,7 @@ for an agent that tunes performance or measures a performance change on real tes
 ## 1. Purpose and boundaries
 
 - The designs in `tools/bench/designs` were written for the harness, and tuning on them alone risks overfitting. This suite times
-  about 30 testbenches taken from real projects (hdl-modules, Open Logic, the test runner's own examples, PoC, fletcher,
+  about 40 testbenches (44 `[[test]]` entries on 2026-11-14, 3 opt-in, 1 excluded) taken from real projects (hdl-modules, Open Logic, the test runner's own examples, PoC, fletcher,
   en_cl_fix, neorv32, the two verification libraries, and the maintainer's own project), chosen for diversity: clocked RTL, FSMs,
   resolved buses, records, `numeric_std` and fixed point, memories, a CPU running software, protected types and scoreboards,
   string and textio code, run lengths from 0.1 s to about 30 s on the reference simulator.

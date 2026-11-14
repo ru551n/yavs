@@ -10,7 +10,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 - Does not: know about signals, drivers, VHDL types or the IR. The kernel decides storage; the
   interpreter decides when to call these operations.
 - Depends on: nothing (dev: `criterion`, `proptest`). Called by: `yavs-kernel` (bit-plane signal
-  storage and resolution), `yavs-interp` (logic array ops), `yavs-elab`, `yavs-lower` (tests).
+  storage and resolution), `yavs-interp` (logic array ops), `yavs-elab`, `yavs-dap`.
 
 ## 2. Map
 
@@ -26,6 +26,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `tests/ieee_tables.rs` | Tables checked against the vendored `lib/ieee` std_logic_1164 body |
 | `tests/layouts.rs` | Both layouts vs a `Vec<StdULogic>` reference: exhaustive pairs/triples at every bit position, proptest |
 | `tests/wide.rs` | Every `wide` kernel and the word-level `Logic` slice/concat/shift/`?=`/`is_x` and `BitVec` compare/`to_i64` against per-element models: random planes, all nine values, odd lengths, every offset |
+| `tests/profile_checks.rs` | Debug-assertion builds only: the test profile still has overflow and invariant checks on (#1014) |
 | `benches/layout.rs` | Criterion layout benchmark; results in `LAYOUT.md` |
 | `benches/wide.rs` | The `wide` kernels against the pairwise per-block loops they replaced |
 
@@ -68,5 +69,5 @@ cargo bench -p yavs-logic                                      # update LAYOUT.m
 ## 6. Coordination
 
 - Changes that affect storage are kernel changes too: read `crates/yavs-kernel/DESIGN.md`.
-- Open issues (snapshot 2026-10-18): none labelled `crate:logic`. #83 (records resolved as a
+- Open issues: none labelled `crate:logic` (checked 2026-11-14). #83 (records resolved as a
   whole) was closed with logic fields kept on planes.

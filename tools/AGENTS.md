@@ -2,7 +2,7 @@
 
 Read the root `AGENTS.md` first. This file is for an agent about to change or run a script under
 `tools/`. Subdirectories have their own guides: `tools/corpus/AGENTS.md` (analysis corpora) and
-`tools/difftest/AGENTS.md` (differential simulation corpus), `tools/conformance/AGENTS.md`, `tools/suites/AGENTS.md`, `tools/bench/AGENTS.md` and `tools/realbench/AGENTS.md`, `tools/stepcount/AGENTS.md`, `tools/waveq/AGENTS.md`, `tools/cocotb/AGENTS.md`, `tools/pgo/AGENTS.md`, `tools/install/AGENTS.md`.
+`tools/difftest/AGENTS.md` (differential simulation corpus), `tools/conformance/AGENTS.md`, `tools/suites/AGENTS.md`, `tools/bench/AGENTS.md` and `tools/realbench/AGENTS.md`, `tools/stepcount/AGENTS.md`, `tools/waveq/AGENTS.md`, `tools/cocotb/AGENTS.md`, `tools/pgo/AGENTS.md`, `tools/install/AGENTS.md`, `tools/vhpi-conformance/AGENTS.md`, `tools/discrepancies/AGENTS.md`.
 
 ## 1. Purpose and boundaries
 
@@ -34,7 +34,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change or ru
 | `cocotb/` | cocotb's own regression over VHPI: venv setup, the yavs makefile and Python runner for cocotb (`tools/cocotb/AGENTS.md`) |
 | `vhpi-conformance/` | VHPI plugin traces on yavs and the reference simulator, diffed (`tools/vhpi-conformance/AGENTS.md`) |
 | `bench/` | Shared performance benchmarks: phase timings, A/B comparison, JSON results (`tools/bench/AGENTS.md`) |
-| `realbench/` | Real-world performance suite: about 30 testbenches of real projects, timed against the reference and between two binaries; plus the opt-in CoreMark workloads on two processors (NEORV32, Microwatt) measured in simulated cycles per second (`tools/realbench/AGENTS.md`, section 7), `window.py`, a short-window A/B on Cranelift against sim1 (section 8), `perfguard.py`, the by-hand instruction guard of its nine windows (section 8a), and `replay.py`, one hot process's instance replayed alone from a recording of its inputs (section 8b) |
+| `realbench/` | Real-world performance suite: about 40 testbenches of real projects, timed against the reference and between two binaries; plus the opt-in CoreMark workloads on two processors (NEORV32, Microwatt) measured in simulated cycles per second (`tools/realbench/AGENTS.md`, section 7), `window.py`, a short-window A/B on Cranelift against sim1 (section 8), `perfguard.py`, the by-hand instruction guard of its nine windows (section 8a), and `replay.py`, one hot process's instance replayed alone from a recording of its inputs (section 8b) |
 | `pgo/` | Profile-guided build of every release archive: `build.sh OUT` (instrumented build, training, `llvm-profdata merge`, final build), `train.py` (the training cases in `train/` and a `tests/corpus` sweep; `--check` in CI), `check.py` (the final build used the profile), `gain.py` (profile-guided against plain on held-out designs) (`tools/pgo/AGENTS.md`) |
 | `stepcount/` | Exact instruction counts per function and per source line for a window of a run (ptrace single-stepper in C plus a Python report; `tools/stepcount/AGENTS.md`) |
 | `waveq/` | Waveform equivalence: real designs on yavs and the reference simulators, compared signal by signal (`tools/waveq/AGENTS.md`) |
@@ -92,7 +92,4 @@ tools/check-sim1.sh 2019
 
 ## 6. Coordination
 
-- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label tools`): #62 re-run
-  `report.sh` and refresh `tools/corpus/RESULTS.md`; #63 gate analysis corpora in CI with
-  expected-failure lists; #65 difftest: all `tests/corpus` groups equal to the reference simulator at 1, 4 and 4
-  shuffled threads. Infra: #87 periodic fuzz and parse-corpus gate, #134 CI.
+- Open issues: `gh issue list -R ru551n/yavs --label tools`. The snapshot of 2026-10-18 (#62 refresh `RESULTS.md`, #63 corpus gate in CI, #65 difftest equal to the reference at 1, 4 and 4 shuffled threads, #87 periodic fuzz and parse-corpus gate, #134 CI) is all closed (checked 2026-11-14); the corpus gate is the `corpus` job of `ci.yml`.

@@ -12,11 +12,11 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
   that reports them), print anything, count errors, or carry runtime stack traces (the kernel's
   `SimError::trace` does that; the CLI prints runtime errors itself).
 - Depends on: `annotate-snippets`, `strsim` (the "did you mean" matcher), `saphyr-parser` (the YAML reader of `yaml.rs`). Called by: `yavs-syntax`, `yavs-sem`, `yavs-lib`,
-  `yavs-ir`, `yavs-interp`, `yavs-lower`, `yavs-elab`, `yavs-vhpi`, `yavs` (CLI). Keep it a leaf.
+  `yavs-ir`, `yavs-interp`, `yavs-lower`, `yavs-elab`, `yavs-kernel`, `yavs-rt`, `yavs-clift`, `yavs-vhpi`, `yavs-dap`, `yavs-cov`, `yavs-lint`, `yavs` (CLI). Keep it a leaf.
 
 ## 2. Map
 
-Everything is in `src/lib.rs` (about 530 lines) except `src/shared.rs`, `src/path.rs`, `src/suggest.rs`, `src/files.rs`, `src/operand.rs` and `src/yaml.rs`.
+Everything is in `src/lib.rs` (about 1100 lines with its tests) except `src/shared.rs`, `src/path.rs`, `src/suggest.rs`, `src/files.rs`, `src/operand.rs` and `src/yaml.rs`.
 
 | Item | Role |
 |---|---|
@@ -81,5 +81,4 @@ YAVS_BLESS=1 cargo test -p yavs --test diag         # accept new output, then in
 
 - Every crate depends on this one: a signature change touches all of them. Prefer additive
   builder methods.
-- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:diag`):
-  none at the moment.
+- Open issues: `gh issue list -R ru551n/yavs --label crate:diag` (none on 2026-11-14).

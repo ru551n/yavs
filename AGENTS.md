@@ -28,7 +28,7 @@ ownership, commit identity, shared-host limits) do not apply to them.
 | kernel (`yavs-kernel`) | `crates/yavs-kernel/AGENTS.md`, `crates/yavs-kernel/DESIGN.md` |
 | CLI, libraries, test-runner integration | `crates/yavs/AGENTS.md`, `crates/yavs-lib/AGENTS.md`, `docs/cli-contract.md` (external test runners depend on it: change it deliberately) |
 | diagnostics, logic, std natives | `crates/yavs-{diag,logic,std}/AGENTS.md` |
-| FFI, VHPI, waves, DAP, coverage, compiled-tier runtime, lint | `crates/yavs-{ffi,vhpi,wave,dap,cov,llvm,lint}/AGENTS.md` |
+| FFI, VHPI, waves, DAP, coverage, compiled-tier runtime and Cranelift tier, lint | `crates/yavs-{ffi,vhpi,wave,dap,cov,rt,clift,lint}/AGENTS.md` |
 | `lib/` (std/ieee sources) | `lib/AGENTS.md`, `lib/README.md`, `lib/SOURCES.md`, `lib/NATIVE.md` |
 | tests and tools | `tests/AGENTS.md` (and `tests/{diag,corpus,parse-corpus,discrepancies}/AGENTS.md`), `tools/AGENTS.md` (and `tools/{corpus,difftest,discrepancies}/AGENTS.md`), `fuzz/AGENTS.md` |
 | releases, version numbers, `.github/workflows/release.yml` | `RELEASING.md` (one release with every artifact, one version, `tools/release/bump.py`) |
@@ -260,7 +260,7 @@ AArch64 under qemu and Windows under Wine: see the commands in `docs/STATUS.md` 
 
 ### Work-counter tests (perf regressions that do not depend on the host)
 
-`crates/yavs/tests/perf.rs` runs about 25 small designs (`crates/yavs/tests/perf/*.vhd`, each
+`crates/yavs/tests/perf.rs` runs about 130 small designs (`crates/yavs/tests/perf/*.vhd`, each
 asserting its own result) with `YAVS_COUNTERS=1 --tier=interp --threads 1` and checks counters of
 work against bounds: kernel (`cycles`, `process_runs`, `wakes`, `events`, update paths,
 quick and direct commits), interpreter `ops` executed and `calls` made, elaboration call cache hits, analysed-unit

@@ -10,7 +10,7 @@ script, or measures a profile-guided binary.
   crate changes; the profile is regenerated in every build, never checked in (a checked-in profile goes stale with every source
   change). `llvm-profdata` comes from rustup's `llvm-tools` component (`rustup component add llvm-tools`, rustc's own LLVM, so the
   profile format matches).
-- `train.py` runs the cases in `train/*.vhd` with the instrumented binary and fails on any run that does not exit 0.
+- `train.py` runs the cases in `train/*.vhd` and then every `tests/corpus` testbench (analysed, run at `auto` and with every function compiled) with the instrumented binary and fails on any run that does not exit 0.
 - Perf comparisons of runtime changes run on profile-guided bench builds (`tools/build-bench.sh --pgo OUT`, after an A/A of
   two such builds), those of generated-code changes on plain bench builds by exact counts (maintainer, 2026-11-06;
   `tools/bench/AGENTS.md` section 7). Say which kind of build a number is from. A profile-guided build moves every baseline,
@@ -26,7 +26,7 @@ script, or measures a profile-guided binary.
 | `check.py LOG SHOW INSTR FINAL`, `--selftest` | The final build used the profile: no mismatch warning, no function missing from the profile, a profile of more than a thousand functions, the profile runtime in the instrumented binary and not in the final one. Called by `build.sh` |
 | `train.py BIN --profile-dir DIR`, `--check` | The training driver (stdlib Python, runs on every platform the build runs on); `--check` runs each case once on any build, in the `corpus` job of `ci.yml` |
 | `gain.py PLAIN PGO`, `--selftest` | Profile-guided against plain on `tools/bench/designs`: paired wall-clock runs with a plain/plain control, instructions where `perf` has a counter |
-| `train/*.vhd` | The training cases: original, self-checking testbenches, header `-- pgo: top=NAME_tb std=2008 stop=TIME [relaxed] [weight=N] [gen=NAME=VALUE]` |
+| `train/*.vhd` | The training cases: original, self-checking testbenches, header `-- pgo: top=NAME_tb std=2008 stop=TIME [relaxed] [weight=N] [analyze=N] [gen=NAME=VALUE]` |
 
 ## 3. Design decisions that bind this module
 

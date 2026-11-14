@@ -81,4 +81,4 @@ Every archive is trained in its own job, and no job ships a binary built without
 - `train: corpus run differs`: a `tests/corpus` testbench did not end as its header says.
 - `pgo: the compiler complains about the profile`: the source changed between the two builds of the job.
 - `pgo: the profile does not fit the final build`: the two builds differ in something cargo mixes into symbol names (`--target`, the linker it is configured with). See `tools/pgo/AGENTS.md` section 4; never lower the check.
-- `pgo: the profile is empty` or `no usable profile`: the training wrote nothing. Check that the instrumented build has the runtime and that `llvm-tools` is installed.
+- `pgo: the profile is empty or nearly so`: the training wrote (almost) nothing. Check that the instrumented build has the runtime and that `llvm-tools` is installed.

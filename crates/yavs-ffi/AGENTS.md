@@ -75,5 +75,5 @@ CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine WINEDEBUG=-all \
 
 - Marshalling and copy-back rules live in `yavs-interp` (`src/foreign.rs`) and
   `docs/decisions.md` "IR and interpreter" (Foreign arrays).
-- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:ffi`): none
+- Open issues (`gh issue list -R ru551n/yavs --label crate:ffi`; none on 2026-11-14)
   (#95 `--load` end to end is done).

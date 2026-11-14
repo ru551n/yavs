@@ -59,9 +59,9 @@ Module-local decisions go in this section in the same commit; a new the referenc
   `ArithError` that the caller renders.
 - Do not edit `golden/sim1-*.txt` by hand; regenerate with `gen.py` (needs the reference simulator, wrap it per root
   `AGENTS.md` rule 15) and review the diff. A deviation needs a reason line.
-- Tests that touch the file system use pid-suffixed temp dirs (`yavs-std-file-<pid>`); env tests
-  rely on unset variable names `YAVS_STD_SURELY_UNSET_VARIABLE`/`YAVS_TEXTIO_TEST_UNSET_VARIABLE`.
-- Known perf debt: a textio read is O(len of the line) (one `drain`). Real conversion is exact in
+- Tests that touch the file system use `tempfile::tempdir()` (one directory per test, removed on drop); env tests
+  rely on the unset variable name `YAVS_STD_SURELY_UNSET_VARIABLE` (`yavs-interp/tests/textio.rs` uses `YAVS_TEXTIO_TEST_UNSET_VARIABLE`).
+- Known perf debt: a textio read is O(len of the line) (one `drain` in `yavs-interp/src/textio.rs`). Real conversion is exact in
   every base.
 
 ## 5. How to work here
@@ -80,6 +80,5 @@ python3 crates/yavs-std/golden/gen.py              # regenerate goldens with the
 
 - The textio and env runtime glue is in `crates/yavs-interp/src/{native,textio}.rs`; symbols are
   in `lib/NATIVE.md`.
-- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:std`): #196 (interp)
-  quadratic textio lines; #97
-  reflection runtime with resolution-limit TIME mirrors.
+- Open issues: `gh issue list -R ru551n/yavs --label crate:std` (none on 2026-11-14; #196 quadratic textio
+  lines and #97 reflection runtime with resolution-limit TIME mirrors are closed).

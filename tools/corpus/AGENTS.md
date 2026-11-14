@@ -70,8 +70,7 @@ tools/corpus/report.sh                                        # RESULTS.md
 
 ## 6. Coordination
 
-- Open issues (snapshot 2026-10-18): #62 refresh `RESULTS.md`; corpus false
-  positives and bugs #59, #61, #157 (#55 to #58, #60 closed as stale 2026-10-18); #115 external verification library suites; #112 external test runner suites.
+- Open issues: a known failing file has its issue (`gh issue list -R ru551n/yavs --label false-positive`). The snapshot of 2026-10-18 (#62 refresh `RESULTS.md`, #59, #61, #157, #115, #112) is all closed (checked 2026-11-14).
 
 CI (`corpus` job in `.github/workflows/ci.yml`, Linux x86_64) runs every manifest with `run.py
 --no-wrap --keep-going` and fails on any difference, so a regression and an unexpected pass both

@@ -231,12 +231,12 @@
        8
       ],
       "composite": [
-       163,
-       163
+       170,
+       170
       ],
       "delta": [
-       19,
-       19
+       21,
+       21
       ],
       "env": [
        16,
@@ -251,32 +251,32 @@
        59
       ],
       "held": [
-       10,
-       10
+       12,
+       12
       ],
       "hierarchy": [
-       91,
-       91
+       107,
+       107
       ],
       "ieee": [
-       21,
-       21
+       25,
+       25
       ],
       "implicit": [
-       6,
-       6
+       9,
+       9
       ],
       "postponed": [
        2,
        2
       ],
       "process": [
-       50,
-       50
+       63,
+       63
       ],
       "protected": [
-       27,
-       27
+       29,
+       29
       ],
       "psl": [
        16,
@@ -299,16 +299,16 @@
        5
       ],
       "scalar": [
-       20,
-       20
+       24,
+       24
       ],
       "shared": [
        4,
        4
       ],
       "sigassign": [
-       37,
-       37
+       47,
+       47
       ],
       "std93": [
        6,
@@ -319,8 +319,8 @@
        20
       ],
       "textio": [
-       19,
-       19
+       20,
+       20
       ]
      }
     },
@@ -336,12 +336,12 @@
        8
       ],
       "composite": [
-       163,
-       163
+       170,
+       170
       ],
       "delta": [
-       19,
-       19
+       21,
+       21
       ],
       "env": [
        16,
@@ -356,32 +356,32 @@
        59
       ],
       "held": [
-       10,
-       10
+       12,
+       12
       ],
       "hierarchy": [
-       91,
-       91
+       107,
+       107
       ],
       "ieee": [
-       21,
-       21
+       25,
+       25
       ],
       "implicit": [
-       6,
-       6
+       9,
+       9
       ],
       "postponed": [
        2,
        2
       ],
       "process": [
-       50,
-       50
+       63,
+       63
       ],
       "protected": [
-       27,
-       27
+       29,
+       29
       ],
       "psl": [
        16,
@@ -404,16 +404,16 @@
        5
       ],
       "scalar": [
-       20,
-       20
+       24,
+       24
       ],
       "shared": [
        4,
        4
       ],
       "sigassign": [
-       37,
-       37
+       47,
+       47
       ],
       "std93": [
        6,
@@ -424,8 +424,8 @@
        20
       ],
       "textio": [
-       19,
-       19
+       20,
+       20
       ]
      }
     },
@@ -441,12 +441,12 @@
        8
       ],
       "composite": [
-       163,
-       163
+       170,
+       170
       ],
       "delta": [
-       19,
-       19
+       21,
+       21
       ],
       "env": [
        16,
@@ -461,32 +461,32 @@
        59
       ],
       "held": [
-       10,
-       10
+       12,
+       12
       ],
       "hierarchy": [
-       91,
-       91
+       107,
+       107
       ],
       "ieee": [
-       21,
-       21
+       25,
+       25
       ],
       "implicit": [
-       6,
-       6
+       9,
+       9
       ],
       "postponed": [
        2,
        2
       ],
       "process": [
-       50,
-       50
+       63,
+       63
       ],
       "protected": [
-       27,
-       27
+       29,
+       29
       ],
       "psl": [
        16,
@@ -509,16 +509,16 @@
        5
       ],
       "scalar": [
-       20,
-       20
+       24,
+       24
       ],
       "shared": [
        4,
        4
       ],
       "sigassign": [
-       37,
-       37
+       47,
+       47
       ],
       "std93": [
        6,
@@ -529,15 +529,15 @@
        20
       ],
       "textio": [
-       19,
-       19
+       20,
+       20
       ]
      }
     }
    }
   },
   "discrepancies": {
-   "cases": 271,
+   "cases": 276,
    "output_tail": "",
    "yavs_matches_expected": true
   },
@@ -625,9 +625,9 @@
   }
  },
  "generated": {
-  "commit": "9bbdb36189",
-  "commit_date": "2026-11-10",
-  "version": "0.19.0"
+  "commit": "1476c939e3",
+  "commit_date": "2026-11-14",
+  "version": "0.20.1"
  },
  "local": {
   "records": {
@@ -2580,6 +2580,20 @@
     "yavs": "OK"
    },
    {
+    "case": "external-name-part-alias",
+    "decided": "agent, 2026-11-13 (#1143, L71)",
+    "kind": "reference bug (#1143)",
+    "lrm": "6.6.2, 8.7",
+    "yavs": "OK"
+   },
+   {
+    "case": "external-name-all-sensitivity",
+    "decided": "agent, 2026-11-13 (#1143, L71)",
+    "kind": "reference bug (#1143)",
+    "lrm": "11.3, 10.2, 8.7",
+    "yavs": "OK"
+   },
+   {
     "case": "external-name-in-port-init",
     "decided": "user, 2026-10-19 (#186, 2 of 3 reference simulators)",
     "kind": "LRM ambiguity",
@@ -3119,6 +3133,13 @@
     "yavs": "OK"
    },
    {
+    "case": "record-resolution-calls",
+    "decided": "agent, 2026-11-13 (#1139)",
+    "kind": "LRM clear",
+    "lrm": "4.6, 14.7.3.2",
+    "yavs": "OK"
+   },
+   {
     "case": "wait-past-time-high",
     "decided": "agent, 2026-10-19 (#366, L99, 3 of 4)",
     "kind": "LRM ambiguity",
@@ -3266,6 +3287,13 @@
     "yavs": "OK"
    },
    {
+    "case": "null-array-order",
+    "decided": "agent, 2026-11-13",
+    "kind": "LRM clear",
+    "lrm": "9.2.3",
+    "yavs": "OK"
+   },
+   {
     "case": "package-instance-path-name",
     "decided": "agent, 2026-10-20 (#445)",
     "kind": "LRM clear",
@@ -3404,6 +3432,13 @@
     "kind": "LRM ambiguity (no size limit is stated; an implementation may have one)",
     "lrm": "5.3.2",
     "yavs": "REJECT"
+   },
+   {
+    "case": "real-negative-zero-event",
+    "decided": "user, 2026-11-13 (#1145)",
+    "kind": "LRM ambiguity",
+    "lrm": "14.7.3, 9.2.3 (`-0.0 = 0.0`)",
+    "yavs": "no event"
    }
   ],
   "platforms": {

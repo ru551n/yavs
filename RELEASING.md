@@ -40,7 +40,9 @@ the tag's version. A new version spot goes into the `SPOTS` table of `bump.py`.
    stale, and `release.yml` publishes nothing until that run of the tag has passed). The `conformance` workflow runs nightly, not on a push (`docs/decisions.md` "Conformance runs
    nightly"), so for a report of the exact commit run `gh workflow run conformance.yml --ref main`
    and use its artifact, after checking that the run's `headSha` is that commit. Main need not be
-   quiet for this: runs on `main` are not cancelled by a newer push.
+   quiet for this: runs on `main` are not cancelled by a newer push. A run by hand fails when the
+   committed report differs from the regenerated one (only the nightly run just warns), and still
+   uploads the artifact to refresh it from (`run.py --report-only`).
 2. A dry run on `main`, if the release flow changed since the last release:
    `gh workflow run release.yml --ref main -f dry_run=true -f checks=true`. It builds and tests
    everything and keeps the files as workflow artifacts; it creates no release and publishes
@@ -61,7 +63,12 @@ the tag's version. A new version spot goes into the `SPOTS` table of `bump.py`.
      installs.
 
    Commit as `release: yavs X.Y.Z`, push to `main`, wait for CI.
-4. Tag that commit `vX.Y.Z` and push the tag. `release.yml` checks the versions, runs the CI
+   Then check the report of that exact commit before tagging, because a tag whose report is stale
+   cannot be repaired (the 0.20.0 tag failed this way): `gh workflow run conformance.yml --ref main`,
+   check that the run's `headSha` is the release commit and wait for it to pass. A red run means the
+   report is stale (the counts change whenever tests are added): refresh it from that run's artifact
+   (`tools/conformance/AGENTS.md` section 5), push, and run it again. Tag the commit whose run passed.
+4. Tag the commit whose by-hand conformance run passed, `vX.Y.Z`, and push the tag. `release.yml` checks the versions, runs the CI
    checks, waits for the `conformance` run of the tag (a red one, a stale report included, stops the
    release before anything is published: the tag stays, release the next patch version), builds the archives, tests `vunit-yavs` on all three platforms and the extension against
    the archives of this run, creates the GitHub pre-release with every file, then uploads the wheel

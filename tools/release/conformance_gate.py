@@ -7,7 +7,7 @@
 
 conformance.yml regenerates the report at the tagged commit and, on a tag, fails when the committed
 docs/conformance.md differs (the file release.yml publishes). Only that run proves the report belongs
-to the release: a run on main passes with a warning when the report is stale.
+to the release: a nightly run on main passes with a warning when the report is stale.
 """
 import json, subprocess, sys, time
 

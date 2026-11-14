@@ -1,6 +1,7 @@
 # Conformance report (#780): regenerates the parts of docs/conformance.md that need only yavs and the
 # fetched corpora, uploads the report as an artifact and checks the committed copy. Nothing is published
-# outside the repository. On main a stale committed report is a warning; on a release tag it fails the run.
+# outside the repository. In the nightly run a stale committed report is a warning; in a run by hand and on a
+# release tag it fails the run, so RELEASING.md can check the report of the release commit before the tag.
 # The osvvm step needs pyEDAA.OSVVM (tools/suites/requirements.txt, installed below).
 # It also runs cocotb's own regression over VHPI (tools/cocotb, a pinned cocotb from PyPI and its tests
 # from GitHub); a failing job there fails the run.
@@ -50,14 +51,17 @@ jobs:
       - run: cargo build --release --locked -p yavs
       - name: Regenerate the report and compare it with the committed one
         id: report
-        # A stale committed report fails only on release tags; the steps that cannot run here
-        # (reference simulators, vendor libraries) keep the records of docs/conformance-local.json.
-        continue-on-error: ${{ github.ref_type != 'tag' }}
+        # A stale committed report is only a warning in the nightly run (a changed count must not turn
+        # it red), and fails a run by hand and the tag run; the steps that cannot run here (reference
+        # simulators, vendor libraries) keep the records of docs/conformance-local.json.
+        continue-on-error: ${{ github.event_name == 'schedule' }}
         run: |
           tools/conformance/run.py --check --no-sandbox --core 1 \
             --yavs target/release/yavs --out "$RUNNER_TEMP/conformance"
       - uses: astral-sh/setup-uv@v6
       - name: cocotb's own regression over VHPI (tools/cocotb)
+        # also after a stale report, so that its artifact has everything the refresh of the report needs
+        if: ${{ !cancelled() }}
         run: |
           mkdir -p "$RUNNER_TEMP/conformance"
           python3 -I tools/cocotb/run.py --no-sandbox --jobs 4 --yavs target/release/yavs \

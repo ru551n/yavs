@@ -8065,7 +8065,7 @@ median of 3, cycles G and ratio to the interpreter):
 
 `--tier=llvm` runs `protected_queue` at 2.09 G cycles: warm `--tier=auto` now reaches the eager tier.
 
-Fourth step (#510): a clocked process is compiled only when at least 16 processes are made of it. In the real-world suite
+Fourth step (#510): a clocked process is compiled only when at least 16 processes are made of it (replaced by 2026-10-25, #675: a process of fewer instances is `Kind::RtlFew`, compiled with a low expected benefit and taken back by the trial after the swap when it does not pay; `docs/decisions.md` "`RtlFew`"). In the real-world suite
 (`tools/realbench`, all 41 tests, core 4, before this step) `--tier=auto` ran the three CPU-design tests 5 to 8 percent and
 the wide-vector writer 5 percent slower than the interpreter at the same instruction count: their processes, most made
 once, were compiled; with the processes not compiled, both are level with the interpreter (CPU design 130.0 against 130.6 G
@@ -8111,7 +8111,7 @@ CPU, not wall) and the LLVM library (10 ms at the first compile); cold runs of s
 compile thread adds CPU and memory to every run that compiles; when a function is compiled depends on sampling, so run
 times (not results) vary more than with the interpreter.
 
-**Decision (user, 2026-10-22): `--tier=auto` is the default** (builds with the `llvm` feature; `--dap` keeps the interpreter, as do builds without the feature, quietly; `--vhpi` follows the default, #125; `docs/decisions.md`). The blockers below were cleared by #525, #532 and #545.
+**Decision (user, 2026-10-22): `--tier=auto` is the default** (builds with the `llvm` feature; `--dap` keeps the interpreter, as do builds without the feature, quietly; `--vhpi` follows the default, #125; `docs/decisions.md`). The blockers below were cleared by #525, #532 and #545. Note 2026-11-14: the `llvm` feature is gone (LLVM tier removed 2026-11-08); the default is still `--tier=auto`, now the Cranelift policy in builds with the `clift` feature, and the interpreter under a debug session (`--dap`, `--interactive`, `--do`) or in a build without `clift`.
 
 Recommendation at the time: not yet. Make `--tier=auto` the default once a run in which nothing pays costs no more than noise
 (#525), and once compiled clocked processes of single-instance designs no longer lose (#532, #527: signal operations and
@@ -8311,7 +8311,7 @@ sides (a throwaway build).
 
 ## Out-port collapsing (#528, 2026-10-22)
 
-`out` and `buffer` ports that are the only source of their actual's elements collapse into the actual like `in` ports
+`out` and `buffer` ports that are the only source of their actual's elements collapse into the actual like `in` ports (`inout` ports collapse too since 2026-11-13: section above)
 (`collapse.rs` `ports`): the formal's drivers drive the actual, which takes the formal's initial value; `inout` ports, actuals
 with another source, a guard, a force, a conversion or an effective value from above stay apart (`docs/decisions.md`
 "Elaboration"). In `fletcher_bufferwriter_512` 422 of 450 `out` leaves collapse (20 are open, 8 kept).
@@ -8333,6 +8333,8 @@ ways; VHPI conformance traces identical before and after (collapsing is off unde
 groups equal with and without collapsing (`crates/yavs/tests/wave.rs`); `cargo test --workspace`.
 
 ## llvm: exits of native frames record what is live (#554, 2026-10-22)
+
+Note 2026-11-14 for every section titled `llvm:` or `llvm and clift:` from here to "Rule 47 rulings": they are the record of the LLVM tier, removed 2026-11-08; the crate they call `yavs-llvm` is `yavs-rt` since 2026-11-10 and is what the Cranelift tier runs on. Their `--tier=llvm`, `--features llvm`, `OptLevel`, `FastRa` and `YAVS_LLVM_*` names no longer exist.
 
 Decision: docs/decisions.md "Native frames: every exit records the registers live at its pc". `--tier=llvm` ran the
 codec and queue loops of a verification library (576-bit `decode(encode(v))`, queue push and pop) and a window-generator
@@ -8599,7 +8601,7 @@ field by field, which is what the entry cost above comes from.
 
 ## Work-counter perf tests and the op census (#579, 2026-10-23)
 
-`crates/yavs/tests/perf.rs`: 22 designs plus the LLVM ones (3, `--features llvm`) check counters of
+`crates/yavs/tests/perf.rs` (2026-11-14: the LLVM cases are gone with the tier, about 25 designs now, `--features clift` for the compiled-code counters; root `AGENTS.md` section 4): 22 designs plus the LLVM ones (3, `--features llvm`) check counters of
 work that are exactly repeatable (kernel `Stats`, interpreter `ops`, call-cache and unit-cache hits,
 wave variable reads, compiled-code callbacks) against ceilings/floors; see root `AGENTS.md` section 4.
 `op-census` (cargo feature) prints the op and adjacent-pair tables of a run (`crates/yavs-interp/AGENTS.md`
@@ -8641,7 +8643,7 @@ The implicit GUARD signal starts as the guard condition on the initial values (`
 `yavs-elab`), so a process reading it at time 0 sees the condition, not `false`. Corpus
 `delta/guard_initial_value`. Open (#464): GUARD still changes a delta after the condition's
 signals, where the references update it in the same cycle (needs a kernel update-phase
-evaluation of the condition).
+evaluation of the condition). Fixed the same day in c9a28c52 (`Builder::guard_process`, `run_guards` in the kernel; corpus `delta/guard_same_cycle`; #464 closed 2026-10-23, `docs/decisions.md` "GUARD changes in the cycle of its condition").
 
 
 
@@ -9038,7 +9040,7 @@ an instance with generics and constants switches, once it has run 1024 activatio
 frozen data (the optimiser folds the data's integer reads: lengths, slice positions, allocation sizes, checks, arms of `if generic then`).
 Equal data share a copy, the parameters of `for` generates are not folded, the copies' optimised IR is capped at 2.5 times (1.5 until 2026-10-24) the shared
 process IR, they are kept in the compilation cache (kind `spec`), and the tiers see them as ordinary functions. Shared code under
-`--dap`, `--vhpi`, wave variables, coverage, `--tier=llvm`, serial processes and processes with several waits.
+`--dap`, `--vhpi`, wave variables, coverage, `--tier=llvm`, serial processes and processes with several waits. Since 2026-10-25 processes with nested subprograms and serial processes get copies too (section "grlib_leon3mp, second round" below, #721, #724).
 
 Bench builds with `llvm`, core 9, `tools/realbench/run.py --compare` (a world per binary, medians of 3), user instructions of the whole
 process tree in G, main at d72ffdd9 before / after; the cycles and the wall times are noisy on the loaded host (the same binary and the same
@@ -10159,7 +10161,7 @@ unchanged by this work). Nothing in the start-up dominates: analysis, elaboratio
 Wall of `--tier=auto` against all-compiled-at-first-call (`--tier-heat=1,0,0`, warm cache): rtl_ff 0.659 s to 0.593, lfsr64 0.170
 to 0.143, rtl_lfsr 0.281 to 0.275, rtl_chain 0.188 to 0.202 (compiled is slower there). The default compiles rtl_ff at 370 ms of 647,
 rtl_lfsr at 79 ms of 306 (refused at 23 ms by a price of 50.6 ms for a compile that is a 3 ms cache hit) and lfsr64 never: the
-price of a function whose object is in the cache is the open question #728 (decision for the user). Every other lever is in a lane:
+price of a function whose object is in the cache is the open question #728 (decision for the user; decided 2026-10-27, option (c): a warm run waits only for its payback at the cache price, section "compiled code found before it is generated" below; #728 closed 2026-10-30). Every other lever is in a lane:
 the kernel numbers are on #521, the policy on #675, the compiled-entry plumbing was taken to its floor for this structure in rounds
 5 and 6 of #634 (a process-direct entry that skips the interpreter's `Machine`, `view` and the thread's object cache would be the next
 step: about 400 of the 620 instructions, not started). Left alone on purpose: a `Cat` of a slice copied to a temporary (the optimiser
@@ -10233,7 +10235,7 @@ Against the reference simulator (`--ref sim1`, same method, this change): run 45
 at the same load; 3.71 and 3.77 at the first measurement of this test).
 
 Open (issues): processes with nested subprograms are never specialised, 25 percent of the ops of `state_register` (#721); the pure-call memo costs 10 percent
-of the S-record start-up (#722); vector drives of a wake that does nothing (#723); the cold activation path of serial processes (#724). Tried and not landed:
+of the S-record start-up (#722); vector drives of a wake that does nothing (#723); the cold activation path of serial processes (#724). (All four were taken up the next day, section "grlib_leon3mp, second round" below; closed.) Tried and not landed:
 the short-circuit clean-up of `opt/cfg.rs` on processes (decisions.md).
 
 ## sc5_fifo_repack: where the time goes, and `uniform` in compiled code (#519, 2026-10-25)
@@ -10394,6 +10396,7 @@ processes, processes a trial took back, the simulation CPU time); the next run o
 processes at their first look, and the run after it keeps them if the run as a whole took 3 percent less simulation CPU time, else loses
 them for good. `YAVS_AUTO_PROFILE=off` turns it off; the first run, `--tier-heat`, `--no-cache` and runs under 100 ms decide as before. The wait of the
 shared code of a process for its copy (`SPEC_WAIT`) is gone with it.
+Amended since: an early compile is judged by a run that linked it, not by the run that paid the compile (2026-11-13); the verdicts and the warm gate read the work of a run (kernel-thread instructions) instead of CPU time, profile format 7 (2026-11-14); `docs/decisions.md` "`--tier=auto`: an early compile is judged by a run that linked it" and "the run-to-run profile judges by work".
 
 Method: bench builds of main (d3123c88 for these tables, "main") and of this change ("new"); per world a fresh copy of the pristine world, the analysis caches of the
 binary filled by two untimed runs, the compiled-code cache emptied, then consecutive `--tier=auto` runs pinned to core 8 (the compile thread shares
@@ -10425,7 +10428,7 @@ of the walls 1.01) and 1.00 (auto-cold, sum 1.01), instructions 0.99 and 1.00. P
 the others are host noise (load average 30 to 39 from other agents: `uvvm_axistream_vvc` 1.12 at equal instructions, `poc_arith_addw` 0.95 at
 instructions 1.10, `leon3mp` 40.4 to 41.6 s). Cold equals main on every design (the profile of a first run is written at its end).
 
-#755: `tier.rs::auto_tier_compiles_a_long_loop_of_one_call` waits (60 s at most) for the compile the call started instead of racing it; it
+#755: `tier.rs::auto_tier_compiles_a_long_loop_of_one_call` (deleted with the LLVM tier, 2026-11-08) waits (60 s at most) for the compile the call started instead of racing it; it
 failed once under `gc-stress` on a loaded host (load average 8).
 
 ### `--tier=auto` first-run latency (yavs-llvm, yavs-interp, #757, #762, 2026-10-26)
@@ -11155,6 +11158,8 @@ Unknown-name diagnostics share `suggest::similar` and `suggest::help`: edit dist
 
 ## Thread budget: a token pool in `MAKEFLAGS` (yavs, yavs-kernel, #801 M3, 2026-10-28)
 
+Record only: replaced the next day by the token server below (`jobserver.rs`, `tests/jobserver.rs` and the `MAKEFLAGS` pool are gone).
+
 `yavs run --threads=N` with N above 1 takes its extra threads from a token pool named in `MAKEFLAGS`
 (`--jobserver-auth=R,W` on Linux, `fifo:PATH` on Unix): at most N - 1 tokens, taken without blocking only for a batch worth
 pooling, an empty pool runs the batch inline; tokens go back after 64 batches in a row that did not pool, when a run
@@ -11177,10 +11182,10 @@ std only, no `unsafe`) connects at the start of `run`, sends `<want>` when its d
 (protocol: `docs/cli-contract.md` "Token server"; decisions: `docs/decisions.md` "Thread budget: a token server").
 Same code on Linux and Windows. Tests: `crates/yavs/tests/tokens.rs` (in-test server: cap, tokens back after end,
 failure, kill and on Unix SIGINT with and without `--wave` and SIGTERM, stdout identical at 0/1/3/8 tokens, E0128
-for bad values, no server, wrong secret); `python/vunit-yavs/tests/test_tokens.py` (lending order, answers per
+for bad values, no server, wrong secret; since 2026-10-31, #878, a server that cannot be reached is warning W0118 and the run goes on with one thread, E0128 stays for a malformed value and a refused secret); `python/vunit-yavs/tests/test_tokens.py` (lending order, answers per
 message, caps, returns on close, kill, a garbled line, stale secrets), `test_interface.py`, `test_fake_e2e.py` and
 `test_real_yavs.py` (a real yavs runs on a lent token with unchanged output); the new CI job `vunit-yavs` runs the
-package tests against the commit's yavs on Linux and Windows. Not done: the tail-gain measurements of #801.
+package tests against the commit's yavs on Linux and Windows. Not done: the tail-gain measurements of #801 (still not run on 2026-11-14; #801 was closed into tracker #892 on 2026-10-30 with the item unchecked).
 The analysed units of the built-in `std`/`ieee` live in one store per user (`$YAVS_STD_CACHE`, else `yavs/std` in the user's cache directory) instead of every library's `yavs-cache/units/`; a fresh library reads them. `YAVS_STD_CACHE=off` keeps the old per-library placement; `E0126` for an unusable directory; a mapped (bootstrap) `ieee` is never shared; `crates/yavs/build.rs` hashes `lib/` into the build id. Cold batched analysis (shared store warm, bench builds, core 8): instructions 0.72 to 0.83 of before on `en_cl_fix_pkg`, `poc_strings`, `neorv32_single_min`, `sc5_timestamp`, `fletcher_bufferreader`, wall 0.75 to 0.92; first call into an empty store unchanged. Decision and numbers: `docs/decisions.md` "Shared std/ieee units". Tests: `crates/yavs/tests/std_share.rs`.
 
 ### Typo suggestion implementation (#894)

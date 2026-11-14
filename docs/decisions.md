@@ -3,9 +3,12 @@
 ## Documentation site logo (user, 2026-11-14)
 
 - The Read the Docs site shows the README logo in the sidebar header (`html_logo` in `docs/conf.py`), referencing the one copy
-  in `assets/` instead of a second one in `docs/`.
+  in `assets/` instead of a second one in `docs/`. The landing page (`docs/index.rst`) shows it too, centred above the title at
+  the width of the README (420 px).
 - The header is dark in every colour scheme of the theme (no dark mode switch), so it uses the dark variant (light wordmark)
-  on a `#0d1117` header background, which keeps the teal fin `#008F83` unchanged and legible. No favicon is generated: the
+  on a `#0d1117` header background, which keeps the teal fin `#008F83` unchanged and legible. The page body is white in every
+  colour scheme, so the landing page uses the light variant (dark wordmark) as a plain image: a `prefers-color-scheme` switch
+  there would put the light wordmark of the dark variant on a white page. No favicon is generated: the
   artwork is not cropped or altered.
 
 ## README logo (user, 2026-11-14)

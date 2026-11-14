@@ -1,3 +1,10 @@
+.. The theme's page is white in every colour scheme, so the light variant of the README logo is the legible one.
+
+.. image:: ../assets/yavs-logo-light.svg
+   :alt: yavs
+   :width: 420px
+   :align: center
+
 yavs
 ====
 

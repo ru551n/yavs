@@ -353,11 +353,15 @@ fn cell(f: Family, c: TypeClass) -> Vec<Item> {
             | Record,
         ) => vec![Na],
         // Concatenation (LRM 9.2.5).
-        (Cat, LogicArray | BitArray | BooleanArray | ByteArray) => vec![Later(
-            5,
-            "a temporary and a copy into the target per operation (a fixed cost of 1-2 k \
-             instructions)",
-        )],
+        (Cat, LogicArray | BitArray | BooleanArray | ByteArray) => {
+            let mut v = rows(cat_rows(c));
+            v.push(Pending(
+                "above 64 elements frame-mode compiled code builds the result in a temporary \
+                 through one `TierHost::signal` callback (`cb_signal.Cat`) and copies it into \
+                 the target: a fixed 1.7 to 2.5 k instructions per operation (2026-11-14)",
+            ));
+            v
+        }
         (Cat, IntArray | WideIntArray | RealArray | ArrayOfArrays) => {
             vec![Pending("one `Cat` of bytes; no row yet")]
         }
@@ -969,6 +973,54 @@ fn tostr_rows(c: TypeClass) -> Vec<Row> {
         v.push(one("to_string_01", true));
     }
     v
+}
+
+/// `&` of two arrays and of an array and an element (LRM 9.2.5) into variables of twice (and
+/// once plus one) the length, checked through slices against the operands.
+fn cat_rows(c: TypeClass) -> Vec<Row> {
+    let t = array(c);
+    // The result ranges, the slices of each operand in them.
+    let (r2, hi, lo, r1, ra, last) = match t.full {
+        "W - 1 downto 0" => (
+            "2 * W - 1 downto 0",
+            "2 * W - 1 downto W",
+            "W - 1 downto 0",
+            "W downto 0",
+            "W downto 1",
+            "0",
+        ),
+        "0 to W - 1" => (
+            "0 to 2 * W - 1",
+            "0 to W - 1",
+            "W to 2 * W - 1",
+            "0 to W",
+            "0 to W - 1",
+            "W",
+        ),
+        _ => (
+            "1 to 2 * W",
+            "1 to W",
+            "W + 1 to 2 * W",
+            "1 to W + 1",
+            "1 to W",
+            "W + 1",
+        ),
+    };
+    let (mut r, _) = native_row("cat", "cat", c);
+    r.native = false;
+    r.vars += &format!(
+        "\n    variable rr : {};\n    variable rs : {};",
+        t.ty.replace("{r}", r2),
+        t.ty.replace("{r}", r1)
+    );
+    let ops = |b: &str| {
+        format!(
+            "rr := a & {b}; check(rr({hi}) = a and rr({lo}) = {b}, true);
+        rs := a & {b}({b}'right); check(rs({ra}) = a and rs({last}) = {b}({b}'right), true);"
+        )
+    };
+    (r.ops1, r.ops0) = (ops("b1"), ops("b0"));
+    vec![r]
 }
 
 /// textio `write` of a std_ulogic_vector (std_logic_1164), plain and justified in a wider field,

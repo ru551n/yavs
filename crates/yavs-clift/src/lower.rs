@@ -2678,13 +2678,10 @@ fn note_site(k: usize) {
 }
 
 /// The element count and offsets of an `LCopy` whose run-time tests the constants settle: all
-/// three in the range of those tests, at most `LCOPY_BLOCKS` blocks on each side. Anything else
-/// stays with the general lowering, which sends it to the interpreter.
+/// three in the range of those tests (below 2^32). Anything else stays with the general lowering.
 fn lcopy_shape(n: Option<i64>, so: Option<i64>, d: Option<i64>) -> Option<(u64, u64, u64)> {
     let small = |v: i64| u64::try_from(v).ok().filter(|&v| v < 1 << 32);
-    let (n, so, d) = (small(n?)?, small(so?)?, small(d?)?);
-    let fits = |off: u64| (off % 64 + n).div_ceil(64) <= LCOPY_BLOCKS;
-    (fits(so) && fits(d)).then_some((n, so, d))
+    Some((small(n?)?, small(so?)?, small(d?)?))
 }
 
 /// The frame slots every `Store` of which (at 8 bytes) stores the plain address of one frame
@@ -4801,14 +4798,6 @@ fn gen_func(
                 };
                 let (sb0, ns, s0) = blocks(&mut g, so);
                 let (db0, nd, d0) = blocks(&mut g, d);
-                let a =
-                    g.b.ins()
-                        .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, ns, LCOPY_BLOCKS as i64);
-                let b =
-                    g.b.ins()
-                        .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, nd, LCOPY_BLOCKS as i64);
-                let fit = g.b.ins().band(a, b);
-                g.guard(fit, slow);
                 let (sb, sn) = (g.b.ins().ishl_imm_s(sb0, 5), g.b.ins().ishl_imm_s(ns, 5));
                 let (db, dn) = (g.b.ins().ishl_imm_s(db0, 5), g.b.ins().ishl_imm_s(nd, 5));
                 let (sa, da) = (g.ld(src), g.ld(dst));

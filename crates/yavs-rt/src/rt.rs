@@ -2100,8 +2100,8 @@ pub extern "C" fn yavs_rt_xstep(
 }
 
 /// `Inst::LCopy` on the `ns` source and `nd` destination plane blocks compiled code found
-/// (`Gen::host`): `yavs_interp::copy_bits`, the interpreter's own copy, on stack copies of both
-/// (they may be one vector).
+/// (`Gen::host`): `yavs_interp::copy_bits`, the interpreter's own copy, on copies of both (they
+/// may be one vector): on the stack up to `LCOPY_BLOCKS` blocks a side, else in vectors.
 pub unsafe extern "C" fn yavs_rt_lcopy(
     dst: *mut u8,
     nd: u64,
@@ -2128,7 +2128,11 @@ pub unsafe extern "C" fn yavs_rt_lcopy(
             *o = std::array::from_fn(|k| u64::from_le_bytes(std::array::from_fn(|j| c[k * 8 + j])));
         }
     };
-    let (ns, nd) = (ns.min(LCOPY_BLOCKS) as usize, nd.min(LCOPY_BLOCKS) as usize);
+    let (ns, nd) = (ns as usize, nd as usize);
+    if ns.max(nd) > LCOPY_BLOCKS as usize {
+        // SAFETY: as below.
+        return unsafe { lcopy_wide(dst, nd, d0, src, ns, s0, n) };
+    }
     let mut sw = [[0u64; 4]; LCOPY_BLOCKS as usize];
     let mut dw = [[0u64; 4]; LCOPY_BLOCKS as usize];
     // SAFETY: compiled code checked `ns` readable blocks at `src` and `nd` writable blocks at
@@ -2148,6 +2152,64 @@ pub unsafe extern "C" fn yavs_rt_lcopy(
         .zip(dw[..nd].as_flattened())
     {
         *c = w.to_le_bytes();
+    }
+}
+
+/// `yavs_rt_lcopy` of more than `LCOPY_BLOCKS` blocks on a side (a vector of more than 512
+/// elements): a whole-block run that starts at bit 0 on both sides is moved as bytes; else, from a
+/// copy of the source when the two overlap, the whole blocks as bytes when both sides start at the
+/// same bit of a block, and the rest 64 elements at a time from the source's words into the
+/// destination's (`eloop` runs).
+#[cold]
+unsafe fn lcopy_wide(dst: *mut u8, nd: usize, d0: u64, src: *const u8, ns: usize, s0: u64, n: u64) {
+    if s0 == 0 && d0 == 0 && n.is_multiple_of(64) && n / 64 <= ns.min(nd) as u64 {
+        // SAFETY: compiled code checked `ns` and `nd` blocks at `src` and `dst`; `copy` allows
+        // the two to overlap.
+        unsafe { std::ptr::copy(src, dst, n as usize / 64 * 32) };
+        return;
+    }
+    let (sa, da) = (src as usize, dst as usize);
+    let staged;
+    let src = if sa < da + nd * 32 && da < sa + ns * 32 {
+        // SAFETY: as above.
+        staged = unsafe { std::slice::from_raw_parts(src, ns * 32) }.to_vec();
+        staged.as_ptr()
+    } else {
+        src
+    };
+    let mut i = 0;
+    if s0 % 64 == d0 % 64 {
+        // One alignment: a run up to the next block, then the whole blocks as bytes.
+        i = ((64 - d0 % 64) % 64).min(n);
+        if i > 0 {
+            // SAFETY: as in the loop below.
+            unsafe {
+                let v = crate::eloop::get_run(src, 0, s0 as usize, i as usize);
+                crate::eloop::put_run(dst, 0, d0 as usize, i as usize, v);
+            }
+        }
+        let whole = (n - i) / 64;
+        // SAFETY: the whole blocks from elements `s0 + i` and `d0 + i` (both at a block's start)
+        // lie inside the checked blocks; `src` is a copy when the two overlap.
+        unsafe {
+            std::ptr::copy(
+                src.add((s0 + i) as usize / 64 * 32),
+                dst.add((d0 + i) as usize / 64 * 32),
+                whole as usize * 32,
+            )
+        };
+        i += whole * 64;
+    }
+    while i < n {
+        let k = (n - i).min(64);
+        // SAFETY: elements `s0 + i ..` and `d0 + i ..`, `k` of them, lie inside the `ns` and `nd`
+        // blocks compiled code checked (`s0 + n` and `d0 + n` do); `staged` is a copy of the
+        // same blocks.
+        unsafe {
+            let v = crate::eloop::get_run(src, 0, (s0 + i) as usize, k as usize);
+            crate::eloop::put_run(dst, 0, (d0 + i) as usize, k as usize, v);
+        }
+        i += k;
     }
 }
 
@@ -5159,6 +5221,83 @@ pub fn xstep_ok(f: &Func, i: &Inst) -> bool {
 mod tests {
     use super::*;
     use yavs_interp::TierState;
+
+    /// `yavs_rt_lcopy` of runs wider than its stack copies (`lcopy_wide`) against
+    /// `yavs_interp::copy_bits` on block vectors: offsets around the block edges, whole-block runs
+    /// (moved as bytes) and runs inside one buffer that overlap.
+    #[test]
+    fn wide_lcopy_matches_copy_bits() {
+        let bytes = |w: &[[u64; 4]]| -> Vec<u8> {
+            w.as_flattened()
+                .iter()
+                .flat_map(|x| x.to_le_bytes())
+                .collect()
+        };
+        let words = |b: &[u8]| -> Vec<[u64; 4]> {
+            b.as_chunks::<32>()
+                .0
+                .iter()
+                .map(|c| {
+                    std::array::from_fn(|k| {
+                        u64::from_le_bytes(std::array::from_fn(|j| c[k * 8 + j]))
+                    })
+                })
+                .collect()
+        };
+        let fill = |n: usize, seed: u64| -> Vec<[u64; 4]> {
+            (0..n as u64)
+                .map(|k| {
+                    std::array::from_fn(|p| {
+                        (k + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ seed.rotate_left(p as u32 * 7)
+                    })
+                })
+                .collect()
+        };
+        for (s0, d0, n) in [
+            (0u64, 0u64, 640u64),
+            (0, 0, 1024),
+            (3, 0, 700),
+            (0, 63, 1000),
+            (17, 41, 1100),
+            (63, 1, 577),
+            (0, 0, 513),
+            (0, 0, 2049),
+            (5, 5, 1500),
+            (63, 63, 700),
+        ] {
+            let (ns, nd) = (
+                (s0 + n).div_ceil(64) as usize,
+                (d0 + n).div_ceil(64) as usize,
+            );
+            let (sw, dw) = (fill(ns, 1), fill(nd, 2));
+            let mut want = dw.clone();
+            yavs_interp::copy_bits(&sw, &mut want, s0, d0, n);
+            let (sb, mut db) = (bytes(&sw), bytes(&dw));
+            // SAFETY: `ns` and `nd` blocks of the two buffers.
+            unsafe {
+                yavs_rt_lcopy(
+                    db.as_mut_ptr(),
+                    nd as u64,
+                    d0,
+                    sb.as_ptr(),
+                    ns as u64,
+                    s0,
+                    n,
+                )
+            };
+            assert_eq!(words(&db), want, "s0 {s0} d0 {d0} n {n}");
+            // One buffer: the source is a run of it that the destination overlaps.
+            let both = fill(ns.max(nd) + 4, 3);
+            let mut want = both.clone();
+            let src = both[1..1 + ns].to_vec();
+            yavs_interp::copy_bits(&src, &mut want[..nd], s0, d0, n);
+            let mut b = bytes(&both);
+            let p = b.as_mut_ptr();
+            // SAFETY: as above, inside one buffer of `ns.max(nd) + 4` blocks.
+            unsafe { yavs_rt_lcopy(p, nd as u64, d0, p.add(32), ns as u64, s0, n) };
+            assert_eq!(words(&b), want, "overlap s0 {s0} d0 {d0} n {n}");
+        }
+    }
 
     fn obj(sp: u8, index: u64) -> Obj {
         Obj {

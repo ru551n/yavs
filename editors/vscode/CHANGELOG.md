@@ -2,7 +2,7 @@
 
 ## 0.20.1 (2026-11-14)
 
-- Needs yavs 0.20.1 or later. All changes: the yavs 0.20.1 release notes. There is no 0.20.0 release; its tag stopped at a stale conformance report.
+- Needs yavs 0.20.1 or later. All changes: the yavs 0.20.1 release notes. There is no 0.20.0 release.
 
 ## 0.19.1 (2026-11-11)
 

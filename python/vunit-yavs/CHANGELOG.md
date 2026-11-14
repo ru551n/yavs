@@ -11,7 +11,9 @@
   simulation runs with `--threads=auto`, as with `-p N`. It was silently off.
 - With a yavs newer than 0.19.1, `-j N` also runs calls at once into libraries that read each other; with 0.19.1 or
   older they get one call at a time, as two calls could wait for each other's library lock forever (yavs #1150).
-- Needs yavs 0.20.1 or later. All changes: the yavs 0.20.1 release notes. There is no 0.20.0 release; its tag stopped at a stale conformance report.
+- Compile output that the console cannot encode (a Windows console in a legacy code page) no longer stops the run with a
+  `UnicodeEncodeError`: such characters are printed as `?`.
+- Needs yavs 0.20.1 or later. All changes: the yavs 0.20.1 release notes. There is no 0.20.0 release.
 
 ## 0.19.1 (2026-11-11)
 

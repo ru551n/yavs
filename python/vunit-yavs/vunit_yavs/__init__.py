@@ -47,8 +47,6 @@ DEFAULT_DEBUG_PORT = 4711
 DAP_LISTENING = "yavs: DAP listening on "
 # The file names of one yavs analyze call: well below the Windows command line limit of 32767 characters
 MAX_BATCH_CHARS = 20000
-# The library clauses of a VHDL file, after its comments are removed
-LIBRARY_CLAUSE = re.compile(r"\blibrary\s+(\w+(?:\s*,\s*\w+)*)\s*;", re.IGNORECASE)
 # With a token server a simulation runs with --threads=auto unless told otherwise: it uses tokens only
 # while its threads gain, at most this many threads (the cap of yavs's own --threads=auto, #884)
 AUTO_MAX_THREADS = 8
@@ -487,12 +485,11 @@ class YavsInterface(SimulatorInterface):
 
         prefix = cls.find_prefix()
         check_executable("YAVS", prefix, cls.executable)
-        version = cls.check_version(prefix)
+        cls.check_version(prefix)
 
         return cls(
             output_path=output_path,
             prefix=prefix,
-            yavs_version=version,
             debug_port=debug_port,
             interactive=interactive,
             surfer=surfer,
@@ -537,11 +534,9 @@ class YavsInterface(SimulatorInterface):
         lint=False,
         cov_directives=None,
         compile_jobs=1,
-        yavs_version=None,
     ):  # pylint: disable=too-many-arguments
         SimulatorInterface.__init__(self, output_path, False)
         self._compile_jobs = compile_jobs  # -j: yavs analyze calls at once
-        self._yavs_version = yavs_version  # None: not known (assume the oldest)
         self._lint = lint
         self._cov_directives = cov_directives
         self._coverage = coverage or CoverageArgs()
@@ -719,10 +714,7 @@ class YavsInterface(SimulatorInterface):
         if not files:
             printer.write("Re-compile not needed\n")
             return None
-        # An older yavs deadlocks on two calls at once into libraries that read each other (#1150)
-        old = self._yavs_version is None or self._yavs_version <= YAVS_LOCK_CYCLE_LAST_VERSION
-        groups = _library_groups(project, graph) if self._compile_jobs > 1 and old else {}
-        failures = _Compile(self, project, printer, graph, files, groups).run(self._compile_jobs, continue_on_error)
+        failures = _Compile(self, project, printer, graph, files).run(self._compile_jobs, continue_on_error)
         if failures:
             printer.write("Compile failed\n", fg="ri")
             if continue_on_error:
@@ -1053,40 +1045,14 @@ def _batch_key(source_file):
     )
 
 
-def _library_groups(project, graph):
-    """
-    {library: its group}: libraries that read each other, directly or through others, share a group. Two calls at once
-    into one group could each hold their own library's lock and wait for the other's (#1150).
-    """
-    names = {library.name.lower() for library in project.get_libraries()}
-    reads = {name: set() for name in names}
-    for source_file in project.get_source_files_in_order():
-        mine = reads[source_file.library.name.lower()]
-        mine.update(dep.library.name.lower() for dep in graph.get_direct_dependencies(source_file))
-        if source_file.is_vhdl:
-            text = re.sub(r"--[^\n]*", "", Path(source_file.name).read_text(encoding="latin-1"))
-            for clause in LIBRARY_CLAUSE.findall(text):
-                mine.update(name.strip().lower() for name in clause.split(",") if name.strip().lower() in names)
-    reach = {}
-    for name in names:
-        seen, todo = set(), [name]
-        while todo:
-            for other in reads[todo.pop()] - seen:
-                seen.add(other)
-                todo.append(other)
-        reach[name] = seen
-    return {name: min({name} | {other for other in reach[name] if name in reach[other]}) for name in names}
-
-
 class _Compile:
     """
-    One compile in yavs analyze calls, up to `jobs` at once. A call starts at a ready file of a library group no call
+    One compile in yavs analyze calls, up to `jobs` at once. A call starts at a ready file of a library no call
     holds (yavs locks a library per call) and takes the later files of its key whose dependencies are done or in it.
     Printing and project.update stay in the main thread (docs/decisions.md "Batch and parallel compile in vunit-yavs").
     """
 
-    def __init__(self, simif, project, printer, graph, files, groups):  # pylint: disable=too-many-arguments
-        self._groups = groups  # {library: group}; a library outside is a group of its own
+    def __init__(self, simif, project, printer, graph, files):  # pylint: disable=too-many-arguments
         self._simif = simif
         self._project = project
         self._printer = printer
@@ -1115,14 +1081,14 @@ class _Compile:
                     files = self._next_call(busy)
                     if not files:
                         break
-                    busy.add(self._group(files[0]))
+                    busy.add(self._library(files[0]))
                     running[pool.submit(self._simif._analyze, files)] = files  # pylint: disable=protected-access
                 if not running:
                     break
                 finished, _ = wait(running, return_when=FIRST_COMPLETED)
                 for future in sorted(finished, key=lambda future: self._order[running[future][0]]):
                     files = running.pop(future)
-                    busy.discard(self._group(files[0]))
+                    busy.discard(self._library(files[0]))
                     if not self._finish(files, *future.result()) and not continue_on_error:
                         stop = True
                     sys.stdout.flush()
@@ -1143,7 +1109,7 @@ class _Compile:
         key = None
         for source_file in self._left:
             if not call:
-                if self._group(source_file) in busy or not self._deps[source_file] <= self._done:
+                if self._library(source_file) in busy or not self._deps[source_file] <= self._done:
                     continue
                 call = [source_file]
                 taken = {source_file}
@@ -1166,10 +1132,10 @@ class _Compile:
         self._left = [source_file for source_file in self._left if source_file not in taken]
         return call
 
-    def _group(self, source_file):
-        """The library group of source_file: one call at a time into it"""
-        name = source_file.library.name.lower()
-        return self._groups.get(name, name)
+    @staticmethod
+    def _library(source_file):
+        """The library of source_file: one call at a time into it"""
+        return source_file.library.name.lower()
 
     def _finish(self, files, cmd, passed, output):
         """Report a finished call and return False when a file failed"""
@@ -1292,7 +1258,3 @@ class YavsVersion:
 
 # The first yavs with what this package uses (--dap, response files, YAVS_TOKENS). Raise it with the CLI contract it relies on.
 YAVS_MIN_VERSION = YavsVersion("0.20.1")
-# The last yavs whose analyze calls at once into libraries that read each other can wait for each other's lock forever
-# (#1150; builds of main report it too, fixed or not). ponytail: _library_groups is dead once YAVS_MIN_VERSION is above
-# it (the next release); delete both then.
-YAVS_LOCK_CYCLE_LAST_VERSION = YavsVersion("0.19.1")

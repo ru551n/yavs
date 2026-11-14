@@ -16645,6 +16645,10 @@ compares from one run to the next.
   with the constant. Measured with a
   fixed yavs and the groups off: two libraries whose second files (50000 constants each) read each other, `-j 2`, the
   two calls ran at once, each read the other's index without its lock, and the compile took 0.41 s instead of 0.76 s.
+- **The groups are gone (agent, 2026-11-14, `YAVS_MIN_VERSION` 0.20.1).** The minimum yavs has the lock fix, so
+  `_library_groups`, `YAVS_LOCK_CYCLE_LAST_VERSION` and the `yavs_version` the interface kept for them are deleted. A
+  call is still one at a time per library, never per group of libraries that read each other. The two bullets above
+  describe what 0.19.1 and older needed.
 - **VUnit's failure semantics (agent, 2026-11-14).** The skipped set is `get_dependent` of the failing file, as in
   VUnit's loop. Without `--keep-compiling` no new call starts after a failure; running calls finish, are printed and,
   when they pass, are recorded with `project.update`; then `Compile failed` and `CompileError`. With it, everything

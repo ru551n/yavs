@@ -4565,6 +4565,8 @@ there). Level instructions at 1.2 times the time: the same IPC gap as in the add
 
 ## performance (tiers against two reference simulators, 2026-10-19)
 
+(Record, 2026-11-14 note: the LLVM tier measured here was removed on 2026-11-08, `docs/decisions.md` "LLVM tier removed"; `crates/yavs-llvm` is now `crates/yavs-rt`; the current comparison is `docs/performance.md`.)
+
 Measurement only (#125, #383, #385, #386, #395). yavs at `d76a08b5`, release build with the
 `llvm` feature, `--tier=interp` and `--tier=llvm`, against two reference simulators (ref-A: JIT
 based; ref-B: in-process machine-code generator, which elaborates at the start of the run). Host:
@@ -4653,7 +4655,7 @@ Findings.
 A study of how the reference simulators reach their speed, with ranked recommendations per crate
 (native ieee fast paths with fallback, interpreter constant factors, kernel assignment and wake
 fast paths, hot-only tier-up, start-up breakdown), is in `docs/design/performance.md`. No
-recommendation is implemented yet.
+recommendation is implemented yet. (2026-11-14 note: true on 2026-10-19 only; most of the list has been built or measured since, see the correction at the top of `docs/design/performance.md`.)
 
 ## Synopsys testbenches: where the time went (#439)
 
@@ -5284,7 +5286,7 @@ designs unchanged to within 3% in instructions (`rtl_ff` 11.86 G to 11.89 G, `rt
 Left in the time-step path (kernel alone, 3 clocks): about 1900 instructions per clock edge against about 1000 for the reference
 simulator's whole edge. It is spread over `update`, `run_batch`, `cycle`, the wake of the waiting process and the finish of the signal
 (each 100 to 400, much of it stalls from small structs copied through memory); a native process for `x <= not x after T` would remove
-the interpreter's 600 to 700 per edge and is not done.
+the interpreter's 600 to 700 per edge and is not done. (2026-11-14 note: done the same day, round 14 below: `ToggleProcess`.)
 
 Checks on the pushed range: `cargo fmt`, `cargo clippy --workspace --all-targets -D warnings` with and without `--features llvm`,
 `cargo test --workspace` (853 passed), `cargo test -p yavs-llvm -p yavs --features llvm` (194), difftest 447 of 447 on the interpreter,
@@ -6177,13 +6179,13 @@ user page `docs/language-choices.rst` is the user-facing subset.
 
 ## test runner recipes
 
-`docs/recipes.rst` (user page): CLI use from an external Python test runner, libraries from source, per-file `--std`, response files, exit codes, and the vendor-library pattern (#275).
+`docs/recipes.rst` (user page; removed from the site on 2026-10-28 with the refocus to a user guide, 3bed458f3, so it no longer exists): CLI use from an external Python test runner, libraries from source, per-file `--std`, response files, exit codes, and the vendor-library pattern (#275).
 
 ## difftest (yavs candidate)
 
 `python3 tools/difftest/difftest.py --candidate yavs` drives `yavs analyze`, `yavs elab` and
 `yavs run`; `tools/difftest/report.sh` writes `tests/corpus/RESULTS.md`, which has the current pass counts per
-group (249 of 249 at 1 thread, 4 threads (identical to 1) and 4 threads shuffled). `std.env.stop`/`finish` end the calling
+group (249 of 249 at 1 thread, 4 threads (identical to 1) and 4 threads shuffled on 2026-10-19; 606 of 606 in the file on 2026-11-14). `std.env.stop`/`finish` end the calling
 process at once; check messages print reals as `%.15g`; runtime errors are coded diagnostics
 (`E3001`-`E3010`, kernel `ErrorKind::code`) with the VHDL call stack, which difftest reads back
 as `fatal` events. Normalisations for the reference simulator's free choices (default assert message without a
@@ -6259,7 +6261,7 @@ Verification on the pushed tree: difftest corpus (419) at 4 threads (1 against 4
 and UVVM 102 pass, 9 fail, 26 skip under `--tier=auto`; `cargo test --workspace` and `-p yavs-llvm --features llvm`
 green. Not done: registers as phi values across blocks with entry stubs and frame variables kept as values with
 write-back at exits (would remove most of the remaining loads and stores); interval analysis for processes (loop
-variables of a process stay in memory, so the checks stay).
+variables of a process stay in memory, so the checks stay). (2026-11-14 note: the interval analysis and register promotion for processes landed in the next section, #444.)
 
 ### Intervals and register promotion in processes (#444)
 
@@ -6317,7 +6319,7 @@ OSVVM, UVVM) does not move: no batch reaches 32 processes and 63 to 100 percent 
 processes. Batches under 32 take the single-thread path unchanged (rtl_chain: +0.15% instructions at 4 threads);
 batches of 32 or more lose the round 9 early commit, lock each slot twice and pay a rayon install per delta (66 to 108
 us per batch). Ideal-schedule ceilings at 4 threads: 2.1x to 2.7x for the large-batch designs, 1.0x for the testbench
-rows. Verdict: not worth building on as a general speed-up; the cheap first step is a work-based inline/pooled
+rows. Verdict (2026-10-21; superseded: the work-based pooling and the pieces of the slot array were built on 2026-10-28, steps 1 and 2 below): not worth building on as a general speed-up; the cheap first step is a work-based inline/pooled
 decision, then a cheaper pooled batch. The host's core 0 runs single-thread code about 50 percent slower than cores
 1 to 7: do not pin a timed run to it.
 
@@ -6332,7 +6334,7 @@ Caveat (#513, found 2026-10-22): every yavs that elaborated the soft-core testbe
 program (checked at `634452a2`, the commit of `docs/design/parallel-kernel.md`; the bug dates from `7e31f69e`, before
 which the design did not elaborate). Its core trapped at the first peripheral store after about 70 instructions and slept
 in `wfi` for the rest of the run, so the neorv32 rows above and in `docs/design/parallel-kernel.md` time a mostly idle
-CPU and do not stand for the real program. Re-measure them on a fixed build before relying on them.
+CPU and do not stand for the real program. Re-measure them on a fixed build before relying on them. (2026-11-14 note: #513 is closed and steps 1 and 2 below re-measured the soft cores on a fixed build.)
 
 ## Parallel kernel, step 1: pooled by estimated work (#497, #481 item 3, 2026-10-28)
 
@@ -6386,7 +6388,7 @@ reserved timing window; main before step 1 (`6ea17bde`) for comparison:
 
 The designs that never pool (lfsr64, lfsr64_xor, rtl_bus, rtl_chain; the soft cores pool 12 to 320 batches as probes)
 run 1.2 to 2 percent more instructions at N threads; timing one activation in 64 instead of 16 left that unchanged, so
-the timed sample is not the cause (not yet identified, #858). At 4 threads the kernel
+the timed sample is not the cause (not yet identified, #858; closed into tracker #884 on 2026-10-30 without a fix, and a later section of this file, searching `#858`, records what was done since). At 4 threads the kernel
 thread still spends 13 percent (rtl_ff: `commit_codes`, the batch gather) and 17 percent (rtl_lfsr: `finish_direct`,
 `commit_planes_run`) of the run in the serial commit and update; the threads are otherwise balanced (each 25 percent of
 the samples). The realbench set at 4 threads (`YAVS_BENCH_TIERFLAGS=--threads=4` for both, interpreter, each test on
@@ -6397,6 +6399,8 @@ before step 1 and this step on the 42 tests (cores 14 and 15, `--count-runs`), g
 interpreted and 1.00 with `--tier=auto`, instructions 1.00 and 1.00, cycles 1.00 and 1.00.
 
 ## llvm: native clocked RTL against the interpreter and sim1, cold and warm (#440, #432, #505, 2026-10-21)
+
+(Record, 2026-11-14 note: the LLVM tier was removed on 2026-11-08 and `crates/yavs-llvm` is now `crates/yavs-rt`; `--tier=llvm` is E0120.)
 
 Measurement only, nothing changed in the product. Release build with `--features llvm` of main at `3abd2fd7`, single
 thread, every timed run pinned to performance core 4 (`taskset -c 4`, builds on 8 to 23), median of 5, interleaved with
@@ -6476,8 +6480,8 @@ and `rtl_fan` look better for yavs than their steady state.
 
 ### What native RTL buys
 
-Native frames (6cadf280, 71032993) do not apply to processes: a process body stays in frame mode (crates/yavs-llvm
-AGENTS.md; `0 functions callable on native frames` in the `--tier=llvm --verbose` note of all eight designs but
+Native frames (6cadf280, 71032993) do not apply to processes: a process body stays in frame mode (crates/yavs-llvm,
+now crates/yavs-rt, AGENTS.md; `0 functions callable on native frames` in the `--tier=llvm --verbose` note of all eight designs but
 `rtl_ram`). Under `--tier=auto` only a process of 140 to 600 IR instructions without a loop is compiled (`auto.rs`
 `rtl`): of the eight designs that is `rtl_ff` (149), `rtl_lfsr` (262) and `rtl_ram` (277). `rtl_fan` (44 instructions,
 printed as "stays interpreted"), `rtl_chain` and `rtl_bus` (under 140) and `lfsr64`, `lfsr64_xor` (a loop in the process:
@@ -6554,6 +6558,8 @@ about 40 instructions per call), why `lfsr64` is not compiled under `auto` with 
 `enter` (symbol level only), and `--threads` above 1.
 
 ## llvm: a leaner compiled activation, round 3 (#440, #507, 2026-10-21)
+
+(Record, 2026-11-14 note: the LLVM tier was removed on 2026-11-08 and `crates/yavs-llvm` is now `crates/yavs-rt`; `--tier=llvm` is E0120.)
 
 Commits 986f5960 (per-thread native slot table without a borrow), 904edb03 (address facts kept after calls, the drive's
 waveform known), 41665859 (`Alloc` zeroed by stores), 049c0e3b (no interpreter entry after an inline native), 8855f019
@@ -6636,6 +6642,8 @@ Not verified: `--threads` above 1 for the timings; aarch64 and Windows beyond CI
 
 ## llvm: cold compiles, where cold minus warm goes (#740, 2026-10-25)
 
+(Record, 2026-11-14 note: the LLVM tier was removed on 2026-11-08 and `crates/yavs-llvm` is now `crates/yavs-rt`; `--tier=llvm` is E0120.)
+
 Breakdown of head-to-head 4 (41 tests, summed seconds, 192 cold against 139 warm): library analysis one call per file 37 (cold parses, warm finds the units; about 13 M user instructions a file at the median,
 flat profile), run phase 13.6 (two tests), elaboration 2.0. Compile cost of `--tier=auto` (window generator, 55 compiles): code generation 62 percent, the `LEAN` passes 34 (of them `instcombine` 78: quadratic in the
 register buffer of the exits), the rest 4; the store of an object costs nothing measurable (no `fsync`). Changes: the passes without the alloca walk, exits that store fewer registers (decisions.md "Cold compiles").
@@ -6650,7 +6658,7 @@ Not done, the larger cuts: the cold analysis of the libraries (a policy and a st
 
 User decision: integrations analyse consecutive files of one library and standard in one `yavs analyze F1 F2 ...` call by default (`docs/decisions.md` "Batched analysis calls"). Changed: `tools/corpus/run.py`
 (yavs batches, a failing call is repeated file by file, `--per-file` for the old form; all 34 manifests give identical results and output either way; whole corpus 34 s against 47 s on a busy host),
-`tools/realbench` analysis cells (both tools, `--analyze-calls batched|per-file`), `tools/bench/run.py` preparation, `docs/usage.rst`, `docs/cli-contract.md`. `tools/suites` already batched; `tools/difftest`,
+`tools/realbench` analysis cells (both tools, `--analyze-calls batched|per-file`), `tools/bench/run.py` preparation, `docs/usage.rst` (page removed with the site refocus of 2026-10-28), `docs/cli-contract.md`. `tools/suites` already batched; `tools/difftest`,
 `tools/discrepancies`, `tiny.py` and the release smoke test analyze one file by construction. The test runner's side of the yavs support (described in `docs/test-runner-requirements.md`) is not in the repository, so it is unchanged; the generic
 `--batch-compile` is the open VUnit pull request #1236 (opt-in flag).
 
@@ -6745,7 +6753,7 @@ cells misses std/ieee units the analysis cells would have stored (the full suite
 
 ## Real-world performance suite: baseline for long CPU tests and large SoC models, 2026-11-01 (`tools/realbench`, `tools/bench`)
 
-Commit `a95d9ad1`, bench builds with the `clift` feature (what users get) and the `llvm` feature (the yardstick until Cranelift matches it), `--tier=auto`, one thread. Comparison with sim1 by the fair rule; `interp` is only the tier's own floor. Timed on cores 9 to 15, one process per core, siblings idle; host load median 10, p90 18, other agents on the other CCD. A re-check at `cb1a1295` (with #1001, #1005, #1008) moved instructions by at most 0.6 percent and cycles by at most 3, with no direction. Console equal to sim1 in every CPU workload cell, on every tier. Raw data kept locally.
+Commit `a95d9ad1`, bench builds with the `clift` feature (what users get) and the `llvm` feature (the yardstick until Cranelift matches it; 2026-11-14 note: the LLVM tier was removed by user decision on 2026-11-08, so the LLVM column cannot be re-measured and #898 was carried out without that condition), `--tier=auto`, one thread. Comparison with sim1 by the fair rule; `interp` is only the tier's own floor. Timed on cores 9 to 15, one process per core, siblings idle; host load median 10, p90 18, other agents on the other CCD. A re-check at `cb1a1295` (with #1001, #1005, #1008) moved instructions by at most 0.6 percent and cycles by at most 3, with no direction. Console equal to sim1 in every CPU workload cell, on every tier. Raw data kept locally.
 
 Run cell, warm, wall ratio to sim1 (GRLIB and Microwatt from a sitting with the CCD quiet, the others from the harness with it busy; a busy CCD makes Microwatt on Cranelift up to 4.93 and LLVM 3.48):
 
@@ -6776,7 +6784,7 @@ sim1 wins these tests, full total warm / cold: `grlib_leon3mp` 3.10 / 3.32, `fle
 
 ## Real-world performance suite: yavs against sim1, sim2 and sim4, head-to-head 8, 2026-10-28 (`tools/realbench`)
 
-Current headline: `1a8edb76` (main with the Cranelift tier behind the `clift` feature), method as head-to-head 7 (batched analysis calls for the tools, `--tier=auto`, total wall incl. analysis, 5 timed
+Headline of head-to-head 8 (2026-10-28, superseded by the 2026-11-01 baseline above): `1a8edb76` (main with the Cranelift tier behind the `clift` feature), method as head-to-head 7 (batched analysis calls for the tools, `--tier=auto`, total wall incl. analysis, 5 timed
 runs, two complete passes merged by the best cell, three claimed cores, controls of the three long tests at the start and the end; the raw data, scripts and logs are kept locally, not committed).
 Two builds against sim1: the bench build with the `llvm` feature (the h2h7 build; two passes, 09:08 to 10:03, host load average 2 to 12 with a median of 5 to 6, of which about 3 is the run's own timed
 processes: the closest to a quiet host this day) and the bench build with the `clift` feature (the `-nollvm` archive: Cranelift is the compiled tier of `--tier=auto`; passes at 10:08 and 11:38, load median 17 and 25 with bursts to
@@ -6878,7 +6886,7 @@ looked at; the output of the references was not compared with yavs's beyond the 
 
 ## Real-world performance suite: yavs against sim1, head-to-head 7, 2026-10-27 (`tools/realbench`)
 
-Current headline: `5b2beb73`, bench build with the `llvm` feature, method exactly as head-to-head 6 (batched analysis calls for both tools, `--tier=auto`, total wall incl. analysis, 5 timed
+This was the headline of head-to-head 7 (2026-10-27, superseded by head-to-head 8 above): `5b2beb73`, bench build with the `llvm` feature, method exactly as head-to-head 6 (batched analysis calls for both tools, `--tier=auto`, total wall incl. analysis, 5 timed
 runs, two complete passes merged by the best cell, three claimed cores 9 to 11, controls of the three long tests at the start and the end). Host load average 5 to 10 (other agents; no quiet window). Raw
 results are not committed. Geometric mean over the same 41 tests, ratio yavs / sim1 (in brackets the scan of 2026-10-26 on `1585475c`, then head-to-head 6):
 
@@ -7932,7 +7940,7 @@ Test: `crates/yavs-cache/tests/huge_heap.rs`. Docs: `docs/running-faster.rst` "H
 
 ## Huge pages for the heap (#556, 2026-10-23)
 
-`yavs_cache::huge_heap()` at the start of `main`: top pad 64 MiB, one growth step of the `brk` heap, `madvise(MADV_HUGEPAGE)` on it (Linux
+`yavs_cache::huge_heap()` at the start of `main`: top pad 64 MiB, one growth step of the `brk` heap, `madvise(MADV_HUGEPAGE)` on it (2026-10-23 state: since 2026-11-10 the later `brk` steps are marked too, by the `yavs-hugepoll` thread; see the section above) (Linux
 with glibc and transparent huge pages in `madvise` mode; no-op elsewhere; `YAVS_HUGE_HEAP=0` off). Decision and the options:
 `docs/decisions.md` "Huge pages for the heap". Test: `crates/yavs-cache/tests/huge_heap.rs`.
 
@@ -7978,6 +7986,8 @@ std hash maps, which are seeded per process; they are `FxHashMap`s now and the s
 
 ## llvm: protected-method calls compiled, calls from the interpreter on native frames (#510, 2026-10-22)
 
+(Record, 2026-11-14 note: the LLVM tier was removed on 2026-11-08 and `crates/yavs-llvm` is now `crates/yavs-rt`; `--tier=llvm` is E0120.)
+
 Decisions: docs/decisions.md "Native calls from the interpreter and the object table". What changed:
 
 - The object cache of compiled code is a direct-mapped table of 16 objects looked up inline by every access of unknown
@@ -7987,7 +7997,7 @@ Decisions: docs/decisions.md "Native calls from the interpreter and the object t
 - The interpreter calls a compiled function that has native-frame code on a native frame (`Tier::call`), without pushing a
   frame of its own: argument cells from its registers, the result in the call's register, frames left to the interpreter
   pushed on the caller. `--tier=auto` compiles a hot native-callable function without a loop as native-frame code only.
-- `YAVS_LLVM_PERFMAP=1` names the compiled functions for `perf report`.
+- `YAVS_LLVM_PERFMAP=1` names the compiled functions for `perf report` (record; the Cranelift tier uses `YAVS_CLIFT_PERFMAP=1`).
 
 `protected_queue` (`tools/bench/designs`), single thread pinned to performance core 4, median of 3 interleaved rounds after
 one warm-up, `perf stat` user-mode `cpu_core` counters of the whole run, warm compilation cache; "before" is main at

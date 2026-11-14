@@ -1,0 +1,322 @@
+exit	0
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	note	0	0	:element_operands:_p0	round 0 sums1 9
+diag	note	0	0	:element_operands:_p0	r5 3 1B
+diag	note	0	0	:element_operands:_p0	r5 4 1B
+diag	note	0	0	:element_operands:_p0	r5 5 1B
+diag	note	0	0	:element_operands:_p0	r5 6 1B
+diag	note	0	0	:element_operands:_p0	r5 7 1B
+diag	note	0	0	:element_operands:_p0	r5 8 1B
+diag	note	0	0	:element_operands:_p0	r5 9 04
+diag	note	0	0	:element_operands:_p0	r12 0 137
+diag	note	0	0	:element_operands:_p0	r12 1 3A5
+diag	note	0	0	:element_operands:_p0	r12 2 613
+diag	note	0	0	:element_operands:_p0	r12 3 881
+diag	note	0	0	:element_operands:_p0	r12 4 AEF
+diag	note	0	0	:element_operands:_p0	r12 5 D5D
+diag	note	0	0	:element_operands:_p0	r12 6 FCB
+diag	note	0	0	:element_operands:_p0	r12 7 239
+diag	note	0	0	:element_operands:_p0	r12 8 4A7
+diag	note	0	0	:element_operands:_p0	r12 9 715
+diag	note	0	0	:element_operands:_p0	r12 10 983
+diag	note	0	0	:element_operands:_p0	r12 11 BF1
+diag	note	0	0	:element_operands:_p0	r12 12 E5F
+diag	note	0	0	:element_operands:_p0	rel12 13
+diag	note	0	0	:element_operands:_p0	p12 0 137 true
+diag	note	0	0	:element_operands:_p0	p12 1 3A5 true
+diag	note	0	0	:element_operands:_p0	p12 2 613 true
+diag	note	0	0	:element_operands:_p0	p12 3 881 true
+diag	note	0	0	:element_operands:_p0	p12 4 AEF true
+diag	note	0	0	:element_operands:_p0	p12 5 D5D true
+diag	note	0	0	:element_operands:_p0	p12 6 FCB true
+diag	note	0	0	:element_operands:_p0	p12 7 239 true
+diag	note	0	0	:element_operands:_p0	p12 8 4A7 true
+diag	note	0	0	:element_operands:_p0	p12 9 715 true
+diag	note	0	0	:element_operands:_p0	p12 10 983 true
+diag	note	0	0	:element_operands:_p0	p12 11 BF1 true
+diag	note	0	0	:element_operands:_p0	p12 12 E5F true
+diag	note	0	0	:element_operands:_p0	p16 7 518F
+diag	note	0	0	:element_operands:_p0	p16 6 F11D
+diag	note	0	0	:element_operands:_p0	p16 5 90AB
+diag	note	0	0	:element_operands:_p0	p16 4 3039
+diag	note	0	0	:element_operands:_p0	p16 3 CFC7
+diag	note	0	0	:element_operands:_p0	p16 2 6F55
+diag	note	0	0	:element_operands:_p0	p16 1 0EE3
+diag	note	0	0	:element_operands:_p0	p16 0 AE71
+diag	note	0	0	:element_operands:_p0	w12 0 000
+diag	note	0	0	:element_operands:_p0	w12 1 137
+diag	note	0	0	:element_operands:_p0	w12 2 3A5
+diag	note	0	0	:element_operands:_p0	w12 3 74A
+diag	note	0	0	:element_operands:_p0	w12 4 C26
+diag	note	0	0	:element_operands:_p0	w12 5 239
+diag	note	0	0	:element_operands:_p0	w12 6 983
+diag	note	0	0	:element_operands:_p0	w12 7 204
+diag	note	0	0	:element_operands:_p0	w12 8 BBC
+diag	note	0	0	:element_operands:_p0	w12 9 6AB
+diag	note	0	0	:element_operands:_p0	w12 10 2D1
+diag	note	0	0	:element_operands:_p0	w12 11 02E
+diag	note	0	0	:element_operands:_p0	w12 12 EC2
+diag	note	0	0	:element_operands:_p0	w12 13 E8D
+diag	note	0	0	:element_operands:_p0	r16 -3 CFF7
+diag	note	0	0	:element_operands:_p0	r16 -2 AFF1
+diag	note	0	0	:element_operands:_p0	r16 -1 CFF7
+diag	note	0	0	:element_operands:_p0	r16 0 EFFD
+diag	note	0	0	:element_operands:_p0	r16 1 1003
+diag	note	0	0	:element_operands:_p0	r16 2 3009
+diag	note	0	0	:element_operands:_p0	r16 3 500F
+diag	note	0	0	:element_operands:_p0	r16 4 7015
+diag	note	0	0	:element_operands:_p0	r16 5 901B
+diag	note	0	0	:element_operands:_p0	s16 7 41EF
+diag	note	0	0	:element_operands:_p0	s16 6 CFC7
+diag	note	0	0	:element_operands:_p0	s16 5 CFC7
+diag	note	0	0	:element_operands:_p0	s16 4 CFC7
+diag	note	0	0	:element_operands:_p0	s16 3 CFC7
+diag	note	0	0	:element_operands:_p0	s16 2 CFC7
+diag	note	0	0	:element_operands:_p0	s16 1 CFC7
+diag	note	0	0	:element_operands:_p0	s16 0 CFC7
+diag	note	0	0	:element_operands:_p0	t16 7 83DE
+diag	note	0	0	:element_operands:_p0	t16 6 236C
+diag	note	0	0	:element_operands:_p0	t16 5 C2FA
+diag	note	0	0	:element_operands:_p0	t16 4 6288
+diag	note	0	0	:element_operands:_p0	t16 3 0216
+diag	note	0	0	:element_operands:_p0	t16 2 A1A4
+diag	note	0	0	:element_operands:_p0	t16 1 4132
+diag	note	0	0	:element_operands:_p0	t16 0 E0C0
+diag	note	0	0	:element_operands:_p0	r63 1 00FBE20000000000
+diag	note	0	0	:element_operands:_p0	r63 2 007A200000000000
+diag	note	0	0	:element_operands:_p0	r63 3 007A200000000000
+diag	note	0	0	:element_operands:_p0	r63 4 00FBE20000000000
+diag	note	0	0	:element_operands:_p0	r64 0 000000000000C001
+diag	note	0	0	:element_operands:_p0	r64 1 000000002C00C000
+diag	note	0	0	:element_operands:_p0	r64 2 000008002C000000
+diag	note	0	0	:element_operands:_p0	r64 3 0150080000000000
+diag	note	0	0	:element_operands:_p0	r64 4 0000000000000000
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_UNSIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_UNSIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_UNSIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_UNSIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	note	0	0	:element_operands:_p0	round 1 sums1 9
+diag	note	0	0	:element_operands:_p0	r5 3 1B
+diag	note	0	0	:element_operands:_p0	r5 4 1B
+diag	note	0	0	:element_operands:_p0	r5 5 1B
+diag	note	0	0	:element_operands:_p0	r5 6 1B
+diag	note	0	0	:element_operands:_p0	r5 7 1B
+diag	note	0	0	:element_operands:_p0	r5 8 1B
+diag	note	0	0	:element_operands:_p0	r5 9 03
+diag	note	0	0	:element_operands:_p0	r12 0 907
+diag	note	0	0	:element_operands:_p0	r12 1 B75
+diag	note	0	0	:element_operands:_p0	r12 2 DE3
+diag	note	0	0	:element_operands:_p0	r12 3 051
+diag	note	0	0	:element_operands:_p0	r12 4 2BF
+diag	note	0	0	:element_operands:_p0	r12 5 52D
+diag	note	0	0	:element_operands:_p0	r12 6 79B
+diag	note	0	0	:element_operands:_p0	r12 7 A09
+diag	note	0	0	:element_operands:_p0	r12 8 C77
+diag	note	0	0	:element_operands:_p0	r12 9 EE5
+diag	note	0	0	:element_operands:_p0	r12 10 153
+diag	note	0	0	:element_operands:_p0	r12 11 3C1
+diag	note	0	0	:element_operands:_p0	r12 12 62F
+diag	note	0	0	:element_operands:_p0	rel12 12
+diag	note	0	0	:element_operands:_p0	p12 0 907 true
+diag	note	0	0	:element_operands:_p0	p12 1 B75 true
+diag	note	0	0	:element_operands:_p0	p12 2 DE3 true
+diag	note	0	0	:element_operands:_p0	p12 3 051 true
+diag	note	0	0	:element_operands:_p0	p12 4 2BF true
+diag	note	0	0	:element_operands:_p0	p12 5 52D true
+diag	note	0	0	:element_operands:_p0	p12 6 79B true
+diag	note	0	0	:element_operands:_p0	p12 7 A09 true
+diag	note	0	0	:element_operands:_p0	p12 8 C77 true
+diag	note	0	0	:element_operands:_p0	p12 9 EE5 false
+diag	note	0	0	:element_operands:_p0	p12 10 153 true
+diag	note	0	0	:element_operands:_p0	p12 11 3C1 true
+diag	note	0	0	:element_operands:_p0	p12 12 62F true
+diag	note	0	0	:element_operands:_p0	p16 7 518F
+diag	note	0	0	:element_operands:_p0	p16 6 F11D
+diag	note	0	0	:element_operands:_p0	p16 5 90AB
+diag	note	0	0	:element_operands:_p0	p16 4 3039
+diag	note	0	0	:element_operands:_p0	p16 3 CFC7
+diag	note	0	0	:element_operands:_p0	p16 2 6F55
+diag	note	0	0	:element_operands:_p0	p16 1 0EE3
+diag	note	0	0	:element_operands:_p0	p16 0 AE71
+diag	note	0	0	:element_operands:_p0	w12 0 3E8
+diag	note	0	0	:element_operands:_p0	w12 1 907
+diag	note	0	0	:element_operands:_p0	w12 2 F5D
+diag	note	0	0	:element_operands:_p0	w12 3 6EA
+diag	note	0	0	:element_operands:_p0	w12 4 FAE
+diag	note	0	0	:element_operands:_p0	w12 5 9A9
+diag	note	0	0	:element_operands:_p0	w12 6 4DB
+diag	note	0	0	:element_operands:_p0	w12 7 144
+diag	note	0	0	:element_operands:_p0	w12 8 EE4
+diag	note	0	0	:element_operands:_p0	w12 9 DBB
+diag	note	0	0	:element_operands:_p0	w12 10 DC9
+diag	note	0	0	:element_operands:_p0	w12 11 F0E
+diag	note	0	0	:element_operands:_p0	w12 12 18A
+diag	note	0	0	:element_operands:_p0	w12 13 53D
+diag	note	0	0	:element_operands:_p0	r16 -3 CCEE
+diag	note	0	0	:element_operands:_p0	r16 -2 A9DF
+diag	note	0	0	:element_operands:_p0	r16 -1 C9E5
+diag	note	0	0	:element_operands:_p0	r16 0 E9EB
+diag	note	0	0	:element_operands:_p0	r16 1 09F1
+diag	note	0	0	:element_operands:_p0	r16 2 29F7
+diag	note	0	0	:element_operands:_p0	r16 3 49FD
+diag	note	0	0	:element_operands:_p0	r16 4 6A03
+diag	note	0	0	:element_operands:_p0	r16 5 8A09
+diag	note	0	0	:element_operands:_p0	s16 7 41F0
+diag	note	0	0	:element_operands:_p0	s16 6 CFC7
+diag	note	0	0	:element_operands:_p0	s16 5 CFC7
+diag	note	0	0	:element_operands:_p0	s16 4 CFC7
+diag	note	0	0	:element_operands:_p0	s16 3 CFC7
+diag	note	0	0	:element_operands:_p0	s16 2 CFC7
+diag	note	0	0	:element_operands:_p0	s16 1 CFC7
+diag	note	0	0	:element_operands:_p0	s16 0 CFC7
+diag	note	0	0	:element_operands:_p0	t16 7 83E0
+diag	note	0	0	:element_operands:_p0	t16 6 236E
+diag	note	0	0	:element_operands:_p0	t16 5 C2FC
+diag	note	0	0	:element_operands:_p0	t16 4 628A
+diag	note	0	0	:element_operands:_p0	t16 3 0218
+diag	note	0	0	:element_operands:_p0	t16 2 A1A6
+diag	note	0	0	:element_operands:_p0	t16 1 4134
+diag	note	0	0	:element_operands:_p0	t16 0 E0C2
+diag	note	0	0	:element_operands:_p0	r63 1 00FBF40000000000
+diag	note	0	0	:element_operands:_p0	r63 2 007A2C0000000000
+diag	note	0	0	:element_operands:_p0	r63 3 007A2C0000000000
+diag	note	0	0	:element_operands:_p0	r63 4 00FBF40000000000
+diag	note	0	0	:element_operands:_p0	r64 0 000000000000E002
+diag	note	0	0	:element_operands:_p0	r64 1 000000003000E000
+diag	note	0	0	:element_operands:_p0	r64 2 0000088030000000
+diag	note	0	0	:element_operands:_p0	r64 3 0160088000000000
+diag	note	0	0	:element_operands:_p0	r64 4 0000000000000000
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_UNSIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_UNSIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_UNSIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_UNSIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_UNSIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_UNSIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_UNSIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD.TO_SIGNED: vector truncated
+diag	note	0	0	:element_operands:_p0	round 2 sums1 9
+diag	note	0	0	:element_operands:_p0	r5 3 1B
+diag	note	0	0	:element_operands:_p0	r5 4 1B
+diag	note	0	0	:element_operands:_p0	r5 5 1B
+diag	note	0	0	:element_operands:_p0	r5 6 1B
+diag	note	0	0	:element_operands:_p0	r5 7 1B
+diag	note	0	0	:element_operands:_p0	r5 8 1B
+diag	note	0	0	:element_operands:_p0	r5 9 02
+diag	note	0	0	:element_operands:_p0	r12 0 0D7
+diag	note	0	0	:element_operands:_p0	r12 1 345
+diag	note	0	0	:element_operands:_p0	r12 2 XXX
+diag	note	0	0	:element_operands:_p0	r12 3 XXX
+diag	note	0	0	:element_operands:_p0	r12 4 A8F
+diag	note	0	0	:element_operands:_p0	r12 5 XXX
+diag	note	0	0	:element_operands:_p0	r12 6 XXX
+diag	note	0	0	:element_operands:_p0	r12 7 9D8
+diag	note	0	0	:element_operands:_p0	r12 8 C47
+diag	note	0	0	:element_operands:_p0	r12 9 6B5
+diag	note	0	0	:element_operands:_p0	r12 10 923
+diag	note	0	0	:element_operands:_p0	r12 11 B91
+diag	note	0	0	:element_operands:_p0	r12 12 DFF
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD."<": metavalue detected, returning FALSE
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD."=": metavalue detected, returning FALSE
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD."<": metavalue detected, returning FALSE
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD."=": metavalue detected, returning FALSE
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD."<": metavalue detected, returning FALSE
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD."=": metavalue detected, returning FALSE
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD."<": metavalue detected, returning FALSE
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD."=": metavalue detected, returning FALSE
+diag	note	0	0	:element_operands:_p0	rel12 20008
+diag	note	0	0	:element_operands:_p0	p12 0 0D7 true
+diag	note	0	0	:element_operands:_p0	p12 1 345 true
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD."<": metavalue detected, returning FALSE
+diag	note	0	0	:element_operands:_p0	p12 2 XXX false
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD."<": metavalue detected, returning FALSE
+diag	note	0	0	:element_operands:_p0	p12 3 XXX false
+diag	note	0	0	:element_operands:_p0	p12 4 A8F true
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD."<": metavalue detected, returning FALSE
+diag	note	0	0	:element_operands:_p0	p12 5 XXX false
+diag	warning	0	0	:element_operands:_p0	NUMERIC_STD."<": metavalue detected, returning FALSE
+diag	note	0	0	:element_operands:_p0	p12 6 XXX false
+diag	note	0	0	:element_operands:_p0	p12 7 9D8 true
+diag	note	0	0	:element_operands:_p0	p12 8 C47 false
+diag	note	0	0	:element_operands:_p0	p12 9 6B5 true
+diag	note	0	0	:element_operands:_p0	p12 10 923 true
+diag	note	0	0	:element_operands:_p0	p12 11 B91 true
+diag	note	0	0	:element_operands:_p0	p12 12 DFF true
+diag	note	0	0	:element_operands:_p0	p16 7 518F
+diag	note	0	0	:element_operands:_p0	p16 6 F11D
+diag	note	0	0	:element_operands:_p0	p16 5 90AB
+diag	note	0	0	:element_operands:_p0	p16 4 XXXX
+diag	note	0	0	:element_operands:_p0	p16 3 XXXX
+diag	note	0	0	:element_operands:_p0	p16 2 6F55
+diag	note	0	0	:element_operands:_p0	p16 1 0EE3
+diag	note	0	0	:element_operands:_p0	p16 0 AE71
+diag	note	0	0	:element_operands:_p0	w12 0 7D0
+diag	note	0	0	:element_operands:_p0	w12 1 0D7
+diag	note	0	0	:element_operands:_p0	w12 2 B15
+diag	note	0	0	:element_operands:_p0	w12 3 XXX
+diag	note	0	0	:element_operands:_p0	w12 4 XXX
+diag	note	0	0	:element_operands:_p0	w12 5 XXX
+diag	note	0	0	:element_operands:_p0	w12 6 XXX
+diag	note	0	0	:element_operands:_p0	w12 7 XXX
+diag	note	0	0	:element_operands:_p0	w12 8 XXX
+diag	note	0	0	:element_operands:_p0	w12 9 XXX
+diag	note	0	0	:element_operands:_p0	w12 10 XXX
+diag	note	0	0	:element_operands:_p0	w12 11 XXX
+diag	note	0	0	:element_operands:_p0	w12 12 XXX
+diag	note	0	0	:element_operands:_p0	w12 13 XXX
+diag	note	0	0	:element_operands:_p0	r16 -3 C9E5
+diag	note	0	0	:element_operands:_p0	r16 -2 A3CD
+diag	note	0	0	:element_operands:_p0	r16 -1 C3D3
+diag	note	0	0	:element_operands:_p0	r16 0 XXXX
+diag	note	0	0	:element_operands:_p0	r16 1 XXXX
+diag	note	0	0	:element_operands:_p0	r16 2 23E5
+diag	note	0	0	:element_operands:_p0	r16 3 43EB
+diag	note	0	0	:element_operands:_p0	r16 4 63F1
+diag	note	0	0	:element_operands:_p0	r16 5 83F7
+diag	note	0	0	:element_operands:_p0	s16 7 41F1
+diag	note	0	0	:element_operands:_p0	s16 6 CFC7
+diag	note	0	0	:element_operands:_p0	s16 5 CFC7
+diag	note	0	0	:element_operands:_p0	s16 4 XXXX
+diag	note	0	0	:element_operands:_p0	s16 3 XXXX
+diag	note	0	0	:element_operands:_p0	s16 2 CFC7
+diag	note	0	0	:element_operands:_p0	s16 1 CFC7
+diag	note	0	0	:element_operands:_p0	s16 0 CFC7
+diag	note	0	0	:element_operands:_p0	t16 7 83E2
+diag	note	0	0	:element_operands:_p0	t16 6 2370
+diag	note	0	0	:element_operands:_p0	t16 5 C2FE
+diag	note	0	0	:element_operands:_p0	t16 4 XXXX
+diag	note	0	0	:element_operands:_p0	t16 3 021A
+diag	note	0	0	:element_operands:_p0	t16 2 A1A8
+diag	note	0	0	:element_operands:_p0	t16 1 4136
+diag	note	0	0	:element_operands:_p0	t16 0 E0C4
+diag	note	0	0	:element_operands:_p0	r63 1 00FC060000000000
+diag	note	0	0	:element_operands:_p0	r63 2 007A380000000000
+diag	note	0	0	:element_operands:_p0	r63 3 007A380000000000
+diag	note	0	0	:element_operands:_p0	r63 4 00FC060000000000
+diag	note	0	0	:element_operands:_p0	r64 0 0000000000010003
+diag	note	0	0	:element_operands:_p0	r64 1 X000000034010000
+diag	note	0	0	:element_operands:_p0	r64 2 X000090034000000
+diag	note	0	0	:element_operands:_p0	r64 3 0170090000000000
+diag	note	0	0	:element_operands:_p0	r64 4 0000000000000000
+diag	note	0	0	:element_operands:_p0	sum XXXXXXXX

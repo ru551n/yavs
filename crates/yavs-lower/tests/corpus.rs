@@ -43,6 +43,8 @@ const PASS: &[&str] = &[
     "composite/array_result_cells",
     "composite/array_result_cells_res",
     "composite/array_result_elems",
+    "composite/element_operands",
+    "composite/element_operands_leave",
     "composite/record_length_var",
     "composite/record_length_var_short",
     "composite/record_length_second_field",

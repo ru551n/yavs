@@ -2294,6 +2294,13 @@ struct Gen<'a> {
     /// The object the instruction being generated found for its result register: entered in
     /// `known` once `track` has run for it (`ObjRef`).
     objnew: Option<(Reg, ObjRef<Value>)>,
+    /// The element operands of the native call being generated that are read where they are
+    /// (`in_place_operands`): their temporaries are made only on the call's rare way.
+    inplace: Vec<InPlace>,
+    /// The pcs after the first of such a call's temporaries up to the call, to that first pc: the
+    /// interpreter entered in between would find a temporary not made, so a way out there leaves at
+    /// the first instead, from where the instructions run again with the same values.
+    redirect: HashMap<u32, u32>,
     /// Registers holding the result of a `std_ulogic` table in this block, and the one the last
     /// instruction wrote: a code of the nine, no test.
     codes: Vec<Reg>,
@@ -2659,15 +2666,16 @@ impl MemoShape {
 /// `ieee` op of two blocks (`Gen::ieee_wide`), of a gate that may meet a metavalue
 /// (`Gen::gate_planes`), of an `LCopy` of a count known at run time only (`Gen::lcopy_inline`)
 /// of a test merged into another or settled by an interval (a product's range, a constant-pool
-/// `Pos`) and of a call of a cheap memoisable function (`MemoSig::dear`), made without the memo's
-/// probe.
-static SITES: [std::sync::atomic::AtomicUsize; 9] =
-    [const { std::sync::atomic::AtomicUsize::new(0) }; 9];
+/// `Pos`), of a call of a cheap memoisable function (`MemoSig::dear`), made without the memo's
+/// probe, and of an element operand of an `ieee` native read where it is (`in_place_operands`).
+static SITES: [std::sync::atomic::AtomicUsize; 10] =
+    [const { std::sync::atomic::AtomicUsize::new(0) }; 10];
 
 /// `[is_x or reduction of a vector, Cat of bytes, LayoutOf from the memo, real to integer, ieee
 /// op over 64 elements, gate with the tables for metavalues, LCopy of a run-time count, merged or
-/// settled test, call without the memo's probe]` sites lowered so far (`YAVS_COUNTERS`).
-pub fn inline_sites() -> [usize; 9] {
+/// settled test, call without the memo's probe, element operand read in place]` sites lowered so
+/// far (`YAVS_COUNTERS`).
+pub fn inline_sites() -> [usize; 10] {
     SITES
         .each_ref()
         .map(|a| a.load(std::sync::atomic::Ordering::Relaxed))
@@ -3048,6 +3056,8 @@ fn gen_func(
         iv: vec![None; f.reg_ty.len()],
         iv_next: None,
         objnew: None,
+        inplace: Vec::new(),
+        redirect: HashMap::new(),
         codes: Vec::new(),
         code_new: None,
         pres: Vec::new(),
@@ -3191,6 +3201,36 @@ fn gen_func(
     // `LayoutOf`s whose one word read is a call of the layout memo, and the last pc made with it.
     let fuse = fuse_layout(prog, f, &leader, &fixed, false);
     let sizes = static_sizes(prog, f, &leader);
+    // Element operands of natives read where they are: their temporaries are made on the call's
+    // rare way, whose slow paths step (frame mode) or leave (a native frame) at their own pcs,
+    // which `in_place_operands` makes safe; the window holds no other entry of this code.
+    let live_at = |r: Reg, pc: usize| {
+        g.live.as_ref().is_none_or(|l| {
+            l.row(pc)
+                .get(r.0 as usize / 64)
+                .is_none_or(|w| w >> (r.0 % 64) & 1 != 0)
+        })
+    };
+    let inplace: HashMap<u32, Vec<InPlace>> = in_place_operands(f, &fixed, &live_at, !native)
+        .into_iter()
+        .filter(|(c, ops)| {
+            let first = ops.iter().map(|o| o.alloc).min().unwrap_or(*c);
+            (first..=*c).all(|p| {
+                (p == first || bbs[p as usize].is_none())
+                    && !eloops.contains_key(&p)
+                    && !scans.contains_key(&p)
+            })
+        })
+        .collect();
+    for (&c, ops) in &inplace {
+        let first = ops.iter().map(|o| o.alloc).min().unwrap_or(c);
+        g.redirect.extend((first + 1..=c).map(|p| (p, first)));
+    }
+    let deferred: HashSet<u32> = inplace
+        .values()
+        .flatten()
+        .flat_map(|o| [o.alloc, o.copy])
+        .collect();
     // Multiplications by a constant that only feed the `Index` after them (`index_muls`): one test
     // of the operand, and that `Index` tests the sum only (`fused_mul`, its pc).
     let imuls = index_muls(f, &fixed);
@@ -3550,7 +3590,7 @@ fn gen_func(
             g.fnew = Some((dst, *t));
         }
         match inst {
-            _ if skipped.contains(&pc) => {}
+            _ if skipped.contains(&pc) || deferred.contains(&pc) => {}
             Inst::Drive { .. } if let Some(d) = scalar_drives.iter().find(|d| d.drive == pc) => {
                 if batched.contains(&pc) && g.batch.is_some() {
                     g.drive_kept(pc, d)
@@ -5017,6 +5057,20 @@ fn gen_func(
             | Inst::Drive { .. }
             | Inst::Suspend { .. } => g.signal(pc, 0),
             Inst::CallNative { native, args, dst } => {
+                // Read in place only on the in-place `ieee` way; every other way gets the
+                // temporaries first.
+                if let Some(ops) = inplace.get(&pc) {
+                    let ieee = native_kind(prog, f, native, args, dst).is_none()
+                        && uniform_regs(prog, f, native, args, dst).is_none()
+                        && frame_direct(prog, f, &inst)
+                        && yavs_interp::light_native(prog, f, native, args)
+                        && ieee_fast(prog, f, native, args, dst).is_some();
+                    if ieee {
+                        g.inplace = ops.clone();
+                    } else {
+                        g.make_temps(f, ops);
+                    }
+                }
                 match native_kind(prog, f, native, args, dst) {
                     Some(NativeKind::Table(t, rs, d)) => {
                         let (slow, join) = g.slow_path(pc, &inst);
@@ -6287,6 +6341,7 @@ impl Gen<'_> {
     /// array the frame is recorded from (`record_frame`), the preloaded ones are stored by the
     /// exit block.
     fn leave_at(&mut self, pc: u32) {
+        let pc = self.redirect.get(&pc).copied().unwrap_or(pc);
         if self.nat.is_some() {
             let n = self.vars.len();
             let row: Option<Vec<u64>> = self.live.as_ref().map(|l| l.row(pc as usize).to_vec());
@@ -8551,6 +8606,94 @@ impl Gen<'_> {
         (n, bits, mask)
     }
 
+    /// The four plane words an [`InPlace`] operand's temporary would hold: its `n` elements read
+    /// at their offset in the source (two blocks where they straddle one), zero above; `slow` when
+    /// the offset is out of the copy's range or `host` does not reach the bytes.
+    fn in_place_words(&mut self, o: &InPlace, slow: Block) -> Vec<Value> {
+        let off = self.ld(o.off);
+        let small = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThan, off, 1 << 32);
+        self.guard(small, slow);
+        let sh = self.b.ins().band_imm_s(off, 63);
+        let blk = self.b.ins().ushr_imm_s(off, 6);
+        let at = self.b.ins().ishl_imm_s(blk, 5);
+        let a = self.ld(o.src);
+        let end = self.b.ins().iadd_imm_s(sh, o.n as i64);
+        let two = self.b.ins().icmp_imm_s(IntCC::UnsignedGreaterThan, end, 64);
+        // One lookup for both shapes, before the branch: a lookup inside it would leave values the
+        // other way does not see (frame mode caches the frame's slots pointer).
+        let (c32, c64) = (self.c64(32), self.c64(64));
+        let len = self.b.ins().select(two, c64, c32);
+        let p = self.host(a, Some(o.src), Op::V(at), Op::V(len), false, slow);
+        let gf = self.gf;
+        let lo: Vec<Value> = (0..4)
+            .map(|k| {
+                let w = self.b.ins().load(I64, gf, p, 8 * k);
+                self.b.ins().ushr(w, sh)
+            })
+            .collect();
+        let (two_b, done) = (self.b.create_block(), self.b.create_block());
+        let ws: Vec<Value> = (0..4)
+            .map(|_| self.b.append_block_param(done, I64))
+            .collect();
+        let args: Vec<BlockArg> = lo.iter().map(|&v| BlockArg::Value(v)).collect();
+        self.b.ins().brif(two, two_b, &[], done, &args);
+        // Straddling: the offset is at least 1, so `64 - sh` is a shift below 64.
+        self.b.switch_to_block(two_b);
+        let back = self.b.ins().isub(c64, sh);
+        let hi: Vec<BlockArg> = (0..4)
+            .map(|k| {
+                let w1 = self.b.ins().load(I64, gf, p, 32 + 8 * k);
+                let h = self.b.ins().ishl(w1, back);
+                BlockArg::Value(self.b.ins().bor(lo[k as usize], h))
+            })
+            .collect();
+        self.b.ins().jump(done, &hi);
+        self.b.switch_to_block(done);
+        let m = low_bits(o.n) as i64;
+        ws.into_iter()
+            .map(|w| self.b.ins().band_imm_s(w, m))
+            .collect()
+    }
+
+    /// The temporaries of `ops` as their `Alloc` and `LCopy` would make them, each with the
+    /// slow path of its own instruction (`in_place_operands` makes leaving there safe).
+    fn make_temps(&mut self, f: &Func, ops: &[InPlace]) {
+        // Frame mode: the stepped `LCopy` reads the temporary's address from the frame.
+        let defer = std::mem::replace(&mut self.defer, false);
+        for o in ops {
+            let first = f.code[o.alloc as usize];
+            let (slow, join) = self.slow_path(o.alloc, &first);
+            match (o.size, first) {
+                (Some(size), _) => {
+                    let sz = self.ld(size);
+                    let (a, _) = self.temp_alloc(sz, slow);
+                    self.st(o.tmp, a);
+                }
+                (None, Inst::Zero { bytes, .. }) => {
+                    let n = u64::from(bytes);
+                    let a = self.ld(o.tmp);
+                    let p = self.host(a, Some(o.tmp), Op::C(0), Op::C(n), true, slow);
+                    self.zero_range(p, 0, n);
+                }
+                _ => self.bad = Some("in-place operand without its temporary".into()),
+            }
+            self.join(join);
+            let (slow, join) = self.slow_path(o.copy, &f.code[o.copy as usize]);
+            let w = self.in_place_words(o, slow);
+            let t = self.ld(o.tmp);
+            let p = self.host(t, Some(o.tmp), Op::C(0), Op::C(32), true, slow);
+            let gf = self.gf;
+            for (k, w) in w.into_iter().enumerate() {
+                self.b.ins().store(gf, w, p, 8 * k as i32);
+            }
+            self.join(join);
+        }
+        self.defer = defer;
+    }
+
     /// An array operand of 1 to 64 elements: `(n, mask, planes)`, the four planes of its block
     /// unmasked; `fb` for any other length.
     fn plane_operand(&mut self, r: &[Reg], fb: Block) -> (Value, Value, Vec<Value>) {
@@ -8567,6 +8710,10 @@ impl Gen<'_> {
         let two = self.c64(2);
         let sh = self.b.ins().ishl(two, diff);
         let mask = self.b.ins().iadd_imm_s(sh, -1);
+        if let Some(o) = self.inplace.iter().find(|o| o.tmp == r[0]).copied() {
+            note_site(9);
+            return (n, mask, self.in_place_words(&o, fb));
+        }
         let a = self.ld(r[0]);
         let p = self.host(a, Some(r[0]), Op::C(0), Op::C(32), false, fb);
         let gf = self.gf;
@@ -9148,7 +9295,23 @@ impl Gen<'_> {
         // The native call is the rare way (wide operands, metavalues): out of line.
         let (fb, done) = (self.b.create_block(), self.b.create_block());
         self.b.set_cold_block(fb);
-        if let Some(lens) = self.wide_lens(op, layout, &rs) {
+        // An operand read in place must be an array operand of the small path.
+        let mut data = Vec::new();
+        let mut at = 0;
+        for a in layout {
+            if *a == Arg::Arr {
+                data.push(rs[at]);
+                at += ARRAY_REGS;
+            } else {
+                at += 1;
+            }
+        }
+        let wide = self.wide_lens(op, layout, &rs);
+        if wide.is_some() || self.inplace.iter().any(|o| !data.contains(&o.tmp)) {
+            let ops = std::mem::take(&mut self.inplace);
+            self.make_temps(f, &ops);
+        }
+        if let Some(lens) = wide {
             let out = self.ieee_wide(op, layout, &rs, &lens, fb);
             return self.ieee_put(pc, inst, f, native, args, d, out, fb, done);
         }
@@ -9925,6 +10088,8 @@ impl Gen<'_> {
         self.b.switch_to_block(fb);
         self.clear();
         self.rare(1);
+        let ops = std::mem::take(&mut self.inplace);
+        self.make_temps(f, &ops);
         self.native_direct(pc, inst, f, native, args, Some(d))?;
         let alt = res.map(|_| match self.cache[d.0 as usize] {
             Some(v) => v,

@@ -4834,6 +4834,164 @@ fn addr_params(f: &Func, any: bool) -> Vec<ParamAddr> {
         .collect()
 }
 
+/// An element operand of a native call read where it is (#1122): `Alloc` of `tmp` at `alloc`
+/// (or, a temporary in the process's frame, `Zero` of its bytes there), `LCopy` of `n` (1 to 64,
+/// known) plane elements of `src` at `off` to its start at `copy`, and `tmp` is dead after the
+/// call (`live`). Compiled code makes the two only where the call needs the temporary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InPlace {
+    pub alloc: u32,
+    pub copy: u32,
+    pub tmp: Reg,
+    /// The `Alloc`'s size; `None` for a temporary in the frame.
+    pub size: Option<Reg>,
+    pub src: Reg,
+    pub off: Reg,
+    pub n: u64,
+}
+
+/// The [`InPlace`] operands of each `CallNative`, by its pc. Every instruction from the first
+/// `Alloc` to the call is in one block and is one of them or arithmetic whose only way out is a
+/// fault (in frame-mode code, `frame`, also a `Load`, whose slow path is a step), and none before the call writes a register an earlier one there read: the interpreter
+/// entered at any of their pcs runs the same values (a native frame leaves there when a test
+/// fails).
+pub fn in_place_operands(
+    f: &Func,
+    fixed: &[Option<i64>],
+    live: &dyn Fn(Reg, usize) -> bool,
+    frame: bool,
+) -> std::collections::HashMap<u32, Vec<InPlace>> {
+    use std::collections::{HashMap, HashSet};
+    let starts: HashSet<u32> = f.blocks.iter().map(|(_, b)| b.start).collect();
+    let k = |r: Reg| fixed.get(r.0 as usize).copied().flatten();
+    let mut out = HashMap::new();
+    for (c, inst) in f.code.iter().enumerate() {
+        let Inst::CallNative { args, dst, .. } = *inst else {
+            continue;
+        };
+        let Some(rs) = f.regs(args) else { continue };
+        let mut found = Vec::new();
+        for &t in rs {
+            // Dead after the call (`Load` of its result follows it in the block).
+            if rs.iter().filter(|&&x| x == t).count() != 1
+                || c + 1 >= f.code.len()
+                || live(t, c + 1)
+            {
+                continue;
+            }
+            // The `LCopy` into it and the `Alloc` before that, back to the block's start.
+            let mut copy = None;
+            let mut pc = c;
+            while pc > 0 && !starts.contains(&(pc as u32)) {
+                pc -= 1;
+                match f.code[pc] {
+                    Inst::LCopy {
+                        dst,
+                        dst_off,
+                        src,
+                        src_off,
+                        n,
+                    } if dst == t && copy.is_none() => copy = Some((pc, dst_off, src, src_off, n)),
+                    Inst::Alloc { dst, size } if dst == t => {
+                        if let Some((cp, d0, src, off, cnt)) = copy
+                            && k(d0) == Some(0)
+                            && let Some(m @ 1..=64) = k(cnt)
+                            && k(size).is_some_and(|s| s >= 32)
+                            && src != t
+                        {
+                            found.push(InPlace {
+                                alloc: pc as u32,
+                                copy: cp as u32,
+                                tmp: t,
+                                size: Some(size),
+                                src,
+                                off,
+                                n: m as u64,
+                            });
+                        }
+                        break;
+                    }
+                    // Right before its `LCopy`: frame-mode code stores the registers live at the
+                    // `Zero` at the `LCopy` (not quiet), where a leave in the window re-enters.
+                    Inst::Zero { addr, bytes } if addr == t && frame => {
+                        if let Some((cp, d0, src, off, cnt)) = copy
+                            && cp == pc + 1
+                            && k(d0) == Some(0)
+                            && let Some(m @ 1..=64) = k(cnt)
+                            && bytes >= 32
+                            && src != t
+                        {
+                            found.push(InPlace {
+                                alloc: pc as u32,
+                                copy: cp as u32,
+                                tmp: t,
+                                size: None,
+                                src,
+                                off,
+                                n: m as u64,
+                            });
+                        }
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let Some(first) = found.iter().map(|o| o.alloc).min() else {
+            continue;
+        };
+        let mine = |pc: u32| found.iter().any(|o| o.alloc == pc || o.copy == pc);
+        let mut read: HashSet<Reg> = HashSet::new();
+        let mut ok = true;
+        for pc in first..=c as u32 {
+            let i = &f.code[pc as usize];
+            let pure = matches!(
+                i,
+                Inst::Const { .. }
+                    | Inst::Move { .. }
+                    | Inst::Bin { .. }
+                    | Inst::BinRange { .. }
+                    | Inst::Pos { .. }
+                    | Inst::DopeLen { .. }
+                    | Inst::Cmp { .. }
+                    | Inst::Select { .. }
+                    | Inst::AddrOf {
+                        space: AddrSpace::Frame,
+                        ..
+                    }
+            ) || (frame && matches!(i, Inst::Load { .. }));
+            if (pc > first && starts.contains(&pc)) || !(pure || mine(pc) || pc == c as u32) {
+                ok = false;
+                break;
+            }
+            let (u, d) = yavs_interp::inst_regs(f, i);
+            // A temporary is written by its `Alloc` (or the `AddrOf` of its frame slot) and read by
+            // its `Zero`, its `LCopy` and the call only.
+            let own = |r: &Reg| {
+                found
+                    .iter()
+                    .any(|o| o.tmp == *r && o.alloc != pc && o.copy != pc && pc != c as u32)
+            };
+            let slot = matches!(i, Inst::AddrOf { .. });
+            if u.iter().any(own) || (!slot && d.iter().any(own)) {
+                ok = false;
+                break;
+            }
+            read.extend(u);
+            // (The call's own result is written after any way out of the window.)
+            if pc != c as u32 && d.iter().any(|r| read.contains(r)) {
+                ok = false;
+                break;
+            }
+        }
+        if ok && dst.is_none_or(|d| !found.iter().any(|o| o.tmp == d)) {
+            found.sort_by_key(|o| o.alloc);
+            out.insert(c as u32, found);
+        }
+    }
+    out
+}
+
 /// Update `known` for what `i` writes.
 pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], f: &Func, i: &Inst) {
     let get = |r: Reg| known.get(r.0 as usize).copied().flatten();

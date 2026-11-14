@@ -16741,3 +16741,22 @@ published, and the guard of "`--tier=auto`: the count rule".
   and retaking the work library's lock mid-call (breaks one call, one atomic update); a timeout with an error (a hang
   becomes a failure, still no parallel compile).
 - **Docs landing page (user, 2026-11-14):** shows the logo without the typed project name (CSS hides the page title in `docs/_static/custom.css`; the title stays for the tab, toctree and search); the sidebar keeps the name.
+
+## Element operands of `ieee` natives read where they are (yavs-clift `Gen::in_place_words`, `make_temps`, yavs-rt `rt::in_place_operands`, #1122, 2026-11-14)
+
+- **Finding**: `r(k) := src(2 * k) + src(2 * k + 1)` on an array of `signed` made each operand a 32-byte temporary
+  (`Alloc`, or in a process a frame slot and its `Zero`) and an `LCopy` of the row into it, and the in-place `+` of
+  compiled code then read the four plane words back from it. In the function of #1122 that was most of what was left
+  between the function and the same loop in the process, which takes its operands from signals.
+- **Decision**: at a `CallNative` that takes the in-place `ieee` way, an operand whose temporary only that call reads
+  (made by an `Alloc` or a frame slot's `Zero`, filled by one `LCopy` of 1 to 64 elements, a constant count, to its
+  start, and dead after the call) is read where it is: its plane words at the offset in the source, two blocks where it
+  straddles one, masked to the count, the same words the temporary would hold. The `Alloc` (or `Zero`) and the `LCopy`
+  are made only on the call's rare way (metavalues, lengths, every other way of that native) with their own slow paths.
+  Every instruction from the first such temporary to the call is in one block and is one of them, arithmetic, `Pos`,
+  `DopeLen`, the `AddrOf` of a frame slot or (frame-mode code) a `Load`, and none before the call writes a register an
+  earlier one there read: so a way out of compiled code anywhere in that stretch leaves at its first pc (`Gen::redirect`),
+  and the interpreter runs the same instructions again with the same values, temporaries included. The interpreter is
+  unchanged (it copies as before).
+- **Not done**: the native's result written straight into `r(k)` (the result still goes through its temporary and an
+  `LCopy`); the same reading in the interpreter's fused ops.

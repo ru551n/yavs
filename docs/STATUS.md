@@ -11522,3 +11522,16 @@ The Read the Docs site shows the logo in the sidebar header: the dark SVG from `
 header background, set in `docs/conf.py` (`html_logo`, `style_nav_header_background`). The theme has no dark mode, so
 there is one variant. The landing page shows the light SVG centred above the title (the page body is white in every colour
 scheme). No favicon yet.
+
+## Element operands of `ieee` natives in compiled code (#1122, 2026-11-14)
+
+Cranelift code reads an element of an array of logic arrays (a row of an array of `signed`, `unsigned` or
+`std_logic_vector` of 1 to 64 elements) that is an operand of an in-place `numeric_std` or `std_logic_1164` native
+where it is, in functions and in processes, instead of copying it into a temporary first; the temporary is made only
+on the native's rare way (`docs/decisions.md` "Element operands of `ieee` natives read where they are"). Tests: corpus
+`composite/element_operands` (rows of 1, 5, 12, 16, 63 and 64 elements, straddling rows, both directions,
+metavalues, an element used twice, an array updated from its own elements; sim1 and sim2 agree),
+`composite/element_operands_leave` (a statement of 64 element operands with metavalues: the temporary area fills on
+the rare way and the native frame leaves inside the stretch, so the interpreter runs it again from its start), perf design
+`clift_elem_operands` (`clift_inplace_sites`, `cb_rare_native`). The interpreter is unchanged, and the native's
+result still goes through a temporary.

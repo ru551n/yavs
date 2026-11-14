@@ -791,6 +791,8 @@ suite's pass list).
 The shared benchmark harness (`tools/bench/AGENTS.md`) measures every performance change the same way:
 `python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`. Testbenches of real projects (41, against sim1 and between binaries): `tools/realbench`. Analysis cells are batched calls since #745 (section "Analysis in batched calls"; tables before it are one call per file and not comparable). Baseline of the long CPU tests and SoC models: section "Real-world performance suite: baseline for long CPU tests and large SoC models, 2026-11-01". Current comparison with sim1 (rule 23: `--tier=auto`, total wall incl. analysis, cold and warm): section "Real-world performance suite: yavs against sim1, sim2 and sim4, head-to-head 8, 2026-10-28" (0.20 warm, 0.58 cold with the LLVM build, 0.21 and 0.57 with the Cranelift build; head-to-head 7 and 6 below it are the earlier ones), on the batched-call analysis basis (#745, both tools analyse consecutive files of a library in one call; head-to-head 1 to 5 were one call per file and are not comparable): geomean of the 41 realbench totals (libraries analysed too) 0.22 warm, 0.64 cold (the same run on the old per-file basis 0.24 and 0.42; head-to-head 5 had 0.23 and 0.43); own files + elab + run 0.23 and 0.49, elab + run 0.23 and 0.47, executed instructions yavs / sim1 0.31 and 0.60, tiny-test corpus 0.11 and 0.25, the h2h designs 0.56 and 0.78. The tables below are older measurements on the earlier host.
 
+Note 2026-11-14: a later head-to-head against sim1 is row A of `docs/performance.md` (run of 2026-11-01 on `a95d9ad1`, 41 testbenches: 0.213 warm, 0.589 cold). The LLVM tier was removed on 2026-11-08 and its crate is now `yavs-rt`: in this part of the file, every `--tier=llvm`, `auto3`, `llvm` feature, `yavs-llvm` or `crates/yavs-llvm/...` is the record of a measurement or change made while that tier existed, not a description of the current build. The default compiled tier is Cranelift (`--features clift`, `--tier=auto`).
+
 `tools/bench/run.py` times each sample from the first-run state of the auto tier (its profiles and compiled objects are reset before every timed run, after untimed warm-up runs; `--learn` keeps the learning): an A/A of one build read the fresh side 20 to 28 percent slower on `uvvm_sb_slv_tb` because the kept world had settled into the faster of two states the policy reaches at random runs (#1147). The policy's run-to-run settling itself is unchanged.
 
 Baseline of main at the commit that added the harness (release build, Intel Core Ultra 9 275HX, 24 CPUs,
@@ -1174,7 +1176,7 @@ syncing once per call): `string_ops` 3.2 s wall / 2.7 s CPU to 0.9 s / 0.9 s, `p
 `yavs run` of a short test (`check` suite, about 100 ms): analyze phase 17 ms (closure and key about 3 ms,
 image restore about 14 ms), elaborate 23 ms, init 22 ms, simulate 38 ms; process start and exit under 3 ms. In the
 verification-component suite: analyze 35 to 60 ms (closure 3.5 ms, image restore 30 ms), elaborate 35 to 140 ms.
-The next levers are the image restore (#426) and caching elaboration (#407).
+The next levers are the image restore (#426) and caching elaboration (#407). (Both were done: #426 and #407 are closed; see the sections on the analysed-unit and compilation caches and on the floor of a run below.)
 
 ### Analysed-unit cache (#537, #539, #407)
 
@@ -1370,7 +1372,7 @@ twice-run wrapper is `textio/file_append_2019`, which appends to a file); the ex
 and 2019; the verification library suite gives 102 pass, 9 fail, 26 skip, as main. Tests: `crates/yavs/tests/cache.rs`
 (`init` entries: protected and heap state grown by elaboration-time calls, the simulation-start path and the time
 resolution key, edit invalidates, reports replayed, a file-opening package not cached, damaged entry, parallel cold
-runs), `state::tests` (block packing). The store keeps 96 entries now (three per design).
+runs), `state::tests` (block packing). The store keeps 96 entries now (three per design; 2026-11-14: the limits are now 65536 entries and 4 GiB per library directory, and the unit and compiled-code subdirectories have their own, `yavs-cache` `MAX_ENTRIES`, `MAX_BYTES`, #1027).
 
 Compact composite constants (#446, `Fx::konst_comp`): a folded record or array-of-composites constant is
 lowered as runs of repeated bytes (repeated elements, record fields with padding, one-valued logic arrays), and the
@@ -1383,6 +1385,7 @@ to the copy; the optimiser reads pool bytes through `ConstData::read`. Tests: `c
 `periodic_constant_is_compact` (`yavs-lower`), `periodic_constant_does_not_block_the_lowering_cache`
 (`crates/yavs/tests/cache.rs`, warm, cold and `--no-cache` identical), `ConstData::read` unit test.
 
+(Record, 2026-11-14: `objcache.rs` and `crates/yavs-llvm/tests/objcache.rs` went with the LLVM tier, and so did the tests `compiled_code_is_cached`, `parallel_runs_share_compiled_code` and `read_only_library_gets_no_compiled_code` named below; the Cranelift tier keeps its compiled code in the same store, `crates/yavs-clift/src/cache.rs`, tested in `crates/yavs/tests/clift_cache.rs`.)
 Compiled code (#505, `docs/decisions.md` "Compiled code in the compilation cache"): the object file of every
 module the LLVM tier compiles is kept in `<work dir>/yavs-cache/obj/`, keyed by the module's LLVM IR, the level,
 the target and the build, and linked again by later runs (`yavs-llvm` `objcache.rs`). Measured with release builds
@@ -2209,6 +2212,8 @@ and counts the first frame under `crates/`); no hardware profiler on this host.
 
 ### Next levers by gap (largest first)
 
+Record of 2026-10-20 (note 2026-11-14): lever 1 was carried out as compiled vector process bodies (section "performance: compiled vector process bodies" below) and, for the interpreter side, rounds 8 to 11; the owner `yavs-llvm` is now `yavs-rt` (`yavs-clift` for the Cranelift tier). Where the gaps stand later is in "Top 5 remaining gaps" (2026-10-21), the head-to-head 8 section and `docs/performance.md`.
+
 1. Clocked RTL (2b, `lfsr`, `ff`, 2a, `chain`: 6.6x to 12x). The per-activation cost (1 to 1.5 us) is interpreter
    dispatch plus logic-vector copies, and the LLVM tier does not help (`auto` is 10 to 15% slower). Lever: lower
    process bodies over `std_logic_vector` signals natively with the vector operations inline (no side exit per
@@ -2687,6 +2692,8 @@ every design row below sim1's except `ram` (94 against 77 MiB) and the compute l
 
 ### Top 5 remaining gaps and where the time goes
 
+Record of 2026-10-21 (note 2026-11-14): superseded by the later head-to-head measurements; gap 3 (`auto` equal to interp, eager `llvm` too expensive) is about the LLVM tier, which no longer exists.
+
 `perf record --call-graph dwarf` (2.5 kHz, pinned to cores 4 and 5, 186 to about 1250 samples per row) of the three worst
 rows and of the testbench row 3, self time, function names are those of the release binary.
 
@@ -2945,7 +2952,7 @@ Peak memory of a test run is 58 MB (main 49 MB: the 10 MB entry is mapped); the 
 peaks at 139 MB and takes 0.36 s once (two lowerings, one to find what depends on the design, and the image). Disk: the
 `.pro` regression leaves 199 MB of cache in 50 entries (25 MB more than before, 174 MB in 34: 11 lowered libraries of
 10 MB, under 1 MB of optimised copies each, fewer prefix images since bodies moved into the prefixes); a library
-directory keeps at most 96 entries and 512 MiB.
+directory keeps at most 96 entries and 512 MiB (2026-10-22 limits; now 65536 entries and 4 GiB, #1027).
 
 Outputs: the logs of all 314 tests under 2008 (three pairs; also against a run with `--no-cache`) and under 2019 (two
 pairs) and of the 111 runs of the first library's suite that run are byte-identical to main's (path-normalised); the
@@ -2968,7 +2975,7 @@ Left: one lowered library per longest prefix (suites with several prefixes of on
 between them would need a program delta); the entry is still 10 MB and reading it is a few ms of a 70 ms run (a
 quarter of it is the statement position of each instruction, which could be run-length coded); a `Db` that
 grew at elaboration lowers as before; the first run of the first closure of a prefix pays nothing and the
-second pays 0.36 s once. Found on the way: release builds never verify functions (#482).
+second pays 0.36 s once. Found on the way: release builds never verify functions (#482, fixed: closed 2026-10-21, see the lazy verify above).
 
 ### floor of a run: zero-copy cache entries (#481 item 2, #407)
 
@@ -3026,6 +3033,8 @@ time, so CPU is reported). Cells: CPU seconds / peak MiB / collections.
 - **Default kept at 1 MiB** (`docs/decisions.md`, "Heap collection threshold").
 
 ## performance: compiled vector process bodies (#338, #339, #432, 2026-10-20)
+
+(Record of the LLVM tier, removed 2026-11-08; the compiled tier is now Cranelift.)
 
 The LLVM tier runs process bodies over `std_logic_vector` without leaving compiled code for the
 vector work: `LCopy` inline (the plane blocks through `Gen::host`, copied by
@@ -3086,12 +3095,11 @@ internal 0.982. Difftest 409/409 for `yavs`, `yavs-llvm` and `yavs-auto` with
 
 ## CI and releases
 
-`.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on
+`.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features, job `check`) on
 ubuntu-24.04 for every push to main and every pull request, plus windows-latest (MSVC) when the change
-touches path or process sensitive code, and plus ubuntu-24.04-arm in the nightly run (`nightly.yml`, which
-opens or updates an issue when red), a manual run and a release (#134, #888, `docs/decisions.md` "CI matrix"); a `corpus` job (Linux x86_64) fetches the pinned external corpora and fails on any difference from `tools/corpus/*.expected` (#63) and on any test of `tools/difftest/external-*.pass` that no longer meets its suite's verdict (#354); not yet in CI: JIT tier. `.github/workflows/release.yml`
-builds and packages `yavs` with `lib/` for the three targets on a `v*` tag and publishes a
-pre-release with SHA256SUMS (#165); `workflow_dispatch` with `dry_run` only builds the archives. The Linux archives are built with cargo-zigbuild against glibc 2.17 and smoke-tested in centos:7.
+touches a crate, `lib/` or the build files, and plus ubuntu-24.04-arm in the nightly run (`nightly.yml`, which
+opens or updates an issue when red), a manual run and a release (#134, #888, #1014, `docs/decisions.md` "CI matrix", "CI scope"; `tools/ci-plan.py` sets the scope from the changed files, so a prose commit builds nothing). Further jobs: `clift` builds and tests the Cranelift tier (`--features clift`, #481) with the difftest smoke, the whole corpus on process copies and `gc-stress`; a `corpus` job (Linux x86_64) fetches the pinned external corpora, fails on any difference from `tools/corpus/*.expected` (#63) and on any test of `tools/difftest/external-*.pass` that no longer meets its suite's verdict (#354), and also checks the discrepancy cases; `vunit-yavs` tests the Python package; `versions` checks that yavs, vunit-yavs and the VS Code extension carry one version (#903). Not in CI: the qemu and Wine runs of `yavs-ffi`. Updated 2026-11-14; the former "not yet in CI: JIT tier" is stale (the Cranelift tier has its own job, and the LLVM tier was removed on 2026-11-08). `.github/workflows/release.yml`
+builds and packages `yavs` with `lib/` for the three platforms on a `v[0-9]*` tag (Linux x86_64 and Windows x86_64 twice, for x86-64-v3 and as `-compat`, Linux aarch64 once), with the compiled tier and a profile-guided build, and publishes one pre-release with SHA256SUMS, the vunit-yavs wheel and sdist (also on PyPI), the VS Code extension and the conformance report (#165, #903); `workflow_dispatch` with `dry_run` builds, tests and packages everything and publishes nothing. The Linux archives are built with cargo-zigbuild against glibc 2.17 and smoke-tested in centos:7.
 An installed binary finds `lib/` next to itself (#43).
 
 The GitHub Action that installs a release lives in its own repository, `ru551n/yavs-action` (#862); `docs/ci.rst` links it.
@@ -3124,9 +3132,9 @@ The GitHub Action that installs a release lives in its own repository, `ru551n/y
   sensitivity list is `E1801` at analysis when the bodies are in the process's design unit (#597,
   L129): `tests/diag/sem/expr/wait_in_procedure_called_by_*`; across units it stays a run-time error
   (corpus `process/wait_in_sensitivity_proc`, catalogue `wait-in-procedure-of-sensitivity-list-process-package`).
-- Negative suite `tests/diag/sem` run by `tests/diag_sem.rs` (exact code, line and column; optional
-  rendered `.stderr` snapshots); what still fails is in `tests/diag_sem_xfail.txt` (the
-  aggregates and case choices group passes, #45; external names and literals, #49; aliases, #46).
+- Negative suite `tests/diag/sem` run by `crates/yavs-sem/tests/diag_sem.rs` (exact code, line and column; optional
+  rendered `.stderr` snapshots); what still fails is in `crates/yavs-sem/tests/diag_sem_xfail.txt`, which is empty
+  (checked 2026-11-14; the three groups it once held, aggregates and case choices #45, external names and literals #49, aliases #46, were closed on 2026-10-18).
 - A construct the semantic analysis does not implement yet is `E1999`, naming the construct; `E9999` is
   only for internal errors (#842).
 - Overload diagnostics (#51): association errors of the only candidate (`E1100` unknown formal,
@@ -3178,7 +3186,7 @@ The GitHub Action that installs a release lives in its own repository, `ru551n/y
   without a full declaration in the package body is `E1230`.
 - A deferred constant named before its full declaration is `E1226` (#809, #846), except in an interface default and, since #1072, as the prefix of `'range`, `'reverse_range`, `'length`, `'left`, `'right`, `'high`, `'low`, `'ascending`, `'subtype` or `'element` when its declaration constrains its subtype fully (lrm-checks L175; PoC v3.0.0 `axi4lite`). An unconstrained deferred constant takes its bounds from the full declaration's value (#1076, maintainer ruling 2026-11-02): the same attributes are accepted in the package body in a subprogram (body, parameter subtypes, variables) and in any declaration after the full declaration, with the right bounds at elaboration and run time (corpus `composite/deferred_unconstrained_attrs`, `generics/deferred_instance_bounds`, catalogue `deferred-constant-unconstrained-*`); a subprogram above the full declaration that reads the bounds before the full declaration is elaborated (called from an earlier declaration of the body) is a run-time error `E3009` in every tier (flag set by the full declaration; also in nested packages and generic package instances in a library unit or a package body; also in an instance declared in an architecture, block, generate, process or subprogram, and in an instance inside an instance, whose bounds and elements are those of the full declaration, #1079; test `crates/yavs/tests/deferred_early.rs`, catalogue `deferred-constant-unconstrained-called-early`); they stay `E1226` in the package declaration and in a declaration of the body before the full declaration.
 - A package body is one declarative region with its package (4.8): redeclaring a package name in the body is `E1101` (#232, lrm-checks L64).
-- `tests/stdlib.rs`: std, ieee packages, and the bodies of std_logic_1164, math_real,
+- `crates/yavs-sem/tests/stdlib.rs`: std, ieee packages, and the bodies of std_logic_1164, math_real,
   math_complex, numeric_std, numeric_bit and numeric_*_unsigned analyze clean (2008 and 2019).
   `numeric_std_body_rule_1` is the rule 1 review: every object and object alias of the numeric_std
   body has its bounds from the one subtype representation.
@@ -3194,8 +3202,7 @@ The GitHub Action that installs a release lives in its own repository, `ru551n/y
 - Types (S3): scalars, arrays, records, element/record/open constraints merged once, resolution
   indications, file element checks; the rule 1 representation is pinned on numeric_std
   (`numeric_std_subtypes_rule_1`, `numeric_std_body_rule_1`) and reviewed for the composite cases
-  in `docs/design/rule1-review.md` (`tests/rule1.rs`; recommendation: approve with fixes, findings
-  F1, F2, F4, F5, F7, F8 open as #98 to #111, F3 and F6 fixed); the user's approval is pending.
+  in `docs/design/rule1-review.md` (`crates/yavs-sem/tests/rule1.rs`; recommendation: approve with fixes). The user approved it with fixes on 2026-10-18 (#96); the findings F1 to F8 (#98 to #111) are all closed.
 - Generics (S4, `generic.rs`): generic packages, subprograms and (2019) protected types; 2008
   `type T` and the 2019 classes; formal subprograms (`is <>`, `is name`) and formal packages
   (`(<>)`, `(default)`, generic map, checked against the actual instance; a parameter type through a
@@ -3265,7 +3272,7 @@ thousands of lexer warnings and an `E0002` (`yavs_syntax::protect`, tests in `sr
 
 Vendor libraries (#119, #61): `tools/corpus/unisim-2008.toml` reads `unisim`/`unimacro` in place from `$YAVS_VENDOR_UNISIM` (skipped when unset): all 1073 files analyze (952 of the 1073 before the Synopsys packages; the 121 failures were exactly the missing `std_logic_arith`, `std_logic_signed` and `std_logic_unsigned`), with the VITAL (#118) and Synopsys (#117) packages built in. The Synopsys packages `std_logic_arith`, `std_logic_unsigned`, `std_logic_signed` and `std_logic_misc` are the original files, unmodified, in `lib/ieee/{2008,2019}` (`lib/SOURCES.md`, `lib/LICENSE-SYNOPSYS`), visible without a flag; `tests/corpus/synopsys/` (20 testbenches, reference simulator or the original package text for 6, `--threads 1` and `4`) passes 20 of 20. The 6 hdl-modules files that need `unisim` analyze against it.
 
-Vendor libraries are built with plain `yavs analyze` from the user's install, and with `add_library` in VUnit (`docs/libraries.rst`, `docs/decisions.md` "Vendor libraries from the user's install"). Measured on Vivado 2026.1: every one of the 1058 primitives of `unisims/primitive` and `unisims/retarget` as top level with default generics and open ports for 1 us gives the exit status and reports of sim1 (1019 run, 39 reject their default attributes in both); this says they elaborate and agree, not that each was exercised. `crates/yavs/tests/vendor/tb_v_*.vhd` do exercise the common ones (buffers, registers, LUTs, SRL, MMCM, PLL, block RAM, DSP48, FIFOs and every macro, DDR registers, delays): self-checking, same output as sim1. Not available: `unisims/secureip` (encrypted Verilog models) and the XPM macros (SystemVerilog). Large arrays of `DSP48E2` are slow in the kernel (#908).
+Vendor libraries are built with plain `yavs analyze` from the user's install, and with `add_library` in VUnit (`docs/libraries.rst`, `docs/decisions.md` "Vendor libraries from the user's install"). Measured on Vivado 2026.1: every one of the 1058 primitives of `unisims/primitive` and `unisims/retarget` as top level with default generics and open ports for 1 us gives the exit status and reports of sim1 (1019 run, 39 reject their default attributes in both); this says they elaborate and agree, not that each was exercised. `crates/yavs/tests/vendor/tb_v_*.vhd` do exercise the common ones (buffers, registers, LUTs, SRL, MMCM, PLL, block RAM, DSP48, FIFOs and every macro, DDR registers, delays): self-checking, same output as sim1. Not available: `unisims/secureip` (encrypted Verilog models) and the XPM macros (SystemVerilog). Large arrays of `DSP48E2` are slow in the kernel (#908, closed 2026-11-02 without a fix: the cost is memory locality of many small processes and signals, left to kernel performance work).
 
 Parse corpus: `tools/fetch-corpus.sh` fetches the corpora (default `~/.cache/rsim-corpus`), then
 `YAVS_CORPUS=~/.cache/rsim-corpus cargo test -p yavs --features corpus` compares them with the
@@ -3302,7 +3309,7 @@ range or subtype indication as the actual of an object formal is `E1361`.
 
 ## lower (`crates/yavs-lower`, M2)
 
-`'driving` / `'driving_value` of a signal the process has no driver of is a run-time error (L116, #546); signal parameters and partly driven composites are still `E2001`.
+`'driving` / `'driving_value` of a signal the process has no driver of is a run-time error (L116, #546); signal parameters, parts and composites over several drivers run too (#615, 1ad62526a; they were `E2001` before).
 
 HIR to IR for every architecture the elaborator instantiates: generics, ports (unconstrained
 array ports take the actual's bounds), blocks (guarded ones with their guard process), generates
@@ -3320,7 +3327,7 @@ objects at run time (`Lowerer::package`: constants evaluated once, composites wi
 bounds too, shared protected variables, package signals and files, the files opened by their declaration staying open for the simulation, #834, difftest `textio/file_in_package`); composite architecture
 constants evaluated once per region (#73); aliases of record elements of ports (#292) and of static logic elements and slices of variables (#296); `'range` of a package signal in subtypes (#294); bounds of record elements of ports in constants, signal subtypes and generate ranges (#304, difftest `composite/record_port_bounds`, `composite/record_in_port_bounds`); `'subtype` of objects bounded by a port, and aliases of record parts of variables keeping their element bounds (#315, difftest `composite/alias_object_subtype`); aggregates with a port's range as choice in initial values (#311, difftest `composite/agg_port_range_choice`); a constant that reads a signal or port takes its initial value (#453, difftest `hierarchy/constant_reads_signal`); elaboration-time calls of functions that read a non-protected (`--relaxed`) shared variable of their region (#524, difftest `shared/elab_call`); a lowering failure without a diagnostic is an ICE; non-protected shared variables (`--relaxed`) in
 packages, architectures, blocks and generates, one per declaring region, whose processes run
-serially (#285), including types holding access values, whose objects live in the shared heap (#303). `tests/corpus.rs` runs every corpus group plus
+serially (#285), including types holding access values, whose objects live in the shared heap (#303). `crates/yavs-lower/tests/corpus.rs` runs every corpus group plus
 `crates/yavs-lower/tests/vhdl/run` (blessed from the reference simulator) through yavs-elab and the kernel; the external test runner's
 minimal testbench runs (#110). Design and conventions: `crates/yavs-lower/DESIGN.md`.
 `'element` attributes of objects with open element bounds (unconstrained ports, aliases of external names, parameters) read the object's descriptor (#235, #243; difftest `composite/element_attr_open`).
@@ -3341,7 +3348,7 @@ value, a partially constrained subtype or a port's actual, signal parameters of 
 package signals of record types, attributes and implicit signals of parts over several
 fields, #215), shared protected variables (created through `call_shared`),
 user resolution functions (yavs-elab resolver over `yavs_interp::resolve`, once per element, on byte and logic leaves, #293). Difftest: access 3/3,
-composite 6/6, force 8/8, protected 6/6, resolution 4/5, textio 2/3 at 1 and 4 threads.
+composite 6/6, force 8/8, protected 6/6, resolution 4/5, textio 2/3 at 1 and 4 threads (an early M2 count, not current).
 
 - An alias of a constant with a static value in a subprogram has no storage; its uses lower the aliased name (#300; difftest `composite/alias_constant`).
 
@@ -3373,7 +3380,7 @@ condition) for the M2/M4 simulation tests. Results: `tools/corpus/RESULTS.md`.
 
 PoC Library v3.0.0 (2026-11-02, #1060): the `poc-2008` corpus was PoC v1.2 (the archived VLSI-EDA/PoC at `8c39b240`); it is now v3.0.0 of github.com/VHDL/PoC (commit `b9040273`, tag `v3.0.0`, also the head of `main`; the v3 line is on the VHDL/PoC repository, not a branch of the old one). Its order comes from PoC's own `.pro` build files (see `tools/corpus/AGENTS.md`), including the OSVVM submodules it pins: 417 files, of which yavs analyses 372 and sim1 417 (the manifest holds only files both references accept; sim3 is not on this host, so 34 files that sim1 accepts and sim2 rejects, rooted in `src/net/net.pkg.vhdl`, are dropped, and 9 that both reject). The 45 yavs failures are one bug, #1072: `E1226` on `K'range` of a deferred constant in the package body before its full declaration (`axi4lite.pkg.vhdl`), and the files that depend on `axi4lite` (AXI4 and AXI4-Lite packages, entities and their OSVVM benches). With the two full declarations moved above their first use in a scratch copy all 417 pass. Since the fix of #1072 (2026-11-02) yavs analyses all 417 unchanged. The old v1.2 benches that used the `PoC.simulation` packages do not exist in v3.0.0 (the packages are gone), so the six `poc_*` realbench tests were replaced by four OSVVM-based v3 tests (`poc_arith_addw`, `poc_arith_scaler`, `poc_ooo_buffer`, `poc_arith_counter_bcd`); all earlier numbers in this file that name a `poc_*` test, and the PoC rows of `docs/performance.md` for 2026-10-28 and 2026-11-01, are from v1.2.
 
-Analysis corpus failures, classified 2026-10-19 (release build of main, all 29 manifests, cascades
+Analysis corpus failures, classified 2026-10-19 (a record; the Synopsys packages landed on 2026-10-19 and 2026-10-20, #117 and #171, and `unisim` was added with #61 on 2026-10-23, so the failures named below no longer occur; current results are in `tools/corpus/RESULTS.md` and `tools/corpus/*.expected`) (release build of main, all 29 manifests, cascades
 followed to the first failing file): 3552 PASS, 299 FAIL. 292 stop on the missing Synopsys
 packages (#117, #171; approach is the user's decision): `std_logic_misc` 126 (fletcher 89, vhlib
 19, open-logic 18), `std_logic_unsigned` 85 and `std_logic_arith` 81 (surf); the reference

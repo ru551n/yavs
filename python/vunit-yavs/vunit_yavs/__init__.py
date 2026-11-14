@@ -1291,7 +1291,7 @@ class YavsVersion:
 
 
 # The first yavs with what this package uses (--dap, response files, YAVS_TOKENS). Raise it with the CLI contract it relies on.
-YAVS_MIN_VERSION = YavsVersion("0.19.1")
+YAVS_MIN_VERSION = YavsVersion("0.20.0")
 # The last yavs whose analyze calls at once into libraries that read each other can wait for each other's lock forever
 # (#1150; builds of main report it too, fixed or not). ponytail: _library_groups is dead once YAVS_MIN_VERSION is above
 # it (the next release); delete both then.

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.20.0 (2026-11-14)
 
 - Compiling follows the project's dependency graph: the files of one library, standard and flags that are ready at the
   same time, and the later ones that depend only on them, go to one `yavs analyze` call, not only consecutive files.
@@ -11,6 +11,7 @@
   simulation runs with `--threads=auto`, as with `-p N`. It was silently off.
 - With a yavs newer than 0.19.1, `-j N` also runs calls at once into libraries that read each other; with 0.19.1 or
   older they get one call at a time, as two calls could wait for each other's library lock forever (yavs #1150).
+- Needs yavs 0.20.0 or later. All changes: the yavs 0.20.0 release notes.
 
 ## 0.19.1 (2026-11-11)
 

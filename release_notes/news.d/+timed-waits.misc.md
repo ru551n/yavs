@@ -1,1 +1,0 @@
-Kernel: a process that waits with a timeout and a condition (`wait on s until c for T`, the message wait of verification components) and is woken by events that leave the condition false now waits again without queueing a new timeout or registering its signals again, and compiled code hands a timed wait's timeout to the kernel directly, so such a wake costs much less.

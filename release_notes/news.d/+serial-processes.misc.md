@@ -1,1 +1,0 @@
-Kernel: processes that name a protected object or a shared variable anywhere, as nearly every testbench process does, are activated as cheaply as other processes, and the shared heap is rescanned at a suspension only when something it holds has changed.

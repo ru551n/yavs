@@ -1,1 +1,0 @@
-Kernel: a wide bus that a process assigns whole, or that is copied through a concurrent assignment, is committed in fewer steps by the kernel, so designs that pass wide data buses through ports simulate a little faster.

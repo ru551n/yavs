@@ -37,7 +37,7 @@ from vunit.vhdl_standard import VHDL
 import vunit
 from vunit_yavs.console import HELP
 from vunit_yavs import YAVS_MIN_VERSION, CoverageArgs, YavsInterface, YavsVersion, check_debug_args, write_response_file
-from vunit_yavs import _library_groups
+from vunit_yavs import YAVS_LOCK_CYCLE_LAST_VERSION, _library_groups
 from vunit_yavs.tokens import TokenServer
 
 FAKE_BIN = Path(__file__).parent / "fake_bin"
@@ -1073,9 +1073,9 @@ class TestCompileSchedule(unittest.TestCase):
         ) + "".join(f"use {use}.all;\n" for use in uses)
         write_file(name, f"{context}package {unit} is\n{extra}end package;\n")
 
-    def compile(self, fake, jobs=1, continue_on_error=False):
-        """Compile the project with fake as yavs and return the printed text"""
-        simif = YavsInterface(prefix="prefix", output_path=self._tempdir.name, compile_jobs=jobs)
+    def compile(self, fake, jobs=1, continue_on_error=False, version=None):
+        """Compile the project with fake as yavs (of `version`, None: unknown) and return the printed text"""
+        simif = YavsInterface(prefix="prefix", output_path=self._tempdir.name, compile_jobs=jobs, yavs_version=version)
         printed = io.StringIO()
         try:
             with mock.patch("vunit.sim_if.check_output", side_effect=fake), contextlib.redirect_stdout(printed):
@@ -1190,14 +1190,19 @@ class TestCompileSchedule(unittest.TestCase):
         self.assertIn(["c1.vhd"], fake.groups())
         self.assertIn(["c2.vhd"], fake.groups())
 
-    def test_libraries_that_read_each_other_get_one_call_at_a_time(self):
-        # yavs would deadlock on the two libraries' locks (#1150); a library clause alone makes it read the library
+    def new_project_reading_each_other(self):
+        """The project and libraries d and e that read each other: a library clause alone makes yavs read one"""
+        self.new_project()
         for library, other in (("d", "e"), ("e", "d")):
             self.project.add_library(library, str(Path("libs") / library))
             write_file(f"{library}1.vhd", f"library {other};\npackage p{library} is\nend package;\n")
             self.project.add_source_file(
                 f"{library}1.vhd", library, file_type="vhdl", vhdl_standard=VHDL.standard("2008")
             )
+
+    def test_libraries_that_read_each_other_get_one_call_at_a_time(self):
+        # A yavs before the fix would deadlock on the two libraries' locks (#1150)
+        self.new_project_reading_each_other()
         groups = _library_groups(self.project, self.project.create_dependency_graph())
         self.assertEqual(groups["d"], groups["e"])
         self.assertEqual(len({groups[name] for name in "abcd"}), 4)  # b reads a, a does not read b
@@ -1207,6 +1212,14 @@ class TestCompileSchedule(unittest.TestCase):
         self.assertEqual(len(spans), 2)
         self.assertLessEqual(spans[0][1], spans[1][0])
         self.assertGreaterEqual(fake.most_at_once, 3)
+        # A yavs with the fix gets both at once; an older one, as an unknown one above, one at a time
+        for version, apart in ((YavsVersion("0.19.2"), False), (YAVS_LOCK_CYCLE_LAST_VERSION, True)):
+            renew_path("libs")  # Nothing is up to date
+            self.new_project_reading_each_other()
+            fake = FakeAnalyze(delay=0.2)
+            self.compile(fake, jobs=8, version=version)
+            spans = sorted((start, end) for library, _, start, end, _ in fake.calls if library in "de")
+            self.assertEqual(spans[0][1] <= spans[1][0], apart, version)
 
     def test_output_the_console_cannot_encode_is_replaced(self):
         # yavs shows a carriage return of a source line as U+240D, which a Windows code page lacks

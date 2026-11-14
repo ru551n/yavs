@@ -148,8 +148,9 @@ always on. A call that fails is repeated one file per call, so the failing file 
 
 ``-j N`` (or ``--jobs N``) runs up to N such calls at once, into different libraries: yavs locks a library for the whole
 of an ``analyze`` call, so calls into one library would only wait for each other, and the package does not start them.
-Libraries that read each other (a ``library`` clause or a dependency, directly or through other libraries) get one call
-at a time between them too: two calls at once into them can wait for each other's lock forever (yavs issue #1150).
+With yavs 0.19.1 or older, libraries that read each other (a ``library`` clause or a dependency, directly or through
+other libraries) get one call at a time between them too: two calls at once into them could wait for each other's lock
+forever (yavs issue #1150, fixed in the next release).
 A project of many libraries gains most; one library, or a chain where each library needs the one before, gains little.
 Without ``-j`` the calls run one at a time. ``-j`` counts compile calls and ``-p`` counts simulations; neither sets the
 other.

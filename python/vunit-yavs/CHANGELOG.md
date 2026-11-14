@@ -9,6 +9,8 @@
   those of VUnit's own compile loop.
 - `--yavs-jobserver` works with `-p 0` (one simulation per CPU): the token server starts with one slot per CPU and each
   simulation runs with `--threads=auto`, as with `-p N`. It was silently off.
+- With a yavs newer than 0.19.1, `-j N` also runs calls at once into libraries that read each other; with 0.19.1 or
+  older they get one call at a time, as two calls could wait for each other's library lock forever (yavs #1150).
 
 ## 0.19.1 (2026-11-11)
 

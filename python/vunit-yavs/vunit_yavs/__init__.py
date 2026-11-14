@@ -487,11 +487,12 @@ class YavsInterface(SimulatorInterface):
 
         prefix = cls.find_prefix()
         check_executable("YAVS", prefix, cls.executable)
-        cls.check_version(prefix)
+        version = cls.check_version(prefix)
 
         return cls(
             output_path=output_path,
             prefix=prefix,
+            yavs_version=version,
             debug_port=debug_port,
             interactive=interactive,
             surfer=surfer,
@@ -536,9 +537,11 @@ class YavsInterface(SimulatorInterface):
         lint=False,
         cov_directives=None,
         compile_jobs=1,
+        yavs_version=None,
     ):  # pylint: disable=too-many-arguments
         SimulatorInterface.__init__(self, output_path, False)
         self._compile_jobs = compile_jobs  # -j: yavs analyze calls at once
+        self._yavs_version = yavs_version  # None: not known (assume the oldest)
         self._lint = lint
         self._cov_directives = cov_directives
         self._coverage = coverage or CoverageArgs()
@@ -716,7 +719,9 @@ class YavsInterface(SimulatorInterface):
         if not files:
             printer.write("Re-compile not needed\n")
             return None
-        groups = _library_groups(project, graph) if self._compile_jobs > 1 else {}
+        # An older yavs deadlocks on two calls at once into libraries that read each other (#1150)
+        old = self._yavs_version is None or self._yavs_version <= YAVS_LOCK_CYCLE_LAST_VERSION
+        groups = _library_groups(project, graph) if self._compile_jobs > 1 and old else {}
         failures = _Compile(self, project, printer, graph, files, groups).run(self._compile_jobs, continue_on_error)
         if failures:
             printer.write("Compile failed\n", fg="ri")
@@ -1287,3 +1292,7 @@ class YavsVersion:
 
 # The first yavs with what this package uses (--dap, response files, YAVS_TOKENS). Raise it with the CLI contract it relies on.
 YAVS_MIN_VERSION = YavsVersion("0.19.1")
+# The last yavs whose analyze calls at once into libraries that read each other can wait for each other's lock forever
+# (#1150; builds of main report it too, fixed or not). ponytail: _library_groups is dead once YAVS_MIN_VERSION is above
+# it (the next release); delete both then.
+YAVS_LOCK_CYCLE_LAST_VERSION = YavsVersion("0.19.1")

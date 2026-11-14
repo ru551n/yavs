@@ -61,8 +61,8 @@ or later (`pip install vunit-yavs` installs it, a pre-release) and yavs 0.19.1 o
 Compiling: files go to `yavs analyze` in the project's dependency order, the out-of-date ones only. A call takes a ready
 file and the later files of its library, standard and flags whose dependencies are done or in the call (always on); a
 failing call is repeated file by file to name the failing file, and what depends on it is skipped, as in VUnit. With `-j N`
-up to N calls run at once, never two into one library (yavs locks a library for a whole call) nor into libraries that
-read each other (they could wait for each other's lock, yavs #1150), so a project of many libraries gains most. Output is printed per finished call. With a VUnit that has `--batch-compile` and `--parallel-compile`
+up to N calls run at once, never two into one library (yavs locks a library for a whole call), nor, with yavs 0.19.1
+or older, into libraries that read each other (they could wait for each other's lock, yavs #1150), so a project of many libraries gains most. Output is printed per finished call. With a VUnit that has `--batch-compile` and `--parallel-compile`
 (5.0.0.dev16 does not have them), those flags hand the compile to VUnit instead, and `-j` has no effect.
 
 Without `yavs.max_threads` or `--yavs-max-threads` no thread count is passed, and yavs runs with

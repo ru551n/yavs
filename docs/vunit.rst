@@ -171,7 +171,7 @@ It helps only when those long tests gain from threads. Under the server every si
 ``--threads=auto``: it takes the idle slots only while its threads make it faster (:doc:`threads`).
 ``--yavs-max-threads N`` or ``yavs.max_threads`` gives a fixed number instead.
 
-``-j N`` compiles with up to N ``yavs analyze`` calls at once, into libraries that do not read each other; it gains
+``-j N`` compiles with up to N ``yavs analyze`` calls at once, into different libraries; it gains
 on projects of many libraries, such as a set of verification components (:ref:`vunit-compiling`).
 
 Other libraries in a test

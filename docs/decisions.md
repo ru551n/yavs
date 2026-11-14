@@ -16635,6 +16635,16 @@ compares from one run to the next.
   directly or through other libraries; one call at a time per group. A deadlock needs such a cycle, so a project whose
   libraries form no cycle loses no parallelism. Computed only with `-j` above 1. A runner's own `--parallel-compile`
   is not protected; #1150 is the fix in yavs.
+- **The groups only for yavs 0.19.1 or older (agent, 2026-11-14, #1150 fixed).** A process that holds a library's
+  exclusive lock no longer waits for another ("Library locks: a writer never waits"), so calls into libraries that read
+  each other run at once. `YAVS_LOCK_CYCLE_LAST_VERSION` (0.19.1, the last release without the fix) gates
+  `_library_groups` on the version `check_version` read; an unknown version (an interface made without `from_args`)
+  keeps them. A build of main reports 0.19.1 until the release, fixed or not, and keeps the groups: correct, only less
+  parallel. Not removed outright: `-j` is unreleased, but vunit-yavs from main may meet a released 0.19.1. The release
+  raises `YAVS_MIN_VERSION` above 0.19.1 (`tools/release/bump.py`), and from then on the groups are dead code, to delete
+  with the constant. Measured with a
+  fixed yavs and the groups off: two libraries whose second files (50000 constants each) read each other, `-j 2`, the
+  two calls ran at once, each read the other's index without its lock, and the compile took 0.41 s instead of 0.76 s.
 - **VUnit's failure semantics (agent, 2026-11-14).** The skipped set is `get_dependent` of the failing file, as in
   VUnit's loop. Without `--keep-compiling` no new call starts after a failure; running calls finish, are printed and,
   when they pass, are recorded with `project.update`; then `Compile failed` and `CompileError`. With it, everything

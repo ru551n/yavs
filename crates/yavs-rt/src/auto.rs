@@ -1560,6 +1560,9 @@ struct Worker {
     /// they were.
     want: Vec<FuncId>,
     wanted: Vec<bool>,
+    /// Per function: published native-frame code left its frames for it (`guard`, `left_to`), in
+    /// this run or an earlier one (`Profile::left`): it does not wait.
+    left_want: Vec<bool>,
     /// The seen time of the functions whose native-frame code a callee keeps unpublished, by callee
     /// (`publish`): what compiling the callee lets run compiled, which its own seen time does not show.
     blocked: Vec<u64>,
@@ -1858,6 +1861,7 @@ impl Worker {
             carried: Default::default(),
             want: Vec::new(),
             wanted: vec![false; nfuncs],
+            left_want: vec![false; nfuncs],
             blocked: vec![0; nfuncs],
             gate: 0,
             count: 0,
@@ -1946,6 +1950,10 @@ impl Worker {
     /// looks), or a subprogram no compiled code calls (a call between interpreted caller and
     /// compiled callee costs what the callee saves, the natfall lesson as a rule).
     fn waits(&self, id: FuncId) -> bool {
+        // (What published code leaves its frames for is worth those frames: `guard`.)
+        if self.left_want[id.0 as usize] {
+            return false;
+        }
         let sub = self
             .prog
             .func(id)
@@ -2389,6 +2397,21 @@ impl Worker {
             let frames = left - std::mem::replace(&mut self.left_seen[k], left);
             // (Published over the whole stretch: `live`.)
             let whole = std::mem::replace(&mut self.live[k], self.nat[k].1);
+            // Published code whose frames cost that much leaves them at calls to functions with no
+            // native-frame code, which the frames are worth: their own seen time does not show it.
+            if self.nat[k].1
+                && frames * LEFT_COST >= work * crate::work::per_us() / self.guard_share
+            {
+                for c in self.left_to(id) {
+                    self.left_want[c.0 as usize] = true;
+                    if !std::mem::replace(&mut self.wanted[c.0 as usize], true) {
+                        if let Some(tr) = &self.trace {
+                            tr.line(format!("wants f{} for the frames f{k} left", c.0));
+                        }
+                        self.want.push(c);
+                    }
+                }
+            }
             if frames == 0
                 || !whole
                 || !self.nat[k].1
@@ -2917,6 +2940,38 @@ impl Worker {
         None
     }
 
+    /// The functions the published native-frame code of `id` calls natively, directly or through
+    /// native callees, that ran and have no native-frame code: where its frames leave at a call.
+    /// Unlike `missing`, a callee left out of its compile counts: it ran since.
+    fn left_to(&self, id: FuncId) -> Vec<FuncId> {
+        let nc = self.nset(id);
+        let mut seen = std::collections::HashSet::from([id]);
+        let (mut todo, mut out) = (vec![id], Vec::new());
+        while let Some(g) = todo.pop() {
+            for inst in self.prog.func(g).map_or(&[][..], |f| &f.code[..]) {
+                let (yavs_ir::Inst::Call { func, .. } | yavs_ir::Inst::CallProt { func, .. }) =
+                    *inst
+                else {
+                    continue;
+                };
+                if !nc.contains(&func) || !seen.insert(func) {
+                    continue;
+                }
+                let k = func.0 as usize;
+                if self.nat[k].0 != 0 {
+                    todo.push(func);
+                } else if !self.lost[k]
+                    && !self.done[k]
+                    && (self.time[k] != [0, 0]
+                        || (self.counted && self.native.count_left(func) != self.count))
+                {
+                    out.push(func);
+                }
+            }
+        }
+        out
+    }
+
     /// Publish the native-frame code whose callees are all compiled.
     fn publish(&mut self) {
         self.blocked.fill(0);
@@ -3432,6 +3487,11 @@ impl Worker {
             .iter()
             .map(|&(id, us, runs)| (FuncId(id), (us, runs)))
             .collect();
+        for &f in &p.left {
+            if let Some(w) = self.left_want.get_mut(f as usize) {
+                *w = true;
+            }
+        }
         for &f in &p.made {
             if let Some(m) = self.made_before.get_mut(f as usize) {
                 *m = true;
@@ -3563,6 +3623,10 @@ impl Worker {
             ran,
             made: (0..self.noted.len())
                 .filter(|&k| self.noted[k])
+                .map(|k| k as u32)
+                .collect(),
+            left: (0..self.left_want.len())
+                .filter(|&k| self.left_want[k])
                 .map(|k| k as u32)
                 .collect(),
         }
@@ -5945,6 +6009,49 @@ mod tests {
             w.ntab[top.0 as usize].load(std::sync::atomic::Ordering::Acquire),
             64
         );
+    }
+
+    /// Published native-frame code that leaves its frames often at a call to a function with no
+    /// native-frame code wants that function, whatever holds it (here the gate), and the profile
+    /// keeps it so that a later run does not hold it either (`olo_fix_cordic_rot`: a linked caller
+    /// left 87 000 frames a run at callees too cold to compile by their own time).
+    #[test]
+    fn a_callee_published_code_leaves_its_frames_for_is_wanted() {
+        let fresh = || {
+            let (prog, top, leaf) = native_chain();
+            let mut w = counted(prog, u64::MAX);
+            w.nat[top.0 as usize] = (64, true);
+            w.ntab[top.0 as usize].store(64, std::sync::atomic::Ordering::Release);
+            w.count = 100;
+            w.native.set_count(leaf, 100);
+            w.native.tick(leaf.0);
+            (w, top, leaf)
+        };
+        let (mut w, top, leaf) = fresh();
+        assert!(w.waits(leaf), "the gate holds it");
+        work_on(&mut w, 100_000);
+        w.guard();
+        // A few frames: not worth a compile.
+        w.native.note_left(top);
+        work_on(&mut w, 100_000);
+        w.guard();
+        assert!(w.waits(leaf));
+        assert!(w.freed().is_empty());
+        for _ in 0..frames_for(100_000) {
+            w.native.note_left(top);
+        }
+        work_on(&mut w, 100_000);
+        w.guard();
+        assert!(!w.waits(leaf));
+        assert_eq!(w.freed(), [leaf]);
+        assert_eq!(w.snapshot().left, [leaf.0]);
+        // The next run: the profile's `left` line.
+        let (mut w, _, leaf) = fresh();
+        w.use_profile(super::Profile {
+            left: vec![leaf.0],
+            ..Default::default()
+        });
+        assert!(!w.waits(leaf));
     }
 
     /// A procedure that runs on native frames and calls another.

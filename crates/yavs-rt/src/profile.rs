@@ -38,9 +38,12 @@ pub(crate) const GAIN_PERCENT: u64 = 3;
 /// The functions `Worker::unrepaid` held kept (the most seen first).
 pub(crate) const HELD_MAX: usize = 1024;
 
+/// The functions kept on the `left` lines.
+pub(crate) const LEFT_MAX: usize = 1024;
+
 /// Version 4 adds the `held` lines, 5 the `ran` lines, 6 the `made` lines, 7 the `work` and `long`
-/// lines; a profile of an earlier version is no profile (`parse`).
-const HEAD: &str = "yavs-auto-profile 7";
+/// lines, 8 the `left` lines; a profile of an earlier version is no profile (`parse`).
+const HEAD: &str = "yavs-auto-profile 8";
 
 /// What the earlier runs of a program left.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -70,6 +73,9 @@ pub(crate) struct Profile {
     /// The functions the last run compiled or linked as modules of their own, which the cache's
     /// list names (`Worker::lost_line`, #1148).
     pub made: Vec<u32>,
+    /// The functions published native-frame code left its frames for (`Worker::left_to`) in this
+    /// run or an earlier one: a run does not hold them (`Worker::waits`).
+    pub left: Vec<u32>,
 }
 
 impl Profile {
@@ -102,6 +108,10 @@ impl Profile {
             use std::fmt::Write;
             let _ = writeln!(s, "made {id}");
         }
+        for id in &self.left {
+            use std::fmt::Write;
+            let _ = writeln!(s, "left {id}");
+        }
         s
     }
 
@@ -120,6 +130,7 @@ impl Profile {
             .collect();
         self.ran = self.ran.iter().filter_map(|&id| f(id)).collect();
         self.made = self.made.iter().filter_map(|&id| f(id)).collect();
+        self.left = self.left.iter().filter_map(|&id| f(id)).collect();
     }
 
     /// The profile in `text`, `None` for anything this version did not write.
@@ -148,6 +159,7 @@ impl Profile {
                 "lost" => p.lost.push(u32::try_from(num(&mut w)?).ok()?),
                 "ran" => p.ran.push(u32::try_from(num(&mut w)?).ok()?),
                 "made" => p.made.push(u32::try_from(num(&mut w)?).ok()?),
+                "left" => p.left.push(u32::try_from(num(&mut w)?).ok()?),
                 "held" => {
                     let (id, us) = (u32::try_from(num(&mut w)?).ok()?, num(&mut w)?);
                     p.held.push((id, us, u32::try_from(num(&mut w)?).ok()?));
@@ -185,6 +197,8 @@ pub(crate) struct Snapshot {
     pub ran: Vec<u32>,
     /// The functions this run compiled or linked as modules of their own (`Profile::made`).
     pub made: Vec<u32>,
+    /// The functions this run did not hold for the frames published code left (`Profile::left`).
+    pub left: Vec<u32>,
 }
 
 /// The profile after a run that took `cpu` simulation CPU microseconds and did `work` microseconds of
@@ -262,6 +276,11 @@ pub(crate) fn next(earlier: &Profile, snap: &Snapshot, cpu: u64, work: u64, gate
     p.held.truncate(HELD_MAX);
     p.ran = snap.ran.clone();
     p.made = snap.made.clone();
+    // (They stay: a later run links them before its code leaves again.)
+    p.left.extend(&snap.left);
+    p.left.sort_unstable();
+    p.left.dedup();
+    p.left.truncate(LEFT_MAX);
     p.lost.drain(..p.lost.len().saturating_sub(LOST_MAX));
     p
 }
@@ -289,6 +308,7 @@ mod tests {
             held: vec![(4, 3_000, 2)],
             ran: vec![8, 2, 5],
             made: vec![2, 6],
+            left: vec![7],
         };
         assert_eq!(Profile::parse(&p.render()), Some(p.clone()));
         assert_eq!(
@@ -313,7 +333,10 @@ mod tests {
             "yavs-auto-profile 5\nbase 5\n",
             // So is version 6 (no `work` lines).
             "yavs-auto-profile 6\nbase 5\n",
-            "yavs-auto-profile 7\nlong 1\n",
+            // So is version 7 (no `left` lines).
+            "yavs-auto-profile 7\nbase 5\n",
+            "yavs-auto-profile 8\nlong 1\n",
+            "yavs-auto-profile 8\nleft x\n",
         ] {
             assert_eq!(Profile::parse(bad), None, "{bad:?}");
         }
@@ -332,6 +355,7 @@ mod tests {
             held: Vec::new(),
             ran: Vec::new(),
             made: Vec::new(),
+            left: Vec::new(),
         }
     }
 
@@ -356,6 +380,26 @@ mod tests {
             [(4, 120, 2), (5, 10, 1)],
             "3 was compiled: it starts over"
         );
+        assert_eq!(Profile::parse(&two.render()), Some(two));
+    }
+
+    /// The functions a run did not hold for the frames published code left stay listed.
+    #[test]
+    fn functions_left_for_stay_listed() {
+        let left = |l: &[u32]| Snapshot {
+            left: l.to_vec(),
+            ..snap(&[], &[], &[])
+        };
+        let one = next(
+            &Profile::default(),
+            &left(&[5, 3]),
+            2_000_000,
+            2_000_000,
+            GATE,
+        );
+        assert_eq!(one.left, [3, 5]);
+        let two = next(&one, &left(&[4, 5]), 2_000_000, 2_000_000, GATE);
+        assert_eq!(two.left, [3, 4, 5]);
         assert_eq!(Profile::parse(&two.render()), Some(two));
     }
 

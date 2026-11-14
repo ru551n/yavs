@@ -16581,6 +16581,45 @@ compares from one run to the next.
   time is the measure), `profile.rs` `a_program_found_long_stays_long_while_its_runs_do_half_the_gate` (fails without the
   hysteresis), `a_run_is_better_by_its_work`, the round trip with `work` and `long` lines and format 6 read as none.
 
+## `--tier=auto`: what published code leaves its frames for does not wait (yavs-rt `auto.rs` `Worker::guard`, `left_to`, `waits`, `profile.rs` format 8, perf/bimodal, 2026-11-14, agent, landed under the standing rule)
+
+Amends "`--tier=auto`: a callee repays by the callers it keeps unpublished" (2026-11-13) for callers that are already
+published, and the guard of "`--tier=auto`: the count rule".
+
+- **Finding** (agent, bimodal). `olo_fix_cordic_rot` (runs of 0.15 s; the count gate never opens) settled at random in one
+  of two states over fresh cache worlds: about 2.38 G instructions a run in three worlds of four, 1.97 G in the others
+  (20 worlds x 10 runs: 5 fast). The state is what the cache holds, set by the order of the compiles of runs 1 and 2.
+  When run 1 compiles `convert` before its callees (`resize_sensible`, ...) have run, they are left out of its compile
+  (`unseen`), its native-frame code is published, and every later run links it and leaves its native frames at each call
+  into them: about 87 000 frames a run, a third of the run's work. By their own seen time the callees are too cold for the
+  sampled path, and the count rule holds them (the gate, the uncalled-subprogram hold, `unrepaid`); `missing` skips a
+  callee left out of the compile, and `blocked` credits only callers kept unpublished. When run 2 compiles `convert`
+  instead, its tree has them: fast for good (the object store of a fast world held six more modules).
+- **Decision** (agent). In every stretch the guard judges, published native-frame code whose left frames cost at least the
+  guard's bar (a thirty-second of the stretch at `LEFT_COST` a frame) wants the functions it reaches natively that ran
+  and have no native-frame code (`left_to`; one left out of its compile counts). Such a function does not wait
+  (`left_want`: not the gate, the uncalled-subprogram hold, `unpaid` or `unrepaid`); budget and pacing (`next_asked`)
+  still apply. The profile keeps them (`left` lines, format 8, kept over the runs, `LEFT_MAX`), so a later run links
+  them as soon as they are asked for instead of after the guard's first stretch (that alone left a middle state at
+  2.16 G). Read from frame counts and the looks' work: no clock.
+- **Measured** (bench builds, all-thread user instructions, fresh worlds, base and change interleaved run by run on
+  claimed cores). `olo_fix_cordic_rot`, 20 worlds x 10: worlds settled fast 5 -> 20; runs 3 to 10 median 2.38 -> 1.98 G
+  (p90 2.41 -> 2.04); sum of the runs 25.66 -> 23.23 G (0.905). `uvvm_axistream_vvc`, `neorv32_single_min`,
+  `neorv32_dual_full`, 16 worlds x 12: sums 0.993, 1.000, 0.997, steady 0.998, 0.999, 1.001. realbench, all 40 tests, 3
+  worlds x 10 runs, base, a byte copy of base and the change interleaved: geomean of the sums 0.995 (A/A 0.998), of the
+  steady runs 0.994 (A/A 0.998), outputs and exit codes equal; the highest, `hdlm_ring_buffer` 1.017, reads 1.016 in the
+  A/A. GRLIB and Microwatt whole runs, interpreted and auto: output and exit status as the base.
+- **Tried and dropped** (same session): adding the earlier runs' seen time to `repays` (the root's alone, or the whole
+  tree's): no change on `olo_fix_cordic_rot` (fast worlds 1 and 3 of 16 against 3); the guard's want without the
+  waits exemption: wanted, never compiled (the gate held it); remembering trial verdicts in the profile (a process
+  judged by the mean of 3 runs): trials are few (2 to 4 a world in 10 runs on `neorv32_dual_full` and
+  `osvvm_axi4_random`), sums 0.998 and 1.013; `unrepaid` and the stop budget from work at the profile's least loaded
+  rate: under a busy SMT sibling (CPU 1.4 to 2.1 times) the base's steady instructions moved 0.988 to 1.008 on four
+  designs and the variant's no less (0.978 to 1.020).
+- **Tests**: `auto.rs` `a_callee_published_code_leaves_its_frames_for_is_wanted` (a few frames want nothing; frames over
+  the bar free a callee the gate held; the snapshot and a profile's `left` line carry it; fails without the exemption),
+  `profile.rs` `functions_left_for_stay_listed`, the round trip with `left` lines and format 7 read as none.
+
 ## Locals of arrays of logic arrays made from their aggregate (yavs-lower `composite.rs`, 2026-11-13)
 
 - **Finding**: `variable r : t_arr(0 to N - 1) := (others => (others => '0'))` (an array of `signed`) wrote its value three

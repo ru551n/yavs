@@ -16467,6 +16467,10 @@ run-to-run profile (user, 2026-11-09).
   longest 10): geomean steady 0.995 and 1.005, sum 0.995 and 1.001; its `uvvm_sb_slv` 0.946. VUnit cells, the
   `c03`/dispatch cells and the skid cell: level. `sc5_timestamp`, `olo_fix_cordic_rot` and `neorv32_single_min` stay
   bimodal (30 worlds: slow runs 202 against 210 and 215 against 205 of 240); not this rule.
+- **Cost, accepted after the landing** (user, 2026-11-14: "keep it"). The dearer early runs of `uvvm_util_rand_tb`
+  above (runs 1 to 5 1.3 to 2.2 percent more in three interleaved series, level over 14 runs, steady 0.5 to 2 percent
+  fewer) were not ruled on before the change landed: the agent landed it with the cost recorded as a known cost, and
+  the maintainer accepted the cost afterwards. The user decision of 2026-11-13 above set the goal, not this cost.
 - **Test**: `policy_tests.rs` `a_candidate_short_of_its_price_compiles_once_the_runs_together_repay_it` (two fresh
   worlds whose runs see the candidate a little over and a little under its tree's price, through `profile::next`,
   the profile's text and `Worker::use_profile`: both compile it, the second one run later; without the change the

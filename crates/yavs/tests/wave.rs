@@ -444,8 +444,22 @@ fn wave_sigterm() {
     wave_signal("sigterm", "-TERM", None);
 }
 
-#[cfg(unix)]
-fn wave_signal(tag: &str, sig: &str, flush: Option<&str>) {
+/// How `interrupted_clock` ends a free-running clock.
+enum Stop {
+    /// A signal for `kill` (`-INT`, `-TERM`), Unix only.
+    Signal(&'static str),
+    /// The parent's pipe closes (`--exit-on-stdin-close`), every platform.
+    StdinClose,
+}
+
+/// A free-running clock recorded with `extra` options and ended by `how`: its output, the
+/// time (fs) of the "simulation interrupted" note, and the directory.
+fn interrupted_clock(
+    tag: &str,
+    how: Stop,
+    flush: Option<&str>,
+    extra: &[&str],
+) -> (std::process::Output, u64, common::Tmp) {
     let d = scratch(tag);
     let src = d.join("clock.vhd");
     std::fs::write(
@@ -463,11 +477,15 @@ fn wave_signal(tag: &str, sig: &str, flush: Option<&str>) {
     if let Some(v) = flush {
         cmd.env("YAVS_WAVE_FLUSH", v);
     }
-    let child = cmd
+    let mut child = cmd
+        .current_dir(&d)
         .args(["run", &format!("--work=work:{}", d.join("lib").display())])
         .arg(format!("--wave={}", fst.display()))
+        .args(extra)
         .arg("clock")
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("yavs");
     // The handler is installed right after the file is created.
@@ -478,17 +496,81 @@ fn wave_signal(tag: &str, sig: &str, flush: Option<&str>) {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     std::thread::sleep(std::time::Duration::from_secs(2));
-    let kill = Command::new("kill")
-        .args([sig, &child.id().to_string()])
-        .status()
-        .expect("kill");
-    assert!(kill.success());
+    match how {
+        Stop::Signal(sig) => {
+            let kill = Command::new("kill")
+                .args([sig, &child.id().to_string()])
+                .status()
+                .expect("kill");
+            assert!(kill.success());
+        }
+        Stop::StdinClose => drop(child.stdin.take()),
+    }
     let out = child.wait_with_output().expect("wait");
-    assert_eq!(out.status.code(), Some(1));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("simulation interrupted"), "{stdout}");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    // Exit status 130 like every other output mode (#1155), with the file finished.
+    assert_eq!(out.status.code(), Some(130), "{stdout}");
+    let note = stdout
+        .lines()
+        .find(|l| l.contains("simulation interrupted"))
+        .unwrap_or_else(|| panic!("no note in {stdout}"));
+    let fs: u64 = note
+        .trim_start_matches("** Note: ")
+        .split("fs+")
+        .next()
+        .and_then(|t| t.parse().ok())
+        .unwrap_or_else(|| panic!("no time in {note}"));
     let s = dump(&fst);
     assert!(changes(&s, "clock.c").split(' ').count() > 10, "{s}");
+    // The file ends at the time the run stopped.
+    let last = *read(&fst)
+        .expect("read")
+        .time_table()
+        .last()
+        .expect("times");
+    assert_eq!(last, fs, "{s}");
+    (out, fs, d)
+}
+
+#[cfg(unix)]
+fn wave_signal(tag: &str, sig: &'static str, flush: Option<&str>) {
+    let _ = interrupted_clock(tag, Stop::Signal(sig), flush, &[]);
+}
+
+/// The first Ctrl-C or SIGTERM of a run that records a waveform and also measures coverage
+/// and profiles: status 130, the file, the coverage database and the profile all written.
+#[cfg(unix)]
+#[test]
+fn wave_cov_profile_sigint() {
+    for sig in ["-INT", "-TERM"] {
+        let (out, _, d) = interrupted_clock(
+            "wave_cov_profile",
+            Stop::Signal(sig),
+            None,
+            &["--cov=s", "--cov-file=c.cov", "--profile"],
+        );
+        assert!(d.join("c.cov").exists(), "{sig}: no coverage database");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("profile: "),
+            "{sig}"
+        );
+    }
+}
+
+/// The parent's pipe closing ends a recording run the same way, on every platform: status
+/// 130 and a finished file (`--exit-on-stdin-close`).
+#[test]
+fn wave_ends_with_stdin_close() {
+    let (out, _, _) = interrupted_clock(
+        "stdin_close",
+        Stop::StdinClose,
+        None,
+        &["--exit-on-stdin-close"],
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("standard input closed"),
+        "{out:?}"
+    );
 }
 
 /// A REAL signal going from 0.0 to -0.0 and back is no event, so the waveform has no change

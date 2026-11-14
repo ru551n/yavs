@@ -125,6 +125,38 @@ VU.main()
 """
 
 
+FOREVER_TB = """
+library vunit_lib;
+context vunit_lib.vunit_context;
+entity tb_forever is generic (runner_cfg : string); end entity;
+architecture a of tb_forever is
+  signal c : bit;
+begin
+  c <= not c after 5 ns;
+  main : process
+  begin
+    test_runner_setup(runner, runner_cfg);
+    wait for 1 hr;
+    test_runner_cleanup(runner);
+    wait;
+  end process;
+end architecture;
+"""
+
+WAVE_RUN = """
+import os
+from pathlib import Path
+from vunit import VUnit
+VU = VUnit.from_argv()
+VU.add_package("vunit-yavs", allow_setup=True)
+VU.add_vhdl_builtins()
+LIB = VU.add_library("lib")
+LIB.add_source_files(Path(__file__).parent / "tb_forever.vhd")
+LIB.set_sim_option("yavs.sim_flags", [f"--wave={os.environ['WAVE_FILE']}"])
+VU.main()
+"""
+
+
 def send(sock, message):
     """Send one DAP message"""
     body = json.dumps(message).encode()
@@ -701,6 +733,41 @@ class TestRealYavs(unittest.TestCase):
             # Free the port for later tests: a client that disconnects ends the run
             socket.create_connection(("127.0.0.1", port), timeout=10).close()
             self.fail("yavs still waits for a debugger after its test runner was killed")
+
+    @unittest.skipUnless(os.name == "posix", "needs process ids from the shell")
+    def test_killing_only_the_test_runner_ends_a_run_that_records_waves(self):
+        """SIGKILL of run.py alone with `--wave` (#1155): the closing pipe stops the run between cycles"""
+        project = self.tempdir / "wave-project"
+        project.mkdir()
+        (project / "tb_forever.vhd").write_text(FOREVER_TB)
+        (project / "run.py").write_text(WAVE_RUN)
+        wave = self.tempdir / "w.fst"
+        proc = subprocess.Popen(  # pylint: disable=consider-using-with
+            [sys.executable, str(project / "run.py"), "-o", str(self.tempdir / "out")],
+            env=dict(self._env(), WAVE_FILE=str(wave)),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(proc.wait)
+        deadline = time.monotonic() + TIMEOUT
+        while not (wave.exists() and wave.stat().st_size > 0):
+            self.assertIsNone(proc.poll(), "run.py ended before the run started")
+            self.assertLess(time.monotonic(), deadline, "the run never started")
+            time.sleep(0.2)
+        time.sleep(2)  # past the setup of the signal handlers
+        children = subprocess.run(
+            ["pgrep", "-P", str(proc.pid)], stdout=subprocess.PIPE, text=True, check=False
+        ).stdout.split()
+        yavs = [int(pid) for pid in children if "yavs" in Path(f"/proc/{pid}/exe").resolve().name]
+        proc.kill()  # Only the test runner: no process group, no yavs
+        self.assertEqual(len(yavs), 1, children)
+        deadline = time.monotonic() + 60
+        while Path(f"/proc/{yavs[0]}").exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if Path(f"/proc/{yavs[0]}").exists():
+            os.kill(yavs[0], 9)
+            self.fail("yavs still runs 60 s after its test runner was killed")
+        self.assertGreater(wave.stat().st_size, 0)
 
     def test_surfer_gets_the_wave_file_of_the_test(self):
         frames = []

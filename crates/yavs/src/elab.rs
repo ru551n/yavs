@@ -1899,7 +1899,7 @@ fn run_design(
                         i.stop();
                     }
                 };
-                ctrl_c_stops(&mut hooks, stop, Arc::default(), true);
+                let _ = ctrl_c_stops(&mut hooks, stop, Arc::default(), true);
                 yavs_wave::interrupt::start(hooks).map_err(handler_error)?;
             }
             let viewer = view.lock().unwrap_or_else(|p| p.into_inner()).clone();
@@ -2166,7 +2166,8 @@ fn run_design(
             yavs_vhpi::note_interrupt();
             current.lock().unwrap_or_else(|p| p.into_inner()).stop();
         };
-        ctrl_c_stops(&mut hooks, stop, flag.clone(), keep_exit);
+        let first = ctrl_c_stops(&mut hooks, stop, flag.clone(), keep_exit);
+        *STDIN_STOP.lock().unwrap_or_else(|p| p.into_inner()) = Some(first);
     } else if crate::stdout::is_on() || tier_up.is_some() {
         // (With a compiled tier a signal ends the run here too, not by its default action: the
         // compilation cache's lists are stored first.)
@@ -2368,7 +2369,8 @@ fn run_design(
             if (0..=125).contains(&c) { c as u8 } else { 1 }
         }
         Ok(RunStatus::Ended(EndReason::Severity(_))) => 1,
-        // Ctrl-C, or the recorder stopped the run after a write error (reported below).
+        // Ctrl-C (status 130 like every other output mode: the file is finished below), or the
+        // recorder stopped the run after a write error (reported below).
         Ok(RunStatus::Ended(EndReason::Requested)) => {
             if interrupted.load(Ordering::Relaxed) {
                 let _ = writeln!(
@@ -2377,8 +2379,10 @@ fn run_design(
                     sim.now().as_fs(),
                     sim.delta()
                 );
+                130
+            } else {
+                1
             }
-            1
         }
         Ok(_) => 0,
         Err(err) => {
@@ -2542,10 +2546,11 @@ pub(crate) fn store_cache_lists() {
 
 /// `--exit-on-stdin-close`: standard input goes to the null device for everything else (a plugin
 /// or foreign library must not touch the pipe, see `yavs_vhpi::divert_stdin`) and a thread reads
-/// the real one to its end, then ends the process as a signal would (status 130). Whatever
-/// arrives on the way is dropped.
-// ponytail: no orderly stop (wave and coverage files stay unfinished); route it through
-// `SimControl::stop` like Ctrl-C if a parent that dies mid-run should leave them complete.
+/// the real one to its end, then ends the run as the first Ctrl-C does (status 130): with
+/// a stop hook (a run that records a waveform, profiles, ...) between cycles so the files are
+/// finished, else the process at once. Whatever arrives on the way is dropped.
+// ponytail: a run that does not end within `STDIN_STOP_GRACE` of the request (stuck inside one
+// cycle) is ended at once; the files are then readable up to their last flush.
 fn exit_when_stdin_ends(keep_exit: bool) -> Result<(), std::io::Error> {
     let mut stdin = yavs_vhpi::divert_stdin()?;
     std::thread::Builder::new()
@@ -2564,27 +2569,40 @@ fn exit_when_stdin_ends(keep_exit: bool) -> Result<(), std::io::Error> {
                 std::io::stderr(),
                 "yavs: standard input closed (the parent ended): stopping the run"
             );
+            let stop = STDIN_STOP.lock().unwrap_or_else(|p| p.into_inner()).take();
+            if let Some(stop) = stop {
+                stop();
+                std::thread::sleep(STDIN_STOP_GRACE);
+            }
             exit_after_signal(130, keep_exit)
         })?;
     Ok(())
 }
 
+/// The first-Ctrl-C hook of the run, for the thread that watches standard input.
+static STDIN_STOP: std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>> =
+    std::sync::Mutex::new(None);
+const STDIN_STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The first Ctrl-C/SIGTERM sets `flag` and ends the run between cycles; the second writes out
-/// the buffered output and exits.
+/// the buffered output and exits. Returns the first-signal hook.
 fn ctrl_c_stops(
     hooks: &mut yavs_wave::interrupt::Handlers,
-    stop: impl Fn() + Send + 'static,
+    stop: impl Fn() + Send + Sync + 'static,
     flag: Arc<AtomicBool>,
     keep_exit: bool,
-) {
-    hooks.first = Some(Box::new(move || {
+) -> Arc<dyn Fn() + Send + Sync> {
+    let first: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
         flag.store(true, Ordering::SeqCst);
         stop();
-    }));
+    });
+    let f = first.clone();
+    hooks.first = Some(Box::new(move || f()));
     hooks.at_exit = Some(Box::new(move || {
         crate::stdout::flush();
         exit_after_signal(1, keep_exit);
     }));
+    first
 }
 
 fn handler_error(err: std::io::Error) -> Box<Diagnostic> {

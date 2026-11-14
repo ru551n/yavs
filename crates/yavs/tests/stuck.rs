@@ -402,11 +402,11 @@ fn sigint_ends_spin(tier: Option<&str>) {
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
-    // The same end whatever tier ran the process: reported, exit status 1, file left behind.
+    // The same end whatever tier ran the process: reported, exit status 130, file left behind.
     let mut stdout = String::new();
     std::io::Read::read_to_string(&mut child.stdout.take().expect("stdout"), &mut stdout)
         .expect("read");
-    assert_eq!(status.code(), Some(1), "{stdout}");
+    assert_eq!(status.code(), Some(130), "{stdout}");
     assert!(stdout.contains("simulation interrupted"), "{stdout}");
     assert!(t.join("o.fst").metadata().expect("wave").len() > 0);
     let _ = std::fs::remove_dir_all(&t);

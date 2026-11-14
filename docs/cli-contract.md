@@ -414,7 +414,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   give one value change (the final value). The file is the same at any
   `--threads`. Names that are the same value (a port collapsed into its actual, at any depth) share one value chain in the file (FST aliases). Signals and ports are recorded; process variables only with `--wave-variables`. Flushed when a block fills (or every `YAVS_WAVE_FLUSH` interval, off by default), on normal end, on stop, and on SIGINT: the
   first Ctrl-C ends the run between cycles, finishes the file, prints
-  `simulation interrupted` and exits 1; a second Ctrl-C exits at once (the file is
+  `simulation interrupted` and exits 130 like every other output mode (#1155; also for SIGTERM, and for standard input closing under `--exit-on-stdin-close`: that one waits at most 30 s for the run to end, then exits 130 at once); a second Ctrl-C exits at once (the file is
   readable up to its last flush). An unwritable path is `E0801` (exit 2).
 - `--wave-include=GLOB`, `--wave-exclude=GLOB` (repeatable): record only paths
   (`top.u1.sig`, case-insensitive, `*` one level, `**` across, `?`) that match /
@@ -558,7 +558,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   `yavs: standard input closed (the parent ended): stopping the run` to stderr and ends the process with status 130, also
   while the run waits for a debugger, analyses or elaborates. For a parent that holds a pipe to the child and may die
   without a word (SIGKILL, TerminateProcess, a crash): the kernel closes the pipe on Linux and on Windows alike, so no
-  signal, process group or polling is involved. Waveform and coverage files are not finished (a Ctrl-C does that). Bytes that
+  signal, process group or polling is involved. A run that records a waveform ends between cycles as a first Ctrl-C does and finishes the file (waiting at most 30 s, then exiting at once); coverage files of other runs are not written (#1155). Bytes that
   arrive on the way are dropped. Standard input is taken for the watcher alone: file descriptor 0 and the Win32 standard input
   handle point at the null device for the design (`textio` `input` is at its end) and for every library, plugin or embedded
   interpreter, because on Windows a pending read of a pipe in one thread makes `GetFileType` on the same handle in

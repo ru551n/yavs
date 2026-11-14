@@ -38,6 +38,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | A `Session` keeps the parsed index and its text in memory; each `record` writes the file's record and then the index (`record_deferred` leaves the index and the deletion of replaced records to `flush`, which `yavs analyze` calls once per call and after a failure: a batch of 250 files rewrote and renamed an index of 40 KB 250 times, 0.6 G kernel instructions, #747; nobody reads the library meanwhile, readers wait for the lock; a record replaced and made again within the batch is not deleted), each as a temp file in the library directory renamed into place (the platform's replace-existing rename on Windows), with NO fsync, and writes nothing that is unchanged; then it deletes the records the index no longer names | A reader or a crash sees the old or the new index, never a torn one; a power loss may lose the last analyze, which the next analyze redoes. The fsync at session end cost 3 to 5 ms of wall per `analyze`, more than the analysis (#561; the analysed-unit cache is unsynced too). Earlier: a batch of 60 files re-read, re-parsed and synced the manifest 60 times | user, 2026-10-23 (#561) |
 | The library is an index plus a record per source file; a record is named by the digest of its text and never rewritten; the index names the digest. The closure holds the shared locks of its libraries while it reads records | A call reads and writes the index and its own records, not the whole library (#599): a warm `analyze` of one file into a 246-file library is 9 million instructions instead of 17; an interrupted write leaves the old index and an unnamed record; a damaged or missing record is `L0003` | user, 2026-10-23 (#599), `docs/decisions.md` "Library layout" |
 | `elab`/`run` take the shared lock only while reading; `run` never writes into library dirs | A long simulation never blocks compilation | rule 14 |
+| A process that holds an exclusive lock (`HELD` not empty) never waits for another library's shared lock: `read` (the index alone) tries the lock once and reads without it when it is taken; `read_locked` (the closure, which reads records) still waits | Two `analyze` calls into libraries that read each other each held their own lock and waited for the other's for ever; the index is renamed whole once per call, so a read without the lock sees it before or after the writer's call; with no waits by lock holders no wait can close a cycle (#1150) | `docs/decisions.md` "Library locks: a writer never waits" |
 | Read-only libraries never fail: lock opened read-only, or no locking at all if it cannot be opened | Sandboxed build systems | rule 14 |
 | A lock wait longer than a few seconds prints a note naming the library | User feedback | rule 14 |
 | Standard recorded per file (manifest format 2) | Mixed 2008/2019 projects (user, 2026-10-18) | `docs/plan.md` "Test-runner integration", `docs/design/sem.md` 0.1 |
@@ -63,8 +64,13 @@ goes into `docs/cli-contract.md` section 3 (root `AGENTS.md` rule 24).
   and write the records before the index.
 - Whoever reads records (`Manifest::records`, only `closure` and the analysed-unit cache's warm check) holds
   the library's shared lock (or the process's exclusive one) meanwhile; `Library::read` alone does not.
-- `HELD` lets a process read a library it holds exclusively without deadlocking on its own lock.
-  Keep it in sync if you add another lock path.
+- `HELD` lets a process read a library it holds exclusively without deadlocking on its own lock,
+  and makes a process that holds any exclusive lock read other libraries without waiting (#1150).
+  Keep it in sync if you add another lock path. The closure still waits (records it reads are
+  deleted by a writer once replaced), so a process holding a session must not call `closure`:
+  it could wait in a cycle again; `yavs analyze` does not.
+- A test that needs a reader to wait runs in a process of its own (`readers_wait_for_writers`):
+  another test's session in the same binary makes the read go ahead.
 - Every error names what was missing and where yavs looked (paths in notes/help). Never return a
   default manifest for an unreadable one.
 - The closure is ordered and deterministic (dependencies first; a package body in a file of its own follows its package's file as soon as everything it needs is placed, so that closures that share the package's files share the body's place, #407); `tests/cli.rs` and the difftest

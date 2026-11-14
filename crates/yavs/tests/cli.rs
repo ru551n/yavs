@@ -977,6 +977,60 @@ fn concurrent_batches() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// #1150: two calls at once into libraries that read each other both finish; each held its own
+/// library's lock and waited for the other's for ever.
+#[test]
+fn concurrent_analyze_into_libraries_that_read_each_other() {
+    let tmp = tempdir("mutual");
+    let dir: &std::path::Path = &tmp;
+    for l in ["a", "b"] {
+        let pkg = format!("package {l}1 is constant c : integer := 1; end package;\n");
+        analyze_into(dir, l, &["a", "b"], &[(&format!("{l}1.vhd"), &pkg)]);
+    }
+    // Big enough that both calls hold their lock while the other reads.
+    let spawn = |l: &str, other: &str| {
+        let body: String = (0..20000)
+            .map(|i| format!("  constant k{i} : integer := c + {i};\n"))
+            .collect();
+        let f = dir.join(format!("{l}2.vhd"));
+        std::fs::write(
+            &f,
+            format!(
+                "library {other};\nuse {other}.{other}1.all;\npackage {l}2 is\n{body}end package;\n"
+            ),
+        )
+        .expect("write");
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never", "analyze", "--std=2008"])
+            .arg(format!("--work={l}:{}/{l}", dir.display()))
+            .arg(format!("--map=a:{}/a", dir.display()))
+            .arg(format!("--map=b:{}/b", dir.display()))
+            .arg(f)
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn")
+    };
+    let mut kids = [spawn("a", "b"), spawn("b", "a")];
+    // A deadlock is for ever: give up after two minutes and kill both.
+    let start = std::time::Instant::now();
+    while kids
+        .iter_mut()
+        .any(|k| k.try_wait().expect("wait").is_none())
+    {
+        if start.elapsed().as_secs() > 120 {
+            for k in &mut kids {
+                let _ = k.kill();
+            }
+            panic!("the two calls wait for each other's lock");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    for k in kids {
+        let o = k.wait_with_output().expect("output");
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+}
+
 /// A file the design never closes is written out when the run ends, also when `yavs run` ends
 /// without freeing the design.
 #[test]

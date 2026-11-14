@@ -34,7 +34,8 @@ large library does not slow down each run.
   type that is not protected. ``--relaxed`` turns those few errors into warnings; pass it to
   ``analyze`` and to ``run``.
 * ``run`` never writes to a library, so any number of simulations can run at once on the same
-  libraries, and parallel ``analyze`` calls into one library are safe too. A library directory is one library
+  libraries, and parallel ``analyze`` calls into one library are safe too, as are calls at once into
+  libraries that read each other. A library directory is one library
   however its path is spelled (through ``..`` or a symlink), also for a command line that names it twice.
 
 Test runners

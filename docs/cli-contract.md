@@ -173,7 +173,11 @@ directly (`docs/design/vhdl-93.md`).
   updates the library (each record and the index are written to a temp file, then atomically
   renamed, the records first and the index last, so a reader sees the index it read and the records it
   names, whole); `run`/`elab` hold it shared only while reading the index and the records of the
-  files in the closure. Read-only
+  files in the closure. A process that holds a library's exclusive lock never waits for another lock
+  (#1150): an `analyze` into `a` that reads `b` while another `analyze` writes `b` reads `b`'s index
+  without the lock, as it was before that call (the index is renamed into place whole, once per call),
+  so two calls into libraries that read each other both finish instead of waiting for each other for
+  ever. Read-only
   library directories never fail: shared lock via a read-only open, or no lock
   if the file cannot be opened at all. The test runner needs no locking of its own.
 - Edited sources: `run`/`elab` find a file that changed since it was analyzed (`L0034`) by its content
@@ -306,7 +310,7 @@ yavs analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=alwa
   index is read again. The work library's exclusive lock is held for the
   whole call, and each successful file's record is renamed into place as soon as it is done; the index is
   written once, at the end of the call and after a failure (#747: one write for the batch, not one per
-  file; a reader waits for the lock, so it sees the library as it was before the call or after it, and a
+  file; a reader waits for the lock (an `analyze` into another library does not wait, section 3, #1150), so it sees the library as it was before the call or after it, and a
   call killed half way records none of its files, which the next `analyze` redoes from the analysed-unit
   entries it made). Nothing is fsynced, so a power loss may lose the last call's files, which the next
   `analyze` records again. Concurrent calls into the same library serialize per call and never lose each

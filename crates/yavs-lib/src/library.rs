@@ -103,19 +103,39 @@ impl Library {
     }
 
     /// Take the shared lock for a read: the lock file (`None`: this process holds the exclusive
-    /// lock, or the library cannot be locked) and whether this process holds the exclusive lock.
-    fn lock_shared(&self) -> Result<(Option<File>, bool)> {
+    /// lock, or the library cannot be locked, or, for a read of the index alone, is being written
+    /// while this process writes another) and whether this process holds the exclusive lock.
+    /// `records`: the caller reads records too, which a writer deletes once replaced, so it waits.
+    fn lock_shared(&self, records: bool) -> Result<(Option<File>, bool)> {
         let lock_path = self.dir.join(LOCK_FILE);
-        let held = HELD
-            .lock()
-            .unwrap()
-            .contains(&yavs_diag::files::resolve(&self.dir));
+        let (held, writing) = {
+            let h = HELD.lock().unwrap();
+            (
+                h.contains(&yavs_diag::files::resolve(&self.dir)),
+                !records && !h.is_empty(),
+            )
+        };
         let opened = if held {
             Ok(None)
         } else {
             File::open(&lock_path).map(Some)
         };
         let guard = match opened {
+            // A process that holds an exclusive lock never waits for another one: two `analyze`
+            // calls into libraries that read each other waited for each other for ever (#1150).
+            // The index is renamed into place whole, once per call, so it is read as it was before
+            // or after the writer's call.
+            Ok(Some(f)) if writing => match f.try_lock_shared() {
+                Ok(()) => Some(f),
+                Err(TryLockError::WouldBlock) => {
+                    debug(format!(
+                        "reading library `{}` without a lock: another process is writing it",
+                        self.name
+                    ));
+                    None
+                }
+                Err(TryLockError::Error(e)) => return Err(io("L0011", "lock", &lock_path, &e)),
+            },
             Ok(Some(f)) => match self.acquire(&f, false) {
                 Ok(()) => Some(f),
                 Err(e) => return Err(io("L0011", "lock", &lock_path, &e)),
@@ -138,7 +158,7 @@ impl Library {
     /// are read later ([`Manifest::records`]); whoever does that holds the lock meanwhile
     /// ([`Library::read_locked`]).
     pub fn read(&self) -> Result<Arc<Manifest>> {
-        let (guard, held) = self.lock_shared()?;
+        let (guard, held) = self.lock_shared(false)?;
         let m = self.parse_index(held);
         drop(guard);
         m
@@ -147,7 +167,7 @@ impl Library {
     /// [`Library::read`] that keeps the shared lock until the returned guard is dropped, so that
     /// no writer replaces a record while it is read.
     pub(crate) fn read_locked(&self) -> Result<(Arc<Manifest>, Option<File>)> {
-        let (guard, held) = self.lock_shared()?;
+        let (guard, held) = self.lock_shared(true)?;
         Ok((self.parse_index(held)?, guard))
     }
 

@@ -312,6 +312,17 @@ fn same_file_units_are_not_a_cycle() {
 
 #[test]
 fn readers_wait_for_writers() {
+    // In a process of its own: while another test of this binary holds a session, the read would
+    // not wait (#1150).
+    if std::env::var_os("YAVS_LIB_TEST_CHILD").is_none() {
+        let s = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "readers_wait_for_writers", "--nocapture"])
+            .env("YAVS_LIB_TEST_CHILD", "1")
+            .status()
+            .unwrap();
+        assert!(s.success());
+        return;
+    }
     let (t, _, work, _) = setup();
     analyze(&work, t.path(), "a.vhd", "a", vec![pkg("A")]);
     let lock = std::fs::OpenOptions::new()
@@ -1091,4 +1102,79 @@ fn a_symlinked_spelling_of_a_held_library_does_not_wait() {
         );
     }
     drop(session);
+}
+
+/// Child entry point for `writers_of_libraries_that_read_each_other_finish`: holds the exclusive
+/// lock of library `me`, and once the other process holds `other`'s, reads `other`.
+#[test]
+fn mutual_reader_entry() {
+    let Ok(spec) = std::env::var("YAVS_LIB_TEST_CHILD") else {
+        return;
+    };
+    let mut it = spec.split(',');
+    let (dir, me, other) = (
+        Path::new(it.next().unwrap()),
+        it.next().unwrap(),
+        it.next().unwrap(),
+    );
+    let wait_for = |name: &str| {
+        let start = std::time::Instant::now();
+        while !dir.join(name).exists() {
+            assert!(start.elapsed().as_secs() < 30, "{name} never appeared");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    };
+    let session = Library::new(me, dir.join(me)).session().unwrap();
+    std::fs::write(dir.join(format!("{me}.held")), "").unwrap();
+    wait_for(&format!("{other}.held"));
+    let m = Library::new(other, dir.join(other)).read().unwrap();
+    assert_eq!(m.units().count(), 1);
+    // Both reads happen while the other process still holds its lock.
+    std::fs::write(dir.join(format!("{me}.read")), "").unwrap();
+    wait_for(&format!("{other}.read"));
+    drop(session);
+}
+
+/// #1150: two writers into libraries `a` and `b`, each reading the other while it holds its own
+/// exclusive lock, both finish instead of waiting for each other for ever.
+#[test]
+fn writers_of_libraries_that_read_each_other_finish() {
+    let t = tempfile::tempdir().unwrap();
+    for l in ["a", "b"] {
+        let lib = Library::new(l, t.path().join(l));
+        analyze(
+            &lib,
+            t.path(),
+            &format!("{l}.vhd"),
+            l,
+            vec![pkg(&format!("{l}1"))],
+        );
+    }
+    let mut kids: Vec<_> = [("a", "b"), ("b", "a")]
+        .iter()
+        .map(|(me, other)| {
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "mutual_reader_entry", "--nocapture"])
+                .env(
+                    "YAVS_LIB_TEST_CHILD",
+                    format!("{},{me},{other}", t.path().display()),
+                )
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    // A deadlock is for ever: give up after a minute and kill both.
+    let start = std::time::Instant::now();
+    while kids.iter_mut().any(|k| k.try_wait().unwrap().is_none()) {
+        if start.elapsed().as_secs() > 60 {
+            for k in &mut kids {
+                let _ = k.kill();
+            }
+            panic!("the two writers wait for each other's lock");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    for mut k in kids {
+        assert!(k.wait().unwrap().success());
+    }
 }

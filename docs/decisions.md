@@ -16665,3 +16665,25 @@ compares from one run to the next.
 
   With `-j` the library groups cost about 0.07 s of that (reading the library clauses of the 397 files); no two
   libraries of this project read each other. A first series before the groups existed gave 1.65 / 0.27 s for `-j 4`.
+
+## Library locks: a writer never waits (yavs-lib `Library::lock_shared`, #1150, agent, 2026-11-14)
+
+- **A process that holds a library's exclusive lock never waits for another lock.** `yavs analyze` holds the work
+  library's exclusive lock for the whole call and read the libraries its files name under their shared locks, waiting
+  as long as it took. Two calls at once, into `a` reading `b` and into `b` reading `a`, each held its own lock and waited
+  for the other's for ever (a bare `library b;` clause was enough). Now, while the process holds an exclusive lock,
+  `Library::read` (the index alone) tries the shared lock once and, when another process writes that library, reads the
+  index without the lock. The closure of `elab` and `run` (`read_locked`, which reads records) still waits; a process
+  that writes a library does not compute one. Every wait is then by a process that holds no exclusive lock, for one that holds one and waits for nothing, so
+  no wait can close a cycle; libraries found in the middle of a call (a library clause) need nothing special.
+- **Why a read without the lock is safe here.** The index is written to a temporary file and renamed into place whole,
+  once per call (#747), so such a read sees the library as it was before the writer's call (or after it), never a torn
+  index. `analyze` reads only the index of another library (unit locations; the analysed-unit entries have their own
+  atomic, lock-free store), never its records, which a writer deletes after its rename. On Windows the rename over an
+  index another process has open works (the file is opened with delete sharing, and the rename falls back to POSIX
+  semantics). What is lost: the call no longer waits to see a concurrent call's files in the other library, which a
+  runner that orders dependent files never relied on.
+- **Rejected:** taking every needed lock up front in a global order (the libraries a call reads are known only from its
+  library clauses, and holding shared locks of every mapped library would serialise all parallel compiles); releasing
+  and retaking the work library's lock mid-call (breaks one call, one atomic update); a timeout with an error (a hang
+  becomes a failure, still no parallel compile).

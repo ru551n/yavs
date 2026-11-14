@@ -419,7 +419,7 @@ fn cell(f: Family, c: TypeClass) -> Vec<Item> {
 /// Operations no implicit family names: `ieee` subprograms and statements.
 fn constructs() -> Vec<Item> {
     use Item::{Later, Pending};
-    let mut v: Vec<Item> = [tosulv_row(), caseq_row()]
+    let mut v: Vec<Item> = [tosulv_row(), caseq_row(), write_row()]
         .into_iter()
         .chain(nbit_rows())
         .map(|r| Item::Row(Box::new(r)))
@@ -434,7 +434,7 @@ fn constructs() -> Vec<Item> {
             "`ieee` natives of 65 to 1024 elements from compiled code: a native callback each \
              (about 200 instructions more than the interpreter's call)",
         ),
-        Pending("textio `read`/`write` of std_ulogic_vector: the bodies, per character"),
+        Pending("textio `read` of std_ulogic_vector: the body, per character"),
     ]);
     v
 }
@@ -969,6 +969,25 @@ fn tostr_rows(c: TypeClass) -> Vec<Row> {
         v.push(one("to_string_01", true));
     }
     v
+}
+
+/// textio `write` of a std_ulogic_vector (std_logic_1164), plain and justified in a wider field,
+/// against strings spelled by an element loop.
+fn write_row() -> Row {
+    let (mut r, _) = native_row("textio_write", "textio_write", TypeClass::LogicArray);
+    r.uses = "use std.textio.all;";
+    r.vars += "\n    variable s0, s1 : string(1 to W);\n    variable s2 : string(1 to W + 2);
+    variable p : positive;\n    variable l : line;";
+    r.setup += "\n    p := 1;
+    for i in a'range loop s0(p) := std_ulogic'image(a(i))(2); s1(p) := std_ulogic'image(b1(i))(2); p := p + 1; end loop;
+    s2 := s0 & \"  \";";
+    r.ops1 = "write(l, b1); check(l.all = s1, true); deallocate(l);
+        write(l, a, left, W + 2); check(l.all = s2, true); deallocate(l);"
+        .into();
+    r.ops0 = "write(l, b0); check(l.all = s0, true); deallocate(l);
+        write(l, a, left, W + 2); check(l.all = s2, true); deallocate(l);"
+        .into();
+    r
 }
 
 /// The std_logic_1164 gates of a std_ulogic_vector and a std_ulogic, both sides ('0'/'1' data:

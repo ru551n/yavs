@@ -1136,6 +1136,34 @@ fn to_string(
     crate::native::text_result(m, t, arg(a, 0)?, false).map(Some)
 }
 
+/// The `n` elements of the plane blocks `b` from the left, each the character `chars` has for
+/// its code, appended to `s`; false when a code has none (0 in `chars`).
+pub(crate) fn spell_planes(b: &[u8], n: u64, chars: &[u8; 16], s: &mut Vec<u8>) -> bool {
+    let nb = n.div_ceil(64) as usize;
+    let at = s.len();
+    // Element `i` from the left is plane element `n - 1 - i`: the blocks from the top.
+    for k in (0..nb).rev() {
+        let w: [u64; 4] = std::array::from_fn(|p| crate::reflect::rd64(b, k * 32 + p * 8));
+        let top = if k + 1 == nb { (n - 1) % 64 } else { 63 };
+        let mask = last_mask(top as usize + 1);
+        if w[1] & mask == mask && (w[2] | w[3]) & mask == 0 {
+            // '0' and '1' (BIT always): plane 0 is the element.
+            let (c0, c1) = (chars[2], chars[3]);
+            s.extend(
+                (0..=top)
+                    .rev()
+                    .map(|j| if w[0] >> j & 1 == 1 { c1 } else { c0 }),
+            );
+        } else {
+            s.extend((0..=top).rev().map(|j| {
+                let code = (w[0] >> j & 1) | (w[1] >> j & 1) << 1 | (w[2] >> j & 1) << 2;
+                chars[(code | (w[3] >> j & 1) << 3) as usize]
+            }));
+        }
+    }
+    !s[at..].contains(&0)
+}
+
 /// `to_string` of a one-dimensional array of BIT or STD_ULOGIC, spelled from its planes a block
 /// at a time with the character of each code looked up once; `None` for any other type.
 fn logic_string(m: &mut Machine, t: TyId, fat: u64) -> R<Option<u64>> {
@@ -1159,31 +1187,11 @@ fn logic_string(m: &mut Machine, t: TyId, fat: u64) -> R<Option<u64>> {
         }
     }
     let (data, n) = m.fat1(fat)?;
-    let nb = n.div_ceil(64) as usize;
     let mut s = m.take_bytes();
     s.reserve(n as usize);
-    let b = m.rd(data, nb as u64 * 32)?;
-    // Element `i` from the left is plane element `n - 1 - i`: the blocks from the top.
-    for k in (0..nb).rev() {
-        let w: [u64; 4] = std::array::from_fn(|p| crate::reflect::rd64(b, k * 32 + p * 8));
-        let top = if k + 1 == nb { (n - 1) % 64 } else { 63 };
-        let mask = last_mask(top as usize + 1);
-        if w[1] & mask == mask && (w[2] | w[3]) & mask == 0 {
-            // '0' and '1' (BIT always): plane 0 is the element.
-            let (c0, c1) = (chars[2], chars[3]);
-            s.extend(
-                (0..=top)
-                    .rev()
-                    .map(|j| if w[0] >> j & 1 == 1 { c1 } else { c0 }),
-            );
-        } else {
-            s.extend((0..=top).rev().map(|j| {
-                let code = (w[0] >> j & 1) | (w[1] >> j & 1) << 1 | (w[2] >> j & 1) << 2;
-                chars[(code | (w[3] >> j & 1) << 3) as usize]
-            }));
-        }
-    }
-    let r = if s.contains(&0) {
+    let b = m.rd(data, n.div_ceil(64) * 32)?;
+    let all = spell_planes(b, n, &chars, &mut s);
+    let r = if !all {
         Ok(None)
     } else {
         m.ret_string(&s).map(Some)

@@ -86,6 +86,8 @@ rows! {
     "Math": Op::Math(_) => NO_FAST, CALL;
     // Compiled code has its own path for it (`uniform_fast`), outside `ieee_layout`.
     "Uniform": Op::Uniform => NO_FAST, CALL;
+    // A procedure on a line: the heap, not a block of planes.
+    "Write": Op::Write => NO_FAST, CALL;
     "Str": Op::Str(_) => NO_FAST, CALL;
 }
 
@@ -108,7 +110,7 @@ pub fn every_op() -> Vec<(Op, String)> {
         "mod", "?>", "?<", "?<=", "?>=", "?=", "?/=", ">", "<", "<=", ">=", "=", "/=", "**", "sll",
         "srl", "sla", "sra", "rol", "ror",
     ];
-    const FNS: [&str; 62] = [
+    const FNS: [&str; 63] = [
         "to_stdulogicvector",
         "and_reduce",
         "nand_reduce",
@@ -159,6 +161,7 @@ pub fn every_op() -> Vec<(Op, String)> {
         "shr",
         "conv_integer",
         "uniform",
+        "write",
         "to_hstring",
         "to_ostring",
         "sqrt",
@@ -204,6 +207,8 @@ pub fn every_op() -> Vec<(Op, String)> {
             }
         }
     }
+    // The textio procedure of `std_logic_1164`.
+    params.push("line,std_ulogic_vector,side,integer".into());
     let mut out: Vec<(Op, String)> = Vec::new();
     for name in names {
         for pkg in PKGS {

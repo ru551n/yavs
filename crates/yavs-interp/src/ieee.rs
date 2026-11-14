@@ -1232,6 +1232,24 @@ fn uniform(m: &mut Machine, ctx: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> 
     Ok(None)
 }
 
+/// `write (L, VALUE, JUSTIFIED, FIELD)` of a `std_ulogic_vector`: the body spells the elements
+/// with `MVL9_to_char` into a string and writes that; here the planes are spelled a block at a
+/// time and the string goes to the line in one edit (a deallocated line is textio's error).
+fn write_vec(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
+    let (cell, data) = (arg(a, 0)?, arg(a, 1)?);
+    let n = dim_len(arg(a, 2)? as i64, arg(a, 3)? as i64, arg(a, 4)? == 1)
+        .ok_or_else(|| Fault::Runtime("array too long".into()))?;
+    let mut chars = [0u8; 16];
+    chars[..9].copy_from_slice(b"UX01ZWLH-");
+    let mut s = Vec::with_capacity(n as usize);
+    let b = m.rd(data, n.div_ceil(64) * 32)?;
+    if !crate::implicit::spell_planes(b, n, &chars, &mut s) {
+        return Err(ice("std_ulogic_vector element that is no std_ulogic code"));
+    }
+    crate::textio::write_chars(m, cell, &s, arg(a, 5)?, arg(a, 6)?)?;
+    Ok(None)
+}
+
 /// `to_hstring` / `to_ostring`: groups of 4 (3) elements from the left, padded on the left with
 /// `Z` when the leftmost element is `Z`, else `0`; a group of `Z` is `Z`, any other non-`0 1`
 /// element (after `L`, `H` are mapped) makes it `X`.
@@ -3426,6 +3444,7 @@ pub(crate) fn lookup(symbol: &str) -> Option<NativeFn> {
             ms!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)
         }
         Op::Uniform => uniform,
+        Op::Write => write_vec,
         Op::Str(false) => to_str::<false>,
         Op::Str(true) => to_str::<true>,
         Op::ShiftFn(Shift::Sll) => shift_fn::<0>,

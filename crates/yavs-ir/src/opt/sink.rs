@@ -255,10 +255,8 @@ impl Sink<'_> {
         let Some(key) = n.symbol.strip_prefix("yavs.ieee.") else {
             return false;
         };
-        !matches!(
-            crate::ieee::parse(key.split_once('@').map_or(key, |k| k.0)),
-            None | Some(crate::ieee::Op::Uniform)
-        )
+        crate::ieee::parse(key.split_once('@').map_or(key, |k| k.0))
+            .is_some_and(|op| !crate::ieee::writes_args(op))
     }
 }
 

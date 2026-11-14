@@ -2108,10 +2108,8 @@ pub fn light_ieee(
         && regs
             .iter()
             .all(|r| f.reg_ty.get(r.0 as usize) != Some(&yavs_ir::RegTy::Sig))
-        && !matches!(
-            yavs_ir::ieee::parse(key.split_once('@').map_or(key, |k| k.0)),
-            None | Some(yavs_ir::ieee::Op::Uniform)
-        )
+        && yavs_ir::ieee::parse(key.split_once('@').map_or(key, |k| k.0))
+            .is_some_and(|op| !yavs_ir::ieee::writes_args(op))
 }
 
 /// The [`Op::CallIeee`] of a light `ieee` native whose numbers all fit its fields, else `None`

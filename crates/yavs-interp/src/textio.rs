@@ -1067,6 +1067,18 @@ natives! {
     }
 }
 
+/// WRITE of the string `s` (not in a heap object) with `JUSTIFIED` and `FIELD` positions
+/// `sd`, `w` to the line at `cell`: what `write_string` does, for a native that made the string.
+pub(crate) fn write_chars(m: &mut Machine, cell: u64, s: &[u8], sd: u64, w: u64) -> R<()> {
+    let (sd, w) = (side(sd)?, width(w)?);
+    m.line_live(cell)?;
+    let mut t = m.take_bytes();
+    tio::write_string(&mut t, s, sd, w);
+    m.line_edit(cell, 0, &t)?;
+    m.give_bytes(t);
+    Ok(())
+}
+
 fn write_bits(
     m: &mut Machine,
     a: Args<'_>,

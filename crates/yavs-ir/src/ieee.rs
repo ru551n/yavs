@@ -7,7 +7,7 @@
 //! matches. `yavs-interp` implements every [`Op`] that `parse` returns.
 
 /// The packages whose subprograms are listed.
-const PACKAGES: [&str; 7] = [
+const PACKAGES: [&str; 8] = [
     "ieee.std_logic_arith.",
     "ieee.std_logic_misc.",
     "ieee.math_real.",
@@ -15,6 +15,7 @@ const PACKAGES: [&str; 7] = [
     "ieee.numeric_std.",
     "ieee.numeric_bit.",
     "std.standard.",
+    "std.textio.",
 ];
 
 /// A two-input gate of `std_logic_1164`.
@@ -267,8 +268,11 @@ pub enum Op {
     ShiftFn(Shift),
     Math(Math),
     Syn(Syn),
-    /// `math_real.uniform (seed1, seed2, x)`: the only native procedure.
+    /// `math_real.uniform (seed1, seed2, x)`.
     Uniform,
+    /// `std_logic_1164.write (L, VALUE, JUSTIFIED, FIELD)` of a `std_ulogic_vector`: the
+    /// characters of the elements written to the line as one string, as the body does.
+    Write,
     /// `to_bitvector (std_ulogic_vector, bit)`: `0 L` to `'0'`, `1 H` to `'1'`, the rest to the
     /// second argument.
     ToBitVector,
@@ -626,6 +630,9 @@ pub fn parse(key: &str) -> Option<Op> {
             keep: true,
         })),
         ("math_real", "uniform", ["integer", "integer", "real"], "") => Some(Op::Uniform),
+        ("std_logic_1164", "write", ["line", "std_ulogic_vector", "side", "integer"], "") => {
+            Some(Op::Write)
+        }
         ("std_logic_1164", n @ ("to_hstring" | "to_ostring"), ["std_ulogic_vector"], "string") => {
             Some(Op::Str(n == "to_ostring"))
         }
@@ -789,6 +796,12 @@ pub fn arg_regs(key: &str) -> usize {
         .sum()
 }
 
+/// Whether the native of `op` is a procedure that writes through its arguments (a variable, a
+/// line): no pass may treat it as a function of its arguments that touches no other memory.
+pub fn writes_args(op: Op) -> bool {
+    matches!(op, Op::Uniform | Op::Write)
+}
+
 /// Whether the native of `op` may hand the call back to the VHDL body.
 pub fn has_fallback(op: Op) -> bool {
     matches!(
@@ -892,6 +905,10 @@ mod tests {
             ),
             ("std_logic_1164.\"?/=\"(std_ulogic,std_ulogic)std_ulogic", 2),
             ("math_real.uniform(integer,integer,real)", 3),
+            (
+                "std_logic_1164.write(line,std_ulogic_vector,side,integer)",
+                7,
+            ),
         ] {
             assert_eq!(arg_regs(k), n, "{k}");
         }

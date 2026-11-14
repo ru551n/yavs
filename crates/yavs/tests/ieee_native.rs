@@ -3474,3 +3474,86 @@ fn native_predefined_match_matches_bodies() {
         }
     }
 }
+
+const WRITES: &str = r#"library ieee;
+use ieee.std_logic_1164.all;
+use std.textio.all;
+entity w is generic (k : integer := 0); end entity;
+architecture a of w is
+begin
+  process
+    variable l, l2 : line;
+    variable v : std_ulogic_vector(129 downto 0);
+    variable u : std_logic_vector(0 to 69);
+  begin
+    if k = 1 then
+      -- A stale copy of a deallocated line.
+      write(l, string'("x"));
+      l2 := l;
+      deallocate(l);
+      write(l2, v(3 downto 0));
+    end if;
+    for i in v'range loop
+      v(i) := std_ulogic'val((i * 7 + i / 9) mod 9);
+    end loop;
+    for i in u'range loop
+      u(i) := '1' when i mod 3 = 1 else '0';
+    end loop;
+    for n in 0 to 130 loop
+      write(l, v(n - 1 downto 0));
+      write(l, string'("|"));
+      write(l, v(129 downto 130 - n), left, n / 2 + 3);
+      write(l, string'("|"));
+      write(l, v(n / 2 downto 0), right, n + 1);
+      writeline(output, l);
+    end loop;
+    write(l, u);
+    bwrite(l, u(3 to 9), right, 12);
+    write(l, u(5 to 4), left, 4);
+    write(l, std_ulogic_vector'("UX01ZWLH-"));
+    writeline(output, l);
+    report "end";
+    wait;
+  end process;
+end architecture;
+"#;
+
+/// textio `write` of a `std_ulogic_vector` (the native writes the string the body spells): the
+/// same lines, justified both ways in fields narrower and wider than the value, null slices, the
+/// alias `bwrite`, a `std_logic_vector`, and the error of a stale line.
+#[test]
+fn native_write_matches_body() {
+    let dir = tempdir("ieee");
+    std::fs::write(dir.join("w.vhd"), WRITES).expect("write");
+    let a = run(
+        &dir,
+        &["analyze", "--std=2008", "--work=work:lib", "w.vhd"],
+        true,
+    );
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    for k in 0..2 {
+        let g = format!("-gk={k}");
+        let go = |native| {
+            run(
+                &dir,
+                &["run", "--std=2008", "--work=work:lib", "w", &g],
+                native,
+            )
+        };
+        let (n, v) = (go(true), go(false));
+        assert_eq!(n.status.code(), v.status.code(), "k={k}");
+        assert_eq!(n.stdout, v.stdout, "k={k}");
+        if k == 0 {
+            assert!(String::from_utf8_lossy(&n.stdout).lines().count() >= 132);
+            assert_eq!(n.stderr, v.stderr);
+        } else {
+            let first = |o: &Output| {
+                String::from_utf8_lossy(&o.stderr)
+                    .lines()
+                    .next()
+                    .map(str::to_string)
+            };
+            assert_eq!(first(&n), first(&v));
+        }
+    }
+}

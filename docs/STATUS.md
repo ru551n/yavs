@@ -317,8 +317,6 @@ The file is the same however it is spelled (#1016): a named file that reached th
 
 ### Dotted paths (#975, 2026-10-31)
 
-`{i}` of `SetVhdlAssertFormat` is `'instance_name` of the region around the process, without the last colon (#982, 2026-11-01; test `assert_format_i_is_the_instance_name`).
-
 Every path yavs writes is dotted through `yavs_diag::dotted`: reports, errors, hierarchy, hang report, activity, profile, coverage reports, JSON. The kernel holds the dotted names; `'path_name`, `'instance_name`, `{i}`, VHPI names, the coverage database and `dataId` keep colons. Both forms are accepted as input. `tools/difftest` normalises the process path.
 
 ### A suite far over the limit (#1034, 2026-11-02)
@@ -6015,6 +6013,8 @@ hand with a MinGW DLL (the test cannot spawn the compiler inside wine). Native W
 runs the test as written.
 
 ## vhpi export (`crates/yavs-vhpi`, `crates/yavs`)
+
+Done (#982, 2026-11-01): `{i}` of `SetVhdlAssertFormat` is `'instance_name` of the region around the process, without the last colon. Test `assert_format_i_is_the_instance_name`.
 
 Done (#983, 2026-11-01): `vhpiRandomSeedP` (1100, one reference's extension) of the tool or NULL is the seed of `--shuffle`; without `--shuffle`, or when the seed does not fit `vhpiIntT`, -1 and `vhpi_check_error`, no warning. Test `vhpi_random_seed_is_the_shuffle_seed`.
 

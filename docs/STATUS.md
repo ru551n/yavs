@@ -3411,6 +3411,8 @@ and property tests, criterion benchmarks. Default layout is bit-planes; see
 
 ## llvm: compiled clocked RTL, 2026-10-21 (#432, #339, #440)
 
+(Record, noted 2026-11-14: this and the next four `llvm:` sections describe the LLVM tier, removed on 2026-11-08; its crate is now `crates/yavs-rt`. See the note under "llvm (`crates/yavs-llvm`)" below.)
+
 Compiled process bodies now read vectors from the code bytes, concatenate, allocate and look up descriptors inline,
 drive a vector through `Ctx::assign_blocks` and wait through one callback, and start straight from `run_quick`
 (decisions.md "Compiled clocked RTL processes"). `--tier=auto` compiles a hot process body of 200 to 600 IR
@@ -3569,6 +3571,17 @@ slot counts, which the stress build changes (it never reuses a slot); fixed in #
 the unit tests run under `gc-stress` in the CI `llvm` job.
 
 ## llvm (`crates/yavs-llvm`)
+
+(Record, noted 2026-11-14. The LLVM tier was removed on 2026-11-08 (`docs/decisions.md` "LLVM tier removed") and the crate is now
+`crates/yavs-rt`, the runtime of the Cranelift tier; the text below is what the LLVM tier was and measured, in the words of its day.
+`--tier=llvm`, `--tier=auto3`, the `llvm` feature, `ORC LLJIT`, `crates/yavs-llvm/WINDOWS.md` and `examples/measure.rs` no longer exist.
+Where the pieces that live on are now: tier-up policy (`--tier=auto`, the 1 ms sampler, budget, `--tier-heat`, `--tier-compile`) in
+`crates/yavs-rt/src/auto.rs`, with the flags parsed in `crates/yavs/src/elab.rs` (`--tier-max-size`, default 50000 IR instructions,
+still applies); the frame view, the `yavs_rt_*` callbacks (`yavs_rt_step`, `yavs_rt_host`) and `enter`/`call` in `crates/yavs-rt/src/rt.rs`;
+native-frame eligibility (`native_set`, `too_big`) in `crates/yavs-rt/src/native.rs`; frame-mode analyses in `regs.rs`; element loops in
+`eloop.rs`; the `Generator` trait in `generator.rs`; the run-to-run profile in `profile.rs`; `TierHost` and `TIER_UNWIND` in
+`crates/yavs-interp/src/lib.rs`; the IR optimiser (`YAVS_NO_IROPT`) in `crates/yavs-ir/src/opt.rs`. The code generator is
+`crates/yavs-clift`.)
 
 LLVM tier (M6), behind the `llvm` feature (`cargo test -p yavs-llvm --features llvm`; `cargo build
 -p yavs --features llvm` for `yavs run --tier=llvm`). `compile` lowers every non-elaboration IR
@@ -3916,6 +3929,12 @@ Codegen at O1/O2 grows faster than linearly in the size of one function (10x the
 costs 25x to 30x the time); O0 stays close to linear. Proposed threshold: O2 up to 40k
 instructions per function, larger units stay interpreted (docs/decisions.md).
 ## clift (`crates/yavs-clift`)
+
+(Correction, 2026-11-14: the first two paragraphs below were written while the LLVM tier existed. Since the LLVM tier was removed on
+2026-11-08 and `crates/yavs-llvm` became `crates/yavs-rt` on 2026-11-10: the shared runtime is `yavs_rt::rt` (`crates/yavs-rt/src/rt.rs`),
+the `Generator` trait is `yavs_rt::generator`, the `llvm` feature, `--tier=auto3` and the LLVM second level do not exist (`auto3` and
+`llvm` are hidden values that fail with a clear error), and `--tier=auto` is the Cranelift `AutoTier` (`clift-auto` is another name for it).
+Current state: `crates/yavs-clift/AGENTS.md`. The measurement tables and the rounds below are dated records and keep their words.)
 
 Cranelift tier (#481 item 1), behind the `clift` feature (`cargo test -p yavs-clift --features clift`;
 `cargo build --release -p yavs --features clift` for `yavs run --tier=clift` and `--tier=clift-auto`; both
@@ -4357,6 +4376,8 @@ cycles at level instructions); h2h 11 designs
 instructions (`xor_types` 2.02, `lfsr64` 1.29, `compute_h2h` 1.14). Go/no-go: no-go as the default compiled tier until the
 frame-mode loop code (register array and `Mem` in registers, hoisted dope checks) closes that gap; the list is in
 decisions.md "Cranelift tier, round 11".
+
+(Superseded 2026-10-27 and 2026-11-08: the user decided that the Cranelift tier lands on main and is the compiled tier of the release archives (decisions.md "Cranelift tier on main"); it became the only compiled tier when the LLVM tier was removed.)
 
 ### clift: round 10, the verdict on a quiet host, `Tune::FIRST`, search loops (2026-10-27, #481)
 
@@ -5669,7 +5690,7 @@ concurrency test. A process that holds an exclusive lock never waits for another
 two `analyze` calls at once into libraries that read each other deadlocked; now each reads the other's
 index without the lock (two-process test in `tests/lib.rs`, CLI test `concurrent_analyze_into_libraries_that_read_each_other`). The standard is stored per file. The analyzer supplies `UnitRecord`s (kind, name, dependencies) per file. A directory with a manifest from before the rename to yavs, or of another format version, fails with L0004 (delete the library, analyze again).
 
-The library is an index (`yavs-lib.toml`, format 3: files in analysis order, hash, stamp, `partial`, the units each defines) plus a record per source file (`yavs-lib.d/<digest>.toml`: names and dependencies), #599 (user decision 2026-10-23): a call reads the index and the records it needs and writes only its own records and the index. A warm `analyze` of one file into the 246-file satcat5 library: 17.4 to 9.1 million instructions, 2.5 to 1.8 ms of wall; the index is 99 KB where the manifest was 244 KB. Realbench `analyze` phase (41 tests, one file per call): warm instructions x0.80 and wall x0.87 of before, cold x0.97 and x0.96.
+The library is an index (`yavs-lib.toml`, format 3 when written (#599), 4 since 2026-10-31 (`weak` units), 5 since 2026-11-01 (the resolved path `real` of a file); `FORMAT` in `crates/yavs-lib/src/manifest.rs`: files in analysis order, hash, stamp, `partial`, the units each defines) plus a record per source file (`yavs-lib.d/<digest>.toml`: names and dependencies), #599 (user decision 2026-10-23): a call reads the index and the records it needs and writes only its own records and the index. A warm `analyze` of one file into the 246-file satcat5 library: 17.4 to 9.1 million instructions, 2.5 to 1.8 ms of wall; the index is 99 KB where the manifest was 244 KB. Realbench `analyze` phase (41 tests, one file per call): warm instructions x0.80 and wall x0.87 of before, cold x0.97 and x0.96.
 
 The manifest is renamed into place without an fsync and not rewritten when unchanged (#561, user decision 2026-10-23): a cold `analyze` of a tiny file went from 6.0 ms wall (2.9 ms CPU) to 2.9 ms (2.8 ms CPU).
 
@@ -5767,6 +5788,7 @@ and stale handle, GC roots, natives, foreign call, elaboration call, serial mark
 tests (conditional line breakpoint with hit condition, step over, step in with frame and locals,
 global step across processes, signal breakpoint and process table), verifier and layout tests.
 Also 5 foreign marshalling tests, 5 textio/file/env tests and a protected-type test.
+(Counts as of M2; on 2026-11-14 `crates/yavs-interp/tests` has 38 tests in `sim.rs`, 5 in `debug.rs`, 5 in `foreign.rs`, 6 in `textio.rs`, plus `arr_cmp.rs`, `checks.rs`, `newfill.rs`.)
 Not done: records with runtime layouts beyond `LayoutOf` (one probe passed, not an exhaustive check), the PSL
 natives (out of scope, `lib/NATIVE.md` section 4). `yavs-elab` builds the model directly, without elaboration
 instructions in the IR. `SetVhdlAssertFormat` is done (#922).
@@ -5780,11 +5802,11 @@ variables, constants, signals, ports and type marks, with mirror variables and g
 subprogram instances (`tests/corpus/reflect`, 12/12 at 1, 4 and 4 shuffled threads; 6 against
 the reference simulator, 6 `ref=hand` where it is wrong or crashes). Scalar subtypes whose range
 is not static (generic or parameter bounds) get their range at the `'reflect`, also as element,
-index or designated subtypes. The CLI has no resolution option yet, so TIME mirrors are
-exercised end to end in femtoseconds only (other resolutions: a unit test).
+index or designated subtypes. The CLI had no resolution option when this was written; `yavs run --resolution` (#253, closed 2026-10-19) sets it now and `tests/corpus/reflect/time_resolution.vhd` covers it
+(the corpus directory holds 14 tests now, 12 when counted above).
 
 - A `report` in a function run without a kernel (elaboration time) prints `** Note: (init): msg` on stderr and goes on; severity failure stops (#299; difftest `report/elab_report`); it is counted in the VHDL assert counts, so an error exits 1 at the end (#349; `report/elab_report_error`, catalogue `elab-time-report-error`). Calls replayed on fresh package state (a session rebuild, building the simulation) print and count their reports no more (#390; `report/elab_report_replay`).
-- A run-time package loaded during elaboration (behind a default-bound component) is initialised after the elaboration-time calls made before it, and every later initialisation (session rebuild, the build's replay, warm runs, every tier) keeps that order, so a replayed call returns what it returned (#873; `crates/yavs/tests/late_packages.rs`); before, the replay on the reordered packages ended in an internal error. Open: packages known when elaboration starts are all initialised before its first call (#875), and package initialiser reports print again when the packages are initialised a second time (#874).
+- A run-time package loaded during elaboration (behind a default-bound component) is initialised after the elaboration-time calls made before it, and every later initialisation (session rebuild, the build's replay, warm runs, every tier) keeps that order, so a replayed call returns what it returned (#873; `crates/yavs/tests/late_packages.rs`); before, the replay on the reordered packages ended in an internal error. Open when written (2026-10-29): packages known when elaboration starts are all initialised before its first call (#875), and package initialiser reports print again when the packages are initialised a second time (#874). Update 2026-11-14: #874 is fixed (`2ad2dd884`, 2026-10-31: the session counts the reports it printed; `late_packages.rs` checks that `took id` prints once); #875 is closed on the tracker (2026-10-30, comment "fixed on main in 2323ce6c", which is the #873 change above); that the elaboration-start order itself changed is not verified here.
 
 ### Shared heap collector: overhead measurement (#303, 2026-10-19)
 
@@ -5992,7 +6014,7 @@ Done (#983, 2026-11-01): `vhpiRandomSeedP` (1100, one reference's extension) of 
 
 Done (#984, 2026-11-01): `vhpi_printf` and `vhpi_assert` write UTF-8, text that is not valid UTF-8 is read as ISO-8859-1. Test `vhpi_printf_text_is_utf8`.
 
-Done (#273, 2026-11-01): `tools/vhpi-conformance/rust_plugins.py`, the Rust `vhpi` crate's plugins at a pinned commit, Linux. All pass (markers and exit status): `test_simple` 2/2, `cb_toggle` 6/6, `foreignf` 2/2, `stringindexing` no markers, exit 0, `dumper` 3/3 on each of 6 testbenches. The dumper's output differs from the reference in what is deliberate: processes are regions, `vhpi_get_next_time` only in the end-of-time-step phase, error texts, the order of value changes within a cycle, plus issue-tracked encoding of characters above 127. Found and fixed: a callback's `obj` was invalid once the plugin released the handle it registered with, `vhpi_get_phys(vhpiResolutionLimitP)` refused the tool handle, `vhpiObjTypeVal` on a composite gave tool-defined raw data (a generic client aborted on it; now an error, raw only when asked for). Not done: the same plugins on Windows (`dynamic` feature, #124), not in CI (network, libclang).
+Done (#273, 2026-11-01): `tools/vhpi-conformance/rust_plugins.py`, the Rust `vhpi` crate's plugins at a pinned commit, Linux. All pass (markers and exit status): `test_simple` 2/2, `cb_toggle` 6/6, `foreignf` 2/2, `stringindexing` no markers, exit 0, `dumper` 3/3 on each of 6 testbenches. The dumper's output differs from the reference in what is deliberate: processes are regions, `vhpi_get_next_time` only in the end-of-time-step phase, error texts, the order of value changes within a cycle, plus issue-tracked encoding of characters above 127. Found and fixed: a callback's `obj` was invalid once the plugin released the handle it registered with, `vhpi_get_phys(vhpiResolutionLimitP)` refused the tool handle, `vhpiObjTypeVal` on a composite gave tool-defined raw data (a generic client aborted on it; now an error, raw only when asked for). Not done: the same plugins on Windows (the plugins' `dynamic` feature; `rust_plugins.py` stops with a message off Linux, #273), not in CI (network, libclang). (#124, the Windows MSVC export path, is closed and unrelated to this.)
 
 Done (#832, 2026-11-01): `vhpiPhaseP`, tool and elaboration phase callbacks, `vhpi_control(vhpiReset)` with its callbacks (in-process rebuild; refused with options that report on a whole run), `vhpiCbPLIError`, `vhpiCbSigInterrupt`, interactive callbacks. Not: analysis reasons, `vhpiCbQuiescense`, save and restart (`vhpi_get_data`, `vhpi_put_data`, their reasons), which return the standard's errors. Nothing here runs without `--vhpi` but one reset check after a run ends. Tests: `crates/yavs/tests/vhpi_run.rs`, plugin `phases.c`; `tools/vhpi-conformance` plugin `phases`.
 
@@ -6016,7 +6038,7 @@ Done (#267): `yavs run --vhpi=LIB[:ENTRY]` (repeatable) loads plugins after elab
 fires start/end of simulation (and start of initialization) callbacks through a kernel
 `Observer`, and ends the run on `vhpi_control(vhpiStop | vhpiFinish)` (status 0, new
 `Hook::end`); load failures are `E0901`/`E0902` with exit 2. `crates/yavs/tests/vhpi_run.rs`
-(2 tests, Unix only) loads the `yavs-vhpi` C test plugin through the CLI, both entry forms.
+(2 tests when written, Unix only; the file has 51 tests on 2026-11-14) loads the `yavs-vhpi` C test plugin through the CLI, both entry forms.
 
 Done (#272, object-independent part; #123): simulation-phase and after-delay callbacks through
 `yavs_vhpi::VhpiObserver` and two new kernel phases (`EndOfInit`, `NextCycle`): start/end of
@@ -6025,7 +6047,7 @@ postponed (kernel phases `StartOfProcesses`, `EndOfProcesses` (also once after i
 of time step (read-only; both also at time 0 after initialization when no delta follows, #347), after delay, each with its `Rep` form; `vhpi_remove_cb`,
 `vhpi_enable_cb`, `vhpi_disable_cb`, `vhpi_get_cb_info` (removing a matured callback is legal);
 disabled callbacks sit outside the per-phase sets and cost nothing per cycle. `vhpi_get_time`
-and `vhpiResolutionLimitP` follow `--resolution`. `crates/yavs/tests/vhpi_run.rs` (7 tests) runs
+and `vhpiResolutionLimitP` follow `--resolution`. `crates/yavs/tests/vhpi_run.rs` (7 tests then) runs
 `tests/plugin/sched.c` scenarios: timed finish at T in resolution units, after-delay chains and
 a removed repeating one, read-write before postponed before read-only, enable/disable with
 100000 disabled callbacks, misuse; output identical at `--threads 1` and `4`.
@@ -6057,9 +6079,9 @@ read-only phases and a process variable before its process first ran (before
 `vhpiCbEndOfInitialization`) are `W0903`; a protected object has no value. Array bounds of
 objects with a constrained subtype now come from the subtype, not the initial value.
 `crates/yavs/tests/vhpi_run.rs` `vhpi_reads_and_deposits_variables` (`tests/plugin/vars.c`,
-`tests/vars/expected.txt`, identical at `--threads 1` and `4`). Not yet: reading a process
-variable before its process ran, a region's shared variable no process uses (#342), variables
-of subprograms.
+`tests/vars/expected.txt`, identical at `--threads 1` and `4`). Not yet when written: reading a process
+variable before its process ran, a region's shared variable no process uses (#342, done: see above, closed 2026-10-19), variables
+of subprograms (not done).
 
 Done (#274): `vhpi_register_foreignf` and `vhpi_get_foreignf_info` (`crates/yavs-vhpi/src/foreign.rs`):
 `'FOREIGN "VHPI library model"` functions and procedures (lowering: `ForeignRef::model`; interpreter:
@@ -6070,7 +6092,7 @@ subprogram; an unregistered model is `W0108` then `E0107` at the call. Scalars a
 only. `crates/yavs/tests/vhpi_run.rs` `vhpi_foreign_subprograms` (functions of integer, real, time,
 logic vector, boolean; procedures with `out`, `inout` and array `inout`; identical at `--threads 4`,
 `tests/foreign/expected.txt`) and `vhpi_foreign_missing_model_and_result`. Missing:
-`vhpi_get_data`/`vhpi_put_data`.
+`vhpi_get_data`/`vhpi_put_data` (#832, closed not planned 2026-11-02: yavs cannot save a simulation; they return 0 with an error, `docs/vhpi.md`).
 Done (#357): `vhpiLibF` and `vhpiAppF` models run: a library model's `elabf` when a foreign model of its
 library is bound, its `execf` and an application model's `elabf` and `execf` at the start of the
 simulation (`vhpi_library_and_application_models`, `tests/libapp/expected.txt`, same at `--threads 4`;
@@ -6106,7 +6128,7 @@ design and primary unit, prefix), `vhpi_handle_by_name` (absolute and relative, 
 Checked by `crates/yavs/tests/vhpi_run.rs` `plugin_walks_the_design_hierarchy` (C plugin
 `crates/yavs-vhpi/tests/plugin/hier.c` against `tests/hier/expected.txt`) and unit tests;
 names and kinds agree with the reference simulator that has VHPI wherever it reports them.
-Missing (see `docs/vhpi.md` "Coverage of the standard"): equivalent processes of concurrent statements, aliases, files (#829, #831);
+Missing when written (see `docs/vhpi.md` "Coverage of the standard"): equivalent processes of concurrent statements, aliases, files (done since: #829, #831, 2026-10-31, above);
 sub-elements of variables whose bounds are only known at run time (`W0904`).
 
 Done (#270, values): `vhpi_get_value` (`crates/yavs-vhpi/src/value.rs`) on signals, ports,
@@ -6129,8 +6151,8 @@ Types (`crates/yavs-vhpi/src/types.rs`, a table built with the snapshot): `vhpiT
 `vhpiIsAnonymousP`, `vhpiPositionP`, `vhpiPhysPositionP`; the same plugin dumps every object's
 type, and it agrees with the reference simulator on kinds, names, bases, bounds, dimensions,
 literals and fields (yavs also gives enumeration and floating ranges and unit names).
-Missing: `vhpiPtrVal` outside foreign access parameters, `vhpiRawDataVal`, `vhpiSmallPhys*`, records as a
-whole (`W0904`, #833; variables' values came with #309); the element subtype of a resolved array subtype (`std_logic_vector`'s
+Missing when written: `vhpiPtrVal` outside foreign access parameters, `vhpiRawDataVal`, `vhpiSmallPhys*`, records as a
+whole (`W0904`, #833, done 2026-10-31, see above; variables' values came with #309); the element subtype of a resolved array subtype (`std_logic_vector`'s
 elements report `STD_ULOGIC`).
 
 Done (#143, VHPI audit, first round): `docs/vhpi.md` "Coverage of the standard" lists every area of the IEEE 1076-2019 VHPI as supported, partial or missing, with an issue per gap (#828 to #833). New: user attribute specifications of declarations (`vhpiAttrSpecs`, `vhpiAttrSpecK` with its value, `vhpiAttrDecl`), `vhpiCapabilitiesP`, `vhpiNumPortsP`, `vhpiNumGensP`, `vhpiLabelNameP`, `vhpiGenerateIndexP`, `vhpiIsSharedP`, `vhpiStartLineNoP`, the foreign-model reasons `vhpiCbTimeOut`, `vhpiCbRepTimeOut` and `vhpiCbSensitivity` (on a signal), and `vhpi_format_value`; tests in `crates/yavs/tests/vhpi_run.rs` (plugin `tests/plugin/extras.c`).
@@ -6139,12 +6161,12 @@ Done (#828): `vhpi_get_next_time` in the end-of-time-step phase (kernel `Hook::n
 
 Done (#122): `tools/cocotb/run.py` installs cocotb 2.1.0 (pinned wheel, tests from the pinned tag, test dependencies pinned) into a venv, builds cocotb's VHPI library from its source without simulator defines (`libcocotbvhpi_yavs`), adds yavs to cocotb's runner and pytest-plugin tables and runs what cocotb's own CI runs for a simulator: the 68 `tests/test_cases` directories, the examples through make and pytest, `pytest -k simulator_required` and the pytest plugin's tests, with cocotb's CI environment (`PYTHONWARNINGS=error`, debug switches). Result on main 2026-10-28: 78 of 78 jobs pass (43 run VHDL tests: 702 tests pass, the 10 failing tests are the expected ones of `test_failure` and `test_max_failures`; the other 35 jobs are Verilog only or error-path cases), identical at `--threads 1` and `4` and with 1 or 6 jobs in parallel; about 20 s. The two directories that failed before (66 of 68) failed in the local integration (time resolution and plusargs not passed, no runner entry), not in VHPI. With yavs added to name gates the recursive walk of `test_iteration_vhdl` finds 2663 objects, the count three reference simulators agree on. CI: the `conformance` workflow runs it on every push to main.
 
-Done (#273): `tools/vhpi-conformance/run.py` runs 5 C plugins (walk, props, values, cbs, put) on 2 small designs under yavs and the primary reference simulator and diffs the canonical traces, no install needed. Baseline at `ba53e23d` (reference lines matched): walk 28/172, props 158/328, values 159/230, cbs 78/114, put 108/149; put_value (#271) was still open.
+Done (#273): `tools/vhpi-conformance/run.py` runs 5 C plugins (walk, props, values, cbs, put; 17 C files in `tools/vhpi-conformance/plugins/` on 2026-11-14) on 2 small designs under yavs and the primary reference simulator and diffs the canonical traces, no install needed. Baseline at `ba53e23d` (reference lines matched): walk 28/172, props 158/328, values 159/230, cbs 78/114, put 108/149; put_value (#271) was still open.
 Three-way run (#273, second reference simulator with VHPI, `--refs sim4`), on main with #269 to #272 (yavs lines matching: both references / only the first / only the second / neither): walk 9/64/19/61, props 152/24/92/60, values 102/57/56/15, cbs 64/15/5/3, put 60/41/22/26 (case-folded, LCS-aligned; many `neither` lines are yavs reporting a property both references give as -1). Real gaps where yavs differs from both: `vhpi_iterator` for block and instance statements (#316), end-of-processes callbacks (#317), `vhpiEnumVal` on integers (#318), integer put into a vector and the delta cycle after a propagating put (#319); release after deposit is #310. Reference quirks (the references differ from each other): upper-case names in one, a dummy root above the design in the other, `vhpi_put_value` on undriven signals, time resolution, string formats of enumerations. After #310, #316 to #319 (and the non-propagating put modes refused): walk 20/93/32/92 (yavs now lists block, instance and statement iterators the references answer differently, more lines), props 152/24/92/60, values 104/57/56/13, cbs 81/18/16/14 (the remaining `neither` lines are start-of-processes callbacks the second reference orders around after-delay callbacks and omits in a time step's last delta), put 66/59/9/15, nonprop (new) 56/50/6/5.
 
 ## discrepancies (simulator catalogue)
 
-`docs/design/simulator-discrepancies.md` lists 132 cases where the reference simulators
+`docs/design/simulator-discrepancies.md` lists cases (132 when written in October; `tests/discrepancies/` holds 276 case directories on 2026-11-14) where the reference simulators
 disagree with each other, the LRM or yavs, each with a reproducer in `tests/discrepancies/` and a
 recorded verdict per simulator. `python3 tools/discrepancies/run.py --sims sim1,sim2,sim3,sim4 --check`
 runs them all (yavs plus the configured simulators; the label mapping is local) and fails when yavs

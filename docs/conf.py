@@ -58,6 +58,8 @@ llms_txt_summary = (
 )
 
 html_theme = "sphinx_rtd_theme"
+html_static_path = ["_static"]
+html_css_files = ["custom.css"]
 # The logo of the README, shared with it. The theme's sidebar header is dark in every colour scheme,
 # so the dark variant (light wordmark) is the one that stays legible there.
 html_logo = "../assets/yavs-logo-dark.svg"

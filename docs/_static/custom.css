@@ -1,0 +1,2 @@
+/* The landing page shows the logo; its title stays in the document for the tab title, toctree and search. */
+section#yavs > h1 { display: none; }

@@ -16701,3 +16701,4 @@ compares from one run to the next.
   library clauses, and holding shared locks of every mapped library would serialise all parallel compiles); releasing
   and retaking the work library's lock mid-call (breaks one call, one atomic update); a timeout with an error (a hang
   becomes a failure, still no parallel compile).
+- **Docs landing page (user, 2026-11-14):** shows the logo without the typed project name (CSS hides the page title in `docs/_static/custom.css`; the title stays for the tab, toctree and search); the sidebar keeps the name.

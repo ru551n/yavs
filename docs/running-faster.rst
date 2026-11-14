@@ -80,7 +80,8 @@ Antivirus on Windows
 --------------------
 
 On Windows a real-time antivirus scanner looks at every file yavs creates or changes in ``yavs-cache/``, and a run that
-compiles a lot creates many: cold runs, and many tests run in parallel, are slowed the most. Excluding the directory that
+compiles a lot creates many (a release after 0.19.1 creates far fewer than 0.19.1 did): cold runs, and many tests run in parallel, are slowed
+the most. Excluding the directory that
 holds the work libraries (the output directory of your test runner), or the ``yavs.exe`` process, from real-time scanning
 removes most of that cost. Exclusions are a security setting: on a managed machine, ask whoever manages it. Warm runs read
 what is stored and create few files, so they gain less.

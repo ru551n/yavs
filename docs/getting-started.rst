@@ -91,7 +91,7 @@ Pick the x86_64 archive without ``-compat`` unless your CPU is older than 2013 (
 ``-compat`` one runs on any x86-64 CPU.
 
 aarch64 is also known as arm64; run ``uname -m`` to see which one you need. There is no macOS
-build and no 32-bit build.
+archive and no 32-bit build (see From source for macOS).
 
 .. code-block:: bash
 
@@ -132,7 +132,7 @@ Each archive unpacks into one directory of the same name (without ``.tar.gz`` or
      - The licence and notices of the built-in ``std`` and ``ieee`` sources, the VITAL packages and the
        Synopsys packages.
    * - ``LICENSE-MIMALLOC``
-     - Windows archives only: the licence (MIT) of the memory allocator built into ``yavs.exe``.
+     - Windows archives after 0.19.1 only: the licence (MIT) of the memory allocator built into ``yavs.exe``.
    * - ``README.txt``
      - A few lines on this archive: version, target, CPU variant, the files, how to start.
 
@@ -172,7 +172,7 @@ release archives are:
     cd yavs
     cargo build --release -p yavs --features clift   # target/release/yavs
 
-The release build optimises the whole program at the end (link-time optimisation), as the archives are: it takes a few
+The release build optimises the whole program at the end (link-time optimisation), as the archives after 0.19.1 are: it takes a few
 minutes and about 6 GB of memory in one compiler process. For a quicker build that runs a little slower, add
 ``CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16`` in front of ``cargo build``.
 

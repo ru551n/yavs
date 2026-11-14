@@ -23,7 +23,7 @@ What do I have to install?
     want VUnit (:doc:`vunit`), the VS Code debugger (:doc:`debugging`) or the Surfer viewer (:doc:`waveforms`).
 
 Which platforms does it run on?
-    Linux x86_64, Linux aarch64 and Windows x86_64. There is no macOS build and no 32-bit build.
+    Linux x86_64, Linux aarch64 and Windows x86_64. There is no macOS archive and no 32-bit build; a build from source works on macOS on Apple silicon (:ref:`installation`).
 
 Which VHDL standards?
     VHDL-1993, VHDL-2008 (the default) and VHDL-2019, mixed in one project (:doc:`mixing-standards`). VHDL-2002 code

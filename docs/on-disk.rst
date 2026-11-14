@@ -64,6 +64,9 @@ next testbench reads it instead.
   it passed 40 MB after eight runs and then grew under 1 MB per run, and it did not reach zero.
 * An entry that is damaged counts as not there. The cache can make a run faster, never wrong: a failure to
   read or write it is not an error.
+* A run that ends by Ctrl-C or SIGTERM (exit status 130) first stores the list of the functions it compiled; a run that
+  crashes or is killed hard may lose that list. The compiled code itself is stored at once, so the next run links or
+  compiles those functions again and the output is the same.
 * ``--no-cache`` turns it off for one command.
 
 The shared store of std and ieee

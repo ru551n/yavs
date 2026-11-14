@@ -1,0 +1,1 @@
+The user guide is brought up to date: what a stopped or killed run keeps in the compilation cache, the work-based default of the warm-run gate, the exit status of a run with a waveform that is stopped by Ctrl-C, the unreleased state of `-j` and the compile batching of the test runner package, and macOS source builds.

@@ -144,7 +144,7 @@ Compiling
 The package compiles in the order of the project's dependencies, as VUnit does, and only the files that are out of date.
 Files of one library, standard and flags go to ``yavs analyze`` in one call whenever their dependencies allow: a call
 takes a file that is ready and every later file of the same library whose dependencies are done or in that call. This is
-always on. A call that fails is repeated one file per call, so the failing file is the one reported.
+always on. It and ``-j`` need a ``vunit-yavs`` release newer than 0.19.1. A call that fails is repeated one file per call, so the failing file is the one reported.
 
 ``-j N`` (or ``--jobs N``) runs up to N such calls at once, into different libraries: yavs locks a library for the whole
 of an ``analyze`` call, so calls into one library would only wait for each other, and the package does not start them.

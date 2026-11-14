@@ -45,7 +45,7 @@ or later (`pip install vunit-yavs` installs it, a pre-release) and yavs 0.19.1 o
 | `--yavs-surfer[=HOST:PORT]` | Shows the waves of the one selected test in Surfer 0.6.0 or later while it runs (`yavs run --surfer`); strictly opt-in. Combines with `--yavs-debug` and `--yavs-interactive`, where the cursor follows the stops |
 | `-j N`, `--jobs N` | Compiles with up to N `yavs analyze` calls at once, into different libraries (below); a bare `-j` is one per CPU (put test names before it). Without it, one call at a time. Independent of `-p` |
 | `--yavs-max-threads N` | `yavs.max_threads` (a number or `auto`) for every test that does not set it (environment variable `VUNIT_YAVS_MAX_THREADS` for run scripts with a command line of their own) |
-| `--yavs-lint` | After compiling, runs `yavs lint` on every library of the project that is not external; a finding of severity error fails the compile step. To leave out VUnit's own libraries, put `exclude: ['**/vunit/vhdl/**']` in `yavs-lint.yaml`. `file_list` in that file is not read: the project says which files a library has. Unknown keys in that file are warned about once, for the first library |
+| `--yavs-lint` | After compiling, runs `yavs lint` on every library of the project that is not external; a finding of severity error fails the compile step. To leave out VUnit's own libraries, put `exclude: ['**/vunit/vhdl/**']` in `yavs-lint.yaml`. `file_list` in that file is not read: the project says which files a library has. An unknown key, rule or rule group in that file or in the waiver file is error E0134 (told once, before any library is checked) and fails the compile step |
 | `--yavs-cov=LETTERS` | Collects coverage in every simulation, as `enable_coverage` does for the tests it is set for, of the kinds the letters name: `s` statement, `b` branch, `c` condition, `e` expression, `t` toggle, `f` fsm, `a` assert, `m` combination (`--yavs-cov=sbt`). No kind is on by default; coverage without a kind fails the simulation, naming this flag, `--yavs-cov-kind` and `yavs.cov_kind`. Write the letters with `=` |
 | `--yavs-cov-directives MODE` | `apply` or `ignore`: what `yavs analyze`, `elab` and `run` do with the `-- yavs coverage exclude` comments in the sources (`--coverage-directives`); without it yavs's default, `apply`, which checks them when compiling |
 | `--yavs-cov-html DIR` | `results.merge_coverage()` also writes the HTML coverage report into DIR |
@@ -58,7 +58,7 @@ or later (`pip install vunit-yavs` installs it, a pre-release) and yavs 0.19.1 o
 | `--yavs-cov-config FILE` | `results.merge_coverage()` reads exclusion files, root and kinds from this file (`yavs cov report --config`). A run script passes `args=["--config", file]` |
 | `--yavs-jobserver` | Lends the CPU slots of `-p N` that no test uses to the running simulations through a token server (below) |
 
-Compiling: files go to `yavs analyze` in the project's dependency order, the out-of-date ones only. A call takes a ready
+Compiling (the dependency-graph batching and `-j` need a release newer than 0.19.1): files go to `yavs analyze` in the project's dependency order, the out-of-date ones only. A call takes a ready
 file and the later files of its library, standard and flags whose dependencies are done or in the call (always on); a
 failing call is repeated file by file to name the failing file, and what depends on it is skipped, as in VUnit. With `-j N`
 up to N calls run at once, never two into one library (yavs locks a library for a whole call), nor, with yavs 0.19.1

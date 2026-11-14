@@ -171,7 +171,7 @@ impl CacheKvStore for Kv {
 const PRE: &str = "clifpre";
 
 /// The switches whose value changes the code the lowering or Cranelift makes: in every pre-key.
-pub(crate) const KEYED: [&str; 14] = [
+pub(crate) const KEYED: [&str; 15] = [
     // (Read through `yavs_rt::count_rule_on`: `**` and a layout on a native frame, or a refusal.)
     "YAVS_AUTO_POLICY",
     "YAVS_CLIFT_OPT",
@@ -187,6 +187,7 @@ pub(crate) const KEYED: [&str; 14] = [
     "YAVS_CLIFT_HOLD_CHECK",
     "YAVS_CLIFT_HOLD_DROP",
     "YAVS_ELOOP_HELPER",
+    "YAVS_CLIFT_RESULT_LEAVE",
 ];
 
 /// `YAVS_ELOOP_HELPER`, or its old name `YAVS_LLVM_ELOOP_HELPER` (accepted for one release; the

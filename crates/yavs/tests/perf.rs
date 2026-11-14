@@ -1888,13 +1888,18 @@ mod clift {
         [("cb_lcopy", Max(0)), ("clift_lcopy_count_sites", Min(2))]
     );
     // Elements of an array of signed as operands of `+` are read where they are, in a function
-    // and in the process (#1122): sites counted when the code is made, and the in-place way taken
-    // (no call of the native on its rare way).
+    // and in the process (#1122), and the result of the function's `+` is copied into `r(k)` from
+    // its words: sites counted when the code is made, and the in-place way taken (no call of the
+    // native on its rare way).
     clift_case!(
         elem_operands,
         "clift_elem_operands",
         "s=",
-        [("clift_inplace_sites", Min(4)), ("cb_rare_native", Max(0))]
+        [
+            ("clift_inplace_sites", Min(4)),
+            ("clift_inplace_result_sites", Min(2)),
+            ("cb_rare_native", Max(0))
+        ]
     );
     // A by-reference address of the enclosing frame in frame-mode code: no callback per access.
     clift_case!(

@@ -4992,6 +4992,102 @@ pub fn in_place_operands(
     out
 }
 
+/// The result of a native call copied into an element of an array of logic arrays: the `Load` of
+/// its data pointer `p` at `load` (the call's pc + 1) and an `LCopy` of 1 to 64 elements (a
+/// constant count) from `p`'s start at `copy`. Compiled code copies the words it computed and
+/// stores them into the result's temporary only where it leaves in between.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InResult {
+    pub load: u32,
+    pub copy: u32,
+}
+
+/// The [`InResult`] of each `CallNative`, by its pc: the `Load` and the `LCopy` in the call's
+/// block, between them only arithmetic, `Pos`, `DopeLen`, frame-slot `AddrOf` and `Load`, none of
+/// which touches the result or `p`, and neither read after the `LCopy` (`live`): nothing reads
+/// the temporary's bytes there but the interpreter entered on a way out.
+pub fn in_place_results(
+    f: &Func,
+    fixed: &[Option<i64>],
+    live: &dyn Fn(Reg, usize) -> bool,
+) -> std::collections::HashMap<u32, InResult> {
+    use std::collections::HashSet;
+    let starts: HashSet<u32> = f.blocks.iter().map(|(_, b)| b.start).collect();
+    let k = |r: Reg| fixed.get(r.0 as usize).copied().flatten();
+    let mut out = std::collections::HashMap::new();
+    for (c, inst) in f.code.iter().enumerate() {
+        let Inst::CallNative { dst: Some(d), .. } = *inst else {
+            continue;
+        };
+        let l = c + 1;
+        let Some(&Inst::Load {
+            dst: p,
+            addr,
+            w: Width::B8,
+        }) = f.code.get(l)
+        else {
+            continue;
+        };
+        if addr != d || starts.contains(&(l as u32)) {
+            continue;
+        }
+        let ours = |r: &Reg| *r == p || *r == d;
+        for pc in l + 1..f.code.len() {
+            let i = &f.code[pc];
+            if starts.contains(&(pc as u32)) {
+                break;
+            }
+            if let Inst::LCopy {
+                dst,
+                dst_off,
+                src,
+                src_off,
+                n,
+            } = *i
+                && src == p
+            {
+                if k(src_off) == Some(0)
+                    && matches!(k(n), Some(1..=64))
+                    && ![dst, dst_off].iter().any(ours)
+                    && pc + 1 < f.code.len()
+                    && !live(p, pc + 1)
+                    && !live(d, pc + 1)
+                {
+                    out.insert(
+                        c as u32,
+                        InResult {
+                            load: l as u32,
+                            copy: pc as u32,
+                        },
+                    );
+                }
+                break;
+            }
+            let pure = matches!(
+                i,
+                Inst::Const { .. }
+                    | Inst::Move { .. }
+                    | Inst::Bin { .. }
+                    | Inst::BinRange { .. }
+                    | Inst::Pos { .. }
+                    | Inst::DopeLen { .. }
+                    | Inst::Cmp { .. }
+                    | Inst::Select { .. }
+                    | Inst::Load { .. }
+                    | Inst::AddrOf {
+                        space: AddrSpace::Frame,
+                        ..
+                    }
+            );
+            let (u, w) = yavs_interp::inst_regs(f, i);
+            if !pure || u.iter().chain(&w).any(ours) {
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// Update `known` for what `i` writes.
 pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], f: &Func, i: &Inst) {
     let get = |r: Reg| known.get(r.0 as usize).copied().flatten();

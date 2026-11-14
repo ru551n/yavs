@@ -1952,3 +1952,43 @@ fn a_subprogram_that_loops_in_one_call_runs_compiled_in_the_next_run() {
     assert_eq!(early, 1, "{err}");
     assert!(compiled > 0, "{err}");
 }
+
+/// Results of `ieee` natives copied into an element from their words: with every such copy sent to
+/// its slow path (`YAVS_CLIFT_RESULT_LEAVE`, a test aid of debug builds) the interpreter runs the
+/// copy from the temporary compiled code stored the words into on the way out, a step in
+/// frame-mode code and a leave of a native frame, and prints what it prints on its own.
+#[test]
+fn element_results_stored_where_compiled_code_leaves() {
+    let src = include_str!("../../../tests/corpus/composite/element_results.vhd");
+    let dir = design("elem_results", src);
+    let want = run(&dir, "element_results", &["--tier=interp"], &[]);
+    let o = yavs(
+        &dir,
+        &[("YAVS_CLIFT_RESULT_LEAVE", "1"), ("YAVS_COUNTERS", "kinds")],
+        &[
+            "run",
+            "--std=2008",
+            "--work=work:work",
+            "--tier=clift",
+            "element_results",
+        ],
+    );
+    let err = String::from_utf8_lossy(&o.stderr);
+    let count = |pat: &str| -> u64 {
+        (err.lines())
+            .filter(|l| l.starts_with(&format!("counters: {pat}=")))
+            .filter_map(|l| l.rsplit('=').next()?.parse::<u64>().ok())
+            .sum()
+    };
+    let rest: Vec<&str> = err
+        .lines()
+        .filter(|l| !l.starts_with("counters: "))
+        .collect();
+    assert_eq!(o.status.code(), want.code);
+    assert_eq!(String::from_utf8_lossy(&o.stdout), want.out);
+    assert_eq!(rest.join("\n"), want.err);
+    if cfg!(debug_assertions) {
+        assert!(count("materialised") > 0, "{err}");
+        assert!(count("cb_step.LCopy") > 0, "{err}");
+    }
+}

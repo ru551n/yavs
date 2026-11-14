@@ -202,8 +202,9 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
     // of a vector, a `Cat` of bytes, a `LayoutOf` from the layout memo, a real to an integer, an
     // `ieee` op of two blocks, a gate that may meet a metavalue, an `LCopy` of a run-time count;
     // a test merged into another or settled by an interval (`clift_guard_sites`) and calls of a
-    // cheap memoisable function that compiled code makes without the probe, and element
-    // operands of `ieee` natives read where they are.
+    // cheap memoisable function that compiled code makes without the probe, element operands of
+    // `ieee` natives read where they are and their results copied into an element from their
+    // words.
     #[cfg(feature = "clift")]
     for (name, v) in [
         "clift_scan_sites",
@@ -216,6 +217,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         "clift_guard_sites",
         "clift_memo_unprobed_sites",
         "clift_inplace_sites",
+        "clift_inplace_result_sites",
     ]
     .into_iter()
     .zip(yavs_clift::inline_sites())

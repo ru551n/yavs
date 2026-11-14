@@ -11547,3 +11547,15 @@ metavalues, an element used twice, an array updated from its own elements; sim1 
 the rare way and the native frame leaves inside the stretch, so the interpreter runs it again from its start), perf design
 `clift_elem_operands` (`clift_inplace_sites`, `cb_rare_native`). The interpreter is unchanged, and the native's
 result still goes through a temporary.
+
+## Results of `ieee` natives copied into an element in compiled code (2026-11-15)
+
+Cranelift code copies the result of an in-place `numeric_std` or `std_logic_1164` native that is assigned to an
+element of an array of logic arrays (`r(k) := a(i) + a(j)`, in functions and in processes) from the words it computed,
+instead of writing the full result into a temporary and reading it back; the temporary is written only where compiled
+code leaves before the copy (`docs/decisions.md` "Results of `ieee` natives copied into an element from their words").
+Tests: corpus `composite/element_results` (rows of 5, 12, 16 and 64 elements, both directions, negative indices, an
+element that is an operand of its own result, metavalues, a truncation warning on the native's rare way, a signal target
+and a signal parameter; sim1 and sim2 agree) and `composite/element_results_fault` (an index error after the operation),
+perf design `clift_elem_operands` (`clift_inplace_result_sites`). Frame-mode subprograms (no liveness) and the interpreter
+keep the copy.

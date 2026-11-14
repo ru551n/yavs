@@ -466,6 +466,14 @@ fn no_proofs() -> bool {
     *ON.get_or_init(|| std::env::var_os("YAVS_CLIFT_NO_PROOFS").is_some())
 }
 
+/// Test aid of debug builds (`YAVS_CLIFT_RESULT_LEAVE=1`): the `LCopy` of a result copied from its
+/// words takes its slow path, so the interpreter reads the words `fill_result` stored.
+fn result_leave() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    cfg!(debug_assertions)
+        && *ON.get_or_init(|| std::env::var_os("YAVS_CLIFT_RESULT_LEAVE").is_some_and(|v| v == "1"))
+}
+
 /// Whether the machine code carries the IR pc of each stretch (`YAVS_CLIFT_CODEDIR` set).
 fn srcmap() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -2236,6 +2244,27 @@ struct FixedRead {
     step: Block,
 }
 
+/// A native result copied into an element from the words its in-place way computed
+/// (`in_place_results`): parameters of the call's join. `at` is the address of its temporary, 0 on
+/// the native's way, where the native made it; its `bytes` not zeroed, `put` the words to
+/// store there at a way out; `words` the four plane words of its first block; `p` its data
+/// pointer.
+#[derive(Clone)]
+struct ResFill {
+    load: u32,
+    copy: u32,
+    at: Value,
+    bytes: u64,
+    put: Vec<(i32, Value)>,
+    words: [Value; 4],
+    p: Value,
+}
+
+/// What `Gen::ieee_put` keeps of a result copied from its words before the join: the temporary's
+/// address, the words to store there by offset, the first block's planes, the data pointer and the
+/// temporary's size.
+type Lazy = (Value, Vec<(i32, Value)>, [Value; 4], Value, u64);
+
 /// A slow path left to emit after the function body: step `inst` at `pc` and go on at `join`.
 #[derive(Clone, Copy)]
 struct Slow {
@@ -2301,6 +2330,14 @@ struct Gen<'a> {
     /// interpreter entered in between would find a temporary not made, so a way out there leaves at
     /// the first instead, from where the instructions run again with the same values.
     redirect: HashMap<u32, u32>,
+    /// Native results copied into an element from their words (`in_place_results`), by call pc.
+    results: HashMap<u32, InResult>,
+    /// Such a result between its call and its `LCopy`, and by pc there what a way out stores into
+    /// its temporary first (`fill_result`).
+    resfill: Option<ResFill>,
+    fills: HashMap<u32, ResFill>,
+    /// The source words of the `LCopy` being generated, in place of its source's planes.
+    fwd: Option<[Value; 4]>,
     /// Registers holding the result of a `std_ulogic` table in this block, and the one the last
     /// instruction wrote: a code of the nine, no test.
     codes: Vec<Reg>,
@@ -2667,15 +2704,16 @@ impl MemoShape {
 /// (`Gen::gate_planes`), of an `LCopy` of a count known at run time only (`Gen::lcopy_inline`)
 /// of a test merged into another or settled by an interval (a product's range, a constant-pool
 /// `Pos`), of a call of a cheap memoisable function (`MemoSig::dear`), made without the memo's
-/// probe, and of an element operand of an `ieee` native read where it is (`in_place_operands`).
-static SITES: [std::sync::atomic::AtomicUsize; 10] =
-    [const { std::sync::atomic::AtomicUsize::new(0) }; 10];
+/// probe, of an element operand of an `ieee` native read where it is (`in_place_operands`) and of
+/// its result copied into an element from its words (`in_place_results`).
+static SITES: [std::sync::atomic::AtomicUsize; 11] =
+    [const { std::sync::atomic::AtomicUsize::new(0) }; 11];
 
 /// `[is_x or reduction of a vector, Cat of bytes, LayoutOf from the memo, real to integer, ieee
 /// op over 64 elements, gate with the tables for metavalues, LCopy of a run-time count, merged or
-/// settled test, call without the memo's probe, element operand read in place]` sites lowered so
-/// far (`YAVS_COUNTERS`).
-pub fn inline_sites() -> [usize; 10] {
+/// settled test, call without the memo's probe, element operand read in place, result copied
+/// from its words]` sites lowered so far (`YAVS_COUNTERS`).
+pub fn inline_sites() -> [usize; 11] {
     SITES
         .each_ref()
         .map(|a| a.load(std::sync::atomic::Ordering::Relaxed))
@@ -2742,6 +2780,22 @@ fn slot_targets(f: &Func) -> HashMap<u64, u64> {
 
 fn ok<T>(r: Option<T>, what: &str) -> Result<T, String> {
     r.ok_or_else(|| what.to_string())
+}
+
+/// Whether the native call `i` takes the in-place `ieee` way (`Gen::ieee_native`).
+fn ieee_way(
+    prog: &Program,
+    f: &Func,
+    i: &Inst,
+    native: yavs_ir::NativeId,
+    args: yavs_ir::Regs,
+    dst: Option<Reg>,
+) -> bool {
+    native_kind(prog, f, native, args, dst).is_none()
+        && uniform_regs(prog, f, native, args, dst).is_none()
+        && frame_direct(prog, f, i)
+        && yavs_interp::light_native(prog, f, native, args)
+        && ieee_fast(prog, f, native, args, dst).is_some()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2837,8 +2891,35 @@ fn gen_func(
     }
     // Address spaces that hold at the start of an IR block whatever path reached it.
     let space_facts = yavs_rt::regs::spaces(prog, f, &leader);
+    // Liveness (processes and native frames; frame-mode subprograms have none) and the results
+    // of natives copied into an element from their words (`in_place_results`): the pc after such
+    // a call stays in the call's block, with no entry (the interpreter that lands there goes on
+    // to the next jump).
+    // The registers a `Const` defines once are preloaded, so they hold the value everywhere
+    // (lengths and counts that `cat_block` and others need to know).
+    let fixed = fixed_consts(f);
+    let mut early_live = (native || f.kind == FuncKind::Process)
+        .then(|| Live::new(prog, f, None))
+        .flatten();
+    let results = early_live.as_ref().map_or_else(HashMap::new, |l| {
+        let live = |r: Reg, pc: usize| {
+            l.row(pc)
+                .get(r.0 as usize / 64)
+                .is_none_or(|w| w >> (r.0 % 64) & 1 != 0)
+        };
+        let mut r = in_place_results(f, &fixed, &live);
+        // Only calls that may take the in-place `ieee` way (the test of `Inst::CallNative`).
+        r.retain(|&c, _| {
+            let i = f.code[c as usize];
+            let Inst::CallNative { native, args, dst } = i else {
+                return false;
+            };
+            ieee_way(prog, f, &i, native, args, dst)
+        });
+        r
+    });
     for (i, inst) in f.code.iter().enumerate() {
-        if resumes(prog, f, inst) {
+        if resumes(prog, f, inst) && !results.contains_key(&(i as u32)) {
             leader[i + 1] = true;
         }
     }
@@ -3042,9 +3123,6 @@ fn gen_func(
             pre[r.0 as usize] = addr;
         }
     }
-    // The registers a `Const` defines once are preloaded, so they hold the value everywhere
-    // (lengths and counts that `cat_block` and others need to know).
-    let fixed = fixed_consts(f);
     for (r, v) in fixed.iter().enumerate() {
         if let (Some(v), None) = (v, &base_known[r]) {
             base_known[r] = Some(Known::Int(*v));
@@ -3058,6 +3136,10 @@ fn gen_func(
         objnew: None,
         inplace: Vec::new(),
         redirect: HashMap::new(),
+        results: HashMap::new(),
+        resfill: None,
+        fills: HashMap::new(),
+        fwd: None,
         codes: Vec::new(),
         code_new: None,
         pres: Vec::new(),
@@ -3120,7 +3202,7 @@ fn gen_func(
     };
     // Processes only: they hold the hot frame-mode code, and the analysis costs every compile.
     if g.nat.is_none() && f.kind == FuncKind::Process {
-        g.live = Live::new(prog, f, None);
+        g.live = early_live.take();
         if let Some(l) = &g.live {
             let spans = l.spans();
             for (r, k) in g.keep.iter_mut().enumerate() {
@@ -3130,7 +3212,7 @@ fn gen_func(
     }
     if g.nat.is_some() {
         g.vars = (0..f.reg_ty.len()).map(|_| g.b.declare_var(I64)).collect();
-        g.live = Live::new(prog, f, None);
+        g.live = early_live.take();
         if g.nat.as_ref().is_some_and(|n| n.closed.is_some()) {
             let sv: Vec<_> = slot_vars(f, &g.pre)
                 .into_iter()
@@ -3230,6 +3312,19 @@ fn gen_func(
         .values()
         .flatten()
         .flat_map(|o| [o.alloc, o.copy])
+        .collect();
+    // Results of natives copied into an element from the words the in-place way computed.
+    g.results = results
+        .into_iter()
+        .filter(|(_, r)| {
+            (r.load..=r.copy).all(|p| {
+                bbs[p as usize].is_none()
+                    && !eloops.contains_key(&p)
+                    && !scans.contains_key(&p)
+                    && !deferred.contains(&p)
+                    && !skipped.contains(&p)
+            })
+        })
         .collect();
     // Multiplications by a constant that only feed the `Index` after them (`index_muls`): one test
     // of the operand, and that `Index` tests the sum only (`fused_mul`, its pc).
@@ -3589,8 +3684,17 @@ fn gen_func(
         {
             g.fnew = Some((dst, *t));
         }
+        // (Every arm of an `LCopy` of 1 to 64 elements takes the words.)
+        debug_assert!(g.fwd.is_none(), "result words not taken, pc {pc}");
+        if let Some(r) = g.resfill.take_if(|r| r.copy == pc) {
+            g.fwd = Some(r.words);
+        }
         match inst {
             _ if skipped.contains(&pc) || deferred.contains(&pc) => {}
+            Inst::Load { dst, .. } if let Some(r) = g.resfill.as_ref().filter(|r| r.load == pc) => {
+                let v = r.p;
+                g.st(dst, v)
+            }
             Inst::Drive { .. } if let Some(d) = scalar_drives.iter().find(|d| d.drive == pc) => {
                 if batched.contains(&pc) && g.batch.is_some() {
                     g.drive_kept(pc, d)
@@ -4793,8 +4897,16 @@ fn gen_func(
                     let (ns, nd) = ((s0 + k).div_ceil(64), (d0 + k).div_ceil(64));
                     let (sa, da) = (g.ld(src), g.ld(dst));
                     let (sb, db) = (so / 64 * 32, d / 64 * 32);
-                    let ps = g.host(sa, Some(src), Op::C(sb), Op::C(ns * 32), false, slow);
+                    // A result's words (`fwd`) stand for its planes.
+                    let ps = match g.fwd {
+                        Some(_) => g.c64(0),
+                        None => g.host(sa, Some(src), Op::C(sb), Op::C(ns * 32), false, slow),
+                    };
                     let pd = g.host(da, Some(dst), Op::C(db), Op::C(nd * 32), true, slow);
+                    if g.fwd.is_some() && result_leave() {
+                        let no = g.b.ins().iconst(I8, 0);
+                        g.guard(no, slow);
+                    }
                     if k <= 64 {
                         g.lcopy_const(pd, d0, ps, s0, k);
                     } else {
@@ -4841,7 +4953,10 @@ fn gen_func(
                 let (sb, sn) = (g.b.ins().ishl_imm_s(sb0, 5), g.b.ins().ishl_imm_s(ns, 5));
                 let (db, dn) = (g.b.ins().ishl_imm_s(db0, 5), g.b.ins().ishl_imm_s(nd, 5));
                 let (sa, da) = (g.ld(src), g.ld(dst));
-                let ps = g.host(sa, Some(src), Op::V(sb), Op::V(sn), false, slow);
+                let ps = match g.fwd {
+                    Some(_) => g.c64(0),
+                    None => g.host(sa, Some(src), Op::V(sb), Op::V(sn), false, slow),
+                };
                 let pd = g.host(da, Some(dst), Op::V(db), Op::V(dn), true, slow);
                 // Up to 64 elements: at most two blocks each side, shifted in registers, when the
                 // count is a constant (an element of an array of logic arrays) or, in a native
@@ -4849,21 +4964,31 @@ fn gen_func(
                 // slice of bounds from a parameter or a generic returned: one block to write);
                 // more calls.
                 let runtime = g.kint(n).is_none() && g.kint(dst_off) == Some(0) && g.nat.is_some();
-                if runtime || g.kint(n).is_some_and(|v| v <= 64) {
-                    if runtime {
-                        note_site(6);
+                if g.fwd.is_some() {
+                    // A result's words: up to 64 elements from their start (`in_place_results`).
+                    if result_leave() {
+                        let no = g.b.ins().iconst(I8, 0);
+                        g.guard(no, slow);
                     }
-                    let few = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, k, 64);
-                    let (inl, call) = (g.b.create_block(), g.b.create_block());
-                    g.brif_split(few, inl, call);
-                    g.b.switch_to_block(inl);
-                    let to = (!runtime).then_some((nd, d0));
-                    g.lcopy_inline(pd, to, ps, ns, s0, k);
-                    g.b.ins().jump(join, &[]);
-                    g.b.switch_to_block(call);
+                    g.lcopy_inline(pd, Some((nd, d0)), ps, ns, s0, k);
+                    g.join(join);
+                } else {
+                    if runtime || g.kint(n).is_some_and(|v| v <= 64) {
+                        if runtime {
+                            note_site(6);
+                        }
+                        let few = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, k, 64);
+                        let (inl, call) = (g.b.create_block(), g.b.create_block());
+                        g.brif_split(few, inl, call);
+                        g.b.switch_to_block(inl);
+                        let to = (!runtime).then_some((nd, d0));
+                        g.lcopy_inline(pd, to, ps, ns, s0, k);
+                        g.b.ins().jump(join, &[]);
+                        g.b.switch_to_block(call);
+                    }
+                    g.b.ins().call(g.imp.lcopy, &[pd, nd, d0, ps, ns, s0, k]);
+                    g.join(join);
                 }
-                g.b.ins().call(g.imp.lcopy, &[pd, nd, d0, ps, ns, s0, k]);
-                g.join(join);
             }
             Inst::Call { func, args, dst } => {
                 let nr = g.imp.natives.get(&func).copied();
@@ -5060,12 +5185,7 @@ fn gen_func(
                 // Read in place only on the in-place `ieee` way; every other way gets the
                 // temporaries first.
                 if let Some(ops) = inplace.get(&pc) {
-                    let ieee = native_kind(prog, f, native, args, dst).is_none()
-                        && uniform_regs(prog, f, native, args, dst).is_none()
-                        && frame_direct(prog, f, &inst)
-                        && yavs_interp::light_native(prog, f, native, args)
-                        && ieee_fast(prog, f, native, args, dst).is_some();
-                    if ieee {
+                    if ieee_way(prog, f, &inst, native, args, dst) {
                         g.inplace = ops.clone();
                     } else {
                         g.make_temps(f, ops);
@@ -5275,6 +5395,8 @@ fn gen_func(
             g.leave_at(s.pc);
             continue;
         }
+        // The stepped instruction, or the interpreter after it, may read a result's temporary.
+        g.fill_result(s.pc);
         if let Some(e) = s.edge {
             let (p, ev) = (g.c32(s.pc), g.c32(e));
             g.call_go(g.imp.signal, &[p, ev], false);
@@ -6341,6 +6463,7 @@ impl Gen<'_> {
     /// array the frame is recorded from (`record_frame`), the preloaded ones are stored by the
     /// exit block.
     fn leave_at(&mut self, pc: u32) {
+        self.fill_result(pc);
         let pc = self.redirect.get(&pc).copied().unwrap_or(pc);
         if self.nat.is_some() {
             let n = self.vars.len();
@@ -7357,6 +7480,7 @@ impl Gen<'_> {
             self.bad = Some(format!("{i:?}"));
             return;
         }
+        self.fill_result(pc);
         let d = format!("{i:?}");
         self.stepped
             .push(d.split([' ', '{', '(']).next().unwrap_or("").to_string());
@@ -8244,9 +8368,13 @@ impl Gen<'_> {
         // In the same place in one block: no shift on either side, the mask is the hole.
         let same = s0 == d0 && !two_s;
         let mut vals = [None; 4];
+        let fwd = self.fwd.take();
         for (plane, v) in vals.iter_mut().enumerate() {
             let at = plane as i32 * 8;
-            let mut x = self.b.ins().load(I64, gf, ps, at);
+            let mut x = match fwd {
+                Some(w) => w[plane],
+                None => self.b.ins().load(I64, gf, ps, at),
+            };
             if same {
                 if k != 64 {
                     x = self.b.ins().band_imm_s(x, (low << s0) as i64);
@@ -8350,7 +8478,13 @@ impl Gen<'_> {
             g.b.ins().ushr(x, c)
         };
         let mut vals = [zero; 4];
+        let fwd = self.fwd.take();
         for (plane, v) in vals.iter_mut().enumerate() {
+            if let Some(w) = fwd {
+                // The words of a result: its elements from bit 0, one block.
+                *v = self.b.ins().band(w[plane], mask);
+                continue;
+            }
             let lo = self.b.ins().load(I64, gf, ps, plane as i32 * 8);
             let hi = high(self, ps, plane as i32, two_s);
             let lo = self.b.ins().ushr(lo, s0);
@@ -8402,6 +8536,12 @@ impl Gen<'_> {
     /// `n` zeroed bytes of temporary memory as `Machine::temp_alloc` makes them: the address,
     /// taking `slow` when the area must grow or exceeds 4 GiB.
     fn temp_alloc(&mut self, n: Value, slow: Block) -> (Value, Value) {
+        self.temp_alloc_z(n, slow, true)
+    }
+
+    /// `temp_alloc`; `zero` false leaves the bytes of an object of a known size as they are (the
+    /// pad before it is zeroed): for one that is written whole before anything reads it.
+    fn temp_alloc_z(&mut self, n: Value, slow: Block, zero: bool) -> (Value, Value) {
         let len = self.mem_ld(MEM_TEMP_LEN);
         let off = self.b.ins().iadd_imm_s(len, 7);
         let off = self.b.ins().band_imm_s(off, !7_i64);
@@ -8430,8 +8570,10 @@ impl Gen<'_> {
             Some(k) if (8..=192).contains(&k) => {
                 let z = self.c64(0);
                 self.b.ins().store(self.gf, z, at, 0);
-                self.zero_range(ptr, 0, k.min(128) as u64);
-                self.zero_range(ptr, 128, k as u64);
+                if zero {
+                    self.zero_range(ptr, 0, k.min(128) as u64);
+                    self.zero_range(ptr, 128, k as u64);
+                }
             }
             Some(k) if (1..8).contains(&k) => {
                 let (even, odd, merge) = (
@@ -10031,6 +10173,10 @@ impl Gen<'_> {
         done: Block,
     ) -> Result<(), String> {
         let (c0, c1) = (self.c64(0), self.c64(1));
+        // The words of a result copied into an element (`in_place_results`): stored into its
+        // temporary only where the code leaves before that copy (`fill_result`).
+        let fuse = self.results.get(&pc).copied();
+        let mut lazy: Option<Lazy> = None;
         match out {
             Out::Scalar(v) => self.st(d, v),
             out => {
@@ -10057,8 +10203,10 @@ impl Gen<'_> {
                         self.low_mask(k)
                     }
                 };
-                let sz = self.c64(i64::from(PUT_SMALL_BYTES) + 32 * last);
-                let (at, p) = self.temp_alloc(sz, fb);
+                let bytes = i64::from(PUT_SMALL_BYTES) + 32 * last;
+                let sz = self.c64(bytes);
+                // Not zeroed where the words are stored only on a way out (`fill_result`).
+                let (at, p) = self.temp_alloc_z(sz, fb, fuse.is_none());
                 let data = self
                     .b
                     .ins()
@@ -10071,9 +10219,21 @@ impl Gen<'_> {
                     let w1 = self.b.ins().band(p1, m);
                     words.extend([w0, w1, c0, c0]);
                 }
-                let gf = self.gf;
-                for (k, w) in words.into_iter().enumerate() {
-                    self.b.ins().store(gf, w, p, 8 * k as i32);
+                if fuse.is_some() {
+                    // The planes 2 and 3 are zeroed with the rest at the way out.
+                    let first = [words[5], words[6], c0, c0];
+                    let put = words
+                        .into_iter()
+                        .enumerate()
+                        .filter(|&(k, _)| k < 5 || (k - 5) % 4 < 2)
+                        .map(|(k, w)| (8 * k as i32, w))
+                        .collect();
+                    lazy = Some((at, put, first, data, bytes as u64));
+                } else {
+                    let gf = self.gf;
+                    for (k, w) in words.into_iter().enumerate() {
+                        self.b.ins().store(gf, w, p, 8 * k as i32);
+                    }
                 }
                 self.st(d, at);
             }
@@ -10081,10 +10241,19 @@ impl Gen<'_> {
         // Frame mode: the result goes on as a parameter of `done`.
         let carry = self.nat.is_none();
         let res = self.cache[d.0 as usize].filter(|_| carry);
-        self.b.ins().jump(
-            done,
-            &res.map(BlockArg::Value).into_iter().collect::<Vec<_>>(),
-        );
+        // A result copied from its words: the temporary's address, the words to store there,
+        // the copy's source words and the data pointer go on as parameters too.
+        let fill = |ja: &mut Vec<BlockArg>, hp: Value, put: &[Value], w: &[Value; 4], pv| {
+            ja.push(BlockArg::Value(hp));
+            ja.extend(put.iter().chain(w).map(|&v| BlockArg::Value(v)));
+            ja.push(BlockArg::Value(pv));
+        };
+        let mut jargs: Vec<BlockArg> = res.map(BlockArg::Value).into_iter().collect();
+        if let Some((hp, put, w, pv, _)) = &lazy {
+            let put: Vec<Value> = put.iter().map(|x| x.1).collect();
+            fill(&mut jargs, *hp, &put, w, *pv);
+        }
+        self.b.ins().jump(done, &jargs);
         self.b.switch_to_block(fb);
         self.clear();
         self.rare(1);
@@ -10095,16 +10264,81 @@ impl Gen<'_> {
             Some(v) => v,
             None => self.b.ins().load(I64, self.rf, self.regs, d.0 as i32 * 8),
         });
-        self.b.ins().jump(
-            done,
-            &alt.map(BlockArg::Value).into_iter().collect::<Vec<_>>(),
-        );
+        let mut jargs: Vec<BlockArg> = alt.map(BlockArg::Value).into_iter().collect();
+        if let Some((_, put, _, _, _)) = &lazy {
+            // The native's own result: its words read back, nothing to store (`at` 0). A
+            // lookup that fails leaves at the `Load` after the call, the result made.
+            let out = self.b.create_block();
+            self.b.set_cold_block(out);
+            let dv = self.ld(d);
+            let pd = self.host(dv, Some(d), Op::C(0), Op::C(8), false, out);
+            let gf = self.gf;
+            let pv = self.b.ins().load(I64, gf, pd, 0);
+            let px = self.host(pv, None, Op::C(0), Op::C(32), false, out);
+            let w = [0, 1, 2, 3].map(|k| self.b.ins().load(I64, gf, px, 8 * k));
+            let z0 = self.c64(0);
+            let z = vec![z0; put.len()];
+            fill(&mut jargs, z0, &z, &w, pv);
+            self.b.ins().jump(done, &jargs);
+            self.b.switch_to_block(out);
+            self.leave_at(pc + 1);
+        } else {
+            self.b.ins().jump(done, &jargs);
+        }
         let p = res.map(|_| self.b.append_block_param(done, I64));
+        let mut par = || self.b.append_block_param(done, I64);
+        let lazy = lazy.map(|(_, put, _, _, bytes)| {
+            let at = par();
+            let put: Vec<(i32, Value)> = put.into_iter().map(|(o, _)| (o, par())).collect();
+            (at, put, [par(), par(), par(), par()], par(), bytes)
+        });
         self.start(done);
         if let Some(p) = p {
             self.cache[d.0 as usize] = Some(p);
         }
+        if let (Some((at, put, words, p, bytes)), Some(r)) = (lazy, fuse) {
+            note_site(10);
+            let fl = ResFill {
+                load: r.load,
+                copy: r.copy,
+                at,
+                bytes,
+                put,
+                words,
+                p,
+            };
+            for at in r.load..=r.copy {
+                self.fills.insert(at, fl.clone());
+            }
+            self.resfill = Some(fl);
+        }
         Ok(())
+    }
+
+    /// Store the words of a result copied from them (`ResFill`) into its temporary before the
+    /// code leaves at `pc`, where the interpreter may read it; nothing on the native's way.
+    fn fill_result(&mut self, pc: u32) {
+        // (Called at every way out: no lookup in a function without such a result.)
+        if self.fills.is_empty() {
+            return;
+        }
+        let Some(fl) = self.fills.get(&pc).cloned() else {
+            return;
+        };
+        let (put, on) = (self.b.create_block(), self.b.create_block());
+        self.b.ins().brif(fl.at, put, &[], on, &[]);
+        self.b.switch_to_block(put);
+        // The area may have moved since (a callback): its base now, the offset in the address.
+        let base = self.mem_ld(MEM_TEMP);
+        let off = self.b.ins().band_imm_u(fl.at, 0xffff_ffff);
+        let hp = self.b.ins().iadd(base, off);
+        self.zero_range(hp, 0, fl.bytes);
+        let gf = self.gf;
+        for &(o, w) in &fl.put {
+            self.b.ins().store(gf, w, hp, o);
+        }
+        self.b.ins().jump(on, &[]);
+        self.b.switch_to_block(on);
     }
 }
 

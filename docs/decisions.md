@@ -16868,3 +16868,25 @@ the next run".
   a fixed bias of up to a few percent on VUnit tests that an A/A did not cancel (re-checked with one text for all
   binaries: `hdlm_unsigned_divider` 1.019 and `hdlm_ring_buffer` 1.017 of earlier series read 1.000); `tools/realbench` and `tools/bench`
   now pass a relative `output path`. Not a user-visible defect: a few percent, fixed for a given path.
+
+## Results of `ieee` natives copied into an element from their words (yavs-clift `Gen::ieee_put`, `fill_result`, yavs-rt `rt::in_place_results`, 2026-11-15)
+
+- **Finding**: after its operands were read in place, `r(k) := src(2 * k) + src(2 * k + 1)` still made the result in
+  compiled code as the native does: a 72-byte temporary zeroed and then written (data pointer, descriptor, bounds, the
+  plane words), the `Load` of its data pointer and an `LCopy` that read the planes back to write them into `r(k)`.
+- **Decision**: where a `CallNative`'s result is read only by the `Load` of its data pointer right after the call and
+  one `LCopy` of 1 to 64 elements (a constant count) from its start in the same block, with only arithmetic, `Pos`,
+  `DopeLen`, frame-slot `AddrOf` and `Load` between that touch neither, and neither register live after the copy
+  (`in_place_results`), the in-place `ieee` way keeps the result's words as values: the `LCopy` writes them into the
+  destination (`Gen::fwd`, the destination half of `lcopy_inline`/`lcopy_const`), the temporary is reserved but neither
+  zeroed nor written, and the registers stay real (the result's address, the data pointer). Every way out of compiled
+  code between the call and the copy (a leave, a step, a slow path) first stores the words into the temporary
+  (`fill_result`, from the area's base at that moment), so the interpreter finds what the native would have made
+  (tested by sending every such copy to its slow path, `YAVS_CLIFT_RESULT_LEAVE=1` in debug builds); nothing is replayed, so the native's rare way
+  (metavalues, truncation warnings), where the native made the result itself, needs no store. The pc after such a call
+  no longer starts a block (`resumes`) where the call may take the in-place way: a frame-mode function has no entry there, and an interpreter that lands there
+  runs on to the next jump. Operands read in the same statement are read at the call, before the copy writes, so `r(k)
+  := r(k) + r(k - 1)` needs no aliasing rule. A result whose copy is the operand copy of another call
+  (`in_place_operands`) is left as it was. The interpreter is unchanged.
+- **Not done**: the reservation of the temporary (a bump of the temporary area per call) stays, because a way out must
+  find the bytes where the registers say; frame-mode subprograms have no liveness and keep the copy.

@@ -668,6 +668,11 @@ Compiled tiers: Cranelift
      - ``backtracking``, ``single_pass``
      - ``backtracking``
      - ``run``
+   * - ``YAVS_CLIFT_RESULT_LEAVE``
+     - Debug builds only, a test aid: compiled code that copies the result of a ``numeric_std`` or ``std_logic_1164`` operation into an element of an array of vectors from the words it computed hands every such copy to the interpreter.
+     - ``1``
+     - unset
+     - ``run``
    * - ``YAVS_CLIFT_TRACE``
      - Prints a line for each materialised frame.
      - any value

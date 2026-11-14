@@ -179,15 +179,10 @@ fn copies_are_stored_between_runs() {
     assert!(kinds.iter().any(|n| n.starts_with("spec-")), "{kinds:?}");
 }
 
-/// The tiers that tier up under heat modes: `auto` is the LLVM tier where that is built in (a build
-/// with both features keeps `auto` for LLVM), and Cranelift runs as `clift-auto`, so the gate that
-/// builds only Cranelift runs these tests.
+/// The tiers that tier up under heat modes: the Cranelift tier, which runs as `clift-auto`.
 #[cfg(feature = "clift")]
 fn auto_tiers() -> Vec<&'static str> {
-    vec![
-        #[cfg(feature = "clift")]
-        "clift-auto",
-    ]
+    vec!["clift-auto"]
 }
 
 /// Under tier-up a copy is a function like any other: with every function compiled when the

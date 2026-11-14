@@ -53,7 +53,7 @@ pub const IN_USE: std::time::Duration = std::time::Duration::from_secs(10);
 /// [`IN_USE`] and [`STALE_AFTER`].
 const TOUCH_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// The subdirectory of [`DIR`] that holds the compiled code of the LLVM tier
+/// The subdirectory of [`DIR`] that holds the compiled code of the Cranelift tier
 /// ([`Store::objects_of_library`]): many small entries, one per compiled module, under limits of
 /// their own, so they never push the stage entries out.
 pub const OBJ_DIR: &str = "obj";

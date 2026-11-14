@@ -18,8 +18,9 @@ use yavs_vhpi::sys::*;
 
 const INCLUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/include");
 
+/// One directory per test process, so two runs sharing a target directory do not collide.
 fn tmp() -> PathBuf {
-    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("yavs-vhpi")
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("yavs-vhpi-{}", std::process::id()))
 }
 
 fn compiler() -> cc::Tool {

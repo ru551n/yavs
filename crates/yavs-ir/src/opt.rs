@@ -3309,7 +3309,7 @@ impl<'a> Opt<'a> {
 
     /// Does some path from just after the marker at `pc` (every marker when `None`: from the start
     /// of each block) reach an instruction `hit` before the next marker? One entry per `Stmt`.
-    fn forward_hits(&self, hit: &dyn Fn(&Inst) -> bool) -> Vec<bool> {
+    fn forward_hits(&self, hit: &dyn Fn(usize, &Inst) -> bool) -> Vec<bool> {
         // What running from the start of a block (or just after a marker) up to the next
         // marker does: reaches it first, hits first, or runs to the end of the block.
         #[derive(Clone, Copy, PartialEq)]
@@ -3322,7 +3322,7 @@ impl<'a> Opt<'a> {
             for pc in rg {
                 match &self.code[pc] {
                     Inst::Stmt => return Run::Marker,
-                    i if hit(i) => return Run::Hit,
+                    i if hit(pc, i) => return Run::Hit,
                     _ => {}
                 }
             }
@@ -3519,7 +3519,7 @@ impl<'a> Opt<'a> {
                 .is_some_and(|f| f.defined && f.flags.contains(FuncFlags::NO_TEMPS))
         };
         let leaves = |i: &Inst| leaves_temps(i, &self.f.reg_ty, &prog.natives, &clean);
-        let pinned = self.forward_hits(&is_wait);
+        let pinned = self.forward_hits(&|_, i| is_wait(i));
         // (The drives pass moves what a drive builds back to the `Stmt` before it, and the
         // predecoder fuses a run of scalar drives, each from its own `Stmt`, into one op: a
         // statement of one block that scatters a record, or builds a waveform and drives, keeps
@@ -3545,7 +3545,18 @@ impl<'a> Opt<'a> {
                 }
             }
         }
-        let ahead = self.forward_hits(&|i| leaves(i) && !is_wait(i));
+        // An instruction this run inserts before `pc` (`inserts`, applied at the end) belongs to
+        // the code at `pc`: the `Alloc` of a gate's result made by `gate_results` (#1149).
+        let mut pend = vec![false; self.code.len()];
+        for (pc, i) in &self.inserts {
+            if leaves(i)
+                && let Some(p) = pend.get_mut(*pc)
+            {
+                *p = true;
+            }
+        }
+        let leaves_at = |pc: usize, i: &Inst| pend[pc] || leaves(i);
+        let ahead = self.forward_hits(&|pc, i| leaves_at(pc, i) && !is_wait(i));
         let nb = self.blocks.len();
         // The markers left so far; the dirty state at the start of each block and at each marker.
         let kept: Vec<bool> = (0..self.code.len())
@@ -3566,7 +3577,7 @@ impl<'a> Opt<'a> {
                     d = false;
                 } else if process && matches!(i, Inst::Suspend { .. }) && !is_dead(i) {
                     d = false;
-                } else if !is_wait(i) && leaves(i) {
+                } else if !is_wait(i) && leaves_at(pc, i) {
                     d = true;
                 }
             }

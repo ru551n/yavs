@@ -3318,3 +3318,62 @@ fn the_bounds_in_a_parameters_slots_are_read_in_registers() {
         });
     }
 }
+
+#[test]
+fn a_gate_made_in_place_in_a_loop_keeps_the_marker_that_frees_it() {
+    if !on() {
+        return;
+    }
+    // `gate_results` turns the native into a `LogicOp` into a new `Alloc`, inserted when the pass
+    // ends: the marker at the start of the body frees that block on the next round, so it stays
+    // (#1149: dropped, every round left 32 bytes more in the temporary area).
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.slot(32, 32);
+        fb.stmt(StmtKind::VarAssign, sp());
+        pin(fb, 0);
+        let (head, done) = (fb.block(), fb.block());
+        fb.emit(Inst::Br { to: head });
+        fb.at(head);
+        fb.stmt(StmtKind::VarAssign, sp());
+        let native = fb.program().native(
+            "yavs.ieee.std_logic_1164.\"xor\"(std_ulogic_vector,std_ulogic_vector)std_ulogic_vector",
+            None,
+        );
+        let data = fb.addr(AddrSpace::Frame, 16);
+        let (l, r, d) = (fb.int(63), fb.int(0), fb.int(1));
+        let args = fb.regs(&[data, l, r, d, data, l, r, d]);
+        let p = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::CallNative {
+            native,
+            args,
+            dst: Some(p),
+        });
+        let x = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Load {
+            dst: x,
+            addr: p,
+            w: Width::B8,
+        });
+        let c = fb.reg(RegTy::I64);
+        let z = fb.int(0);
+        fb.emit(Inst::LGet {
+            dst: c,
+            base: x,
+            idx: z,
+        });
+        fb.emit(Inst::CondBr {
+            c,
+            t: head,
+            f: done,
+        });
+        fb.at(done);
+        fb.emit(Inst::Ret { v: Some(z) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::LogicOp { .. })),
+        1,
+        "{code:?}"
+    );
+    assert_eq!(count(&code, |i| matches!(i, Inst::Stmt)), 1, "{code:?}");
+}

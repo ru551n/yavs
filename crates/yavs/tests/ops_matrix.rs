@@ -751,11 +751,6 @@ fn logic_rows(f: Family, c: TypeClass) -> Vec<Row> {
     };
     (r.ops1, r.ops0) = (ops1, ops0);
     if c == TypeClass::LogicArray {
-        r.step_ok = Some((
-            5,
-            "with a static W of 2048 the native is a `LogicOp` into an `Alloc` of 1024 bytes, \
-             a host step of compiled code at every operation (above the temporary area's reserve)",
-        ));
         r.general_ok = Some(
             "above 1024 elements the std_logic_1164 natives take their general path, word by \
              word on a `LogicVec`",

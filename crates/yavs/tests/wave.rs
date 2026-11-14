@@ -446,7 +446,8 @@ fn wave_sigterm() {
 
 /// How `interrupted_clock` ends a free-running clock.
 enum Stop {
-    /// A signal for `kill` (`-INT`, `-TERM`), Unix only.
+    /// A signal for `kill` (`-INT`, `-TERM`).
+    #[cfg(unix)]
     Signal(&'static str),
     /// The parent's pipe closes (`--exit-on-stdin-close`), every platform.
     StdinClose,
@@ -497,6 +498,7 @@ fn interrupted_clock(
     }
     std::thread::sleep(std::time::Duration::from_secs(2));
     match how {
+        #[cfg(unix)]
         Stop::Signal(sig) => {
             let kill = Command::new("kill")
                 .args([sig, &child.id().to_string()])

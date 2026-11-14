@@ -260,8 +260,8 @@ LIMITS = [
     ("Verilog and mixed-language designs", f"not supported yet; the plan is [#776]({GH}/issues/776)"),
     ("Encrypted IP", f"an encrypted VHDL file stops with E0012 ([#775]({GH}/issues/775)); the contents are never guessed"),
     ("PSL", f"a subset; the rest is skipped with warning W0004 or listed in the tracking issue [#445]({GH}/issues/445)"),
-    ("SDF and VITAL timing, SystemC, macOS", "out of scope (docs/plan.md, \"Out of scope\")"),
-    ("Platforms", "Linux x86_64, Linux aarch64 and Windows x86_64 only"),
+    ("SDF and VITAL timing, SystemC", "out of scope (docs/plan.md, \"Out of scope\")"),
+    ("Platforms", "release archives and CI: Linux x86_64, Linux aarch64 and Windows x86_64 only; a build from source works on macOS on Apple silicon (2026-11-06), with no archive and no CI job, so this report does not cover it"),
     ("LLVM tier", "removed on 2026-11-08 (maintainer decision): the compiled tier is Cranelift (`--tier=auto`, the default, and `--tier=clift`)"),
     ("Reference simulators", "the comparison is against two established open-source VHDL simulators (sim3 and sim4, two commercial simulators, vote in part of the discrepancy catalogue); where the language reference is unclear yavs is permissive and the choice is recorded below"),
     ("What a pass means", "a pass is agreement with a recorded reference output or with a suite's own verdict. It is evidence, not a proof of correctness; each known disagreement is listed in the catalogue"),
@@ -363,8 +363,8 @@ tests pass; every failure is tracked as an issue. This is evidence, not a proof 
 """ + "".join(f"| {r['name']} | {r['what']} | " + ("not run yet" if r["t"] is None else f"{r['p']}/{r['t']}" + ("" if r["unit"] == "tests" else f" {r['unit']}")) + " |\n" for r in srows if "tier" not in r["name"]) + """
 Terms used here: *passed / total* counts the tests a suite judges itself, out of the tests that can be judged (a test whose own
 expectation is wrong or depends on the implementation is not counted, with its reason). To *analyse* a file is to
-check it and store it in a library; to *simulate* is to elaborate the design and run it. A *tier* is the interpreter or one of the
-compiler (Cranelift) that run a design; every tier gives the same output. The *language reference* is the IEEE 1076 standard.
+check it and store it in a library; to *simulate* is to elaborate the design and run it. A *tier* is the interpreter or the
+compiler (Cranelift) that runs a design; every tier gives the same output. The *language reference* is the IEEE 1076 standard.
 """]
     o.append("## Details\n\nThe sections below give each result in full. The last table says where and when each was produced: on CI every night on `main` "
              "and for every release tag, or by a local run with installed reference simulators, with its date and commit.\n")

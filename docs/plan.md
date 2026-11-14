@@ -15,19 +15,19 @@ Decisions made with the user:
 - **Platforms (all tier 1, in CI from M0):** Linux x86_64, Linux aarch64 and Windows x86_64.
   - Windows includes the compiled tier and Python testbench framework support.
   - VHPI uses no separate DLL. `yavs.exe` exports the `vhpi_*` symbols. **No import library is built or shipped** (user, 2026-10-18): a plugin brings its own, as Python testbench frameworks do with their `.def` files.
-- **Dependencies** (user, 2026-10-18): any crate that cargo fetches and builds by itself is fine. For **any** dependency that has to be installed by hand, **ask the user first**. Approved so far: a C compiler at build time (the VHPI variadic shim). LLVM 21 was approved for the LLVM tier until its removal (user, 2026-11-08). The reference simulators are dev-only references.
+- **Dependencies** (user, 2026-10-18): any crate that cargo fetches and builds by itself is fine. For **any** dependency that has to be installed by hand, **ask the user first**. Approved so far: a C compiler at build time (the VHPI variadic shim) and mimalloc as the allocator on Windows (MIT, cargo-built, maintainer 2026-11-13). LLVM 21 was approved for the LLVM tier until its removal (user, 2026-11-08). The reference simulators are dev-only references.
 - **Performance:** correctness first, no speed target yet. Benchmarks are tracked, not gated.
-- **Embedded Python is deferred.** A Tcl-like `yavs` scripting module comes after the DAP server.
+- **Embedded Python is deferred.** A Tcl-like `yavs` scripting module comes after the DAP server. (2026-11-02: the embedded-interpreter plan was superseded by Python control of a run from the command line, `--script`, tracked in #891 and paused by the maintainer on 2026-10-31; nothing of it is built.)
 - **Foreign subprograms:** yavs needs `foreign` subprograms in the VHPIDIRECT style plus `--load <lib>` (M3), so test-runner packages that call C (and Python through C) from VHDL work.
 - **Vendor libraries:**
   - UNISIM/UNIMACRO, Altera `altera_mf`/`lpm`, and Lattice/Microchip are supported, **functional only**: VITAL compiles and runs with zero delay, and there is no SDF.
   - Synopsys `std_logic_arith`/`unsigned`/`signed`/`misc` are **built in as the original files, unmodified** (user, 2026-10-19, #117; supersedes the clean-room plan of 2026-10-18). Black-box testbenches: `tests/corpus/synopsys/`.
 - **Test-runner integration** (user, 2026-10-18):
   - **Mixing VHDL-2008 and 2019 files in one project is allowed.** The manifest records the standard per file. Each file is parsed with its own standard's syntax. A design is analyzed and elaborated against **one** `std`/`ieee` revision, the newest one in its closure, so types such as `INTEGER` are the same type everywhere. A construct that is illegal under that revision is a fail-early error naming the file and its standard. A construct whose **meaning changes** (e.g. `integer'high` going 64-bit) is a **warning**, given once per construct and escalatable with `-Werror`, so external test runners and verification libraries keep working from 2019 testbenches.
-  - **Each yavs defaults to `--threads 1`** under a test runner's parallel option (`-p N`); users opt in through `yavs.sim_flags`.
+  - **Each yavs defaults to `--threads 1`** under a test runner's parallel option (`-p N`); users opt in through `yavs.sim_flags`, `--yavs-max-threads` or `--yavs-jobserver` (which gives each simulation `--threads=auto` under a token server, 2026-11-07).
   - **`@file` response files are supported from the start.** test runners use them on Windows for long `runner_cfg` generics.
   - Installation is documented as test-runner library recipes, with no installer command.
-- **Repo:** `ru551n/yavs` on GitHub is **public** (made public 2026-10-18 after the rename and a history audit). **Initial phase:** agents push straight to `main`, with no PRs and no CI. Once something works, CI is added on Linux x86_64, Linux aarch64 and Windows, and each milestone then lands as a PR that the user merges.
+- **Repo:** `ru551n/yavs` on GitHub is **public** (made public 2026-10-18 after the rename and a history audit). **Initial phase (long over):** agents pushed straight to `main`, with no PRs and no CI. CI exists now (`docs/decisions.md` "CI matrix"), and the root `AGENTS.md` (rule 17) says how work lands today.
 - **External test inputs (never copied into the repo):** conformance suites and the reference simulators' own test suites, fetched in CI or read from local checkouts, for parse, sem and differential runs.
 - **Licensing:** MIT/Apache, published once the repo goes public.
 - **Workflow:** one subagent per milestone.
@@ -44,7 +44,7 @@ What the research found locally:
   - The VHDL sources of an external test runner and verification library, read from local checkouts.
 - **Not installed:** a Python testbench framework and a waveform viewer checkout. Both are needed in later milestones.
 
-## Architecture (Cargo workspace at `~/git/rsim`)
+## Architecture (Cargo workspace)
 | Crate | Role |
 |---|---|
 | `yavs-diag` | One diagnostics model shared by every stage, rendered with `annotate-snippets` (codes, snippets, labels, notes, help). A diagnostic carries a severity and colour, a stable code (`yavs --explain E0xxx`), a primary span plus labelled secondary spans, and `note:`/`help:` lines with suggested fixes. Errors recover and are reported together, with cascading errors suppressed. **Runtime errors** add a VHDL stacktrace (one frame per subprogram, with its source line), the process, the instance path, and the time and delta, so an assert raised inside an IEEE library still points at the caller in user code. Colour turns off when the output isn't a TTY, with `--color` and `NO_COLOR` to override. Also `--message-format=json\|short` for test runners, editors and DAP. Internal compiler errors are caught and rendered at the span being processed. |
@@ -52,11 +52,12 @@ What the research found locally:
 | `yavs-sem` | Libraries and design units, scopes and visibility (`use`, `context`, selected names), the type system, overload resolution, static expression evaluation, and diagnostics. Its output is a **typed HIR** in which every expression carries its type and every call names the overload it resolved to. |
 | `yavs-lib` | Library manifests. `yavs analyze --work L f.vhd` checks the file and records it in `L/yavs-lib.toml` (the index, in compile order) and `L/yavs-lib.d/` (a record per file), under the library lock (rule 14), so parallel analysis is safe. `elab` and `run` analyze the closure of the top level from source, or read it back from the compilation cache of the work library (`yavs-cache`, `docs/decisions.md` "Compilation cache"). **Analysis is on demand:** the manifest maps unit names to files, and `elab` analyzes only the units the top level can reach. This keeps big vendor libraries such as UNISIM from being re-analyzed in full on every run. |
 | `yavs-cache` | The on-disk store of the compilation cache: keys, atomic writes, validation of what is read, pruning, cleaning. It knows nothing about VHDL; `yavs-sem` makes and restores the analysis images (`image.rs`) and the CLI decides when. |
-| `yavs-ir` | Lowers the HIR to a register-based IR. Each instruction carries a statement-location tag, used for stepping and for coverage. |
+| `yavs-ir`, `yavs-lower` | `yavs-ir` is the register-based IR; `yavs-lower` lowers the HIR to it. Each instruction carries a statement-location tag, used for stepping and for coverage. |
 | `yavs-elab` | Elaboration. Folds generics through the interpreter, expands generates, binds components and configurations, and resolves external names. It builds the signal net graph (drivers, resolution, port conversions). |
 | `yavs-interp` | IR interpreter. Used for elaboration-time evaluation, cold code, and debug stepping. |
 | `yavs-rt`, `yavs-clift` | The compiled tier: `yavs-clift` translates the IR with Cranelift, `yavs-rt` (called `yavs-llvm` until 2026-11-10, after the LLVM tier it held until 2026-11-08) is its runtime and tier-up policy. The machine code of every compiled function is kept in the compilation cache of the work library and linked again by later runs (#481, #505). Tiered: a process starts in the interpreter and is compiled once it is hot; compilation runs on a single thread (`--tier-compile`). |
-| `yavs-rt` | The kernel. Implements the LRM 14.7 cycle with **parallel process evaluation** (described below). Holds the value heap (access types, protected types) and the native `std.standard`, `textio` and `env`. Logic values, **signals included**, use **bit-planes** everywhere (user, 2026-10-18; yavs-logic benchmarked planes as the winner). Protected-type callers run serial through M3. Foreign subprograms are supported (VHPIDIRECT style, plus `--load`). The calls go through **our own per-ABI call trampolines** (SysV x86_64, AArch64, Win64), with no libffi, so library dependencies stay minimal. |
+| `yavs-kernel` | The kernel. Implements the LRM 14.7 cycle with **parallel process evaluation** (described below). The value heap (access types, protected types) is in `yavs-interp`, the native `std.standard`, `textio` and `env` in `yavs-std`. Logic values, **signals included**, use **bit-planes** everywhere (user, 2026-10-18; yavs-logic benchmarked planes as the winner). Protected-type callers run serial through M3. Foreign subprograms are supported (VHPIDIRECT style, plus `--load`). The calls go through **our own per-ABI call trampolines** (SysV x86_64, AArch64, Win64; `yavs-ffi`), with no libffi, so library dependencies stay minimal. |
+| `yavs-logic`, `yavs-ffi`, `yavs-prefetch`, `yavs-lint` | Added after this plan: the bit-plane logic values, the foreign-call trampolines, a cache prefetch hint for the kernel's batch loop, and `yavs lint`. The crate list and roles are in the root `AGENTS.md`. |
 | `yavs-wave` | Records values into a `wellen` `Hierarchy` and signals, and writes FST. |
 | `yavs-cov` | Statement, branch and toggle counters, a database that can be merged, and HTML and Cobertura reports. |
 | `yavs-vhpi` | IEEE 1076 VHPI C ABI (`vhpi_user.h`) and `vhpi_startup_routines` loading for Python testbench frameworks. |
@@ -64,7 +65,7 @@ What the research found locally:
 | `yavs` | The CLI: `yavs analyze`, `yavs elab`, `yavs run [--wave] [--cov] [--vhpi lib] [--dap port]`. The exit code follows `env.stop`/`finish` and severity, as test runners expect. |
 | `yavs --dap` clients (the former `yavs-gui` was removed 2026-10-29) | The debugger is any DAP client. **Debugging matches the other major simulators** (user, 2026-10-18): line breakpoints with conditions and hit counts; signal breakpoints (on change or on a value); step into/over/out within a process plus a global step to the next statement of any process; run for a time, to the next delta or to the next time step; call stack and locals per process; a list of active and waiting processes with what they wait on; time and delta shown at every stop. |
 
-**Designed for the GUI from the start** (none of it is built until M10):
+**Designed for DAP clients from the start** (the GUI this was first written for was dropped, M10):
 - **The kernel is driven through a `SimControl` API**: run-for, run-until, step-delta, pause, plus breakpoint and watch hooks. The CLI, DAP and VHPI all call this one API, and nothing else drives simulation.
 - **Every IR instruction carries a source span and a statement id**, and every elaborated object has a stable hierarchical path. The same ids feed DAP stack frames, VHPI handles, coverage and the hierarchy view.
 - **Value change events go to a subscriber bus.** Waves (`wellen`), VHPI value-change callbacks and DAP live streaming are all subscribers, so a live viewer is just one more subscriber.
@@ -130,7 +131,7 @@ Other open source simulators kept running into these bug classes.
 - **M7: waves.** FST output through `wellen`, as an event-bus subscriber.
 - **M8: DAP server.** Interpreter stepping, signal peek/force, and the wave-stream extension. Check: scripted DAP sessions in tests, plus manual use from a DAP-capable editor.
 - **M9: coverage.** Statement, branch and toggle coverage, merge, HTML and Cobertura output.
-- **M9b: embedded Python scripting (deferred).**
+- **M9b: embedded Python scripting (deferred; superseded 2026-11-02 by Python control of a run, #891, not built).**
   - A pyo3 `yavs` module over `SimControl`: run, step, force, examine, breakpoints, waves.
   - libpython is loaded dynamically, and an interpreter that a Python testbench framework or a test-runner package has already started is reused (one CPython per process).
 - **M10: GUI.** Dropped (maintainer, 2026-10-29): `yavs-gui` was built (G1, G2) and removed again; DAP clients cover debugging.
@@ -157,4 +158,4 @@ Other open source simulators kept running into these bug classes.
 - **Both tiers on every suite** (from M6). JIT-only and interpreter-only runs must give identical output.
 
 ## Out of scope (add when needed)
-Verilog and mixed-language designs, PSL (skipped with a warning, user 2026-10-18), SystemC, VHDL-93-only semantic quirks, distributed simulation, a full LSP (existing language servers already cover that), SDF and VITAL timing, macOS (avoid gratuitously Unix-only code), and a speed target.
+Verilog and mixed-language designs, PSL beyond the subset that runs since 2026-10-19 (#226; the rest is skipped with warning `W0004`, `docs/psl.md`), SystemC, VHDL-93-only semantic quirks, distributed simulation, a full LSP (existing language servers already cover that), SDF and VITAL timing, macOS as a release platform (a build from source works on Apple silicon since 2026-11-06, #1112, with no archive and no CI job), and a speed target.

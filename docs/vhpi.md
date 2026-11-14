@@ -4,7 +4,7 @@ VHPI is the standard C interface (IEEE 1076-2019) that lets a plugin look into a
 simulation, read and write signals, and react to simulation events. yavs implements it: plugins
 written in C, C++ or Rust can inspect the design hierarchy, read and drive values, register
 callbacks and supply foreign models. Most of the standard is there; the table below says what is missing, and the
-open work is in [#978](https://github.com/ru551n/yavs/issues/978), [#979](https://github.com/ru551n/yavs/issues/979) and, for save and restart, [#832](https://github.com/ru551n/yavs/issues/832).
+open work is listed in the epic [#143](https://github.com/ru551n/yavs/issues/143) (the issues #978, #979 and, for save and restart, #832 were folded into it on 2026-11-02).
 For calling a plain C function from VHDL without a plugin, see "Calling C from VHDL" below.
 
 ```{contents} On this page

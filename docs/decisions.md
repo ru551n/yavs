@@ -16536,7 +16536,7 @@ compares from one run to the next.
   to 374 000); the value is the maintainer's to confirm. Measured both: at 400 000
   `sc5_timestamp` stays in its slow state for good (+0.6 percent over 12 runs against the base in that sitting, +3.9 in one
   where load gave the base more fast runs); at 313 000 it is long from run 2 and settled fast (-12 percent). `sc5_timestamp`
-  was in view when the bar was set, so it does not validate it; no other realbench test is between the two bars.
+  was in view when the bar was set, so it does not validate it; no other realbench test is between the two bars. The maintainer confirmed the value 313 000 after the landing (user, 2026-11-14); the agent had chosen it with `sc5_timestamp` in view, and values from about 255 000 to 366 000 give the same decisions on all 40 realbench tests.
 - **What stays timing dependent.** `unrepaid` predicts the rest of a run from the last run's CPU time; the trials compare
   progress per CPU second within a run (their windows alternate, so a steady load cancels, but a taking back near 1.0
   becomes a `lost` line); under `--threads` the kernel thread's join spin retires instructions that follow the load; where

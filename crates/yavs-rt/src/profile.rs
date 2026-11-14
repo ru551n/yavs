@@ -21,8 +21,8 @@ pub(crate) const EARLY_SPEEDUP: f64 = 1.4;
 /// is compiled early once its seen time summed over the runs repays its compile, #679.)
 pub(crate) const EARLY_RUNS: u64 = 4;
 
-/// A run is judged, and written to the profile, only when it did this much work (the kernel thread's,
-/// `auto::run_work`: its instructions in the looks' microseconds, its CPU time at a warm run's rate
+/// A run is judged, and written to the profile, only when it did this much work (the simulation
+/// threads', `auto::run_work`: their counted instructions in the looks' microseconds, its CPU time at a warm run's rate
 /// where the counters are refused): 100 ms of simulation CPU at that rate, as when this was CPU time.
 pub(crate) const JUDGE_MIN_US: u64 = 100_000 * crate::work::WARM_IPUS / crate::work::INSTR_PER_US;
 

@@ -621,13 +621,16 @@ fn sim_cpu(_: Clock) -> Option<Duration> {
 
 /// The work of a run as the run-to-run profile keeps it, in the looks' microseconds: the kernel
 /// thread's instructions retired between the two readings of its counter (`instr0`, `None` before the
-/// counter opened, and `instr`; `work::work_us`), its CPU time over the run (`cpu_us`, at
-/// `work::WARM_IPUS`) where the counters are refused. A loaded host changes the second, not the first
-/// (`work.rs`). The two readings come from the same clock: a counter not open yet at the start counts
-/// from its opening.
-fn run_work(instr0: Option<u64>, instr: Option<u64>, cpu_us: u64) -> u64 {
+/// counter opened, and `instr`; `work::work_us`) and the instructions the looks charged to the other
+/// simulation threads meanwhile (`pool`, `Shared::pool_instr`), its CPU time over the run (`cpu_us`,
+/// at `work::WARM_IPUS`) where the counters are refused. A loaded host changes the CPU time, not the
+/// instructions (`work.rs`), and with a thread pool not their sum either, only how a batch is split
+/// among the threads (user, 2026-11-14). The two readings come from the same clock: a counter not
+/// open yet at the start counts from its opening.
+fn run_work(instr0: Option<u64>, instr: Option<u64>, pool: u64, cpu_us: u64) -> u64 {
     match instr {
-        Some(n) => crate::work::work_us(n.saturating_sub(instr0.unwrap_or(0))),
+        Some(n) => crate::work::work_us(n.saturating_sub(instr0.unwrap_or(0)))
+            .saturating_add(crate::work::work_us(pool)),
         None => crate::work::cpu_as_work(cpu_us),
     }
 }
@@ -1068,6 +1071,9 @@ struct Shared {
     /// threads' would count the pool's workers against the kernel thread's CPU).
     read_cpu_us: std::sync::atomic::AtomicU64,
     read_instr: std::sync::atomic::AtomicU64,
+    /// The instructions the looks charged to the simulation threads other than the kernel thread
+    /// (a pool's workers, while they run a function: not their spin between batches), for `run_work`.
+    pool_instr: std::sync::atomic::AtomicU64,
     /// Eager mode: per function, its compile (or the decision to leave it interpreted) is over,
     /// `Tier::hot` returns then.
     finished: Vec<AtomicBool>,
@@ -1087,10 +1093,11 @@ struct ProfileJob {
     /// The ids in identity order (`objcache::profile_key`): the stored profile names ranks.
     order: Vec<u32>,
     earlier: Profile,
-    /// `sim_cpu` and the kernel thread's instructions when the profile was read (`run_work`), and
-    /// `Worker::gate_run`.
+    /// `sim_cpu`, the kernel thread's instructions and `Shared::pool_instr` when the profile was read
+    /// (`run_work`), and `Worker::gate_run`.
     cpu0: u64,
     instr0: Option<u64>,
+    pool0: u64,
     gate: u64,
     snap: Snapshot,
 }
@@ -1293,7 +1300,7 @@ const COUNT: u32 = 100;
 /// The work the simulation threads did, in the looks' microseconds (`work::per_us`), before the count
 /// rule compiles anything: a test of a few hundred milliseconds does not get a compile back.
 const COUNT_GATE: u64 = 160_000;
-/// The work of its last run (the kernel thread's, `run_work`, as the run-to-run profile has it) from
+/// The work of its last run (the simulation threads', `run_work`, as the run-to-run profile has it) from
 /// which a program does not wait for that gate; a program found that long stays so while its runs keep
 /// half of it (`profile::next`: linking early shortens the run that judges it). It was 400 ms of the
 /// kernel thread's CPU time (half of that let more short suite tests link what they do not get back:
@@ -4192,6 +4199,7 @@ fn sampler_loop(
     let mut running = Vec::new();
     let mut counts = Vec::new();
     let mut slots = Vec::new();
+    let mut kernel_slot = None;
     while !sh.halt.load(Ordering::SeqCst) {
         let period = base_period * stretch(done_us);
         let target = u64::try_from(period.as_micros())
@@ -4249,6 +4257,15 @@ fn sampler_loop(
             cpu.map_or(0, |c| u64::try_from(c.as_micros()).unwrap_or(u64::MAX)),
             Ordering::Relaxed,
         );
+        if work {
+            kernel_slot = kernel_slot.or_else(|| crate::work::slot_of(sh.sim_tid));
+            let pool: u64 = running
+                .iter()
+                .filter(|r| Some(r.0) != kernel_slot)
+                .map(|r| since(&counts, &last, r.0).min(2 * target))
+                .sum();
+            sh.pool_instr.fetch_add(pool, Ordering::Relaxed);
+        }
         let mut look = if work {
             let running: Vec<_> = running
                 .iter()
@@ -4553,6 +4570,7 @@ impl AutoTier {
                                 earlier: w.earlier.clone(),
                                 cpu0,
                                 instr0,
+                                pool0: sh.pool_instr.load(Ordering::Relaxed),
                                 gate: w.gate_run,
                                 snap: Snapshot::default(),
                             });
@@ -4894,6 +4912,7 @@ impl AutoTier {
         // (The simulation's CPU time first: the compile thread's clock is gone once it has ended.)
         let cpu = self.sim_cpu_now();
         let instr = crate::work::of_thread(self.shared.sim_tid);
+        let pool = self.shared.pool_instr.load(Ordering::Relaxed);
         self.shared.halt.store(true, Ordering::SeqCst);
         // (An empty batch wakes the compile thread, which sees `halt`.)
         if let Some(q) = self
@@ -4904,7 +4923,7 @@ impl AutoTier {
         {
             let _ = q.send(Msg::Looks(Vec::new()));
         }
-        self.write_profile(cpu, instr);
+        self.write_profile(cpu, instr, pool);
         if std::env::var_os("YAVS_AUTO_TRACE").is_some()
             && let Some((what, t0)) = &*IN_FLIGHT.lock().unwrap_or_else(PoisonError::into_inner)
         {
@@ -4953,7 +4972,7 @@ impl AutoTier {
     /// Write the profile of this run (`profile::next`) from what the compile thread published, once:
     /// from here and not from the compile thread, which may be in the middle of a compile when the
     /// run ends. Nothing for a run whose CPU time or work is not known, or too short to judge.
-    fn write_profile(&self, cpu: Option<u64>, instr: Option<u64>) {
+    fn write_profile(&self, cpu: Option<u64>, instr: Option<u64>, pool: u64) {
         let job = self
             .shared
             .profile
@@ -4964,17 +4983,19 @@ impl AutoTier {
             return;
         };
         let cpu = cpu.saturating_sub(job.cpu0);
-        let work = run_work(job.instr0, instr, cpu);
+        let pool = pool.saturating_sub(job.pool0);
+        let work = run_work(job.instr0, instr, pool, cpu);
         if work < profile::JUDGE_MIN_US {
             return;
         }
         let mut p = profile::next(&job.earlier, &job.snap, cpu, work, job.gate);
         if std::env::var_os("YAVS_AUTO_TRACE").is_some() {
             eprintln!(
-                "trace: profile: stored {} hot ({} judged), {} lost; this run {cpu} us, {work} us of work, last {:?} us, {:?} us of work, long {} (was {}), {} compiled early",
+                "trace: profile: stored {} hot ({} judged), {} lost; this run {cpu} us, {work} us of work ({} us the other threads'), last {:?} us, {:?} us of work, long {} (was {}), {} compiled early",
                 p.hot.len(),
                 p.hot.iter().filter(|h| h.2).count(),
                 p.lost.len(),
+                crate::work::work_us(pool),
                 job.earlier.base,
                 job.earlier.work,
                 p.long,
@@ -5918,7 +5939,7 @@ mod tests {
         let after = |runs: &[(u64, u64)]| {
             let mut p = super::Profile::default();
             for &(instr, cpu) in runs {
-                let work = super::run_work(Some(per), Some(per + instr), cpu);
+                let work = super::run_work(Some(per), Some(per + instr), 0, cpu);
                 let n =
                     super::profile::next(&p, &Default::default(), cpu, work, super::COUNT_GATE_RUN);
                 p = super::Profile::parse(&n.render()).expect("its text");
@@ -5949,16 +5970,21 @@ mod tests {
         );
         // Without the work clock (refused counters) the CPU time at a warm run's rate is the work:
         // the gate is 400 ms of it, as before.
-        let w = |cpu| super::run_work(None, None, cpu);
+        let w = |cpu| super::run_work(None, None, 0, cpu);
         assert_eq!(w(per), crate::work::WARM_IPUS);
         assert_eq!(
-            super::run_work(Some(3 * per), None, per),
+            super::run_work(Some(3 * per), None, 0, per),
             crate::work::WARM_IPUS
         );
         assert!(w(399_000) < super::COUNT_GATE_RUN && w(400_000) >= super::COUNT_GATE_RUN);
         // The instructions between the two readings, from the counter's opening if it opened late.
-        assert_eq!(super::run_work(Some(3 * per), Some(8 * per), 7), 5);
-        assert_eq!(super::run_work(None, Some(8 * per), 7), 8);
+        assert_eq!(super::run_work(Some(3 * per), Some(8 * per), 0, 7), 5);
+        assert_eq!(super::run_work(None, Some(8 * per), 0, 7), 8);
+        // With a thread pool the workers' counted work adds to the kernel thread's, so a batch split
+        // otherwise among the threads (a loaded host) is the same work, and the gate reads the same.
+        let split = |kernel: u64, pool: u64| super::run_work(Some(0), Some(kernel), pool, 7);
+        assert_eq!(split(long, 0), split(long / 4 * 3, long / 4));
+        assert_eq!(split(long / 2, long / 2), super::COUNT_GATE_RUN);
     }
 
     /// A short last run links before the gate what its own profile named hot, and nothing else the

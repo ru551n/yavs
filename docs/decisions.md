@@ -16760,3 +16760,44 @@ published, and the guard of "`--tier=auto`: the count rule".
   unchanged (it copies as before).
 - **Not done**: the native's result written straight into `r(k)` (the result still goes through its temporary and an
   `LCopy`); the same reading in the interpreter's fused ops.
+
+## `--tier=auto`: the work of a run counts all its simulation threads (yavs-rt `auto.rs` `run_work`, `Shared::pool_instr`, `work::slot_of`, perf/policy2, 2026-11-14, user decision: "count all threads")
+
+Amends "`--tier=auto`: the run-to-run profile judges by work" for runs with `--threads` above 1.
+
+- **Finding** (agent, bimodal and policy2). The work the profile stores for a run (`run_work`, what the warm gate,
+  `better` and the judge minimum read) was the kernel thread's instructions alone. With a thread pool the kernel thread
+  runs its share of each pooled batch, and that share follows the load: `neorv32_dual_full` at `--threads=4`, a busy
+  loop on each SMT sibling of the four cores against none, stored 10 percent less work in run 1 (two worlds: 852 185
+  against 762 365 and 852 639 against 760 572). Under load `osvvm_axi4_random` even pooled where the quiet run did not, and
+  its stored work fell 10 percent with it.
+- **Decision** (user, 2026-11-14: count all threads). The work of a run is the kernel thread's instructions between the
+  two readings of its counter, as before, plus the instructions the sampler's looks charged to the other simulation
+  threads in between (`Shared::pool_instr`: a worker's instructions since the look before, while it runs a function,
+  at most two periods, as the looks charge them to functions). A worker's spin between batches is not counted: the raw
+  counters of all threads summed rose 4 to 9 percent under load in run 1 (the pool's idle loop). At `--threads=1` there
+  is no other simulation thread and the value is the kernel thread's alone, as before (shown equal in the same process
+  on every realbench test: the trace's "us the other threads'" is 0 in every stored run). The profile format is
+  unchanged: its key holds the build, so no profile of the earlier binary is read.
+- **Measured** (agent, `--threads=4` on cores 0-3, quiet against a busy loop on 16-19, busy/quiet ratio of the stored
+  work per run, two fresh worlds x 4 runs, one binary that printed all three measures): kernel thread alone 0.886 to
+  0.894 in run 1 and 0.898 to 0.967 later on `neorv32_dual_full`, `neorv32_single_cache`, `grlib_leon3mp` and
+  `osvvm_axi4_random`; all raw counters 0.967 to 1.077 in run 1, 0.990 to 1.031 later; the kernel thread with the
+  pool's counted work 0.960 to 1.013 in run 1, 0.977 to 1.005 later. Designs that do not pool (`sc5_timestamp`,
+  `vai_pe_array`) read the same in all three.
+  All 40 realbench tests at `--threads=4`, one fresh world x 4 runs each, quiet and busy, the base against the change:
+  busy/quiet stored work mean 0.963 (standard deviation 0.074, lowest `sc5_fifo_repack` 0.727, `osvvm_axi4_random`
+  0.886, `neorv32_dual_full` 0.904, `grlib_leon3mp` 0.922) against 0.993 (0.030; those four 0.962, 0.993, 0.972,
+  0.990). The warm gate's verdict (`long`) was the same run by run quiet and busy for both binaries, and the same for
+  both binaries on every test: no test sits near the bar at `--threads=4`. With the bar moved next to one
+  (`YAVS_AUTO_WARM_GATE=240000`, `osvvm_axi4_random`, 4 fresh worlds x 5 runs; its runs do 228 000 to 255 000 of work):
+  the base's `long` verdicts differed quiet against busy in 3 of 4 worlds (busy stored 0.91 of quiet), the change's in
+  none (1.01).
+  At `--threads=1` (all 40 realbench tests, 3 fresh worlds x 10 runs, base, a byte copy of it, the change): geomean of
+  the sums 1.002 against the copy's 1.000, steady runs 1.003 against 0.999, run 1 1.001 against 1.000; outputs equal.
+  The highest, `vunit_logging` 1.030 (copy 1.017), read 1.006 (copy 0.996) on 10 worlds, and the two binaries retire the
+  same instructions in one world (166.70 and 166.69 M a warm run): its count follows the world's path, which the
+  measurement's labels change (163 to 175 M across paths of the same binary).
+- **What stays timing dependent.** The kernel thread's own join spin (up to `JOIN_SPIN` a pooled batch) is still in its
+  count, and whether a batch pools at all follows the timed costs of its processes; a worker's work at a look where
+  its slot is empty is not charged.

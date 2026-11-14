@@ -72,6 +72,11 @@ pub(crate) fn of_thread(tid: i32) -> Option<u64> {
     imp::of_thread(tid)
 }
 
+/// The slot index of the thread `tid` (`thread_id`), once it has one.
+pub(crate) fn slot_of(tid: i32) -> Option<usize> {
+    imp::slot_of(tid)
+}
+
 /// `per_thread` for the threads with these slot indices only: a read is a system call, and the
 /// sampler shares the core with the simulation it counts.
 pub(crate) fn of_threads(slots: &[usize], out: &mut Vec<(usize, u64)>) {
@@ -252,6 +257,10 @@ mod imp {
         Some(read_one(*fd))
     }
 
+    pub(super) fn slot_of(tid: i32) -> Option<usize> {
+        state().tids.iter().find(|t| t.1 == tid).map(|t| t.0)
+    }
+
     pub(super) fn per_thread(out: &mut Vec<(usize, u64)>, only: Option<&[usize]>) {
         let st = state();
         out.extend(
@@ -281,6 +290,10 @@ mod imp {
     }
 
     pub fn of_thread(_: i32) -> Option<u64> {
+        None
+    }
+
+    pub fn slot_of(_: i32) -> Option<usize> {
         None
     }
 }

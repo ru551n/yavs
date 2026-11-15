@@ -3,7 +3,8 @@
 -- with a fixed distance (kept out: the distance is not followed), one variable on both bounds,
 -- variables known on every path (both branches, a `case`, a procedure's `inout` formal, a
 -- function's locals) and not known (branches that differ, a loop that may exit, a register's
--- state variable with an initial value).
+-- state variable with an initial value); an initial value that reads another variable reads its
+-- start value, not the value the body gave it before it first names the variable.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -32,6 +33,7 @@ architecture a of cycle_slices is
   signal sel : unsigned(1 downto 0) := "00";
   signal mask : std_ulogic_vector(3 downto 0) := "0000";
   signal y1, y2, y3, y4, y5, y6 : std_ulogic_vector(W - 1 downto 0);
+  signal n7 : integer := 0;
 begin
   merge : process (all)
     variable hi, lo : integer := 0;
@@ -104,6 +106,17 @@ begin
     end if;
   end process;
 
+  dflt : process (clk)
+    variable a : integer := 1;
+    variable b : integer := a + W;
+  begin
+    if rising_edge(clk) then
+      a := 5;
+      b := b + 1;
+      n7 <= b;
+    end if;
+  end process;
+
   main : process
     variable s : unsigned(4 * W - 1 downto 0) := (others => '0');
   begin
@@ -120,7 +133,7 @@ begin
       clk <= '0';
       report "cyc=" & integer'image(cyc) & " mt=" & to_hstring(mt) & " y1=" & to_hstring(y1)
         & " y2=" & to_hstring(y2) & " y3=" & to_hstring(y3) & " y4=" & to_hstring(y4)
-        & " y5=" & to_hstring(y5) & " y6=" & to_hstring(y6);
+        & " y5=" & to_hstring(y5) & " y6=" & to_hstring(y6) & " n7=" & integer'image(n7);
     end loop;
     wait;
   end process;

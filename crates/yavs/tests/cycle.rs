@@ -1204,7 +1204,8 @@ fn arrays_of_records_equal_the_normal_mode_at_widths_around_a_word() {
 /// variables, both branches, a `case`, an `inout` formal, a function's locals), unknown ones
 /// do not (branches that differ, a loop that may exit, a state variable), and two variables
 /// chosen at run time keep their process out instead of being taken for a one-element slice,
-/// which failed at run time with a false length error.
+/// which failed at run time with a false length error. An initial value is evaluated where the
+/// run starts, not where the body first names its variable.
 #[test]
 fn slices_with_bounds_from_variables_equal_the_normal_mode_at_widths_around_a_word() {
     let dir = tempdir("cycle-slices");
@@ -1221,7 +1222,7 @@ fn slices_with_bounds_from_variables_equal_the_normal_mode_at_widths_around_a_wo
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             // Every process but the testbench's `main` and `apart`.
             assert!(
-                err.contains("cycle mode: 5 of 7 processes run cycle-based"),
+                err.contains("cycle mode: 6 of 8 processes run cycle-based"),
                 "{w}: {err}"
             );
             let (_, why) = row(&err, "cycle_slices.apart");

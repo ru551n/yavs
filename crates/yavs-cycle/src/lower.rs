@@ -2373,13 +2373,16 @@ impl Lx<'_> {
                 let v = self.place_vars(v, o.default.is_some());
                 self.vars.insert(d, v.clone());
                 // The initial value, once at initialisation (a combinational process assigns
-                // before it reads, so it never sees it).
+                // before it reads, so it never sees it): evaluated where the run starts, so the
+                // values known at this point of the body are not.
                 if let Some(init) = o.default {
+                    let known = std::mem::take(&mut self.known);
                     let made = self.capture(|lx| {
                         let s = lx.expr_h(init, Some(&v))?;
                         lx.assign(&v, s)
-                    })?;
-                    self.init_ops.extend(made);
+                    });
+                    self.known = known;
+                    self.init_ops.extend(made?);
                 }
                 Ok(v)
             }

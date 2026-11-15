@@ -2211,6 +2211,16 @@ impl Cx<'_> {
         };
         let params: HashSet<DeclId> = sp.params.iter().filter_map(|p| p.decl).collect();
         let mine = |x: DeclId| params.contains(&x) || inside(db.decls[x].scope);
+        // A body apart from its declaration declares the formals again, in the same order.
+        let again: Vec<DeclId> = (db.scopes[*scope].order.iter().copied())
+            .filter(
+                |&x| matches!(&db.decls[x].kind, DeclKind::Object(o) if o.role == ObjRole::Param),
+            )
+            .collect();
+        let formal = |x: DeclId| {
+            (sp.params.iter().position(|p| p.decl == Some(x)))
+                .or_else(|| again.iter().position(|&y| y == x))
+        };
         // The formals a top-level statement before any `return` assigns as a whole.
         for &s in stmts.iter() {
             match &db.stmts[s].kind {
@@ -2224,7 +2234,8 @@ impl Cx<'_> {
                     ..
                 } => {
                     if let ExprKind::Obj(x) = db.exprs[target.expr].kind
-                        && let Some(i) = sp.params.iter().position(|p| p.decl == Some(x))
+                        && let Some(i) = formal(x)
+                        && i < c.must_out.len()
                     {
                         c.must_out[i] = true;
                     }

@@ -421,6 +421,10 @@ pub struct Region {
     pub members: Vec<usize>,
     /// The region wakes only on this edge (`yavs_kernel::Builder::edge_trigger`).
     pub trigger: Option<yavs_kernel::EdgeTrigger>,
+    /// Kernel signals the region exports and nothing outside waits on, ascending: they keep no
+    /// byte codes (`yavs_kernel::Builder::no_codes`), so their updates take the kernel's short
+    /// path for registers.
+    pub quiet: Vec<u32>,
     pub make: RegionMake,
 }
 

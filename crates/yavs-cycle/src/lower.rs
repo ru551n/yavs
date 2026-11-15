@@ -13,11 +13,12 @@ use yavs_sem::{Db, DeclId, ExprId, StmtId};
 
 pub(crate) type Block = [u64; 4];
 
-/// A block of the region's state: the current value of a signal leaf, or a slot of the process
-/// (a leaf of a variable, a temporary), numbered per body.
+/// A block of the region's state: the current value of a kernel signal (all the leaves the
+/// kernel keeps in it, each at its kernel offset), or a slot of the process (a leaf of a
+/// variable, a temporary), numbered per body.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Ref {
-    Sig(LeafId),
+    Sig(u32),
     Loc(u32),
 }
 
@@ -69,6 +70,13 @@ pub(crate) enum Op {
         lo: u32,
         len: u32,
     },
+    /// `dst := dst & !mask | src & mask`, on every plane: the leaves of a record at the same
+    /// places of two blocks, copied together.
+    Blend {
+        dst: Ref,
+        src: Ref,
+        mask: u64,
+    },
     /// `hi & lo` (the left operand is the high part): `lo_len` elements of `lo` below `hi`.
     Cat {
         dst: Ref,
@@ -96,6 +104,7 @@ impl Op {
             | Op::Extract { dst, .. }
             | Op::Insert { dst, .. }
             | Op::Cat { dst, .. }
+            | Op::Blend { dst, .. }
             | Op::AddK { dst, .. } => dst,
         }
     }
@@ -109,6 +118,7 @@ impl Op {
             | Op::Extract { dst, .. }
             | Op::Insert { dst, .. }
             | Op::Cat { dst, .. }
+            | Op::Blend { dst, .. }
             | Op::AddK { dst, .. } => dst,
         }
     }
@@ -161,6 +171,8 @@ struct Part {
     bounds: Option<Bounds>,
     /// A temporary made for this value alone: the operation that made it may write elsewhere.
     fresh: bool,
+    /// The signal leaf the part is of (reads and writes of the body are counted by leaf).
+    leaf: Option<LeafId>,
 }
 
 type R<T> = Result<T, String>;
@@ -323,6 +335,7 @@ impl Lx<'_> {
             full: len,
             bounds: None,
             fresh: true,
+            leaf: None,
         }
     }
 
@@ -405,14 +418,40 @@ impl Lx<'_> {
     /// `dst := src` (or `<=`): leaf by leaf for records.
     fn assign(&mut self, dst: &Val, src: Val) -> R<()> {
         match (dst, src) {
-            (Val::Rec(ds), Val::Rec(ss)) if ds.len() == ss.len() => {
-                for (d, s) in ds.iter().zip(ss) {
-                    self.assign(d, s)?;
+            (Val::Rec(_), src @ Val::Rec(_)) => {
+                let mut pairs = Vec::new();
+                flatten(dst, src, &mut pairs)?;
+                // Leaves at the same places of two blocks (the packs of two signals of one
+                // record type) are copied together: one blend per pair of blocks.
+                let mut groups: Vec<(Ref, Ref, u64, u32)> = Vec::new();
+                for (d, s) in pairs {
+                    if s.fresh || d.lo != s.lo || d.len != s.len || d.full != s.full {
+                        self.assign(&Val::Part(d), Val::Part(s))?;
+                        continue;
+                    }
+                    if let Some(l) = d.leaf {
+                        self.writes.insert(l);
+                    }
+                    let m = mask(d.len) << d.lo;
+                    match groups.iter_mut().find(|g| (g.0, g.1) == (d.r, s.r)) {
+                        Some(g) => g.2 |= m,
+                        None => groups.push((d.r, s.r, m, d.full)),
+                    }
+                }
+                for (dst, src, m, full) in groups {
+                    if dst == src {
+                        continue;
+                    }
+                    self.ops.push(if m == mask(full) {
+                        Op::Copy { dst, src }
+                    } else {
+                        Op::Blend { dst, src, mask: m }
+                    });
                 }
                 Ok(())
             }
             (Val::Part(d), Val::Part(s)) if d.len == s.len => {
-                if let Ref::Sig(l) = d.r {
+                if let Some(l) = d.leaf {
                     self.writes.insert(l);
                 }
                 let whole = d.lo == 0 && d.len == d.full;
@@ -563,7 +602,7 @@ impl Lx<'_> {
                 let mut next = so.leaves.0.0;
                 let v = self.tree(&so.shape, &mut |_| {
                     next += 1;
-                    Ref::Sig(LeafId(next - 1))
+                    Ref::Loc(next - 1)
                 })?;
                 if next != so.leaves.1.0 {
                     return Err(format!(
@@ -571,7 +610,7 @@ impl Lx<'_> {
                         decl.name
                     ));
                 }
-                self.check_leaves(&v)?;
+                let v = self.place_sig(v)?;
                 if !target {
                     self.note_reads(&v);
                 }
@@ -629,33 +668,50 @@ impl Lx<'_> {
         }
     }
 
-    fn check_leaves(&self, v: &Val) -> R<()> {
+    /// A signal's leaves (numbered `Loc(leaf)` by `tree`) at their kernel signal and offset.
+    fn place_sig(&self, v: Val) -> R<Val> {
         match v {
-            Val::Part(Part {
-                r: Ref::Sig(l),
-                len,
-                ..
-            }) => {
-                let leaf = self.e.nets.leaf(*l);
-                if leaf.ty.len != *len || leaf.ty.elem != yavs_kernel::Elem::Logic {
+            Val::Part(mut p) => {
+                let Ref::Loc(l) = p.r else {
+                    return Err("a signal leaf placed twice".into());
+                };
+                let l = LeafId(l);
+                let nets = &self.e.nets;
+                let leaf = nets.leaf(l);
+                if leaf.ty.len != p.len || leaf.ty.elem != yavs_kernel::Elem::Logic {
                     return Err(format!(
                         "the signal {}, whose kernel form differs",
-                        self.e.leaf_name(*l)
+                        self.e.leaf_name(l)
                     ));
                 }
                 if leaf.implicit.is_some() {
                     return Err("an implicit signal".into());
                 }
-                Ok(())
+                let at = nets.loc[l.index()];
+                let full = nets.signal_len(at.signal);
+                if full > 64 {
+                    return Err(format!(
+                        "the signal {}, kept in a kernel signal of more than 64 elements",
+                        self.e.leaf_name(l)
+                    ));
+                }
+                p.r = Ref::Sig(at.signal.0);
+                p.lo = at.base;
+                p.full = full;
+                p.leaf = Some(l);
+                Ok(Val::Part(p))
             }
-            Val::Part(_) => Ok(()),
-            Val::Rec(fs) => fs.iter().try_for_each(|f| self.check_leaves(f)),
+            Val::Rec(fs) => fs
+                .into_iter()
+                .map(|f| self.place_sig(f))
+                .collect::<R<Vec<_>>>()
+                .map(Val::Rec),
         }
     }
 
     fn note_reads(&mut self, v: &Val) {
         match v {
-            Val::Part(Part { r: Ref::Sig(l), .. }) => {
+            Val::Part(Part { leaf: Some(l), .. }) => {
                 self.reads.insert(*l);
             }
             Val::Part(_) => {}
@@ -676,6 +732,7 @@ impl Lx<'_> {
                     full: 1,
                     bounds: None,
                     fresh: false,
+                    leaf: None,
                 }))
             }
             Shape::Scalar { .. } => Err(
@@ -709,6 +766,7 @@ impl Lx<'_> {
                     full: n,
                     bounds: Some(*b),
                     fresh: false,
+                    leaf: None,
                 }))
             }
             Shape::Record { fields, .. } => fields
@@ -1007,6 +1065,27 @@ impl Lx<'_> {
             )),
         }
     }
+}
+
+/// The leaves of two records of one shape, pairwise.
+fn flatten(d: &Val, s: Val, out: &mut Vec<(Part, Part)>) -> R<()> {
+    match (d, s) {
+        (Val::Rec(ds), Val::Rec(ss)) if ds.len() == ss.len() => {
+            for (d, s) in ds.iter().zip(ss) {
+                flatten(d, s, out)?;
+            }
+            Ok(())
+        }
+        (Val::Part(d), Val::Part(s)) if d.len == s.len => {
+            out.push((*d, s));
+            Ok(())
+        }
+        _ => Err("an assignment whose value has another shape than its target".into()),
+    }
+}
+
+fn mask(len: u32) -> u64 {
+    if len >= 64 { !0 } else { (1u64 << len) - 1 }
 }
 
 /// The element (0 = rightmost) of index `i` of an array with index range `b`.

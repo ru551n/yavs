@@ -146,9 +146,11 @@ pub fn plan(db: &Db, e: &Elaborated, strict: bool) -> Result<Plan, Vec<Diagnosti
 
 /// Lay out the image, schedule and compile the region, and make its kernel process.
 fn build(_db: &Db, e: &Elaborated, sel: region::Selection) -> Result<Region, String> {
-    // Image: the current value of every signal leaf of the region, then next-state blocks,
-    // then the slots of each member.
-    let mut cur: BTreeMap<LeafId, u32> = BTreeMap::new();
+    let nets = &e.nets;
+    let ksig = |l: LeafId| nets.loc[l.index()].signal.0;
+    // Image: one block per kernel signal of the region (its leaves at their kernel offsets), then
+    // next-state blocks, then the slots of each member.
+    let mut cur: BTreeMap<u32, u32> = BTreeMap::new();
     let mut n = 0u32;
     let leaves = (sel.driven.iter().chain(&sel.inputs)).chain(
         sel.members
@@ -156,22 +158,24 @@ fn build(_db: &Db, e: &Elaborated, sel: region::Selection) -> Result<Region, Str
             .flat_map(|(_, b)| b.reads.iter().chain(&b.writes)),
     );
     for &l in leaves {
-        cur.entry(l).or_insert_with(|| {
+        cur.entry(ksig(l)).or_insert_with(|| {
             n += 1;
             n - 1
         });
     }
-    let mut next: BTreeMap<LeafId, u32> = BTreeMap::new();
+    let mut next: BTreeMap<u32, u32> = BTreeMap::new();
     for &l in &sel.next {
-        next.insert(l, n);
-        n += 1;
+        next.entry(ksig(l)).or_insert_with(|| {
+            n += 1;
+            n - 1
+        });
     }
     let mut settle = Vec::new();
     let mut edge = Vec::new();
-    for (&l, &s) in &next {
+    for (&k, &s) in &next {
         edge.push(Op::Copy {
             dst: Ref::Loc(s),
-            src: Ref::Loc(cur[&l]),
+            src: Ref::Loc(cur[&k]),
         });
     }
     let mut committed = false;
@@ -199,16 +203,26 @@ fn build(_db: &Db, e: &Elaborated, sel: region::Selection) -> Result<Region, Str
         .ok_or("the design has no top-level instance")?;
     let label = e.hier.dotted(yavs_elab::ScopeId(top as u32));
     let code = Arc::new(codegen::compile(&settle, &edge, n as usize, &label)?);
-    let nets = &e.nets;
-    let whole = |l: LeafId| nets.kref(l, Range::new(0, nets.leaf(l).ty.len));
-    let all: Vec<_> = cur.iter().map(|(&l, &s)| (whole(l), s)).collect();
-    let inputs: Vec<_> = sel.inputs.iter().map(|l| (whole(*l), cur[l])).collect();
+    let whole = |k: u32| {
+        let s = yavs_kernel::SignalId(k);
+        s.slice(0, nets.signal_len(s))
+    };
+    let all: Vec<_> = cur.iter().map(|(&k, &s)| (whole(k), s)).collect();
+    // Inputs leaf by leaf: a kernel signal may also hold leaves the region drives.
+    let inputs: Vec<_> = (sel.inputs.iter())
+        .map(|&l| {
+            let len = nets.leaf(l).ty.len;
+            let at = nets.loc[l.index()];
+            (nets.kref(l, Range::new(0, len)), cur[&at.signal.0], at.base, len)
+        })
+        .collect();
     let clock = sel.clock.map(|c| {
         let kind = u8::from(c.rising) | if c.legacy { EDGE_LEVEL } else { 0 };
         (nets.kref(c.leaf, Range::new(c.elem, 1)), kind)
     });
+    let leaf_ref = |l: LeafId| nets.kref(l, Range::new(0, nets.leaf(l).ty.len));
     let mut waits: Vec<_> = clock.iter().map(|c| c.0).collect();
-    waits.extend(sel.wakes.iter().map(|l| whole(*l)));
+    waits.extend(sel.wakes.iter().map(|l| leaf_ref(*l)));
     let trigger = sel.clock.filter(|_| sel.wakes.is_empty()).map(|c| {
         let (signal, elem) = nets.kelem(c.leaf, c.elem);
         EdgeTrigger {
@@ -219,39 +233,35 @@ fn build(_db: &Db, e: &Elaborated, sel: region::Selection) -> Result<Region, Str
             reset: None,
         }
     });
-    // The leaf, kernel signal and base of each driver declaration, for the exports.
-    let decls: Vec<_> = nets
-        .drivers
-        .iter()
-        .map(|d| (d.leaf, d.range, nets.loc[d.leaf.index()].base))
+    // The leaf of each driver declaration, for the exports.
+    let decls: Vec<LeafId> = nets.drivers.iter().map(|d| d.leaf).collect();
+    let quiet: Vec<u32> = (sel.outputs.iter())
+        .map(|&l| ksig(l))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
         .collect();
     let outputs = sel.outputs.clone();
     let slots = n as usize;
     let make: yavs_elab::RegionMake = Arc::new(move |ds: &[RegionDriver]| {
+        // One export per kernel driver with an exported leaf: its range of the signal's block.
         let mut outs: BTreeMap<u32, rt::Out> = BTreeMap::new();
-        let exported: std::collections::BTreeSet<u32> = (ds.iter())
-            .filter(|d| outputs.contains(&decls[d.decl].0))
-            .map(|d| d.driver.0)
-            .collect();
-        for d in ds.iter().filter(|d| exported.contains(&d.driver.0)) {
+        for d in ds.iter().filter(|d| outputs.contains(&decls[d.decl])) {
             if d.range.len > 64 {
                 return Err(SimError::new(yavs_kernel::ErrorKind::Usage(
                     "cycle mode: a driver of more than 64 elements".into(),
                 )));
             }
-            let (leaf, lr, base) = decls[d.decl];
-            // Elements `lr` of the leaf, at kernel elements `base + lr` of the signal.
-            let start = base + lr.offset;
-            let part = (cur[&leaf], lr.offset, start - d.range.offset, lr.len);
-            let o = outs.entry(d.driver.0).or_insert_with(|| rt::Out {
+            let Some(&slot) = cur.get(&d.signal.0) else {
+                return Err(SimError::new(yavs_kernel::ErrorKind::Internal(
+                    "cycle mode: an exported signal without a block".into(),
+                )));
+            };
+            outs.entry(d.driver.0).or_insert(rt::Out {
                 driver: d.driver,
                 range: d.range,
-                parts: Vec::new(),
+                slot,
                 last: None,
             });
-            if !o.parts.contains(&part) {
-                o.parts.push(part);
-            }
         }
         Ok(Box::new(rt::RegionProc {
             code: code.clone(),
@@ -270,11 +280,12 @@ fn build(_db: &Db, e: &Elaborated, sel: region::Selection) -> Result<Region, Str
         name: format!("{}.cycle_region", label),
         members,
         trigger,
+        quiet,
         make,
     })
 }
 
-fn commit(edge: &mut Vec<Op>, next: &BTreeMap<LeafId, u32>, cur: &BTreeMap<LeafId, u32>) {
+fn commit(edge: &mut Vec<Op>, next: &BTreeMap<u32, u32>, cur: &BTreeMap<u32, u32>) {
     for (&l, &s) in next {
         edge.push(Op::Copy {
             dst: Ref::Loc(cur[&l]),
@@ -289,8 +300,8 @@ fn resolve(
     op: &Op,
     base: u32,
     clocked: bool,
-    cur: &BTreeMap<LeafId, u32>,
-    next: &BTreeMap<LeafId, u32>,
+    cur: &BTreeMap<u32, u32>,
+    next: &BTreeMap<u32, u32>,
 ) -> Op {
     let src = |r: Ref| match r {
         Ref::Sig(l) => Ref::Loc(cur[&l]),
@@ -306,6 +317,16 @@ fn resolve(
             src: src(s),
         },
         Op::Lit { dst: d, val } => Op::Lit { dst: dst(d), val },
+        // A blend reads the block it writes, as an insert does.
+        Op::Blend {
+            dst: d,
+            src: s,
+            mask,
+        } => Op::Blend {
+            dst: dst(d),
+            src: src(s),
+            mask,
+        },
         Op::Gate {
             g,
             dst: d,

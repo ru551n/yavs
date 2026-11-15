@@ -88,6 +88,11 @@ impl Elaborated {
         let mut b = Builder::new();
         let nets = &self.nets;
         let mut guards = Vec::new();
+        let quiet = |k: usize| {
+            self.region
+                .as_ref()
+                .is_some_and(|r| r.quiet.binary_search(&(k as u32)).is_ok())
+        };
         for (k, &(a, z)) in nets.packs.iter().enumerate() {
             if z.0 != a.0 + 1 {
                 // A pack of record leaves (#686): logic, unresolved or `resolved`, no guard.
@@ -116,7 +121,7 @@ impl Elaborated {
                     b.lean_events(id);
                     b.no_history(id);
                 }
-                if (a.0..z.0).all(|l| self.no_codes.get(l as usize) == Some(&true)) {
+                if quiet(k) || (a.0..z.0).all(|l| self.no_codes.get(l as usize) == Some(&true)) {
                     b.no_codes(id);
                 }
                 continue;
@@ -164,7 +169,7 @@ impl Elaborated {
             if self.bare.get(i) == Some(&true) {
                 b.no_history(id);
             }
-            if self.no_codes.get(i) == Some(&true) {
+            if quiet(k) || self.no_codes.get(i) == Some(&true) {
                 b.no_codes(id);
             }
             if let Some(g) = leaf.guard {

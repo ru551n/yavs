@@ -242,6 +242,16 @@ impl Gen<'_> {
                 let v = val.map(|w| self.b.ins().iconst(I64, w as i64));
                 self.store(dst, v);
             }
+            Op::Blend { dst, src, mask } => {
+                let (d, s) = (self.load(dst), self.load(src));
+                let mut out = d;
+                for k in 0..4 {
+                    let a = self.b.ins().band_imm_s(d[k], !mask as i64);
+                    let x = self.b.ins().band_imm_s(s[k], mask as i64);
+                    out[k] = self.b.ins().bor(a, x);
+                }
+                self.store(dst, out);
+            }
             Op::Extract { dst, src, lo, len } => {
                 let v = self.load(src);
                 let m = mask(len) as i64;

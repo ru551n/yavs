@@ -9,22 +9,22 @@ use yavs_logic::Block;
 
 use crate::codegen::Code;
 
-/// One kernel driver whose elements the region exports: `(slot, first element of the leaf,
-/// element in the driver's range, length)` per leaf part it covers.
+/// One kernel driver whose elements the region exports: elements `range` of the block `slot` of
+/// its kernel signal.
 pub(crate) struct Out {
     pub driver: DriverId,
     pub range: Range,
-    pub parts: Vec<(u32, u32, u32, u32)>,
+    pub slot: u32,
     pub last: Option<Block>,
 }
 
 pub(crate) struct RegionProc {
     pub code: Arc<Code>,
     pub img: Vec<Block>,
-    /// Every region leaf with its slot: read once at initialisation.
+    /// Every kernel signal of the region, whole, with its block: read once at initialisation.
     pub leaves: Vec<(SigRef, u32)>,
-    /// Leaves read from the kernel at every wake.
-    pub inputs: Vec<(SigRef, u32)>,
+    /// Leaves read from the kernel at every wake: block and first element there, length.
+    pub inputs: Vec<(SigRef, u32, u32, u32)>,
     pub outs: Vec<Out>,
     /// The clock element and the edge test of `Ctx::edge_by`.
     pub clock: Option<(SigRef, u8)>,
@@ -34,12 +34,21 @@ pub(crate) struct RegionProc {
 }
 
 impl RegionProc {
-    fn read(ctx: &Ctx<'_>, img: &mut [Block], what: &[(SigRef, u32)]) -> Result<(), SimError> {
+    fn read(ctx: &Ctx<'_>, r: SigRef) -> Result<Block, SimError> {
         let mut buf = [0u8; 32];
-        for &(r, s) in what {
-            ctx.read_into(r, &mut buf)?;
-            let w = buf.as_chunks::<8>().0;
-            img[s as usize] = [0, 1, 2, 3].map(|k| u64::from_le_bytes(w[k]));
+        ctx.read_into(r, &mut buf)?;
+        let w = buf.as_chunks::<8>().0;
+        Ok([0, 1, 2, 3].map(|k| u64::from_le_bytes(w[k])))
+    }
+
+    fn read_inputs(&mut self, ctx: &Ctx<'_>) -> Result<(), SimError> {
+        for &(r, s, lo, len) in &self.inputs {
+            let v = Self::read(ctx, r)?;
+            let m = mask(len) << lo;
+            let b = &mut self.img[s as usize];
+            for k in 0..4 {
+                b[k] = b[k] & !m | v[k] << lo & m;
+            }
         }
         Ok(())
     }
@@ -49,14 +58,9 @@ impl RegionProc {
     #[inline(never)]
     fn export(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         for o in &mut self.outs {
-            let mut v: Block = [0; 4];
-            for &(slot, lo, at, len) in &o.parts {
-                let m = if len >= 64 { !0 } else { (1u64 << len) - 1 };
-                let src = self.img[slot as usize];
-                for k in 0..4 {
-                    v[k] |= ((src[k] >> lo) & m) << at;
-                }
-            }
+            let src = self.img[o.slot as usize];
+            let (lo, m) = (o.range.offset, mask(o.range.len));
+            let v: Block = std::array::from_fn(|k| src[k] >> lo & m);
             // Word by word: `==` on the arrays was a `memcmp` call per driver.
             if let Some(l) = o.last
                 && (l[0] ^ v[0]) | (l[1] ^ v[1]) | (l[2] ^ v[2]) | (l[3] ^ v[3]) == 0
@@ -86,7 +90,9 @@ impl Process for RegionProc {
     fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         if !self.started {
             // Initialisation: every leaf from the kernel's initial values, then settle.
-            Self::read(ctx, &mut self.img, &self.leaves)?;
+            for &(r, s) in &self.leaves {
+                self.img[s as usize] = Self::read(ctx, r)?;
+            }
             self.code.run(&mut self.img, false);
             self.export(ctx)?;
             for &w in &self.waits {
@@ -95,7 +101,7 @@ impl Process for RegionProc {
             self.started = true;
             return Ok(());
         }
-        Self::read(ctx, &mut self.img, &self.inputs)?;
+        self.read_inputs(ctx)?;
         let edge = match self.clock {
             Some((r, kind)) => ctx.edge_by(r, kind)? == Some(true),
             None => false,
@@ -109,4 +115,8 @@ impl Process for RegionProc {
         }
         Ok(())
     }
+}
+
+fn mask(len: u32) -> u64 {
+    if len >= 64 { !0 } else { (1u64 << len) - 1 }
 }

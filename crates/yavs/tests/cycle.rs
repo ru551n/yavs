@@ -1354,6 +1354,30 @@ fn a_reader_one_delta_after_the_edge_sees_region_logic_settled() {
     );
 }
 
+/// A literal aggregate of an array of records (a reset table whose elements differ, nested
+/// records, booleans) as the record of arrays the kernel keeps (`tests/cycle/reclit.vhd`).
+#[test]
+fn literals_of_arrays_of_records_equal_the_normal_mode_at_widths_around_a_word() {
+    let dir = tempdir("cycle-reclit");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("reclit{w}.vhd"),
+            &with_width(include_str!("cycle/reclit.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_reclit");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_reclit");
+            assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 1 of 2 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// Constants a plain elaboration evaluates only when something needs it (an architecture
 /// constant computed by a function, a deferred package constant), read only by region code.
 #[test]

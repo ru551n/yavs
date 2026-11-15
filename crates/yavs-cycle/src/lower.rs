@@ -3403,9 +3403,97 @@ impl Lx<'_> {
                     .collect::<R<Vec<_>>>()
                     .map(Val::Rec);
             }
+            // An array of records: a record of arrays, one per field, as the kernel keeps it.
+            (ConstValue::Array(a), TypeKind::Array { elem, .. })
+                if matches!(db.types[db.base(*elem)].kind, TypeKind::Record { .. }) =>
+            {
+                let [(l, d, r)] = a.bounds[..] else {
+                    return Err("a multi-dimensional literal".into());
+                };
+                let b = Bounds {
+                    left: l,
+                    dir: d,
+                    right: r,
+                };
+                let Elems::Runs(runs) = &a.elems else {
+                    return Err("a literal of an unexpected shape".into());
+                };
+                let vals: Vec<&ConstValue> = (runs.iter())
+                    .flat_map(|(n, v)| std::iter::repeat_n(v, *n as usize))
+                    .collect();
+                if vals.is_empty() || vals.len() as u64 != b.len() {
+                    return Err("a literal of an unexpected shape".into());
+                }
+                return self.rec_array_lit(b, db.base(*elem), &vals);
+            }
             _ => {}
         }
         let (codes, dims) = self.codes(t, c)?;
+        self.logic_lit(codes, dims)
+    }
+
+    /// The fields of an array of records of index range `b` whose elements, from the left, are
+    /// `vals` (records of type `t`), each as an array over the elements.
+    fn rec_array_lit(&mut self, b: Bounds, t: TypeId, vals: &[&ConstValue]) -> R<Val> {
+        let db = self.db;
+        let TypeKind::Record { elems } = &db.types[t].kind else {
+            return Err("a literal of an unexpected shape".into());
+        };
+        let mut fields = Vec::new();
+        for (j, el) in elems.iter().enumerate() {
+            let fv: Vec<&ConstValue> = (vals.iter())
+                .map(|v| match v {
+                    ConstValue::Record(fs) => fs.get(j).ok_or("a literal of an unexpected shape"),
+                    _ => Err("a literal of an unexpected shape"),
+                })
+                .collect::<Result<_, _>>()?;
+            let ft = db.base(el.subtype);
+            let logic = match &db.types[ft].kind {
+                TypeKind::Record { .. } => {
+                    fields.push(self.rec_array_lit(b, ft, &fv)?);
+                    continue;
+                }
+                TypeKind::Integer => false,
+                TypeKind::Enum { .. } => yavs_elab::elem_of(db, ft) == yavs_kernel::Elem::Logic,
+                _ => true,
+            };
+            if !logic {
+                // A word per element, the rightmost first.
+                let vs: Vec<i64> = (fv.iter())
+                    .map(|v| v.as_int().ok_or("a literal of an unexpected shape"))
+                    .collect::<Result<_, _>>()?;
+                let val: Box<[u64]> = vs.iter().rev().map(|&v| v as u64).collect();
+                let mut p = self.tmp(64 * vs.len() as u32);
+                self.ops.push(Op::Lit { dst: p.r, val });
+                p.dims = Dims::wrap(b, Dims::wrap(WORD, Dims::NONE).expect("one deep"))
+                    .expect("two deep");
+                p.int = Some(IntElem {
+                    lo: *vs.iter().min().expect("not empty"),
+                    hi: *vs.iter().max().expect("not empty"),
+                    down: false,
+                    place: None,
+                });
+                fields.push(Val::Part(p));
+                continue;
+            }
+            let mut codes = Vec::new();
+            let mut inner = Dims::NONE;
+            for v in &fv {
+                let (cs, ib) = self.codes(ft, v)?;
+                inner = ib;
+                codes.extend(cs);
+            }
+            let ds = Dims::wrap(b, inner).ok_or("a literal nested more than four deep")?;
+            if codes.len() as u64 != b.len() * u64::from(ds.elem_len()) {
+                return Err("a literal of an unexpected shape".into());
+            }
+            fields.push(self.logic_lit(codes, ds)?);
+        }
+        Ok(Val::Rec(fields))
+    }
+
+    /// A logic literal of `codes` (row-major, from the left) and index ranges `dims`.
+    fn logic_lit(&mut self, codes: Vec<u8>, dims: Dims) -> R<Val> {
         let n = codes.len() as u32;
         if n == 0 {
             return Err("a null literal".into());

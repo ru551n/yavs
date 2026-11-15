@@ -12,7 +12,9 @@ the thin slice on `tools/bench/designs/rec_pair.vhd`.
   Every other process stays in the event kernel and is listed in the region report with its reason.
 - The region reads the inputs its members read from the kernel at every wake, and drives with zero
   delay, through the member processes' own drivers, every member-driven signal anything outside may
-  read, only where it changed.
+  read, only where it changed. An exported kernel signal nothing outside waits on is quiet
+  (`yavs_kernel::Builder::quiet`, no byte codes): the kernel makes its change without an event
+  while nothing waits on it at run time.
 - Selection is automatic and never an error under `--cycle`. Under `--cycle-strict` a process left
   out that is below the top-level design unit and not behavioural is `E4101`, all of them listed.
 - Does not: change the normal mode (without the option no code of this crate runs; the only hook is
@@ -29,8 +31,8 @@ the thin slice on `tools/bench/designs/rec_pair.vhd`.
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | `plan` (selection, `--cycle-strict` errors, the region report, `build`), `codes` (`E4101`, `E4102`), `build` (image layout: current blocks of signal leaves, next-state blocks, member slots; the two schedules; the `RegionMake` closure), `resolve` |
-| `src/region.rs` | `classify` (the one membership decision per process; milestone 3's checker replaces its body), `select` (the fixpoint over the set: a leaf also driven outside, resolution or guard or constant source, an internal clock, a second clock, combinational loops; then the dependency order), `boundary` (driven, outputs, inputs, wakes, next-state leaves), `outside_reads` (what non-members may read), `behavioural`, `in_top_unit`, `where_` |
+| `src/lib.rs` | `plan` (selection, `--cycle-strict` errors, the region report, `build`), `codes` (`E4101`, `E4102`), `build` (image layout: one current block per kernel signal, its leaves at their kernel offsets, next-state blocks, member slots; the two schedules; the quiet signals; the `RegionMake` closure: one export per kernel driver), `resolve` |
+| `src/region.rs` | `classify` (the one membership decision per process; milestone 3's checker replaces its body), `select` (the fixpoint over the set: a leaf also driven outside, resolution or guard or constant source, an internal clock, a second clock, combinational loops; then the dependency order), `boundary` (driven, outputs, waited, inputs, wakes, next-state leaves), `outside_reads` (what non-members may read, and may wait on), `behavioural`, `in_top_unit`, `where_` |
 | `src/lower.rs` | HIR to `Op`s (`Lx`): the clocked shape `if <edge> then ... end if;` with the kernel's edge trigger, combinational processes (`pure_comb_reads`, sensitivity list complete); variable and signal assignment, names (fields, static index and slice), logic literals, logical operators (predefined and `std_logic_1164`, `numeric_std`), `not`, `&`, `numeric_std` `unsigned + natural constant`, conversions between logic vectors |
 | `src/codegen.rs` | The only `unsafe`: Cranelift functions `settle` and `edge` on the image, the four-plane gate helpers, perf map names (`YAVS_CLIFT_PERFMAP`) |
 | `src/rt.rs` | `RegionProc`: initialisation (every leaf from the kernel, settle, export all), wakes (inputs, edge test, the function, export of what changed), waits |
@@ -47,6 +49,8 @@ the thin slice on `tools/bench/designs/rec_pair.vhd`.
 | A signal leaf is exported when anything outside may read it: a non-member's names (whole objects), a port edge, an implicit signal, a guard, a package signal; a non-member that calls a subprogram declared outside a package, or an external name anywhere, exports every leaf | Sound by over-approximation: a missed reader would see a stale value | `src/region.rs` `outside_reads` |
 | A combinational member must satisfy `Db::pure_comb_reads` (with its asserts and reports left out) and its sensitivity list must name every leaf it reads, by whole signals (a list naming a part keeps it out) | It runs on every settle, not only on events of its list | `src/lower.rs` |
 | A clocked write goes to a next-state block only when a clocked member reads the leaf | Reads in a clocked body see the value before the edge | `src/lib.rs` `build` |
+| The image holds one block per kernel signal, with each leaf at its kernel offset: an export is one compare and one block per kernel driver; a record copy between two signals of one record type is one copy or blend per pair of blocks | The gather of leaf parts into driver blocks was a fifth of a clock of `rec_pair` | `src/lib.rs` `build`, `src/lower.rs` `assign` |
+| An exported kernel signal none of whose leaves anything outside waits on (`outside_reads`: sensitivity lists, `all`, wait statements, statements that are not processes, port edges, implicit signals, guards, package signals; everything when an external name or a local subprogram call is seen) is quiet: no byte codes, and the kernel changes it without an event while it is not watched at run time (`yavs-kernel` AGENTS.md, quiet signal) | Soundness rests on the kernel's run-time test; the static set only keeps codes where an event will be needed anyway | `src/lib.rs` `build` |
 | With one clock and no combinational inputs the region has the kernel's edge trigger; otherwise it waits on the clock and the inputs and tests the edge itself | `wait_edge` cannot be combined with data wakes | `src/rt.rs` |
 
 ## 4. Invariants and pitfalls

@@ -2094,3 +2094,91 @@ fn a_wait_of_several_ranges_named_again_is_the_same_wait() {
     assert_eq!(n[0], n[1], "{n:?}");
     assert!(n[0] > 100, "{n:?}");
 }
+
+/// A quiet signal (`Builder::quiet`, cycle mode) changes without an event while nothing waits on
+/// it: a reader by value sees each new value one delta after the assignment, as usual. Once a
+/// process waits on it, from the delta that registers the wait on (here the delta of an
+/// assignment), every change is an event again and wakes it.
+#[test]
+fn a_quiet_signal_has_events_once_something_waits_on_it() {
+    use std::sync::Mutex;
+    let mut b = Builder::new();
+    let s = b.signal(
+        "s",
+        SignalType::logic(8),
+        &LogicVec::new(8, StdULogic::Zero),
+    );
+    for f in [
+        Builder::lean_events,
+        Builder::no_history,
+        Builder::no_codes,
+        Builder::quiet,
+    ] {
+        f(&mut b, s);
+    }
+    let d = b.driver(s);
+    // Writes k at (k - 1) * 10 ns.
+    let mut k = 0u64;
+    b.process(
+        "writer",
+        NONE,
+        &[d],
+        p(move |c| {
+            k += 1;
+            if !c.assign_planes_now(d, None, [k, 0xff, 0, 0]) {
+                panic!("the fast case");
+            }
+            c.wait_for(ns(10))
+        }),
+    );
+    let word = move |c: &Ctx<'_>| {
+        let mut buf = [0u8; 32];
+        c.read_into(s, &mut buf).unwrap();
+        u64::from_le_bytes(buf[..8].try_into().unwrap())
+    };
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (by_value, woken) = (seen.clone(), seen.clone());
+    let mut started = false;
+    b.process(
+        "reader",
+        NONE,
+        &[],
+        p(move |c| {
+            if started {
+                by_value.lock().unwrap().push(("read", c.now(), word(c)));
+                return c.wait_for(ns(1000));
+            }
+            started = true;
+            c.wait_for(ns(25))
+        }),
+    );
+    let mut waiting = false;
+    b.process(
+        "waiter",
+        NONE,
+        &[],
+        p(move |c| {
+            if waiting {
+                woken.lock().unwrap().push(("woken", c.now(), word(c)));
+            } else if c.now() == Time::ZERO {
+                return c.wait_for(ns(30));
+            }
+            waiting = true;
+            c.wait_on(s)
+        }),
+    );
+    // Only a signal nothing reads the activity of is quiet.
+    let cfg = Config {
+        skip_unchanged: true,
+        ..Config::default()
+    };
+    let mut sim = b.build(cfg).unwrap();
+    sim.run_until(ns(105)).unwrap();
+    let got = seen.lock().unwrap().clone();
+    let mut want = vec![("read", ns(25), 3)];
+    want.extend((4..=11).map(|k| ("woken", ns(10 * (k - 1)), k)));
+    assert_eq!(got, want);
+    // No events before the wait but the first change, at initialisation (no quiet path there):
+    // one plus the eight changes it saw.
+    assert_eq!(sim.stats().events, 9);
+}

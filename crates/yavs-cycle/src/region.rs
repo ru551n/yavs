@@ -33,6 +33,8 @@ pub(crate) struct Selection {
     /// Leaves members drive, and of those the ones something outside reads (exported).
     pub driven: BTreeSet<LeafId>,
     pub outputs: BTreeSet<LeafId>,
+    /// Leaves something outside may wait on (or that it is not known it does not).
+    pub waited: BTreeSet<LeafId>,
     /// Leaves members read that no member drives (read from the kernel at each wake); of
     /// those, the ones a combinational member reads wake the region.
     pub inputs: BTreeSet<LeafId>,
@@ -225,11 +227,11 @@ fn boundary(
         .intersection(&clocked_reads)
         .copied()
         .collect();
-    let outputs = if outside_reads_all(db, e, &is_member) {
-        driven.clone()
+    let (outputs, waited) = if outside_reads_all(db, e, &is_member) {
+        (driven.clone(), driven.clone())
     } else {
-        let seen = outside_reads(db, e, &is_member);
-        driven.intersection(&seen).copied().collect()
+        let (seen, waited) = outside_reads(db, e, &is_member);
+        (driven.intersection(&seen).copied().collect(), waited)
     };
     Selection {
         members,
@@ -237,6 +239,7 @@ fn boundary(
         clock,
         driven,
         outputs,
+        waited,
         inputs,
         wakes,
         next,
@@ -248,22 +251,31 @@ fn outside_reads_all(db: &Db, _e: &Elaborated, _members: &BTreeSet<usize>) -> bo
     !db.externals.is_empty()
 }
 
-/// The leaves anything that is not a member may read: the code of the other processes (by the
-/// objects their names denote, whole), port edges and implicit signals the kernel updates,
-/// guards, and the signals of packages. A call that may read signals it is not given (a
-/// subprogram declared in a design unit rather than a package) counts as reading every signal
-/// of the design.
-fn outside_reads(db: &Db, e: &Elaborated, members: &BTreeSet<usize>) -> BTreeSet<LeafId> {
+/// The leaves anything that is not a member may read, and of those the ones something outside
+/// may wait on. Read: the code of the other processes (by the objects their names denote, whole),
+/// port edges and implicit signals the kernel updates, guards, and the signals of packages. A
+/// call that may read signals it is not given (a subprogram declared in a design unit rather than
+/// a package) counts as reading every signal of the design. Waited on: a sensitivity list (`all`:
+/// every read), the signals of a wait statement (its `until` condition when it names none), every
+/// read of a statement that is not a process, and everything above that is not process code.
+fn outside_reads(
+    db: &Db,
+    e: &Elaborated,
+    members: &BTreeSet<usize>,
+) -> (BTreeSet<LeafId>, BTreeSet<LeafId>) {
     let mut seen = BTreeSet::new();
-    let all = || (0..e.nets.leaves.len() as u32).map(LeafId).collect();
+    let mut waited = BTreeSet::new();
+    let all = || -> BTreeSet<LeafId> { (0..e.nets.leaves.len() as u32).map(LeafId).collect() };
     for (pi, p) in e.procs.iter().enumerate() {
         if members.contains(&pi) {
             continue;
         }
+        // Names read, and names waited on.
         let mut lsps = Vec::new();
+        let mut waits = Vec::new();
         let mut calls_local = false;
         if let Some(pa) = &p.actual {
-            db.reads(pa.expr, &mut lsps);
+            db.reads(pa.expr, &mut waits);
             calls_local |= exprs_call_local(db, &[pa.expr]);
         } else {
             match &db.stmts[p.stmt].kind {
@@ -271,63 +283,82 @@ fn outside_reads(db: &Db, e: &Elaborated, members: &BTreeSet<usize>) -> BTreeSet
                     sensitivity, body, ..
                 } => {
                     db.reads_deep(body, &mut lsps);
-                    if let Sensitivity::List(l) = sensitivity {
-                        lsps.extend(l.iter().cloned());
+                    match sensitivity {
+                        Sensitivity::List(l) => waits.extend(l.iter().cloned()),
+                        Sensitivity::All => waits.extend(lsps.iter().cloned()),
+                        Sensitivity::None => {}
                     }
                     let mut stmts = Vec::new();
                     deep(db, body, &mut stmts);
                     for s in stmts {
-                        if let StmtKind::Wait { on, .. } = &db.stmts[s].kind {
-                            lsps.extend(on.iter().cloned());
+                        if let StmtKind::Wait { on, until, .. } = &db.stmts[s].kind {
+                            waits.extend(on.iter().cloned());
+                            if on.is_empty()
+                                && let Some(c) = until
+                            {
+                                db.reads(*c, &mut waits);
+                            }
                         }
                         calls_local |= stmt_calls_local(db, s);
                     }
                 }
                 _ => {
-                    db.stmt_reads(p.stmt, &mut lsps);
+                    db.stmt_reads(p.stmt, &mut waits);
                     calls_local |= stmt_calls_local(db, p.stmt);
                 }
             }
         }
         if calls_local {
-            return all();
+            return (all(), all());
         }
-        for l in lsps {
+        for (l, wait) in lsps
+            .iter()
+            .map(|l| (l, false))
+            .chain(waits.iter().map(|l| (l, true)))
+        {
             match l.root {
                 ObjRoot::Decl(d) => match e.signal(p.scope, d) {
                     Some(o) => {
                         let (a, z) = e.nets.obj(o).leaves;
-                        seen.extend((a.0..z.0).map(LeafId));
+                        let leaves = (a.0..z.0).map(LeafId);
+                        if wait {
+                            waited.extend(leaves.clone());
+                        }
+                        seen.extend(leaves);
                     }
-                    None => return all(),
+                    None => return (all(), all()),
                 },
-                ObjRoot::External(_) => return all(),
+                ObjRoot::External(_) => return (all(), all()),
                 ObjRoot::ImplicitSignal(_) => {}
             }
         }
         if let Some(g) = &p.guard {
             seen.extend(g.iter().map(|x| x.0));
+            waited.extend(g.iter().map(|x| x.0));
         }
     }
+    let mut other = BTreeSet::new();
     for pe in &e.nets.ports {
-        seen.insert(pe.formal.0);
-        seen.insert(pe.actual.0);
+        other.insert(pe.formal.0);
+        other.insert(pe.actual.0);
     }
     for cp in &e.nets.conv_ports {
-        seen.extend(cp.formal.iter().chain(&cp.actual).map(|x| x.0));
+        other.extend(cp.formal.iter().chain(&cp.actual).map(|x| x.0));
     }
     for leaf in &e.nets.leaves {
         if let Some((_, src, _)) = leaf.implicit {
-            seen.insert(src);
+            other.insert(src);
         }
-        seen.extend(leaf.implicit_more.iter().map(|x| x.0));
+        other.extend(leaf.implicit_more.iter().map(|x| x.0));
     }
     for o in &e.nets.objs {
         if matches!(e.hier.scope(o.scope).kind, ScopeKind::Package { .. }) {
-            seen.extend((o.leaves.0.0..o.leaves.1.0).map(LeafId));
+            other.extend((o.leaves.0.0..o.leaves.1.0).map(LeafId));
         }
     }
-    seen
+    seen.extend(other.iter().copied());
+    waited.extend(other);
+    (seen, waited)
 }
 
 fn deep(db: &Db, body: &[StmtId], out: &mut Vec<StmtId>) {

@@ -1198,6 +1198,8 @@ pub struct SimControl {
     directb: Vec<OutB>,
     /// Signals with direct transactions (`commit_out`) for the next update.
     direct_sigs: Vec<u32>,
+    /// A signal is quiet (`Builder::quiet`): `cycle` finishes such signals at its end.
+    quiet_any: bool,
     ops: Vec<SignalOp>,
     /// Signals with events in the current cycle.
     changed_sigs: Vec<u32>,
@@ -1762,6 +1764,7 @@ impl SimControl {
             directv: Vec::new(),
             directb: Vec::new(),
             direct_sigs: Vec::new(),
+            quiet_any: false,
             ops: Vec::new(),
             changed_sigs: Vec::new(),
             in_changed: vec![false; nsignals as usize],
@@ -1873,6 +1876,13 @@ impl SimControl {
             s.live = true;
             s.set_lean_words();
         });
+        for i in 0..sim.signals.len() {
+            let read = sim.readers_start.get(i) != sim.readers_start.get(i + 1)
+                || sim.guard_readers.contains_key(&(i as u32));
+            let s = &mut sim.signals[i];
+            s.quiet &= !read && s.quiet_ok();
+            sim.quiet_any |= s.quiet;
+        }
         Ok(sim)
     }
 
@@ -3026,8 +3036,21 @@ impl SimControl {
             self.run_batch(ready, false, false)?;
         }
         self.phase(Phase::EndOfProcesses);
-
+        if self.quiet_any && !self.direct_sigs.is_empty() {
+            self.finish_quiet();
+        }
         self.last_delta()
+    }
+
+    /// Quiet signals (`Builder::quiet`) with direct commits of this cycle that nothing waits on
+    /// now, every wait of the cycle registered: their values change at once, with no event, and
+    /// they need no next delta.
+    #[inline(never)]
+    fn finish_quiet(&mut self) {
+        let (now, cycle) = (self.now, self.cycle + 1);
+        let signals = &mut self.signals;
+        self.direct_sigs
+            .retain(|&s| !signals[s as usize].finish_quiet(now, cycle));
     }
 
     /// f/g: at the last delta of this time, postponed processes. Also after initialization

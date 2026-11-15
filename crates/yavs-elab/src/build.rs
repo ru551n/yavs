@@ -124,6 +124,9 @@ impl Elaborated {
                 if quiet(k) || (a.0..z.0).all(|l| self.no_codes.get(l as usize) == Some(&true)) {
                     b.no_codes(id);
                 }
+                if quiet(k) {
+                    b.quiet(id);
+                }
                 continue;
             }
             let i = a.index();
@@ -171,6 +174,9 @@ impl Elaborated {
             }
             if quiet(k) || self.no_codes.get(i) == Some(&true) {
                 b.no_codes(id);
+            }
+            if quiet(k) {
+                b.quiet(id);
             }
             if let Some(g) = leaf.guard {
                 guards.push((id, g, leaf.disconnect));

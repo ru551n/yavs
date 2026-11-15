@@ -120,8 +120,10 @@ pub fn plan(db: &Db, e: &Elaborated, strict: bool) -> Result<Plan, Vec<Diagnosti
     let name = |l: &LeafId| e.leaf_name(*l);
     let _ = writeln!(
         report,
-        "  boundary: {} signal leaves exported, {} read at each wake, {} wake the region{}",
+        "  boundary: {} signal leaves exported ({} nothing outside waits on), {} read at each \
+         wake, {} wake the region{}",
         sel.outputs.len(),
+        sel.outputs.difference(&sel.waited).count(),
         sel.inputs.len(),
         sel.wakes.len(),
         match sel.wakes.iter().map(name).collect::<Vec<_>>() {
@@ -213,7 +215,12 @@ fn build(_db: &Db, e: &Elaborated, sel: region::Selection) -> Result<Region, Str
         .map(|&l| {
             let len = nets.leaf(l).ty.len;
             let at = nets.loc[l.index()];
-            (nets.kref(l, Range::new(0, len)), cur[&at.signal.0], at.base, len)
+            (
+                nets.kref(l, Range::new(0, len)),
+                cur[&at.signal.0],
+                at.base,
+                len,
+            )
         })
         .collect();
     let clock = sel.clock.map(|c| {
@@ -235,8 +242,12 @@ fn build(_db: &Db, e: &Elaborated, sel: region::Selection) -> Result<Region, Str
     });
     // The leaf of each driver declaration, for the exports.
     let decls: Vec<LeafId> = nets.drivers.iter().map(|d| d.leaf).collect();
+    // Exported kernel signals none of whose leaves anything outside waits on: candidates for an
+    // update without an event (the kernel decides at run time, `Builder::quiet`).
+    let waited: std::collections::BTreeSet<u32> = sel.waited.iter().map(|&l| ksig(l)).collect();
     let quiet: Vec<u32> = (sel.outputs.iter())
         .map(|&l| ksig(l))
+        .filter(|k| !waited.contains(k))
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();

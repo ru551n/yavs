@@ -934,6 +934,10 @@ pub(crate) struct Signal {
     /// The cycle and stamp of the last event `bare` kept no record of (0: none), for the reports
     /// of `hang.rs`.
     bare_last: (u64, u64),
+    /// Its value may change without an event (`Builder::quiet`, cycle mode): kept only when
+    /// `SimControl::new` finds nothing that could see the event (`quiet_ok`), and then used
+    /// only while the signal is not `watched` (`finish_quiet`).
+    pub(crate) quiet: bool,
 }
 
 /// The elements of a block of 64 whose last event was one `update_word`, with its cycle and
@@ -1259,6 +1263,7 @@ impl Signal {
             bare: false,
             bare_whole: false,
             bare_last: (0, 0),
+            quiet: false,
         };
         sig.sync_codes();
         sig
@@ -3074,6 +3079,50 @@ impl Signal {
             && self.guard.is_none()
             && self.port_in.is_none()
             && matches!(self.resolution, None | Some(Resolution::StdLogic));
+    }
+
+    /// Whether an update of this signal can be made without an event, apart from `watched`: a
+    /// lean register (at most 64 elements, no codes, no activity stamps) that keeps no history,
+    /// on plane storage, with no group, guard, port or implicit signal and no resolution but
+    /// `std_logic`'s (whose direct commits write the driving value of their sole source).
+    pub(crate) fn quiet_ok(&self) -> bool {
+        self.bare
+            && self.lean_words
+            && self.ty.len <= 64
+            && self.static_plain
+            && self.groups.is_empty()
+            && self.guard.is_none()
+            && self.port_in.is_none()
+            && !self.out_port
+    }
+
+    /// The direct commits of this cycle (`commit_planes`) made effective at once, with no event:
+    /// the end of a cycle in which nothing can see one (a quiet signal nothing waits on). False,
+    /// nothing done, when the usual update must run.
+    #[inline(never)]
+    pub(crate) fn finish_quiet(&mut self, now: Time, cycle: u64) -> bool {
+        if !self.quiet
+            || self.watched
+            || self.pend_one
+            || self.force_eff.is_some()
+            || self.force_drv.is_some()
+            || !self.force_ev.is_empty()
+        {
+            return false;
+        }
+        let (Buf::Planes { b: cur, .. }, Buf::Planes { b: drv, .. }, Some(p)) =
+            (&mut self.cur, &self.driving, self.pend.first_mut())
+        else {
+            return false;
+        };
+        let m = block_diff(&cur[0], &drv[0]) & std::mem::take(p);
+        self.pend_words.clear();
+        if m != 0 {
+            let x = cur[0];
+            cur[0] = std::array::from_fn(|k| x[k] & !m | drv[0][k] & m);
+            self.bare_last = (cycle, stamp(now));
+        }
+        true
     }
 
     /// `lean_words` once the codes and `inactive` are settled (the end of `SimControl::new`).

@@ -114,7 +114,33 @@ fn a_region_with_processes_left_out_gives_the_same_result() {
             "{err}"
         );
         assert!(
-            err.contains("1 wake the region (cycle_partial.din)"),
+            err.contains("wake, 1 wake the region (cycle_partial.din)"),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn region_outputs_read_late_waited_on_or_read_by_an_idle_skipped_process() {
+    let dir = tempdir("cycle-quiet");
+    analyze(&dir, "quiet.vhd", include_str!("cycle/quiet.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_quiet");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_quiet");
+        // Hand-checked: `nxt` changes at time 0 and at each of the 20 edges, `events` starts at 0
+        // and counts one more for the initial run of `watch`.
+        assert!(
+            normal.len() == 1 && normal[0].ends_with("cnt=20 last=19 seen=19 events=22"),
+            "{t:?} {normal:?}"
+        );
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 2 of 5 processes run cycle-based"),
+            "{err}"
+        );
+        // `cnt` and `last` are read by value only, `nxt` is waited on.
+        assert!(
+            err.contains("3 signal leaves exported (2 nothing outside waits on)"),
             "{err}"
         );
     }

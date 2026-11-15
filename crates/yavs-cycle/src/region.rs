@@ -1,7 +1,6 @@
-//! Which processes join the region, and the region's boundary (design sections 1.1 to 1.3,
-//! amended: selection is automatic). A process joins when its body lowers ([`classify`]) and
-//! the boundary rules below hold for the set; every other process stays in the event kernel,
-//! listed with its reason.
+//! Which processes join the region, and the region's boundary. Selection is automatic: a
+//! process joins when its body lowers ([`classify`]) and the boundary rules below hold for the
+//! set; every other process stays in the event kernel, listed with its reason.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -39,7 +38,7 @@ pub(crate) struct Selection {
     pub inputs: BTreeSet<LeafId>,
     pub wakes: BTreeSet<LeafId>,
     /// Leaves a clocked member writes and a clocked member reads: written to a next-state
-    /// block, committed after all clocked bodies ran (design 6.3).
+    /// block, committed after all clocked bodies ran.
     pub next: BTreeSet<LeafId>,
 }
 
@@ -62,7 +61,16 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         for d in &e.nets.drivers {
             drivers.entry(d.leaf).or_default().insert(d.proc.index());
         }
-        let consts: BTreeSet<LeafId> = e.nets.consts.iter().map(|c| c.0).collect();
+        // Leaves with a source no process owns: a constant source, or a port edge or converted
+        // port the kernel updates (a member would read its own driving value from the image,
+        // not the resolved one).
+        let mut consts: BTreeSet<LeafId> = e.nets.consts.iter().map(|c| c.0).collect();
+        for pe in &e.nets.ports {
+            consts.extend([pe.formal.0, pe.actual.0]);
+        }
+        for cp in &e.nets.conv_ports {
+            consts.extend(cp.formal.iter().chain(&cp.actual).map(|x| x.0));
+        }
         let mut clock: Option<Clock> = None;
         let mut writer: BTreeMap<LeafId, usize> = BTreeMap::new();
         for (pi, v) in verdicts.iter().enumerate() {
@@ -83,7 +91,8 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
                     || matches!(leaf.resolution, Some(LeafRes::Func(_) | LeafRes::Whole(_)))
                 {
                     why = Some(format!(
-                        "{} has a resolution, guard or other source cycle mode does not model yet",
+                        "{} has a resolution, guard, port or other source cycle mode does not \
+                         model yet",
                         e.leaf_name(l)
                     ));
                     break;
@@ -445,14 +454,14 @@ fn local_subprogram(db: &Db, d: yavs_sem::DeclId) -> bool {
     false
 }
 
-/// A behavioural process (D2): one the testbench side of a design is made of. Milestone 1's
-/// reading, from the statements alone: a process without a sensitivity list that waits for a
-/// time, waits forever (`wait;`), has more than one wait, calls a procedure (which may wait),
-/// or declares a file.
+/// A behavioural process: one the testbench side of a design is made of. Milestone 1's
+/// reading, from the statements alone: a process that declares a file, or one without a
+/// sensitivity list that waits for a time, waits forever (`wait;`), has more than one wait or
+/// calls a procedure (which may wait).
 pub(crate) fn behavioural(db: &Db, e: &Elaborated, pi: usize) -> bool {
     let p = &e.procs[pi];
     let StmtKind::Process {
-        sensitivity: Sensitivity::None,
+        sensitivity,
         body,
         scope,
         ..
@@ -464,6 +473,12 @@ pub(crate) fn behavioural(db: &Db, e: &Elaborated, pi: usize) -> bool {
         matches!(&db.decls[d].kind, yavs_sem::decl::DeclKind::Object(o)
             if o.class == yavs_sem::decl::ObjClass::File)
     });
+    if files {
+        return true;
+    }
+    if !matches!(sensitivity, Sensitivity::None) {
+        return false;
+    }
     let mut stmts = Vec::new();
     deep(db, body, &mut stmts);
     let mut waits = 0;
@@ -481,7 +496,7 @@ pub(crate) fn behavioural(db: &Db, e: &Elaborated, pi: usize) -> bool {
             _ => {}
         }
     }
-    files || waits != 1
+    waits != 1
 }
 
 /// The process is directly in the top-level design unit (its architecture, or a block or

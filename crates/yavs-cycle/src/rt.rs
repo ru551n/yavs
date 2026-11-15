@@ -1,4 +1,4 @@
-//! The region's kernel process (design 1.2, 2.1, 5.9): it reads its inputs from the kernel
+//! The region's kernel process: it reads its inputs from the kernel
 //! into the image, runs the compiled trigger function, and drives the outputs that changed with
 //! zero delay through the drivers of the member processes.
 

@@ -41,12 +41,13 @@ the thin slice on `tools/bench/designs/rec_pair.vhd`.
 | Decision | Why | Source |
 |---|---|---|
 | Members keep their kernel process (no code, no drivers); the region process comes after all others and owns their drivers | Process ids index `Elaborated::procs` (profiles, hang reports, run-time diagnostics) | `yavs-elab` `build.rs` |
-| Inside the region the mode is for speed: `assert` and `report` of members are compiled to nothing (counted per process in the report), and no simulation-only bookkeeping (ieee warnings, range checks, history of region signals) is built into region code | The user's direction for this mode (2026-11-15); processes outside keep full semantics | design.md amendment A6 |
-| Values are four planes in milestone 1 (`Block`), gates are calls into `yavs-logic`; uninitialised state is `U`, as the kernel holds it | The milestone measures the image and the schedule before two-state values (design 5.8) | design.md 5.8, 9 |
-| A signal leaf is exported when anything outside may read it: a non-member's names (whole objects), a port edge, an implicit signal, a guard, a package signal; a non-member that calls a subprogram declared outside a package, or an external name anywhere, exports every leaf | Sound by over-approximation: a missed reader would see a stale value | design.md 1.3 |
-| A combinational member must satisfy `Db::pure_comb_reads` and its sensitivity list must name every leaf it reads | It runs on every settle, not only on events of its list | design.md 3.1, D7 |
-| A clocked write goes to a next-state block only when a clocked member reads the leaf | Reads in a clocked body see the value before the edge | design.md 6.3 |
-| With one clock and no combinational inputs the region has the kernel's edge trigger; otherwise it waits on the clock and the inputs and tests the edge itself | `wait_edge` cannot be combined with data wakes | design.md 1.2 |
+| Inside the region the mode is for speed: `assert` and `report` of members are compiled to nothing (counted per process in the report), and no simulation-only bookkeeping (ieee warnings, range checks, history of region signals) is built into region code | The user's direction for this mode (2026-11-15); processes outside keep full semantics | user direction, 2026-11-15 |
+| Values are four planes in milestone 1 (`Block`), gates are calls into `yavs-logic`; uninitialised state is `U`, as the kernel holds it | The milestone measures the image and the schedule before two-state values | milestone 1 scope |
+| A member whose driven leaf has any source the kernel resolves for it (another driver, a constant source, a port edge or converted port, a resolution function, a guard) stays out | It would read its own driving value from the image, not the resolved one | `src/region.rs` `select` |
+| A signal leaf is exported when anything outside may read it: a non-member's names (whole objects), a port edge, an implicit signal, a guard, a package signal; a non-member that calls a subprogram declared outside a package, or an external name anywhere, exports every leaf | Sound by over-approximation: a missed reader would see a stale value | `src/region.rs` `outside_reads` |
+| A combinational member must satisfy `Db::pure_comb_reads` (with its asserts and reports left out) and its sensitivity list must name every leaf it reads, by whole signals (a list naming a part keeps it out) | It runs on every settle, not only on events of its list | `src/lower.rs` |
+| A clocked write goes to a next-state block only when a clocked member reads the leaf | Reads in a clocked body see the value before the edge | `src/lib.rs` `build` |
+| With one clock and no combinational inputs the region has the kernel's edge trigger; otherwise it waits on the clock and the inputs and tests the edge itself | `wait_edge` cannot be combined with data wakes | `src/rt.rs` |
 
 ## 4. Invariants and pitfalls
 

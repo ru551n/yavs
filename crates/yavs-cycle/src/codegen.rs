@@ -1,6 +1,6 @@
-//! Cranelift code of the region (design 6.4): one function per trigger, the operations of the
+//! Cranelift code of the region: one function per trigger, the operations of the
 //! member bodies in schedule order on the flat state image. Milestone 1's values are four-plane
-//! blocks; the IEEE 1164 gates are calls into `yavs-logic` (design 5.8), the rest is inline.
+//! blocks; the IEEE 1164 gates are calls into `yavs-logic`, the rest is inline.
 //!
 //! The only `unsafe` of the crate: the helpers read and write the image through raw pointers,
 //! and the region calls the generated code.

@@ -120,6 +120,52 @@ fn a_region_with_processes_left_out_gives_the_same_result() {
     }
 }
 
+/// A sensitivity list naming part of a signal is not complete for cycle mode even when it names
+/// the object the body reads: the process stays out, and the result is the normal mode's.
+const PART_LIST: &str = "\
+library ieee;
+use ieee.std_logic_1164.all;
+entity cycle_part_list is
+end entity;
+architecture a of cycle_part_list is
+  signal v : std_ulogic_vector(1 downto 0) := \"00\";
+  signal w : std_ulogic_vector(1 downto 0) := \"00\";
+begin
+  half : process (v(0))
+  begin
+    w <= v;
+  end process;
+  main : process
+  begin
+    v <= \"01\";
+    wait for 1 ns;
+    -- Only v(1) changes: `half` does not run again in the normal mode.
+    v <= \"11\";
+    wait for 1 ns;
+    report \"w=\" & to_string(w);
+    wait;
+  end process;
+end architecture;
+";
+
+#[test]
+fn a_sensitivity_list_naming_a_part_keeps_the_process_out() {
+    let dir = tempdir("cycle-part-list");
+    analyze(&dir, "part_list.vhd", PART_LIST);
+    let (normal, _) = run(&dir, &["--tier=interp"], "cycle_part_list");
+    let (cycle, err) = run(&dir, &["--tier=interp", "--cycle"], "cycle_part_list");
+    assert!(
+        normal.len() == 1 && normal[0].ends_with("w=01"),
+        "{normal:?}"
+    );
+    assert_eq!(cycle, normal);
+    assert!(
+        err.contains("0 of 2 processes run cycle-based")
+            && err.contains("a sensitivity list naming part of a signal"),
+        "{err}"
+    );
+}
+
 #[test]
 fn cycle_strict_refuses_rtl_that_cannot_join() {
     let dir = tempdir("cycle-strict");

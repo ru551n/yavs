@@ -537,7 +537,7 @@ impl RunArgs {
     }
 
     /// The option `--cycle` cannot be used with: it observes or changes signals inside the
-    /// region (design decision D16, milestone 1 refuses all of them).
+    /// region (milestone 1 of cycle mode refuses all of them).
     fn not_with_cycle(&self) -> Option<&'static str> {
         if self.debugged() {
             Some("a debug session")

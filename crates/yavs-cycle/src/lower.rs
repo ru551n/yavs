@@ -1,7 +1,6 @@
-//! The bodies of member processes, from the elaborated HIR to region operations (design
-//! section 6.2). Milestone 1 keeps values in four planes (`yavs_logic::planes::Block`): one
-//! block per logic leaf of at most 64 elements. Anything else is a reason to leave the process
-//! in the event kernel, never a guess.
+//! The bodies of member processes, from the elaborated HIR to region operations. Milestone 1
+//! keeps values in four planes (`yavs_logic::Block`): one block per logic leaf of at most 64
+//! elements. Anything else is a reason to leave the process in the event kernel, never a guess.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -195,7 +194,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         locs: 0,
         dropped: 0,
     };
-    // `if <edge> then ... end if;` with the kernel's edge trigger (design 1.1).
+    // `if <edge> then ... end if;` with the kernel's edge trigger.
     if let Some(t) = p.trigger {
         if t.wait {
             return Err("a clocked `wait until` process is not supported in cycle mode yet".into());
@@ -239,7 +238,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         return Err("a process with wait statements runs in the event kernel".into());
     }
     // What an activation does must be a function of the signals it reads: no state kept in
-    // variables from one activation to the next (design 3.1).
+    // variables from one activation to the next.
     // Asserts and reports are not evaluated in the region, so they do not count here.
     let kept: Vec<StmtId> = (body.iter().copied())
         .filter(|&s| {
@@ -257,13 +256,22 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         );
     }
     lx.stmts(body)?;
-    // Cycle mode computes from every read; the normal mode only wakes on the list (D7).
+    // Cycle mode computes from every read; the normal mode only wakes on the list.
     if let yavs_sem::hir::Sensitivity::List(list) = sensitivity {
         let mut listed = BTreeSet::new();
         for l in list.iter() {
             let yavs_sem::hir::ObjRoot::Decl(d) = l.root else {
                 return Err("a sensitivity list naming an external name".into());
             };
+            // A part names fewer leaves than its object: not taken yet (the check must not
+            // count leaves the list does not name).
+            if !l.path.is_empty() {
+                return Err(
+                    "a sensitivity list naming part of a signal is not supported in cycle mode \
+                     yet"
+                    .into(),
+                );
+            }
             let Some(o) = e.signal(p.scope, d) else {
                 return Err("a sensitivity list naming something that is not a signal".into());
             };
@@ -372,7 +380,7 @@ impl Lx<'_> {
             }
             StmtKind::Loop { .. } => Err("a loop is not supported in cycle mode yet".into()),
             StmtKind::Wait { .. } => Err("a wait statement runs in the event kernel".into()),
-            // Simulation-only: compiled to nothing, counted for the report (amendment A6).
+            // Simulation-only: compiled to nothing, counted for the report (the mode is for speed).
             StmtKind::Assert { .. } | StmtKind::Report { .. } => {
                 self.dropped += 1;
                 Ok(())

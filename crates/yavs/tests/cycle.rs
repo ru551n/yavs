@@ -2064,3 +2064,73 @@ fn inputs_read_only_when_they_changed_give_the_same_result() {
         );
     }
 }
+
+const TABLE_INDEX: &str = "\
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+entity cycle_tbl is
+end entity;
+architecture a of cycle_tbl is
+  type table_t is array (0 to 7) of unsigned(7 downto 0);
+  constant TBL : table_t := (x\"11\", x\"22\", x\"33\", x\"44\", x\"55\", x\"66\", x\"77\", x\"88\");
+  function rot(v : unsigned) return unsigned is
+  begin
+    return v(0) & v(v'left downto 1);
+  end function;
+  signal din : unsigned(7 downto 0) := x\"00\";
+  signal k1, k2, k3, k4 : integer range 0 to 7 := 0;
+  signal fo : unsigned(7 downto 0);
+  signal fb : std_ulogic;
+begin
+  pf : process (all)
+  begin
+    k1 <= to_integer(din(2 downto 0));
+    fo <= TBL(k2);
+  end process;
+  pg : process (all)
+  begin
+    k2 <= (k1 + 1) mod 8;
+  end process;
+  ph : process (all)
+  begin
+    k3 <= to_integer(din(2 downto 0));
+    fb <= rot(din)(k4);
+  end process;
+  pk : process (all)
+  begin
+    k4 <= 7 - k3;
+  end process;
+  main : process
+  begin
+    for i in 1 to 6 loop
+      din <= din + 3;
+      wait for 1 ns;
+      report \"fo=\" & to_hstring(fo) & \" fb=\" & std_ulogic'image(fb);
+    end loop;
+    wait;
+  end process;
+end architecture;
+";
+
+/// An element of a constant or of a function's result at an index chosen at run time depends
+/// on the index: `pf` reads `k2` through `TBL(k2)`, which `pg` makes of what `pf` drives.
+#[test]
+fn an_element_chosen_at_run_time_depends_on_its_index() {
+    let dir = tempdir("cycle-tbl");
+    analyze(&dir, "tbl.vhd", TABLE_INDEX);
+    let report = verdicts(&dir, "cycle_tbl");
+    for group in [
+        "loop group of 2 processes: 2 passes, or 3 pieces after a split: cycle_tbl.pf, cycle_tbl.pg",
+        "loop group of 2 processes: 2 passes, or 3 pieces after a split: cycle_tbl.ph, cycle_tbl.pk",
+    ] {
+        assert!(report.contains(group), "{group}\n{report}");
+    }
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_tbl");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_tbl");
+        // Hand-checked: din 03, k1 3, k2 4; rot(din) is "10000001" indexed 0 to 7, k4 4.
+        assert!(normal[0].ends_with("fo=55 fb='0'"), "{normal:?}");
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+    }
+}

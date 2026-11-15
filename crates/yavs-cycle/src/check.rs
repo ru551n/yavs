@@ -1208,8 +1208,12 @@ impl Cx<'_> {
         let Some(n) = self.name(x, st)? else {
             return Ok(None);
         };
+        Ok(self.place_of(n))
+    }
+
+    fn place_of(&mut self, n: Name) -> Option<Place> {
         let decl = n.decl;
-        Ok(match n.root {
+        match n.root {
             Root::Const => None,
             Root::Sig(o) => {
                 let (parts, exact) = self.sig_parts(o, &n.sels);
@@ -1231,7 +1235,7 @@ impl Cx<'_> {
                     decl,
                 })
             }
-        })
+        }
     }
 
     /// The one static element a clock or reset name denotes.
@@ -2023,7 +2027,14 @@ impl Cx<'_> {
 
     /// A name read for its value.
     fn read(&mut self, x: ExprId, st: &St) -> R<Dv> {
-        let Some(p) = self.place(x, st)? else {
+        let Some(n) = self.name(x, st)? else {
+            return self.unnamed(x, st);
+        };
+        // A part of a constant: what its indices read (`table(i)`).
+        if matches!(n.root, Root::Const) {
+            return Ok(Dv::Flat(Rc::new(n.idx)));
+        }
+        let Some(p) = self.place_of(n) else {
             return Ok(Self::empty());
         };
         let idx = Rc::new(p.idx.clone());
@@ -2089,6 +2100,33 @@ impl Cx<'_> {
             return Ok(Dv::Flat(Rc::new(s)));
         }
         Ok(Dv::Runs(runs))
+    }
+
+    /// A part of a value that is not an object (an element of a function's result): everything
+    /// the value and the indices read.
+    fn unnamed(&mut self, x: ExprId, st: &St) -> R<Dv> {
+        let db = self.db;
+        let mut xs: Vec<ExprId> = Vec::new();
+        match &db.exprs[x].kind {
+            ExprKind::Index { prefix, indices } => {
+                xs.push(*prefix);
+                xs.extend(indices.iter());
+            }
+            ExprKind::Slice { prefix, range } => {
+                xs.push(*prefix);
+                if let RangeC::Explicit { left, right, .. } = range {
+                    xs.extend([*left, *right]);
+                }
+            }
+            ExprKind::Field { prefix, .. } => xs.push(*prefix),
+            _ => {}
+        }
+        let mut s = ESet::default();
+        for x in xs {
+            let d = self.expr(x, st)?;
+            s.union(&self.flat(&d));
+        }
+        Ok(Dv::Flat(Rc::new(s)))
     }
 
     /// The dependences of a call: its arguments, and the signals the subprogram reads itself.

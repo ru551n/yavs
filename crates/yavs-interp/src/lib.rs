@@ -2463,6 +2463,18 @@ impl Runtime {
         self.asserts.counts()[s as usize]
     }
 
+    /// A report of severity `s` made outside the interpreter (a cycle region's top-level
+    /// member): counted as an assert of `std.env` and formatted as the interpreter's own; `None`
+    /// when the severity is disabled (`SetVhdlAssertEnable`).
+    pub fn assert_report(
+        &self,
+        ctx: &yavs_kernel::Ctx<'_>,
+        s: yavs_kernel::Severity,
+        text: String,
+    ) -> Option<String> {
+        self.asserts.report(ctx, s, text)
+    }
+
     /// Run compiled code of `tier` where it has some, from now on (`yavs run --tier`).
     /// Elaboration-time code that already ran stayed interpreted; a debugger keeps a
     /// process interpreted. Returns `false` if a tier was set before.

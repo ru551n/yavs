@@ -5416,9 +5416,9 @@ impl SimControl {
     fn commit(&mut self, process: ProcId, effects: Vec<Effect>) {
         for e in effects {
             match e {
-                Effect::Report(severity, message, live) => {
+                Effect::Report(severity, message, live, by) => {
                     let report = Report {
-                        process: Some(process),
+                        process: Some(by),
                         context: None,
                         severity,
                         message,

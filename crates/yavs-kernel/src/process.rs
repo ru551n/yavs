@@ -829,7 +829,8 @@ pub trait LiveSink: Send + Sync {
 /// A buffered side effect, committed after the delta in elaboration order. The flag on a
 /// report or output: already written to the live sink.
 pub(crate) enum Effect {
-    Report(Severity, String, bool),
+    /// Severity, message, shown live already, the process it is reported as.
+    Report(Severity, String, bool, ProcId),
     Output(Vec<u8>, bool),
     Stop(i32),
     Finish(i32),
@@ -3613,17 +3614,25 @@ impl Ctx<'_> {
 
     /// `report` / `assert`.
     pub fn report(&mut self, severity: Severity, msg: impl Into<String>) {
+        self.report_as(self.pid, severity, msg);
+    }
+
+    /// `report` / `assert` of process `pid`, made by this one (a cycle region reporting for a
+    /// member it runs): shown and committed as `pid`'s.
+    pub fn report_as(&mut self, pid: ProcId, severity: Severity, msg: impl Into<String>) {
         let msg = msg.into();
         let live = match self.sh.live {
             Some(l) if self.live => {
-                let name = &self.sh.names[self.pid.0 as usize];
+                let name = &self.sh.names[pid.0 as usize];
                 l.report(self.sh.now, self.sh.delta, name, severity, &msg);
                 true
             }
             _ => false,
         };
         self.st.act |= ACT_SLOW;
-        self.st.effects.push(Effect::Report(severity, msg, live));
+        self.st
+            .effects
+            .push(Effect::Report(severity, msg, live, pid));
     }
 
     /// Buffered textio `OUTPUT` text, delivered to observers at commit in elaboration order

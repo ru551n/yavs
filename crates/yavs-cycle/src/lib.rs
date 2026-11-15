@@ -836,6 +836,7 @@ fn build(
                 bytes: sig_bytes[&d.signal.0],
                 last: 0,
                 wide: Vec::new(),
+                ram: Vec::new(),
             });
         }
         let mut img = vec![0u64; words];

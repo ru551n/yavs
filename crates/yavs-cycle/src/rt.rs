@@ -52,6 +52,38 @@ pub(crate) struct Out {
     pub last: u64,
     /// The words driven last of a wider driver.
     pub wide: Vec<u64>,
+    /// A memory's driver: the writes of the edge that may have changed it (after the first
+    /// export only those words are compared and driven).
+    pub ram: Vec<RamWrite>,
+}
+
+/// A write of a memory kept back to the commit (`lib.rs` `defer`): its flag word (set when it
+/// happened in this wake, cleared by the export), its index word, and where it writes (the
+/// operands of its `IndexWrite`).
+#[derive(Clone)]
+pub(crate) struct RamWrite {
+    pub flag: usize,
+    pub idx: usize,
+    pub lo: u32,
+    pub n: u32,
+    pub stride: u32,
+    pub w: u32,
+    pub left: i64,
+    pub down: bool,
+}
+
+impl RamWrite {
+    /// The elements of the kernel signal the write changed (it passed its index check).
+    fn elems(&self, img: &[u64]) -> std::ops::Range<u32> {
+        let i = img[self.idx] as i64;
+        let p = if self.down {
+            self.left - i
+        } else {
+            i - self.left
+        };
+        let first = self.lo as i64 + (i64::from(self.n) - 1 - p) * i64::from(self.stride);
+        first as u32..first as u32 + self.w
+    }
 }
 
 pub(crate) struct RegionProc {
@@ -198,8 +230,34 @@ impl RegionProc {
     #[inline(never)]
     fn export(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         let all = !std::mem::replace(&mut self.exported, true);
+        let mut written: Vec<usize> = Vec::new();
         for o in &mut self.outs {
             let slot = o.slot as usize;
+            if !o.ram.is_empty() && !all {
+                // A memory: the 64-element words its writes of this wake touched, each driven once.
+                let mut chunks: Vec<u32> = Vec::new();
+                for wr in o.ram.iter().filter(|wr| self.img[wr.flag] != 0) {
+                    written.push(wr.flag);
+                    let e = wr.elems(&self.img);
+                    let (a, z) = (e.start.max(o.range.offset), e.end.min(o.range.end()));
+                    chunks.extend((a / 64..z.div_ceil(64)).filter(|_| a < z));
+                }
+                chunks.sort_unstable();
+                chunks.dedup();
+                for c in chunks {
+                    let a = (64 * c).max(o.range.offset);
+                    let z = (64 * c + 64).min(o.range.end());
+                    let len = z - a;
+                    let v = word_at(&self.img[slot..], a, len);
+                    let r = Range::new(a, len);
+                    if !ctx.assign_planes_now(o.driver, Some(r), [v, mask(len), 0, 0]) {
+                        let b = blocks(&[v], len);
+                        ctx.assign_blocks(o.driver, Some(r), Time::ZERO, &b, DelayMode::Transport)?;
+                    }
+                }
+                continue;
+            }
+            written.extend(o.ram.iter().map(|wr| wr.flag));
             if o.bytes != 0 {
                 // Integers the checks kept in their subtype, a word each: their low bytes are the
                 // values.
@@ -294,6 +352,9 @@ impl RegionProc {
                     DelayMode::Transport,
                 )?;
             }
+        }
+        for f in written {
+            self.img[f] = 0;
         }
         Ok(())
     }

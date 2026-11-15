@@ -1290,7 +1290,7 @@ fn slices_with_bounds_from_variables_equal_the_normal_mode_at_widths_around_a_wo
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             // Every process but the testbench's `main` and `apart`.
             assert!(
-                err.contains("cycle mode: 6 of 8 processes run cycle-based"),
+                err.contains("cycle mode: 7 of 9 processes run cycle-based"),
                 "{w}: {err}"
             );
             let (_, why) = row(&err, "cycle_slices.apart");

@@ -3937,6 +3937,25 @@ impl Lx<'_> {
                         self.not(v)
                     }
                     Family::Cat => {
+                        // A null operand (`"" & x`): the other one, as an array.
+                        let null = |lx: &Self, a: &yavs_sem::hir::Arg| match a.actual {
+                            Actual::Expr(x) => matches!(lx.fold(x), Some(ConstValue::Array(c))
+                            if c.bounds.len() == 1 && {
+                                let (l, d, r) = c.bounds[0];
+                                Bounds { left: l, dir: d, right: r }.is_empty()
+                            }),
+                            _ => false,
+                        };
+                        if let [a, b] = args
+                            && (null(self, a) || null(self, b))
+                        {
+                            let other = if null(self, a) { b } else { a };
+                            let v = self.arg(other)?;
+                            return Ok(Val::Part(Part {
+                                dims: Dims::NONE,
+                                ..self.part(v)?
+                            }));
+                        }
                         let (a, b) = two(self)?;
                         let (a, b) = (self.part(a)?, self.part(b)?);
                         let (ra, rb) = (self.whole(a), self.whole(b));

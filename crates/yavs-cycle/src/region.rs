@@ -938,10 +938,12 @@ fn outside_reads_all(db: &Db, _e: &Elaborated, _members: &BTreeSet<usize>) -> bo
 /// The leaves anything that is not a member may read, and of those the ones something outside
 /// may wait on. Read: the code of the other processes (by the objects their names denote, whole),
 /// port edges and implicit signals the kernel updates, guards, and the signals of packages. A
-/// call that may read signals it is not given (a subprogram declared in a design unit rather than
-/// a package) counts as reading every signal of the design. Waited on: a sensitivity list (`all`:
-/// every read), the signals of a wait statement (its `until` condition when it names none), every
-/// read of a statement that is not a process, and everything above that is not process code.
+/// call of a subprogram declared in a design unit rather than a package reads what its body (and
+/// the local subprograms it calls) names; one the scan cannot follow counts as reading every
+/// signal of the design. Waited on: a sensitivity list (`all`: every read), the signals of a wait
+/// statement (its `until` condition when it names none), in the process or in a local subprogram
+/// it calls (a wait on a formal: the call's actuals), every read of a statement that is not a
+/// process, and everything above that is not process code.
 fn outside_reads(
     db: &Db,
     e: &Elaborated,
@@ -950,6 +952,7 @@ fn outside_reads(
     let mut seen = BTreeSet::new();
     let mut waited = BTreeSet::new();
     let all = || -> BTreeSet<LeafId> { (0..e.nets.leaves.len() as u32).map(LeafId).collect() };
+    let mut memo = BTreeMap::new();
     for (pi, p) in e.procs.iter().enumerate() {
         if members.contains(&pi) {
             continue;
@@ -957,10 +960,11 @@ fn outside_reads(
         // Names read, and names waited on.
         let mut lsps = Vec::new();
         let mut waits = Vec::new();
-        let mut calls_local = false;
+        let mut calls = Vec::new();
+        let mut follow = true;
         if let Some(pa) = &p.actual {
             db.reads(pa.expr, &mut waits);
-            calls_local |= exprs_call_local(db, &[pa.expr]);
+            follow &= exprs_calls(db, &[pa.expr], &mut calls);
         } else {
             match &db.stmts[p.stmt].kind {
                 StmtKind::Process {
@@ -983,17 +987,29 @@ fn outside_reads(
                                 db.reads(*c, &mut waits);
                             }
                         }
-                        calls_local |= stmt_calls_local(db, s);
+                        follow &= stmt_calls(db, s, &mut calls);
                     }
                 }
                 _ => {
                     db.stmt_reads(p.stmt, &mut waits);
-                    calls_local |= stmt_calls_local(db, p.stmt);
+                    follow &= stmt_calls(db, p.stmt, &mut calls);
                 }
             }
         }
-        if calls_local {
+        if !follow {
             return (all(), all());
+        }
+        // A subprogram declared outside a package reads the signals its body names and waits on
+        // those its waits name; a wait on a formal waits on the call's actuals.
+        for (c, args) in &calls {
+            let Some(sum) = callee_sigs(db, *c, 0, &mut memo) else {
+                return (all(), all());
+            };
+            lsps.extend(sum.reads);
+            waits.extend(sum.waits);
+            if sum.waits_formal {
+                waits.extend(actual_reads(db, args));
+            }
         }
         for (l, wait) in lsps
             .iter()
@@ -1441,19 +1457,26 @@ fn deep(db: &Db, body: &[StmtId], out: &mut Vec<StmtId>) {
     }
 }
 
-/// Statement `s` (not its children) calls a subprogram that may read signals it is not given.
-fn stmt_calls_local(db: &Db, s: StmtId) -> bool {
+/// A call of a subprogram declared outside a package, with its actuals.
+type LocalCall = (yavs_sem::DeclId, Vec<yavs_sem::hir::Actual>);
+
+/// The calls statement `s` (not its children) makes of subprograms that may read signals they
+/// are not given, into `out`; false when the scan cannot follow it (see [`exprs_calls`]).
+fn stmt_calls(db: &Db, s: StmtId, out: &mut Vec<LocalCall>) -> bool {
     if let StmtKind::ProcCall(c) | StmtKind::ConcProcCall { call: c, .. } = &db.stmts[s].kind
         && local_subprogram(db, c.callee)
     {
-        return true;
+        out.push((c.callee, c.args.iter().map(|a| a.actual.clone()).collect()));
     }
     let mut xs = Vec::new();
     db.stmt_exprs(s, &mut |x, _| xs.push(x));
-    exprs_call_local(db, &xs)
+    exprs_calls(db, &xs, out)
 }
 
-fn exprs_call_local(db: &Db, xs: &[ExprId]) -> bool {
+/// The calls of subprograms declared outside a package in `xs`, into `out`; false at an actual
+/// that is a subtype, a subprogram or a package, or an allocator of a subtype (whose default
+/// value may call anything).
+fn exprs_calls(db: &Db, xs: &[ExprId], out: &mut Vec<LocalCall>) -> bool {
     let mut stack: Vec<ExprId> = xs.to_vec();
     while let Some(x) = stack.pop() {
         match &db.exprs[x].kind {
@@ -1464,12 +1487,12 @@ fn exprs_call_local(db: &Db, xs: &[ExprId]) -> bool {
                 ..
             } => {
                 if local_subprogram(db, *callee) {
-                    return true;
+                    out.push((*callee, args.iter().map(|a| a.actual.clone()).collect()));
                 }
                 stack.extend(method_of);
                 for a in args.iter() {
                     if !push_actual(&a.actual, &mut stack) {
-                        return true;
+                        return false;
                     }
                 }
             }
@@ -1516,8 +1539,11 @@ fn exprs_call_local(db: &Db, xs: &[ExprId]) -> bool {
                     stack.extend(c);
                 }
             }
-            // An allocator's initial value may call anything: counted as a call.
-            ExprKind::New { .. } => return true,
+            ExprKind::New {
+                init: yavs_sem::hir::NewInit::Value(v),
+            } => stack.push(*v),
+            // The default value of an allocated subtype may call anything.
+            ExprKind::New { .. } => return false,
             ExprKind::Const(_)
             | ExprKind::Obj(_)
             | ExprKind::External(_)
@@ -1527,7 +1553,132 @@ fn exprs_call_local(db: &Db, xs: &[ExprId]) -> bool {
             | ExprKind::Error => {}
         }
     }
-    false
+    true
+}
+
+/// What a subprogram declared outside a package (and the local subprograms it calls) reads and
+/// waits on by name: the LSPs of the signals its body names that are not its formals, and
+/// whether a wait names a formal (then the signals of each call's actuals are waited on).
+#[derive(Clone, Default)]
+struct CallSigs {
+    reads: Vec<yavs_sem::hir::Lsp>,
+    waits: Vec<yavs_sem::hir::Lsp>,
+    waits_formal: bool,
+}
+
+/// [`CallSigs`] of subprogram `d`; `None` when the scan cannot place what it reads: a body that
+/// is not HIR (a predefined operation reads nothing), an actual it does not follow, calls nested too deep, a recursion through another
+/// subprogram (memo `None` while one is being scanned).
+fn callee_sigs(
+    db: &Db,
+    d: yavs_sem::DeclId,
+    depth: u32,
+    memo: &mut BTreeMap<yavs_sem::DeclId, Option<CallSigs>>,
+) -> Option<CallSigs> {
+    use yavs_sem::decl::Body as B;
+    if let Some(v) = memo.get(&d) {
+        return v.clone();
+    }
+    if depth > 16 {
+        return None;
+    }
+    memo.insert(d, None);
+    let sp = db.decls[d].kind.subprogram()?;
+    let (scope, stmts) = match &sp.body {
+        B::Hir { scope, stmts } => (*scope, stmts),
+        // A predefined operation of a local type reads only its operands.
+        B::Implicit(_) => {
+            memo.insert(d, Some(CallSigs::default()));
+            return Some(CallSigs::default());
+        }
+        _ => return None,
+    };
+    let formal = |l: &yavs_sem::hir::Lsp| matches!(l.root, ObjRoot::Decl(r) if is_formal(db, r));
+    let mut all = Vec::new();
+    deep(db, stmts, &mut all);
+    let (mut reads, mut sum, mut calls) = (Vec::new(), CallSigs::default(), Vec::new());
+    // What the declarations evaluate at each call (initial values, file names, constraints) and
+    // the defaults of the formals.
+    let mut xs: Vec<ExprId> = sp.params.iter().filter_map(|p| p.default).collect();
+    for &x in &db.scopes[scope].order {
+        if let yavs_sem::decl::DeclKind::Object(o) = &db.decls[x].kind {
+            xs.extend(o.default);
+            if let Some((a, b)) = o.file_open {
+                xs.extend(a);
+                xs.push(b);
+            }
+            constraint_exprs(&db.subtypes[o.subtype].constraint, &mut xs);
+        }
+    }
+    for &x in &xs {
+        db.reads(x, &mut reads);
+    }
+    if !exprs_calls(db, &xs, &mut calls) {
+        return None;
+    }
+    for &s in &all {
+        db.stmt_reads(s, &mut reads);
+        if let StmtKind::Wait { on, until, .. } = &db.stmts[s].kind {
+            let mut w = on.to_vec();
+            if on.is_empty()
+                && let Some(c) = until
+            {
+                db.reads(*c, &mut w);
+            }
+            sum.waits_formal |= w.iter().any(formal);
+            sum.waits.extend(w.into_iter().filter(|l| !formal(l)));
+        }
+        if !stmt_calls(db, s, &mut calls) {
+            return None;
+        }
+    }
+    sum.reads = reads.into_iter().filter(|l| !formal(l)).collect();
+    for (c, args) in calls {
+        if c == d {
+            continue;
+        }
+        let inner = callee_sigs(db, c, depth + 1, memo)?;
+        sum.reads.extend(inner.reads);
+        sum.waits.extend(inner.waits);
+        if inner.waits_formal {
+            let w = actual_reads(db, &args);
+            sum.waits_formal |= w.iter().any(formal);
+            sum.waits.extend(w.into_iter().filter(|l| !formal(l)));
+        }
+    }
+    memo.insert(d, Some(sum.clone()));
+    Some(sum)
+}
+
+/// The bound expressions of a constraint.
+fn constraint_exprs(c: &yavs_sem::types::Constraint, out: &mut Vec<ExprId>) {
+    use yavs_sem::types::{Constraint as C, RangeC};
+    let mut range = |r: &RangeC| {
+        if let RangeC::Explicit { left, right, .. } = r {
+            out.extend([*left, *right]);
+        }
+    };
+    match c {
+        C::Range(r) => range(r),
+        C::Array { dims, elem } => {
+            dims.iter().flatten().for_each(&mut range);
+            constraint_exprs(elem, out);
+        }
+        C::Record { elems } => elems.iter().for_each(|(_, c)| constraint_exprs(c, out)),
+        _ => {}
+    }
+}
+
+/// The signals the actuals of a call read.
+fn actual_reads(db: &Db, args: &[yavs_sem::hir::Actual]) -> Vec<yavs_sem::hir::Lsp> {
+    let (mut xs, mut out) = (Vec::new(), Vec::new());
+    for a in args {
+        push_actual(a, &mut xs);
+    }
+    for x in xs {
+        db.reads(x, &mut out);
+    }
+    out
 }
 
 /// The expressions of an actual; false for one this scan does not follow.

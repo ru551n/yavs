@@ -35,6 +35,7 @@ CYCLE_TESTS = {
     "clocks.vhd": [("cycle_clocks", "", None)],
     "cmpcount.vhd": [("cycle_cmpcount", "", None)],
     "consts.vhd": [("cycle_consts", "", None)],
+    "export.vhd": [("cycle_export", "", None)],
     "fsmrec.vhd": [("cycle_fsmrec", "", None)],
     "handshake.vhd": [("cycle_handshake", "", None)],
     "history.vhd": [("cycle_history", "", None)],

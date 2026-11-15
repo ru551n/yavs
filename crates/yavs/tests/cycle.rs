@@ -166,6 +166,40 @@ fn region_outputs_read_late_waited_on_or_read_by_an_idle_skipped_process() {
     }
 }
 
+#[test]
+fn region_outputs_seen_every_clock_on_events_and_through_local_subprograms() {
+    let dir = tempdir("cycle-export");
+    analyze(&dir, "export.vhd", include_str!("cycle/export.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_export");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_export");
+        // Hand-checked: 40 edges, `v` is `cnt` xor `cnt` rotated by one, `w` a Johnson counter
+        // (40 ones), `pulse` has no event after the initial run of `on_pulse`.
+        assert!(
+            normal.len() == 2
+                && normal[0].ends_with(
+                    "cnt=28 v=3C ra=0 rb=A w=000000000000000FFFFFFFFFF both=2B acc=58 sum=5478 \
+                     ones=20020 nd=16 nn=8"
+                )
+                && normal[1].ends_with("events v3=5 ra=32 w=41 pulse=1 p=3 f=2 cnt=2"),
+            "{t:?} {normal:?}"
+        );
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 2 of 8 processes run cycle-based"),
+            "{err}"
+        );
+        // Exported: every output but `inner`, which only members read; the testbench calls local
+        // subprograms, whose bodies name `viaf` (read), `viad` in an initial value, `vian` in an
+        // allocator's, `viap` and through a formal `viaformal` (waited on), and the predefined `=`
+        // of `state_t`. Nothing outside waits on `both`, `acc`, `viaf`, `viad`, `vian` and `st`.
+        assert!(
+            err.contains("14 signal leaves exported (6 nothing outside waits on)"),
+            "{err}"
+        );
+    }
+}
+
 /// A sensitivity list naming part of a signal is not complete for cycle mode even when it names
 /// the object the body reads: the process stays out, and the result is the normal mode's.
 const PART_LIST: &str = "\

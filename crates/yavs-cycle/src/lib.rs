@@ -601,7 +601,8 @@ fn build(
                 range: d.range,
                 slot,
                 bytes: sig_bytes[&d.signal.0],
-                last: Vec::new(),
+                last: 0,
+                wide: Vec::new(),
             });
         }
         let mut img = vec![0u64; words];
@@ -617,6 +618,7 @@ fn build(
             ins: ins.clone(),
             looked: false,
             check: import_check,
+            exported: false,
             outs: outs.into_values().collect(),
             clocks: clocks.clone(),
             clocks_only,

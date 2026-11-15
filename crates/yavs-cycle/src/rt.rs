@@ -45,8 +45,11 @@ pub(crate) struct Out {
     pub slot: u32,
     /// An integer of 4 or 8 bytes; 0 for logic elements.
     pub bytes: u32,
-    /// The words driven last (none yet: empty).
-    pub last: Vec<u64>,
+    /// The word driven last (an integer, or at most 64 elements in one word), kept in place: the
+    /// compare of an unchanged output is one load from the image and one from here.
+    pub last: u64,
+    /// The words driven last of a wider driver.
+    pub wide: Vec<u64>,
 }
 
 pub(crate) struct RegionProc {
@@ -63,6 +66,8 @@ pub(crate) struct RegionProc {
     pub looked: bool,
     /// `YAVS_CYCLE_IMPORT_CHECK=1`: after each import every chunk is read again and compared.
     pub check: bool,
+    /// The first export, which drives every output, is done.
+    pub exported: bool,
     pub outs: Vec<Out>,
     /// Per edge class: the clock element, the edge test of `Ctx::edge_by` and the word that
     /// tells the code whether the edge happened.
@@ -195,15 +200,15 @@ impl RegionProc {
     /// time). Not inlined: profiles show the export apart from the body.
     #[inline(never)]
     fn export(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        let all = !std::mem::replace(&mut self.exported, true);
         for o in &mut self.outs {
             let slot = o.slot as usize;
             if o.bytes != 0 {
                 let v = self.img[slot];
-                if o.last.first() == Some(&v) {
+                if v == o.last && !all {
                     continue;
                 }
-                o.last.clear();
-                o.last.push(v);
+                o.last = v;
                 // An integer the checks kept in its subtype: its low bytes are the value.
                 let b = &v.to_le_bytes()[..o.bytes as usize];
                 if !ctx.assign_bytes_now(o.driver, o.range, b) {
@@ -215,11 +220,10 @@ impl RegionProc {
             if len <= 64 && lo % 64 + len <= 64 {
                 // One word (a register, or a driver of a pack).
                 let v = self.img[slot + lo as usize / 64] >> (lo % 64) & mask(len);
-                if o.last.first() == Some(&v) {
+                if v == o.last && !all {
                     continue;
                 }
-                o.last.clear();
-                o.last.push(v);
+                o.last = v;
                 // The whole driver, once per run, only when it changed: the kernel's short entry.
                 if !ctx.publish_planes(o.driver, [v, mask(len), 0, 0])
                     && !ctx.assign_planes_now(o.driver, Some(o.range), [v, mask(len), 0, 0])
@@ -239,17 +243,24 @@ impl RegionProc {
             // allocation per export).
             let nw = words(len) as usize;
             let w = &self.img[slot..];
-            let same = o.last.len() == nw
-                && (0..nw)
-                    .all(|j| o.last[j] == word_at(w, lo + 64 * j as u32, len - 64 * j as u32));
+            let same = !all
+                && if lo % 64 == 0 {
+                    // At a word boundary: whole words compared as they are, the last masked.
+                    let (k, full, rest) = ((lo / 64) as usize, (len / 64) as usize, len % 64);
+                    w[k..k + full] == o.wide[..full]
+                        && (rest == 0 || w[k + full] & mask(rest) == o.wide[full])
+                } else {
+                    (0..nw)
+                        .all(|j| o.wide[j] == word_at(w, lo + 64 * j as u32, len - 64 * j as u32))
+                };
             if same {
                 continue;
             }
-            o.last.resize(nw, 0);
+            o.wide.resize(nw, 0);
             self.buf.clear();
             for j in 0..nw {
                 let x = word_at(w, lo + 64 * j as u32, len - 64 * j as u32);
-                o.last[j] = x;
+                o.wide[j] = x;
                 let m = mask((len - 64 * j as u32).min(64));
                 for p in [x, m, 0, 0] {
                     self.buf.extend_from_slice(&p.to_le_bytes());

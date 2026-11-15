@@ -11559,6 +11559,10 @@ the rare way and the native frame leaves inside the stretch, so the interpreter 
 `clift_elem_operands` (`clift_inplace_sites`, `cb_rare_native`). The interpreter is unchanged, and the native's
 result still goes through a temporary.
 
+## Impure calls in scalar array aggregates once per element (#1158, 2026-11-15)
+
+An impure call under `others`, a range choice or a choice list of a scalar array aggregate (integers, reals, enumerations, logic vectors, with or without array pieces) now runs once per element, `others` after the other choices, in every tier, as #909 had it for records. Pure values keep the fill. Tests: corpus `composite/aggregate_scalar_impure`, catalogue `aggregate-range-impure-scalar`.
+
 ## Target before value in variable assignments to indexed composites (#1156, 2026-11-15)
 
 A variable assignment whose target is an array or record named with an index or slice (an element, a slice, a field below one) lowers the target name, its index and slice checks before the value (`stmt.rs` `assign`), in every tier, as both reference simulators do; other targets (a scalar element, a whole object) still take the value first (the references differ there, lrm-checks L187, catalogue `variable-assignment-target-order`). Tests: corpus `composite/assign_target_first` (impure calls in index and value traced, in a loop long enough to be compiled), `assign_target_first_fault` and `assign_target_first_slice` (the value's truncation warnings only for elements in range, then the index error). The value of such a slice target takes the target's evaluated descriptor where it names the target's subtype (`Fx::target_dope`), so an aggregate value no longer evaluates the slice bounds again: an impure call there runs once for a variable target (#1157, corpus `composite/slice_target_bound_once`, by hand); a signal target still runs it twice (#1157 open).

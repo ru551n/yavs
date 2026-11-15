@@ -488,6 +488,7 @@ const PASS: &[&str] = &[
     "protected/variable_ports_same_delta",
     "protected/aggregate_impure_per_element",
     "protected/aggregate_others_impure",
+    "composite/aggregate_scalar_impure",
     "protected/protected_method_elab",
     "protected/protected_var_path_name",
     "reflect/access_file_prot",

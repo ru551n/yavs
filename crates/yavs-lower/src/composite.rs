@@ -1823,7 +1823,7 @@ impl Fx<'_, '_> {
     }
 
     /// Whether expression `e` calls an impure function.
-    fn calls_impure(&self, e: ExprId) -> bool {
+    pub(crate) fn calls_impure(&self, e: ExprId) -> bool {
         let mut found = false;
         self.db.walk_expr(e, &mut |x| {
             if let ExprKind::Call { callee, .. } = self.db.exprs[x].kind {

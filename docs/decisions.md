@@ -16924,3 +16924,18 @@ the next run".
   from a constant count: 2.6 percent more instructions on a loop of byte-lane slices); whole objects keep their order, since moving
   them gained some designs ops and lost others (`perf/zero_fill`). The work counters of `crates/yavs/tests/perf.rs`
   are unchanged but for small drops.
+
+## Impure calls in scalar array aggregates run once per element (yavs-lower `Fx::aggregate`, #1158)
+
+- **Decision:** the #909 rule holds for every element type: an expression with an impure call under `others`, a range
+  choice or a choice list of a one-dimensional scalar array aggregate runs once per element, the other choices before
+  `others`. Such an aggregate takes the composite path (`agg_fill`, `covered`); one with array pieces evaluates those
+  values per element in `aggregate_pieces` (`late`), after the other associations.
+- **Why:** LRM 9.3.3 does not tell scalar from composite elements (lrm-checks L163, which had kept the scalar case at
+  once). sim2 runs per element; sim1 once per choice with `others` first. The old scalar path ran each choice once and
+  `others` first, an order that matched neither (`(0 to 1 => t, others => t)` gave `2 2 1 1`).
+- **Perf:** only aggregates with an impure call under such a choice change; the fill fast path and the lowered code of
+  every other aggregate are as before.
+- **References:** corpus `composite/aggregate_scalar_impure` (hand: sim2's values on every line except where the range
+  is not leftmost, `(1 to 2 => t, others => t)` giving `3 1 2 4` by the #909 choice order where sim2 counts in element
+  order and sim1 gives `2 1 1 2`), catalogue `aggregate-range-impure-scalar`.

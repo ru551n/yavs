@@ -1,0 +1,25 @@
+exit	0
+diag	note	0	0	:aggregate_scalar_impure:_p0	initial: 1 2 3 4 calls 4
+diag	note	0	0	:aggregate_scalar_impure:_p0	others: 1 2 3 4 calls 4
+diag	note	0	0	:aggregate_scalar_impure:_p0	range+others: 1 2 3 4 calls 4
+diag	note	0	0	:aggregate_scalar_impure:_p0	elem+others: 1 2 77 3 calls 3
+diag	note	0	0	:aggregate_scalar_impure:_p0	range: 1 2 3 4 calls 4
+diag	note	0	0	:aggregate_scalar_impure:_p0	list: 9 1 9 2 calls 2
+diag	note	0	0	:aggregate_scalar_impure:_p0	dyn range: 1 2 3 2 calls 3
+diag	note	0	0	:aggregate_scalar_impure:_p0	pos+others: 1 2 3 4 calls 4
+diag	note	0	0	:aggregate_scalar_impure:_p0	nested: 11 12 13 14 calls 4
+diag	note	0	0	:aggregate_scalar_impure:_p0	pure others: 5 5 5 5 
+diag	note	0	0	:aggregate_scalar_impure:_p0	method: 1 2 3 4 
+diag	note	0	0	:aggregate_scalar_impure:_p0	downto: 1 2 3 4 calls 4
+diag	note	0	0	:aggregate_scalar_impure:_p0	enum index: 1 50 2 calls 2
+diag	note	0	0	:aggregate_scalar_impure:_p0	named bounds: 1 2 3 calls 3
+diag	note	0	0	:aggregate_scalar_impure:_p0	actual: 1 2 3 4 calls 4
+diag	note	0	0	:aggregate_scalar_impure:_p0	return: 3 1 2 4 calls 4
+diag	note	1000000	0	:aggregate_scalar_impure:_p0	signal: 3 1 2 4 calls 4
+diag	note	1000000	0	:aggregate_scalar_impure:_p0	logic others: 010101 calls 6
+diag	note	1000000	0	:aggregate_scalar_impure:_p0	logic range: 101111 calls 2
+diag	note	1000000	0	:aggregate_scalar_impure:_p0	logic pieces: 100101 calls 4
+diag	note	1000000	0	:aggregate_scalar_impure:_p0	named piece: 010110 calls 4
+diag	note	1000000	0	:aggregate_scalar_impure:_p0	piece range: 011001 calls 2
+diag	note	1000000	0	:aggregate_scalar_impure:_p0	real others: 1 2 3 calls 3
+diag	note	1000000	0	:aggregate_scalar_impure:_p0	2d others: 1 2 3 4 calls 4

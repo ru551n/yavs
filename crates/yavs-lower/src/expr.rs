@@ -80,6 +80,9 @@ pub(crate) enum Place {
     },
 }
 
+/// An element value of an aggregate with pieces: a scalar, or an array's data and length.
+type Piece = (Reg, Option<Reg>);
+
 /// A slice target whose bounds are checked (`Fx::slice_checked`).
 pub(crate) struct SliceChecked {
     data: Reg,
@@ -2696,6 +2699,14 @@ impl<'a> Fx<'a, '_> {
         if assocs.iter().any(|a| a.slice_piece) {
             return self.aggregate_pieces(assocs, bounds, st, span);
         }
+        // An impure value of a choice naming several elements runs once per element, `others`
+        // last: the composite path does that (#909, #1158); this one evaluates a choice once.
+        if assocs
+            .iter()
+            .any(|a| !matches!(&*a.choices, [] | [Choice::Expr(_)]) && self.calls_impure(a.value))
+        {
+            return self.aggregate_comp(assocs, bounds, st, span);
+        }
         let (index, elem) = (indexes[0], *elem);
         let dope = match bounds {
             AggBounds::Context => match self.subtype_dope(st, span)? {
@@ -4806,6 +4817,17 @@ impl<'a> Fx<'a, '_> {
         let scalar = crate::composite::elem_w(self.fb.program(), etid);
         let logic = self.is_logic(tid);
         let is_others = |a: &AggAssoc| a.choices.iter().any(|c| matches!(c, Choice::Others));
+        // An impure value of a choice naming several elements runs once per element, after
+        // the other associations (#909, #1158).
+        let late: Vec<&AggAssoc> = assocs
+            .iter()
+            .filter(|a| {
+                !a.slice_piece
+                    && !matches!(&*a.choices, [] | [Choice::Expr(_)])
+                    && self.calls_impure(a.value)
+            })
+            .collect();
+        let late_others = late.iter().any(|a| is_others(a));
         let mut vals = Vec::new();
         // Elements of the positional associations.
         let mut n = self.int(0);
@@ -4815,6 +4837,9 @@ impl<'a> Fx<'a, '_> {
                     span,
                     "`others` with an array value in an aggregate (sem rejects it)",
                 ));
+            }
+            if late.iter().any(|l| std::ptr::eq(*l, a)) {
+                continue;
             }
             let v = self.expr(a.value)?;
             let len = if a.slice_piece {
@@ -4985,6 +5010,50 @@ impl<'a> Fx<'a, '_> {
             });
             pos
         };
+        // The value of a late association, evaluated again for each element.
+        let fresh = |fx: &mut Self, e: ExprId| -> R<Piece> {
+            Ok(match fx.expr(e)? {
+                V::S(r) => {
+                    fx.check_scalar(r, Some(db.exprs[e].subtype), elem, "", span)?;
+                    (r, None)
+                }
+                V::A(d, p) => {
+                    fx.check_desc(db.base(elem), etid, p, ed, "aggregate element", span)?;
+                    (d, Some(fx.int(1)))
+                }
+            })
+        };
+        // A range choice of one value per element; the lowest and highest positions it writes.
+        let range_put = |fx: &mut Self,
+                         rc: &RangeC,
+                         val: &dyn Fn(&mut Self) -> R<Piece>|
+         -> R<Option<(Reg, Reg)>> {
+            let r = fx.range(rc, span)?;
+            let d = fx.dir_reg(r.dir);
+            let rd = fx.one_dope(r.left, r.right, d);
+            let rn = fx.dope_len(rd);
+            let (z, one) = (fx.int(0), fx.int(1));
+            let up = fx.cmp(CmpOp::Eq, d, z);
+            let m1 = fx.int(-1);
+            let step = fx.select(up, one, m1, RegTy::I64);
+            let left = r.left;
+            fx.for_n(rn, |fx, i| {
+                let off = fx.bin(IntOp::Mul, i, step);
+                let idx = fx.bin(IntOp::Add, left, off);
+                let pos = pos_of(fx, idx);
+                let piece = val(fx)?;
+                fx.put_at(data, count, logic, bw, m, pos, piece);
+                Ok(())
+            })?;
+            if !late_others {
+                return Ok(None);
+            }
+            let (pl, pr) = (pos_of(fx, r.left), pos_of(fx, r.right));
+            let first = fx.cmp(CmpOp::Lt, pl, pr);
+            let lo = fx.select(first, pl, pr, RegTy::I64);
+            let hi = fx.select(first, pr, pl, RegTy::I64);
+            Ok(Some((lo, hi)))
+        };
         // `others` first: the other associations then overwrite their positions.
         for (_, piece, _) in pieces.iter().filter(|p| is_others(p.0)) {
             let piece = *piece;
@@ -4995,6 +5064,7 @@ impl<'a> Fx<'a, '_> {
         }
         let mut k = self.int(0);
         let one = self.int(1);
+        let mut covered: Vec<(Reg, Reg)> = Vec::new();
         for (a, piece, pd) in pieces.into_iter().filter(|p| !is_others(p.0)) {
             if a.choices.is_empty() {
                 self.put_at(data, count, logic, bw, m, k, piece);
@@ -5006,6 +5076,7 @@ impl<'a> Fx<'a, '_> {
                     (Choice::Expr(c), None) => {
                         let i = self.scalar_expr(*c)?;
                         let pos = pos_of(self, i);
+                        covered.push((pos, pos));
                         self.put_at(data, count, logic, bw, m, pos, piece);
                     }
                     // The piece fills the range's elements in the aggregate's order.
@@ -5022,6 +5093,12 @@ impl<'a> Fx<'a, '_> {
                         let rn = self.dope_len(rd);
                         let z = self.int(0);
                         let some = self.cmp(CmpOp::Gt, rn, z);
+                        // Positions written, for a late `others`: none unless the range has some.
+                        let (clo, chi) = (self.reg(RegTy::I64), self.reg(RegTy::I64));
+                        if late_others {
+                            self.emit(Inst::Move { dst: clo, src: one });
+                            self.emit(Inst::Move { dst: chi, src: z });
+                        }
                         let (body, join) = (self.block(), self.block());
                         self.branch(some, body, join);
                         self.at(body);
@@ -5030,30 +5107,61 @@ impl<'a> Fx<'a, '_> {
                         let first = self.cmp(CmpOp::Lt, pl, ph);
                         let p = self.select(first, pl, ph, RegTy::I64);
                         self.put_at(data, count, logic, bw, m, p, piece);
+                        if late_others {
+                            let last = self.bin(IntOp::Sub, rn, one);
+                            let hi = self.bin(IntOp::Add, p, last);
+                            self.emit(Inst::Move { dst: clo, src: p });
+                            self.emit(Inst::Move { dst: chi, src: hi });
+                            covered.push((clo, chi));
+                        }
                         self.jump(join);
                         self.at(join);
                     }
                     (Choice::Range(rc), None) => {
-                        let r = self.range(rc, span)?;
-                        let d = self.dir_reg(r.dir);
-                        let rd = self.one_dope(r.left, r.right, d);
-                        let rn = self.dope_len(rd);
-                        let z = self.int(0);
-                        let up = self.cmp(CmpOp::Eq, d, z);
-                        let m1 = self.int(-1);
-                        let step = self.select(up, one, m1, RegTy::I64);
-                        let left = r.left;
-                        self.for_n(rn, |fx, i| {
-                            let off = fx.bin(IntOp::Mul, i, step);
-                            let idx = fx.bin(IntOp::Add, left, off);
-                            let pos = pos_of(fx, idx);
-                            fx.put_at(data, count, logic, bw, m, pos, piece);
-                            Ok(())
-                        })?;
+                        let lh = range_put(self, rc, &|_| Ok(piece))?;
+                        covered.extend(lh.filter(|_| late_others));
                     }
                     _ => return Err(self.cx.ice(span, "element choice in an array aggregate")),
                 }
             }
+        }
+        for a in late.iter().filter(|a| !is_others(a)) {
+            let e = a.value;
+            for c in a.choices.iter() {
+                match c {
+                    Choice::Expr(c) => {
+                        let i = self.scalar_expr(*c)?;
+                        let pos = pos_of(self, i);
+                        covered.push((pos, pos));
+                        let piece = fresh(self, e)?;
+                        self.put_at(data, count, logic, bw, m, pos, piece);
+                    }
+                    Choice::Range(rc) => covered.extend(range_put(self, rc, &|fx| fresh(fx, e))?),
+                    _ => return Err(self.cx.ice(span, "element choice in an array aggregate")),
+                }
+            }
+        }
+        for a in late.iter().filter(|a| is_others(a)) {
+            let e = a.value;
+            self.for_n(count, |fx, i| {
+                let (go, skip) = (fx.block(), fx.block());
+                let mut seen = fx.int(0);
+                for &(lo, hi) in &covered {
+                    let (ge, le) = (fx.cmp(CmpOp::Ge, i, lo), fx.cmp(CmpOp::Le, i, hi));
+                    let inside = fx.select(ge, le, ge, RegTy::I64);
+                    seen = fx.select(inside, inside, seen, RegTy::I64);
+                }
+                // The positional associations wrote positions 0 to k - 1.
+                let inside = fx.cmp(CmpOp::Lt, i, k);
+                seen = fx.select(inside, inside, seen, RegTy::I64);
+                fx.branch(seen, skip, go);
+                fx.at(go);
+                let piece = fresh(fx, e)?;
+                fx.put_at(data, count, logic, bw, m, i, piece);
+                fx.jump(skip);
+                fx.at(skip);
+                Ok(())
+            })?;
         }
         Ok(V::A(data, dope))
     }

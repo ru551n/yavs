@@ -1421,8 +1421,8 @@ fn arrays_of_integers_give_the_same_result() {
 }
 
 /// Memories written by clocked members at run-time indices: their writes wait for the commit, so a
-/// read at the same edge gives the old value (`tests/cycle/ram.vhd`); one the testbench reads stays
-/// out with the reason.
+/// read at the same edge gives the old value (`tests/cycle/ram.vhd`); one the testbench reads is
+/// exported by the words its writes touched.
 #[test]
 fn memories_equal_the_normal_mode_at_widths_around_a_word() {
     let dir = tempdir("cycle-ram");
@@ -1437,16 +1437,13 @@ fn memories_equal_the_normal_mode_at_widths_around_a_word() {
             let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_ram");
             assert_eq!(normal.len(), 20, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
-            // `writer`, `reader`, `fast` and the concurrent read.
+            // Every process but the clock and the testbench's `main`.
             assert!(
-                err.contains("cycle mode: 4 of 7 processes run cycle-based"),
+                err.contains("cycle mode: 5 of 7 processes run cycle-based"),
                 "{w}: {err}"
             );
-            let (_, why) = row(&err, "cycle_ram.shadow");
-            assert!(
-                why.contains("the memory cycle_ram.seen it writes is read outside the region"),
-                "{w}: {err}"
-            );
+            let (section, _) = row(&err, "cycle_ram.shadow");
+            assert_eq!(section, "cycle-based:", "{w}: {err}");
         }
     }
 }

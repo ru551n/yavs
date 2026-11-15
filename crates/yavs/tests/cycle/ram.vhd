@@ -3,7 +3,7 @@
 -- of a word): a read of the address written at the same edge gives the old value, in the writing
 -- process, in another process and on a 2x clock from the same clock process; two writes of one
 -- edge (the later one wins at the same address), a conditional write, a write of part of a word,
--- a combinational read. A memory the testbench reads stays out.
+-- a combinational read; a memory the testbench reads, exported by the words its writes touched.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -49,7 +49,7 @@ begin
 
   qc <= mem(ra);
 
-  -- The testbench reads `seen` itself: its writer stays out.
+  -- The testbench reads `seen` itself: exported by the words written.
   shadow : process (clk)
   begin
     if rising_edge(clk) then
@@ -86,7 +86,7 @@ begin
       nib(0) <= r(3);
       report "c=" & integer'image(c) & " q1=" & to_hstring(q1) & " q2=" & to_hstring(q2)
         & " q3=" & to_hstring(q3) & " qc=" & to_hstring(qc) & " qs=" & to_hstring(qs)
-        & " s=" & to_hstring(seen(3));
+        & " s=" & to_hstring(seen(0)) & "," & to_hstring(seen(3)) & "," & to_hstring(seen(7));
     end loop;
     wait;
   end process;

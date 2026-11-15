@@ -926,15 +926,24 @@ pub(crate) fn sig_writes(ops: &[Op], out: &mut BTreeMap<u32, How>) {
 /// the region: not implemented yet. A big signal no clocked member writes at a run-time index is
 /// no memory (whole writes go through a next-state block, as for any signal).
 fn ram_rule(db: &Db, e: &Elaborated, taken: &BTreeMap<usize, (Fit, Body)>) -> Vec<(usize, String)> {
-    let mut rams: BTreeMap<u32, Vec<(usize, bool)>> = BTreeMap::new();
+    let mut rams: BTreeMap<u32, Vec<(usize, bool, bool)>> = BTreeMap::new();
     for (&pi, (_, b)) in taken.iter().filter(|(_, (_, b))| b.kind == Kind::Clocked) {
         let mut w = BTreeMap::new();
         sig_writes(&b.ops, &mut w);
+        // A reset branch also runs in the settle, where its writes go in place.
+        let mut rw = BTreeMap::new();
+        if b.reset.is_some()
+            && let Some(piece) = reset_piece(&b.ops)
+        {
+            sig_writes(&piece, &mut rw);
+        }
         for (k, how) in w
             .into_iter()
             .filter(|&(k, h)| h.indexed && big_signal(e, k))
         {
-            rams.entry(k).or_default().push((pi, !how.other));
+            rams.entry(k)
+                .or_default()
+                .push((pi, !how.other, rw.contains_key(&k)));
         }
     }
     if rams.is_empty() {
@@ -946,11 +955,22 @@ fn ram_rule(db: &Db, e: &Elaborated, taken: &BTreeMap<usize, (Fit, Body)>) -> Ve
     for (k, ws) in rams {
         let (a, z) = e.nets.packs[k as usize];
         let name = e.leaf_name(a);
-        let outside = seen
-            .as_ref()
-            .is_none_or(|s| (a.0..z.0).any(|l| s.contains(&LeafId(l))));
-        for (pi, ok) in ws {
-            if !ok {
+        // A memory of logic elements is exported by the words its writes touched (`rt::RamWrite`).
+        let logic = e.nets.leaf(a).ty.elem == yavs_kernel::Elem::Logic;
+        let outside = !logic
+            && seen
+                .as_ref()
+                .is_none_or(|s| (a.0..z.0).any(|l| s.contains(&LeafId(l))));
+        for (pi, ok, in_reset) in ws {
+            if in_reset {
+                gone.push((
+                    pi,
+                    format!(
+                        "its asynchronous reset branch writes the memory {name}, which cycle mode \
+                         does not take yet"
+                    ),
+                ));
+            } else if !ok {
                 gone.push((
                     pi,
                     format!(

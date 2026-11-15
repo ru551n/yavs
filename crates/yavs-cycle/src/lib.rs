@@ -637,19 +637,54 @@ fn build(
         edge.push(ops);
     }
     // The memory writes of this edge, in member and program order, then the next-state blocks.
+    // A memory something outside reads keeps the flags of its writes for the export, which
+    // drives only what they changed and clears them (`rt::RamWrite`).
+    let exported = |k: u32| {
+        let (a, z) = nets.packs[k as usize];
+        (a.0..z.0).any(|l| sel.outputs.contains(&LeafId(l)))
+    };
     let mut writes = Vec::new();
+    let mut ram_writes: BTreeMap<u32, Vec<rt::RamWrite>> = BTreeMap::new();
     for (k, (_, pend)) in deferred.iter().enumerate() {
         let r = &rs[k];
         for p in pend {
+            let Op::IndexWrite {
+                dst: Ref::Sig(sig),
+                idx: Ref::Loc(i),
+                lo,
+                n,
+                stride,
+                w,
+                left,
+                down,
+                ..
+            } = p.write
+            else {
+                return Err("cycle mode: a kept-back memory write of another shape".into());
+            };
+            let keep = exported(sig);
+            if keep {
+                ram_writes.entry(sig).or_default().push(rt::RamWrite {
+                    flag: (r.base + p.flag) as usize,
+                    idx: (r.base + i) as usize,
+                    lo,
+                    n,
+                    stride,
+                    w,
+                    left,
+                    down,
+                });
+            }
+            let mut then = vec![p.write.clone()];
+            if !keep {
+                then.push(Op::Lit {
+                    dst: Ref::Loc(p.flag),
+                    val: Box::new([0]),
+                });
+            }
             writes.push(r.op(&Op::If {
                 cond: Ref::Loc(p.flag),
-                then: vec![
-                    p.write.clone(),
-                    Op::Lit {
-                        dst: Ref::Loc(p.flag),
-                        val: Box::new([0]),
-                    },
-                ],
+                then,
                 else_: Vec::new(),
             }));
         }
@@ -836,7 +871,7 @@ fn build(
                 bytes: sig_bytes[&d.signal.0],
                 last: 0,
                 wide: Vec::new(),
-                ram: Vec::new(),
+                ram: ram_writes.get(&d.signal.0).cloned().unwrap_or_default(),
             });
         }
         let mut img = vec![0u64; words];

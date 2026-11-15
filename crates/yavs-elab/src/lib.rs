@@ -412,6 +412,36 @@ pub struct ExtProc {
 /// Called with the driver ids of an [`ExtProc`] when the simulation is built.
 pub type DriversBuilt = std::sync::Arc<dyn Fn(&[yavs_kernel::DriverId]) + Send + Sync>;
 
+/// A cycle region (`yavs-cycle`, `yavs run --cycle`): its member processes keep their place in
+/// the kernel's process order but run no code and own no driver; one process made by `make`
+/// after all others owns their drivers and does their work.
+pub struct Region {
+    pub name: String,
+    /// Indices into `Elaborated::procs`, ascending.
+    pub members: Vec<usize>,
+    /// The region wakes only on this edge (`yavs_kernel::Builder::edge_trigger`).
+    pub trigger: Option<yavs_kernel::EdgeTrigger>,
+    pub make: RegionMake,
+}
+
+/// One driver declaration of a region member: its index in `NetGraph::drivers`, its kernel
+/// driver, and the kernel signal and range that driver covers (drivers of one target on
+/// adjacent elements are one kernel driver).
+#[derive(Clone, Copy, Debug)]
+pub struct RegionDriver {
+    pub decl: usize,
+    pub driver: yavs_kernel::DriverId,
+    pub signal: yavs_kernel::SignalId,
+    pub range: yavs_kernel::Range,
+}
+
+/// Makes the region's process from the drivers of its members, at every build.
+pub type RegionMake = std::sync::Arc<
+    dyn Fn(&[RegionDriver]) -> Result<Box<dyn yavs_kernel::Process>, yavs_kernel::SimError>
+        + Send
+        + Sync,
+>;
+
 pub struct Elaborated {
     pub top: Top,
     pub hier: Hierarchy,
@@ -423,6 +453,8 @@ pub struct Elaborated {
     /// Processes a VHPI plugin created for foreign architectures (`vhpi_create`), set by the
     /// caller before building: each owns drivers and runs no code.
     pub ext_procs: Vec<ExtProc>,
+    /// The cycle region, set by the caller before building (`yavs run --cycle`).
+    pub region: Option<Region>,
     /// Values of generics, generate parameters and constants per scope (for lowering).
     pub model_vals: Vec<ScopeVals>,
     /// Per leaf: nothing asks for the event history of single elements of this signal, so

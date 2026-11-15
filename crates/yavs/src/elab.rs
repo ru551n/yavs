@@ -222,6 +222,18 @@ pub struct RunArgs {
     /// point is missing).
     #[arg(long, value_name = "LIB[:ENTRY]")]
     vhpi: Vec<String>,
+    /// Cycle mode: the processes that can run cycle-based (clocked and combinational ones in
+    /// what it supports) run as one region on a static schedule with compiled code; the rest
+    /// stays in the event kernel. A report on standard error lists both, with reasons. Not with
+    /// a debug session, `--wave`, `--cov` or `--vhpi` (E4102). The strict form is
+    /// `--cycle-strict`, given instead of this option.
+    #[arg(long, conflicts_with = "cycle_strict")]
+    cycle: bool,
+    /// Cycle mode in its strict form, instead of `--cycle`: the same selection, but a process
+    /// below the top-level design unit that is not behavioural and cannot run cycle-based is an
+    /// error (E4101), and the run stops before simulation.
+    #[arg(long)]
+    cycle_strict: bool,
     // The text names the tiers this build has, so it is built by `tier_help`.
     #[arg(long, value_enum, help = tier_help())]
     tier: Option<TierArg>,
@@ -522,6 +534,22 @@ impl RunArgs {
     /// Whether the run goes through the debug server: a client or the console drives it.
     fn debugged(&self) -> bool {
         self.dap.is_some() || self.interactive || !self.do_commands.is_empty()
+    }
+
+    /// The option `--cycle` cannot be used with: it observes or changes signals inside the
+    /// region (design decision D16, milestone 1 refuses all of them).
+    fn not_with_cycle(&self) -> Option<&'static str> {
+        if self.debugged() {
+            Some("a debug session")
+        } else if self.wave.is_some() {
+            Some("`--wave`")
+        } else if self.cov.is_some() {
+            Some("`--cov`")
+        } else if !self.vhpi.is_empty() {
+            Some("`--vhpi`")
+        } else {
+            None
+        }
     }
 
     /// Whether the wave file holds variables: asked for, or a debug session, where `wave add` of a
@@ -1757,6 +1785,32 @@ fn run_design(
         out.emit(&SourceMap::default(), &d);
         return out.finish(2);
     }
+    // Cycle mode cannot serve what observes or changes signals inside its region.
+    if (a.cycle || a.cycle_strict)
+        && let Some(option) = a.not_with_cycle()
+    {
+        let mut out = Out::new(format, color);
+        out.emit(
+            &SourceMap::default(),
+            &Diagnostic::error(
+                yavs_cycle::codes::NOT_WITH,
+                format!(
+                    "`{}` cannot be used with {option}",
+                    if a.cycle_strict {
+                        "--cycle-strict"
+                    } else {
+                        "--cycle"
+                    }
+                ),
+            )
+            .with_note(
+                "cycle mode keeps the signals inside its region in its own image, which this \
+                 option would observe or change",
+            )
+            .with_help("run without `--cycle`"),
+        );
+        return out.finish(2);
+    }
     // `--surfer` without `--wave`: `<top>.fst` beside the work library directory.
     if a.surfer.is_some() && a.wave.is_none() {
         let dir = a.common.work.split_once(':').map_or("", |(_, d)| d);
@@ -1866,6 +1920,21 @@ fn run_design(
     let none = SourceMap::default();
     if let Some(why) = token_warning {
         out.emit(&none, &token_gone(why));
+    }
+    // Cycle mode: select and compile the region while the analysis is still there.
+    if a.cycle || a.cycle_strict {
+        match yavs_cycle::plan(&db, &e, a.cycle_strict) {
+            Ok(plan) => {
+                eprint!("{}", plan.report);
+                e.region = plan.region;
+            }
+            Err(ds) => {
+                for d in &ds {
+                    out.emit(&db.sources, d);
+                }
+                return out.finish(2);
+            }
+        }
     }
     let cfg_profile = a
         .profile

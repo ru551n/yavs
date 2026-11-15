@@ -597,6 +597,20 @@ Run time (E3 and W3)
    * - _`W3102`
      - A process has no wait statement, no sensitivity list and calls no procedure that waits.
 
+Cycle mode (E4 and W4)
+----------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 12 88
+
+   * - Code
+     - Meaning
+   * - _`E4101`
+     - ``yavs run --cycle-strict`` found a process below the top-level design unit that is not behavioural and cannot run cycle-based.
+   * - _`E4102`
+     - ``yavs run --cycle`` cannot be used with an option that observes or changes signals inside the cycle region: a debug session, ``--wave``, ``--cov`` or ``--vhpi``.
+
 Internal errors (E9)
 --------------------
 

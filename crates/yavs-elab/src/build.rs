@@ -14,6 +14,13 @@ fn usage(m: String) -> SimError {
 }
 
 impl Elaborated {
+    /// Process `pi` is a member of the cycle region.
+    fn is_member(&self, pi: usize) -> bool {
+        self.region
+            .as_ref()
+            .is_some_and(|r| r.members.binary_search(&pi).is_ok())
+    }
+
     /// Kernel signal names, as texts show them: the leaf's object path, plus record fields.
     pub fn leaf_name(&self, l: crate::LeafId) -> String {
         let leaf = self.nets.leaf(l);
@@ -211,7 +218,8 @@ impl Elaborated {
         // Counters in the lowered code (statement, branch, condition coverage) count each
         // activation, so the processes the kernel runs itself stay interpreted.
         let counters_off = self.ir.as_ref().is_none_or(|ir| ir.program.cov.is_empty());
-        for p in &self.procs {
+        let mut region_ds: Vec<crate::RegionDriver> = Vec::new();
+        for (pi, p) in self.procs.iter().enumerate() {
             // Drivers of one process on adjacent elements of one kernel signal that one target
             // names together (a whole record of a pack, #686) are one kernel driver; `ds` has
             // one entry per declaration. Fields assigned one by one keep a driver each: a
@@ -241,7 +249,23 @@ impl Elaborated {
                     b.driver_init(id, v);
                 }
                 ds.extend(std::iter::repeat_n(id, j - i));
+                if self.is_member(pi) {
+                    region_ds.extend((i..j).map(|k| crate::RegionDriver {
+                        decl: p.drivers[k],
+                        driver: id,
+                        signal: s,
+                        range: r,
+                    }));
+                }
                 i = j;
+            }
+            // A member of the cycle region keeps its place in the process order (process ids
+            // index `procs`) but runs nothing: the region process owns its drivers.
+            if self.is_member(pi) {
+                let idle = |_: &mut yavs_kernel::Ctx<'_>| Ok(());
+                let name = self.hier.dotted_in(p.scope, Case::Lrm);
+                b.process(&name, ProcFlags::default(), &[], idle);
+                continue;
             }
             let mut own = ds.clone();
             own.dedup();
@@ -476,6 +500,17 @@ impl Elaborated {
             (p.built)(&ds);
             let idle = |_: &mut yavs_kernel::Ctx<'_>| Ok(());
             b.process(&p.name, ProcFlags::default(), &ds, idle);
+        }
+        // The cycle region, after every other process (`yavs-cycle`).
+        if let Some(r) = &self.region {
+            let mut own: Vec<DriverId> = region_ds.iter().map(|d| d.driver).collect();
+            own.sort_unstable_by_key(|d| d.0);
+            own.dedup();
+            let proc = (r.make)(&region_ds)?;
+            let pid = b.process_boxed(&r.name, ProcFlags::default(), &own, proc);
+            if let Some(t) = r.trigger {
+                b.edge_trigger(pid, t);
+            }
         }
         let mut sim = b.build(cfg)?;
         // Hang and loop reports name the fields of a pack, not the pack.

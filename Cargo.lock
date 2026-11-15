@@ -1967,6 +1967,7 @@ dependencies = [
  "yavs-cache",
  "yavs-clift",
  "yavs-cov",
+ "yavs-cycle",
  "yavs-dap",
  "yavs-diag",
  "yavs-elab",
@@ -2021,6 +2022,24 @@ dependencies = [
  "yavs-ir",
  "yavs-kernel",
  "yavs-lint",
+ "yavs-sem",
+]
+
+[[package]]
+name = "yavs-cycle"
+version = "0.20.1"
+dependencies = [
+ "cranelift-codegen",
+ "cranelift-frontend",
+ "cranelift-jit",
+ "cranelift-module",
+ "cranelift-native",
+ "yavs-diag",
+ "yavs-elab",
+ "yavs-ir",
+ "yavs-kernel",
+ "yavs-logic",
+ "yavs-rt",
  "yavs-sem",
 ]
 

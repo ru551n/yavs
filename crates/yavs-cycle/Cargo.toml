@@ -1,0 +1,27 @@
+[package]
+name = "yavs-cycle"
+description = "Cycle mode for yavs: a region of processes run on a static schedule with compiled code"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The versions of yavs-clift: one Cranelift in the build.
+cranelift-codegen = "=0.137.0"
+cranelift-frontend = "=0.137.0"
+cranelift-jit = "=0.137.0"
+cranelift-module = "=0.137.0"
+cranelift-native = "=0.137.0"
+yavs-diag.workspace = true
+yavs-elab = { path = "../yavs-elab" }
+yavs-ir = { path = "../yavs-ir" }
+yavs-kernel = { path = "../yavs-kernel" }
+yavs-logic.workspace = true
+yavs-rt = { path = "../yavs-rt" }
+yavs-sem = { path = "../yavs-sem" }
+
+# Generated code and raw pointers need unsafe, confined to `src/codegen.rs`.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

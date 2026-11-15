@@ -703,6 +703,7 @@ pub(crate) fn elaborate(
         procs: e.procs,
         foreign_archs: e.foreign_archs,
         ext_procs: Vec::new(),
+        region: None,
         convs: std::mem::take(&mut e.m.convs),
         model_vals: e.m.vals,
         sigs: e.m.sigs,

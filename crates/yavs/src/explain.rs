@@ -533,6 +533,15 @@ const EXPLAIN: &[(&str, &str)] = &[
         "W3102",
         "A process has no wait statement, no sensitivity list and calls no procedure that waits. It never gives control back to the simulator, so time cannot advance and the run does not end by itself; it can only end through `stop` or `finish`, a failed assertion or an error. A process that should run once ends with `wait;`.",
     ),
+    // yavs-cycle: cycle mode (`yavs run --cycle`)
+    (
+        "E4101",
+        "`yavs run --cycle-strict` found a process below the top-level design unit that is not behavioural and cannot run cycle-based. Cycle mode takes clocked processes (`if rising_edge(clk) then ... end if;`) and combinational processes (a sensitivity list naming every signal they read, variables assigned before they are read) whose statements and operators it supports; the label of each error gives the reason. A behavioural process (one that waits for a time, waits forever, has several waits, calls a procedure or declares a file) and every process of the top-level design unit, the testbench, stay in the event kernel without an error. `--cycle` alone runs the same selection and leaves such processes in the event kernel, listed in its report.",
+    ),
+    (
+        "E4102",
+        "`yavs run --cycle` cannot be used with an option that observes or changes signals inside the cycle region: a debug session, `--wave`, `--cov` or `--vhpi`. Cycle mode keeps those signals in an image of its own and updates the kernel only with what processes outside the region read. Run without `--cycle` for these.",
+    ),
     // every stage
     (
         "E9999",

@@ -21,6 +21,7 @@
 //! | `E0900`-`E0999`, `W0900`-`W0999` | `yavs-vhpi` (E0901, E0902, W0903, W0904, E0905 in use) |
 //! | `E3000`-`E3099` | `yavs-kernel`: simulation runtime errors, one per `ErrorKind` (`yavs_kernel::ErrorKind::code`) |
 //! | `W3100`-`W3199` | run-time warnings of `yavs run` about a stuck or hung simulation (`yavs_elab::stuck`: W3101 hang report, W3102 process that never suspends) |
+//! | `E4100`-`E4199`, `W4100`-`W4199` | `yavs-cycle`: cycle mode (`yavs run --cycle`; `yavs_cycle::codes`) |
 //! | `L0000`-`L0099` | `yavs-lib`: library manifests and closure queries |
 //! | `E2000`-`E2099` | `yavs-lower`: HIR to IR lowering (E2001 not lowered yet) |
 //! | `lint_NNN` | `yavs-lint`: findings of `yavs lint`, their own namespace (`yavs_lint::RULES`) |

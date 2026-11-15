@@ -484,7 +484,7 @@ fn first_sentence(text: &str) -> String {
 /// `docs/error-codes.rst`: every code of the tables behind `yavs --explain`, by the stage it
 /// belongs to, with the first sentence of its explanation.
 fn error_index() -> String {
-    const GROUPS: [(&str, &str, &str); 6] = [
+    const GROUPS: [(&str, &str, &str); 7] = [
         (
             "E0",
             "Syntax, command line, waveforms, coverage, debugger, plugins",
@@ -494,6 +494,7 @@ fn error_index() -> String {
         ("E1", "Semantic analysis", "E1 and W1"),
         ("E2", "Elaboration", "E2 and W2"),
         ("E3", "Run time", "E3 and W3"),
+        ("E4", "Cycle mode", "E4 and W4"),
         ("E9", "Internal errors", "E9"),
     ];
     let mut codes = crate::explain::all();

@@ -497,6 +497,16 @@ Arguments:
 
    May be repeated.
 
+.. option:: --cycle
+
+   Cycle mode: the processes that can run cycle-based (clocked and combinational ones in what it supports) run as one region on a static schedule with compiled code; the rest stays in the event kernel. A report on standard error lists both, with reasons. Not with a debug session, ``--wave``, ``--cov`` or ``--vhpi`` (E4102). The strict form is ``--cycle-strict``, given instead of this option.
+
+   Cannot be combined with ``--cycle-strict``.
+
+.. option:: --cycle-strict
+
+   Cycle mode in its strict form, instead of ``--cycle``: the same selection, but a process below the top-level design unit that is not behavioural and cannot run cycle-based is an error (E4101), and the run stops before simulation.
+
 .. option:: --tier=interp|auto|clift|clift-auto
 
    Execution tier: ``interp`` runs the interpreter alone; ``auto`` runs it and compiles the functions that become hot (see ``--tier-compile``); ``clift`` compiles every function before time 0; ``clift-auto`` is another name for ``auto``. A tier needs its code generator in the build (error E0120 otherwise): this yavs has the tiers ``yavs --version`` names. Default: ``auto`` with a compiled tier, ``interp`` with ``--dap``, ``--interactive`` or ``--do``, and without one.
@@ -565,7 +575,7 @@ Arguments:
 
    May be repeated.
 
-Diagnostics named above: ``E0105``, ``E0106``, ``E0107``, ``E0120``, ``E0136``, ``E0701``, ``E0801``, ``E0901``, ``E0902``, ``E3002``; ``yavs --explain CODE`` explains each.
+Diagnostics named above: ``E0105``, ``E0106``, ``E0107``, ``E0120``, ``E0136``, ``E0701``, ``E0801``, ``E0901``, ``E0902``, ``E3002``, ``E4101``, ``E4102``; ``yavs --explain CODE`` explains each.
 
 ``yavs cov merge``
 ------------------

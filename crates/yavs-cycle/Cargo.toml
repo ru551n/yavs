@@ -17,7 +17,6 @@ yavs-diag.workspace = true
 yavs-elab = { path = "../yavs-elab" }
 yavs-ir = { path = "../yavs-ir" }
 yavs-kernel = { path = "../yavs-kernel" }
-yavs-logic.workspace = true
 yavs-rt = { path = "../yavs-rt" }
 yavs-sem = { path = "../yavs-sem" }
 

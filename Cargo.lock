@@ -2038,7 +2038,6 @@ dependencies = [
  "yavs-elab",
  "yavs-ir",
  "yavs-kernel",
- "yavs-logic",
  "yavs-rt",
  "yavs-sem",
 ]

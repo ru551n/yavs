@@ -683,6 +683,16 @@ Compiled tiers: Cranelift
      - ``0``, ``1``
      - ``1`` in a debug build, else ``0``
      - ``run``
+   * - ``YAVS_CYCLE_CHECKS``
+     - ``off``: the code of a cycle region (``--cycle``) leaves out its integer overflow and range checks and clamps an index chosen at run time into its array, to measure what the checks cost. Results are wrong where a check would have failed.
+     - ``off``
+     - checks on
+     - ``run``
+   * - ``YAVS_CYCLE_DISASM``
+     - Prints the machine code of the functions of a cycle region (``--cycle``) on standard error.
+     - any value
+     - unset
+     - ``run``
 
 Compiled tiers: when to compile
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -435,6 +435,19 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             Ok(b) if differs(e, &f, &b).is_some() => {
                 out.push((pi, Why::NotYet(differs(e, &f, &b).expect("checked"))))
             }
+            // Region code does not evaluate asserts and reports (A6): a testbench checker in the
+            // top-level unit keeps them in the event kernel (A19).
+            Ok(b) if b.dropped > 0 && in_top_unit(e, pi) => {
+                nfits -= 1;
+                out.push((
+                    pi,
+                    Why::Behavioural(
+                        "it holds an assert or report of the top-level unit, which cycle mode \
+                         evaluates only in the event kernel"
+                            .into(),
+                    ),
+                ))
+            }
             Ok(b) => {
                 taken.insert(pi, (f, b));
             }

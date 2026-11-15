@@ -2658,3 +2658,60 @@ fn instances_of_one_shape_share_a_body_and_others_do_not() {
         }
     }
 }
+
+/// Asserts and reports of the top-level unit (A19): a clocked checker failing with severity error,
+/// one checking in a called procedure, a concurrent assert and a combinational report stay in the
+/// event kernel, so every message and the exit status are the normal mode's; the design below the
+/// top joins. Not an error under `--cycle-strict`.
+#[test]
+fn asserts_and_reports_of_the_top_level_unit_are_evaluated() {
+    let dir = tempdir("cycle-topcheck");
+    analyze(&dir, "topcheck.vhd", include_str!("cycle/topcheck.vhd"));
+    let go = |flags: &[&str]| {
+        let mut args = vec!["run", "--work=work:lib", "--no-cache"];
+        args.extend(flags);
+        args.push("cycle_topcheck");
+        let o = yavs(&dir, &args);
+        let err = String::from_utf8_lossy(&o.stderr).into_owned();
+        // Without the delta of each stamp: the region saves the delta of `q <= r`.
+        let out: String = String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(|l| match l.split_once("fs+") {
+                Some((a, b)) => format!(
+                    "{a}fs{}\n",
+                    b.trim_start_matches(|c: char| c.is_ascii_digit())
+                ),
+                None => format!("{l}\n"),
+            })
+            .collect();
+        (o.status.code(), out, err)
+    };
+    let (code, normal, _) = go(&[]);
+    for msg in ["q reached 3", "q 12 not below 12", "q is 9", "q is 6"] {
+        assert!(normal.contains(msg), "{msg}: {normal}");
+    }
+    assert_eq!(code, Some(1), "{normal}");
+    for mode in ["--cycle", "--cycle-strict"] {
+        let (c, out, err) = go(&[mode]);
+        assert_eq!((c, &out), (code, &normal), "{mode}\n{err}");
+        // The counter and `q <= r` below the top.
+        assert!(
+            err.contains("cycle mode: 2 of 8 processes run cycle-based"),
+            "{mode}: {err}"
+        );
+    }
+    let report = with_report(&dir, &["--cycle"], "cycle_topcheck", String::new());
+    for p in ["chk", "chk2", "rep", "assert"] {
+        assert!(
+            report.contains(&format!("cycle_topcheck.{p} ")),
+            "{p}: {report}"
+        );
+    }
+    assert_eq!(
+        report
+            .matches("it holds an assert or report of the top-level unit")
+            .count(),
+        4,
+        "{report}"
+    );
+}

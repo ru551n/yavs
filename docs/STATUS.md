@@ -25,6 +25,27 @@
 | `yavs lint` | all rule classes, `--facts`, reports, configuration, waivers (#895): `crates/yavs-lint`, `crates/yavs/src/lint.rs`, `docs/lint.rst`, `--yavs-lint` in `vunit-yavs`, problem matcher `$yavs` in VS Code; pinned in `crates/yavs/tests/lint.rs`. `file_list` in the configuration reads the files to check; every unknown key, rule id and rule group in the configuration or waiver file is E0134, all listed in one run, and the four YAML files yavs reads (these two, the coverage exclusion file and `cov --config`) are checked against declared schemas by one reader, `yavs_diag::yaml`, so a configuration written for a style tool needs its style settings removed first (#895). Rule ids of analysis (lint_006, lint_782) stay nameable and report nothing. Definite findings on the corpora and the realbench designs are confirmed real (#895); known noise of the advisory rules: see the issues linked there. lint_720 follows statements (#989); the rules beyond the definite class were compared with the source project's tests (#1002, `docs/decisions.md`), with `rtl:` and `testbench:` rule blocks and a heuristic for what a testbench is. |
 | M5, M10 | M5 in progress, partial (#143; what works and what does not is in `docs/vhpi.md`): the `vhpi_*` export surface (#266), `yavs run --vhpi` (#267), the hierarchy (#269), values and types (#270), puts (#271), callbacks (#272), foreign models (#274, #330, #357) and plusargs (#298) are done, `crates/yavs-vhpi`, coverage in `docs/vhpi.md`; cocotb 2.1.0's own simulator regression passes on yavs (`tools/cocotb/run.py`, 78 of 78 jobs, 43 of them run VHDL tests, at 1 and 4 threads, run in the `conformance` CI workflow, #122); M10 (the graphical debugger) is dropped: `yavs-gui` was built (slices G1 #388 and G2 #399, 2026-10-19) and removed again with `yavs run --gui` and its release files (maintainer, 2026-10-29; #871 closed 2026-10-31; `docs/plan.md` M10); the DAP server slices made for it (#396, #397, #398) were closed 2026-10-30 and DAP clients cover debugging. Corrected 2026-11-14: this row described the GUI as in progress) |
 
+### The memo of pure calls: dear functions with few callers judged again later (2026-11-15)
+
+A memoised function whose body is dear (`MemoSig::dear`) and that at most three processes call is no longer given up for
+good when its first 64 calls rarely repeat: the process takes it up again 1024 calls later for 256 calls, then 8192
+calls after that for 1024, each with a full table, and keeps it when half the calls of that trial hit; it votes for "off
+for all processes" (#762) only after its last trial (user decision 2026-11-15). With more callers the first give-up is
+final, as before. Counts: `perf.rs` `memo_retry` 1840 or more hits (none before), `memo_callers` keeps `pmemo_off` 1,
+`memo_giveup` no longer reaches its vote in its short run (floor removed). Costs, exact: a dear function that never
+repeats, one caller 12 000 calls +2.2 percent interpreter and +1.6 percent compiled instructions, three callers +3.5 and
++3.0 percent; `poc_ooo_buffer` +0.16 percent interpreter, +0.045 percent forced compiled. Measured on main 7371d90ee
+(all-thread instructions, fresh worlds prepared by each binary, fixed output path, bench builds, A/A = byte copy of the
+base): realbench 40 tests x 3 worlds x 10 runs geomean sum 0.9980 (A/A 1.0000), steady 0.9974 (0.9998), run 1 1.0021
+(1.0002); bench h2h and external 19 x 4 x 10 sum 0.9982 (0.9965); VUnit cells A and D sum 0.976 and 0.984 (1.000,
+1.000). `neorv32_dual_full` 0.975 to 0.985 in four series (A/A about 1.00). Re-run at 10 or 20 worlds x 10 runs, each
+world its own preparation, level with the A/A: `osvvm_axi4_random` 1.003 (0.997; exact interpreter and compiled counts
+level), `uvvm_sb_slv` 0.996 (1.005), `olo_fix_cordic_rot` 1.001 (0.994), `neorv32_single_min` 0.999 (1.001),
+`poc_ooo_buffer` 1.000 (1.000), `grlib_leon3mp` 0.997 (0.997), `uvvm_util_rand_tb` 1.006 (1.007). Slower:
+`osvvm_axis_random` run 1, whose first cold run takes the slow of two modes in 19 of 26 worlds against 25 of 52 for the
+base and its copy (about +3 percent in the mean; sum and steady level), the trade accepted by the user. `docs/decisions.md`
+"Memo of pure calls: a dear function with few callers is judged again later".
+
 ### The memo of pure calls: judged at the 64th call, two slots per key (2026-11-15)
 
 A memoised function is judged at its 64th call in a process whatever that call finds (before, a hit there skipped the

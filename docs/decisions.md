@@ -11686,7 +11686,9 @@ first-run latency".
   for all once `VOTES` or every process that called it so far has given it up** (`Pre::memo_users`, counted at a process's first call of the
   function). Accepted: a process that starts calling after the others gave up does not get the memo. After: the memo symbols are 0.7
   percent of the cycles. Counter `pmemo_off` (functions whose memo is off for all), test `perf/memo_giveup.vhd`. The idea of a flag that
-  compiled code tests before the callback was not needed.
+  compiled code tests before the callback was not needed. Widened 2026-11-15 (user): a function with a dear body and at most `VOTES`
+  callers votes only after its later trials, test `perf/memo_callers.vhd` ("Memo of pure calls: a dear function with few callers is
+  judged again later").
 - **Not done, why:** compiling on spare cores (every timed comparison pins the run and its compile thread to one core, so it cannot show
   there, and the budget would need a second rule for it); a cheaper first level for frame-mode copies (`Fast` code is about 1.7 times slower
   and the copies' gain is 1.75 at O2); batching copies with equal code (twins, #713, already compile once; the `sc5_fifo_repack` copies
@@ -16947,7 +16949,7 @@ the next run".
 - **Defect** (agent). `State::look` judged a function (fewer than 8 hits in its first 64 calls: off for the process)
   only after a miss: a function whose 64th call hit was never judged and stayed memoised for good. Which call came
   64th decided it, so the decision moved with any change of key placement (a VUnit test's output path text, the slot
-  index). Never a wrong result. Now the 64th call judges whatever it finds (`a_function_is_judged_at_its_warm_call_whatever_it_finds`).
+  index). Never a wrong result. Now the 64th call judges whatever it finds (`a_function_is_judged_at_its_warm_call_whatever_it_finds`; later trials of dear functions: next section).
 - **Slot index** (agent). A key's slot was the low bits of the hash's last multiply, which see only the low bits of
   the key's last word: keys that differ only in its upper bytes (string text) always shared one slot. The top bits
   alone spread those, but placed small integers that differ by little at random: 40 dense keys in the first 32 slots
@@ -16991,3 +16993,42 @@ the next run".
   percent more instructions on short testbenches whose run is mostly the optimiser (`uvvm_func_cov`), not found to
   pay; the lengths alone as pure keys after the same scan cost 0.85 percent there. Where in that work the cost lies
   was not localised by a profile (too few samples on a 0.4 s run); the patch is kept outside the repository.
+
+## Memo of pure calls: a dear function with few callers is judged again later (yavs-interp `pmemo.rs`, 2026-11-15)
+
+- **Gap** (agent). A function given up in its first trial (fewer than 8 hits in its first 64 calls) stayed off in that
+  process for the rest of the run, so a function whose keys repeat only later (a phase of distinct keys first, or a
+  cycle longer than the table holds in 64 calls) never got the memo. `neorv32_dual_full` has two such functions with
+  dear bodies and one and two callers: 0 to 1 hits in their first 64 calls, 251 of 256 and 972 of 1024 in later trials.
+- **Rule** (`State::look`, `retry`, `need`, `RETRIES`). A function whose body is dear (`MemoSig::dear`: a loop, a call
+  of itself, a concatenation or a native beyond the `ieee` gates, conversions and comparisons) is not given up for good
+  at the end of its first trial: the process takes it up again 1024 calls later for 256 calls, then 8192 calls after
+  that for 1024 calls, each trial with a full table (`LAST` entries). A later trial keeps the function when half its
+  calls hit (one in eight, as in the first trial, kept OSVVM functions at 14 and 32 percent hits whose probe and table
+  cost compiled code more than they saved). Cheap bodies keep the one judgement (cheap string helpers kept at about 20
+  percent hits by a later trial were where a retry for every function lost, in VUnit tests).
+- **#762 widened** (`Look::Paused`). The process votes for "off for all processes" only when its last trial gives the
+  function up. With more than `VOTES` (3) callers (`Pre::memo_users` when a trial gives the function up) the first give-up is
+  final and votes at once, as before: later trials would cost every one of them (64 processes of a dear function that
+  never repeats: +4.7 percent interpreter and +6.3 percent compiled instructions without this guard).
+- **User decision (2026-11-15).** Widen decision #762 this way: for a dear function with at most three callers, "off
+  for all processes" comes only after its later trials; with more than three callers the first give-up stays final as
+  before. Remove the work-counter floor `pmemo_off Min(1)` of `perf/memo_giveup.vhd` (its two processes no longer vote
+  within that short run; the floor is now on `perf/memo_callers.vhd`, eight callers), finish the gates, and land if
+  nothing is slower than the byte-copy A/A.
+- **User decision (2026-11-15, after the measurement).** Land it with one trade: `osvvm_axis_random` run 1 is slower
+  (its first cold run takes the slow of its two modes more often: 19 of 26 fresh worlds against 25 of 52 for the base and
+  its copy, about +3 percent over the base in the mean, about +9 percent over the level before the judgement fix of the
+  64th call), for the gains on `neorv32_dual_full` and the VUnit tests; its ten-run sum and steady state are level.
+- **Costs** (measured, interpreter and compiled instructions of a whole run). A dear function that never repeats pays
+  both later trials and the delayed vote: one caller and 12 000 calls +2.2 percent interpreter, +1.6 percent compiled;
+  three callers and 12 000 cycles +3.5 and +3.0 percent (about 1280 more misses per caller, once per function and
+  process). A run too short to reach a later trial pays nothing (`memo_giveup` +0.1 percent). Hit counts may now also
+  differ with the thread count where a trial gives a function up while other threads add to `Pre::memo_users` (the output never
+  does).
+- **Tried, not kept** (exact interpreter counts on the 40 realbench tests and 20 VUnit tests on 12 output paths): a
+  bigger table and a second judgement when evicted keys came back (only the reproducer moved); later trials for every
+  function (VUnit 1.0010); one later trial only, 64-call later trials, a lower bar for dear bodies in the first trial
+  (it flips an OSVVM function back on and makes `osvvm_axis_random` slower); a miss that reuses the evicted slot's
+  buffer (level: the cost of a miss is not its allocation).
+- **Measured**: `docs/STATUS.md` "The memo of pure calls: dear functions with few callers judged again later".

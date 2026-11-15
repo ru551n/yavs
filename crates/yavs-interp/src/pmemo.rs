@@ -3,12 +3,13 @@
 //! it has seen before is answered without running the function (`Machine::memo_probe`).
 //!
 //! One memo per function and process (no locks; the same hits on every thread count but where the
-//! switch off for all, `Pre::memo_off`, flips while other threads run): a table of `FIRST` to
-//! `LAST` entries where a key has two slots ([`ways`]), each the key (the argument words and, for
-//! an array, its descriptor and element bytes), a hash of it and the result. A key is compared
-//! whole, so a hit is exact. The first `WARM` calls of a function decide whether it is kept: a
-//! function whose calls rarely repeat costs the key and the entry for nothing, and is switched
-//! off for the process.
+//! switch off for all, `Pre::memo_off`, flips, or a give-up reads `Pre::memo_users`, while other
+//! threads run): a table of `FIRST` to `LAST` entries where a key has two slots ([`ways`]), each
+//! the key (the argument words and, for an array, its descriptor and element bytes), a hash of it
+//! and the result. A key is compared whole, so a hit is exact. A function is judged at the end of
+//! a trial, its first `WARM` calls: one whose calls rarely repeat costs the key and the entry for
+//! nothing, and is switched off for the process; a dear one with few callers gets later trials
+//! (`RETRIES`) before it is given up for good.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
@@ -37,6 +38,16 @@ const RATE: u32 = 8;
 /// are seen. The process votes (`Machine::memo_vote`) when it gives the function up for good.
 const RETRIES: u8 = 2;
 const RETRY: u32 = 1024;
+
+/// Hits a function needs in its trial after `tries` were given up: one in `RATE` in the first,
+/// half the calls in a later one (a body that repeats one in four or so came out slower in
+/// compiled code than the probe and table it costs).
+fn need(tries: u8) -> u32 {
+    match tries {
+        0 => WARM / RATE,
+        _ => (WARM << (2 * tries)) / 2,
+    }
+}
 /// Processes that give a function's memo up before it is off for all of them (fewer when fewer
 /// processes call it: off once every caller gave it up, #762).
 const VOTES: u32 = 3;
@@ -359,7 +370,7 @@ impl State {
         let m = &mut self.memos[at];
         m.calls += 1;
         let judged = !m.off && m.calls == m.until;
-        let give_up = judged && m.hits < (WARM << (2 * m.tries)) / RATE;
+        let give_up = judged && m.hits < need(m.tries);
         if give_up {
             m.off = true;
             m.slots = Vec::new();
@@ -401,7 +412,7 @@ impl State {
             // Judged at the end of the trial whatever the call finds: a hit there used to skip
             // the judgement, so a function with few hits stayed on for good.
             if m.calls == m.until {
-                if m.hits < (WARM << (2 * m.tries)) / RATE {
+                if m.hits < need(m.tries) {
                     m.off = true;
                     m.slots = Vec::new();
                     if dear && m.tries < RETRIES {
@@ -449,7 +460,7 @@ impl State {
     }
 
     /// Show the table of memo `at` to compiled code, once its function has been judged and kept
-    /// (`WARM` calls: the hits compiled code makes by itself are not counted for the judgement).
+    /// (at the end of a trial: the hits compiled code makes by itself are not counted for it).
     /// A function whose entry another holds stays with the host.
     fn show(&mut self, at: usize) {
         let m = &mut self.memos[at];
@@ -1129,6 +1140,36 @@ mod tests {
                 assert!(st.is_off(3));
             }
         }
+    }
+
+    /// A later trial needs half its calls to hit: a dear function that repeats one call in four
+    /// after a first phase of distinct keys is given up for good after its two later trials.
+    #[test]
+    fn a_later_trial_needs_half_its_calls_to_hit() {
+        let mut st = State::default();
+        let at = st.index(4);
+        let mut gave_up = 0;
+        for c in 0..12000u64 {
+            let k = if c < 300 || c % 4 != 0 {
+                1000 + c
+            } else {
+                c % 32
+            };
+            if st.memos[at].off && !st.retry(at) {
+                continue;
+            }
+            st.key = k.to_le_bytes().to_vec();
+            match st.look(at, true) {
+                Look::Miss => {
+                    let key = st.key.clone();
+                    st.keep(4, hash(&key), &key, Val::Word(k));
+                }
+                Look::GaveUp => gave_up += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(gave_up, 1);
+        assert!(st.is_off(4) && st.memos[at].until == 0);
     }
 
     /// Keys that differ only in the upper bytes of their last word (a string's text) spread over

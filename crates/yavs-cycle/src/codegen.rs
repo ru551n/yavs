@@ -425,8 +425,8 @@ impl Gen<'_> {
     }
 
     /// The element of a dynamic index: `idx - left` (ascending) or `left - idx`, checked to be
-    /// below `n` (or clamped to 0 when checks are off); returns its first bit,
-    /// `lo + (n - 1 - p) * w`.
+    /// below `n` and, for `count` elements from it to the left, at least `count - 1` (or clamped
+    /// when checks are off); returns its first bit, `lo + (n - 1 - p) * w`.
     #[allow(clippy::too_many_arguments)]
     fn element(
         &mut self,
@@ -435,6 +435,7 @@ impl Gen<'_> {
         down: bool,
         n: u32,
         w: u32,
+        count: u32,
         lo: u32,
         site: u32,
     ) -> Value {
@@ -445,15 +446,18 @@ impl Gen<'_> {
         } else {
             self.b.ins().iadd_imm_s(i, -left)
         };
-        let out = self
-            .b
-            .ins()
-            .icmp_imm_s(IntCC::UnsignedGreaterThanOrEqual, p, i64::from(n));
+        // `p - (count - 1)` below `n - count + 1`, unsigned.
+        let q = self.b.ins().iadd_imm_s(p, 1 - i64::from(count));
+        let out = self.b.ins().icmp_imm_s(
+            IntCC::UnsignedGreaterThanOrEqual,
+            q,
+            i64::from(n) - i64::from(count) + 1,
+        );
         let p = if self.checks {
             self.check(out, site, &[i]);
             p
         } else {
-            let z = self.konst(0);
+            let z = self.konst(i64::from(count - 1) as u64);
             self.b.ins().select(out, z, p)
         };
         let l = self.b.ins().iconst(I64, i64::from(n - 1));
@@ -482,9 +486,9 @@ impl Gen<'_> {
         self.b.ins().ushr(t, r)
     }
 
-    /// Whether a `w`-element field at a bit `lo + k * w` never crosses a word.
-    fn aligned(lo: u32, w: u32) -> bool {
-        w.is_power_of_two() && w <= 64 && lo.is_multiple_of(w)
+    /// Whether a `w`-element field at a bit `lo + k * stride` never crosses a word.
+    fn aligned(lo: u32, stride: u32, w: u32) -> bool {
+        w.is_power_of_two() && w <= 64 && lo.is_multiple_of(w) && stride.is_multiple_of(w)
     }
 
     /// The `w` bits of `r` from the run-time bit `bit` (memory holds them, see `spill`).
@@ -850,17 +854,19 @@ impl Gen<'_> {
                 src,
                 lo,
                 n,
+                stride,
                 w,
                 idx,
                 left,
                 down,
                 site,
             } => {
-                let bit = self.element(*idx, *left, *down, *n, *w, *lo, *site);
-                let end = lo + n * w;
+                let count = w / stride;
+                let bit = self.element(*idx, *left, *down, *n, *stride, count, *lo, *site);
+                let end = lo + n * stride;
                 // The word after the value too: an element may reach into it.
                 self.spill(*src, lo / 64, end.div_ceil(64));
-                let v = self.dyn_read(*src, bit, *w, Self::aligned(*lo, *w));
+                let v = self.dyn_read(*src, bit, *w, Self::aligned(*lo, *stride, *w));
                 self.sts(*dst, &v);
             }
             Op::IndexWrite {
@@ -868,6 +874,7 @@ impl Gen<'_> {
                 src,
                 lo,
                 n,
+                stride,
                 w,
                 idx,
                 left,
@@ -875,11 +882,12 @@ impl Gen<'_> {
                 site,
             } => {
                 let v = self.lds(*src, *w);
-                let bit = self.element(*idx, *left, *down, *n, *w, *lo, *site);
-                let (k0, k1) = (lo / 64, (lo + n * w).div_ceil(64));
+                let count = w / stride;
+                let bit = self.element(*idx, *left, *down, *n, *stride, count, *lo, *site);
+                let (k0, k1) = (lo / 64, (lo + n * stride).div_ceil(64));
                 self.spill(*dst, k0, k1);
                 self.forget(*dst, k0, k1);
-                self.dyn_write(*dst, bit, *w, &v, Self::aligned(*lo, *w));
+                self.dyn_write(*dst, bit, *w, &v, Self::aligned(*lo, *stride, *w));
             }
             Op::Select { dst, c, a, b, len } => {
                 let c = self.ld(*c, 0);

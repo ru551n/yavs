@@ -309,25 +309,28 @@ pub(crate) enum Op {
         hi: i64,
         site: u32,
     },
-    /// Element `idx` (each of `w` elements) of the array of `n` elements from element `lo` of
-    /// `src`, index range from `left` (`down`: descending), checked.
+    /// The `w` elements (`w / stride` array elements) from array element `idx` on (its
+    /// rightmost, for a slice) of the array of `n` elements, each `stride` wide, from element `lo`
+    /// of `src`; index range from `left` (`down`: descending), checked.
     IndexRead {
         dst: Ref,
         src: Ref,
         lo: u32,
         n: u32,
+        stride: u32,
         w: u32,
         idx: Ref,
         left: i64,
         down: bool,
         site: u32,
     },
-    /// The `w` elements of `src` into element `idx` of such an array of `dst`.
+    /// The `w` elements of `src` into elements from `idx` on of such an array of `dst`.
     IndexWrite {
         dst: Ref,
         src: Ref,
         lo: u32,
         n: u32,
+        stride: u32,
         w: u32,
         idx: Ref,
         left: i64,
@@ -615,9 +618,10 @@ struct Part {
     fresh: bool,
     /// The signal leaf the part is of (reads and writes of the body are counted by leaf).
     leaf: Option<LeafId>,
-    /// One element (`len` wide) of the array from element `lo`, chosen at run time: the index
-    /// and the array's index range.
-    at: Option<(Ref, Bounds)>,
+    /// Elements of the array from element `lo`, chosen at run time: the index of the first (the
+    /// rightmost of a slice), the array's index range and the width of one of its elements; the
+    /// part is `len` wide.
+    at: Option<(Ref, Bounds, u32)>,
     /// The object a name starts from (messages of index checks).
     obj: Option<DeclId>,
     /// A literal with a metavalue element: its `std_ulogic` codes (`Lx::lits`), since no
@@ -1638,7 +1642,7 @@ impl Lx<'_> {
                 if let Some(l) = d.leaf {
                     self.writes.insert(l);
                 }
-                if let Some((idx, b)) = d.at {
+                if let Some((idx, b, stride)) = d.at {
                     // ponytail: a big array signal written at a run-time index is a RAM, whose
                     // next-state copy would cost the whole array per edge; RAMs are the next step.
                     if matches!(d.r, Ref::Sig(_)) && d.full > 4096 {
@@ -1648,7 +1652,7 @@ impl Lx<'_> {
                                 .into(),
                         );
                     }
-                    self.mark(d.r, d.lo, d.len * b.len() as u32, false);
+                    self.mark(d.r, d.lo, stride * b.len() as u32, false);
                     let s = self.whole(s);
                     let site = self.index_site(d, b);
                     self.ops.push(Op::IndexWrite {
@@ -1656,6 +1660,7 @@ impl Lx<'_> {
                         src: s,
                         lo: d.lo,
                         n: b.len() as u32,
+                        stride,
                         w: d.len,
                         idx,
                         left: b.left,
@@ -1786,7 +1791,7 @@ impl Lx<'_> {
 
     /// A dynamic element read into a temporary; any other part as it is.
     fn materialise(&mut self, p: Part) -> Part {
-        let Some((idx, b)) = p.at else {
+        let Some((idx, b, stride)) = p.at else {
             return p;
         };
         let site = self.index_site(&p, b);
@@ -1797,6 +1802,7 @@ impl Lx<'_> {
             src: p.r,
             lo: p.lo,
             n: b.len() as u32,
+            stride,
             w: p.len,
             idx,
             left: b.left,
@@ -1868,7 +1874,7 @@ impl Lx<'_> {
                     Err(_) => {
                         let i = self.expr(*i)?;
                         let i = self.int(i)?;
-                        p.at = Some((i.r, b));
+                        p.at = Some((i.r, b, ew));
                     }
                 }
                 p.len = ew;
@@ -1876,11 +1882,9 @@ impl Lx<'_> {
                 Ok(Val::Part(p))
             }
             ExprKind::Slice { prefix, range } => {
-                let (sb, _) = self.static_range(range).map_err(|_| {
-                    "a slice whose bounds are not known during elaboration is not supported in \
-                     cycle mode yet"
-                        .to_string()
-                })?;
+                let Ok((sb, _)) = self.static_range(range) else {
+                    return self.dynamic_slice(*prefix, range, target);
+                };
                 let mut p = self.array_part(*prefix, target)?;
                 let b = p
                     .dims
@@ -1903,6 +1907,111 @@ impl Lx<'_> {
                 Ok(Val::Part(p))
             }
             _ => Err("a name that is not supported in cycle mode yet".into()),
+        }
+    }
+
+    /// A slice with bounds chosen at run time and a length known during elaboration (`a(i + 7
+    /// downto i)`): the length from the bounds with every value elaboration does not know taken
+    /// as 0, 1 and 7, checked at run time.
+    fn dynamic_slice(&mut self, prefix: ExprId, range: &RangeC, target: bool) -> R<Val> {
+        let unknown = || {
+            "a slice whose length is not known during elaboration is not supported in cycle mode \
+             yet"
+            .to_string()
+        };
+        let RangeC::Explicit { left, dir, right } = range else {
+            return Err(unknown());
+        };
+        let len = |lx: &Self, v: i64| -> Option<i64> {
+            let (l, r) = (lx.probe(*left, v)?, lx.probe(*right, v)?);
+            Some(if *dir == Direction::Downto {
+                l - r
+            } else {
+                r - l
+            })
+        };
+        let d = len(self, 0).ok_or_else(unknown)?;
+        if d < 0 || len(self, 1) != Some(d) || len(self, 7) != Some(d) {
+            return Err(unknown());
+        }
+        let mut p = self.array_part(prefix, target)?;
+        let b = p
+            .dims
+            .first()
+            .ok_or("a slice of a value with no index range")?;
+        if *dir != b.dir {
+            return Err("a slice in the other direction than its array".into());
+        }
+        let ew = p.dims.elem_len();
+        let (l, r) = (self.expr(*left)?, self.expr(*right)?);
+        let (l, r) = (self.int(l)?, self.int(r)?);
+        // The length the bounds give at run time is the one assumed.
+        let (a, z) = if *dir == Direction::Downto {
+            (l, r)
+        } else {
+            (r, l)
+        };
+        let diff = self.tmp_int(i64::MIN, i64::MAX);
+        let site = self.site(Check::Arith {
+            op: Arith::Sub,
+            ty: "INTEGER".into(),
+        });
+        self.ops.push(Op::Int {
+            op: Arith::Sub,
+            dst: diff.r,
+            a: a.r,
+            b: z.r,
+            lo: i64::from(i32::MIN),
+            hi: i64::from(i32::MAX),
+            site,
+        });
+        let site = self.site(Check::Range {
+            ty: "INTEGER".into(),
+            lo: d,
+            hi: d,
+            down: false,
+            what: "the length of a slice chosen at run time".into(),
+        });
+        self.ops.push(Op::Range {
+            a: diff.r,
+            lo: d,
+            hi: d,
+            site,
+        });
+        p.at = Some((r.r, b, ew));
+        p.len = (d as u32 + 1) * ew;
+        // Its index range is the bounds' at run time: no index or slice of it is taken.
+        p.dims = Dims::NONE;
+        Ok(Val::Part(p))
+    }
+
+    /// The integer value of `x` with every integer subexpression elaboration does not know taken
+    /// as `v` (the length of a slice chosen at run time).
+    fn probe(&self, x: ExprId, v: i64) -> Option<i64> {
+        if let Some(c) = self.fold(x) {
+            return c.as_int();
+        }
+        let db = self.db;
+        if !matches!(
+            db.types[db.base(db.exprs[x].subtype)].kind,
+            TypeKind::Integer
+        ) {
+            return None;
+        }
+        match &db.exprs[x].kind {
+            ExprKind::Call { callee, .. }
+                if matches!(
+                    db.decls[*callee].kind.subprogram().map(|s| &s.body),
+                    Some(yavs_sem::decl::Body::Implicit(_))
+                ) =>
+            {
+                db.fold_with(x, &mut |c| self.probe(c, v).map(ConstValue::Int))
+                    .ok()
+                    .flatten()?
+                    .as_int()
+            }
+            ExprKind::ImplicitConv { operand } => self.probe(*operand, v),
+            _ => Some(v),
         }
     }
 
@@ -2105,7 +2214,7 @@ impl Lx<'_> {
                 if let Some(l) = p.leaf {
                     let base = nets.loc[l.index()].base;
                     let n = match p.at {
-                        Some((_, b)) => p.len * b.len() as u32,
+                        Some((_, b, stride)) => stride * b.len() as u32,
                         None => p.len,
                     };
                     self.reads.insert(l);

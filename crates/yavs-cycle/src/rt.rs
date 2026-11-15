@@ -155,18 +155,32 @@ impl RegionProc {
                 }
                 continue;
             }
-            let v = extract(&self.img[slot..], lo, len);
-            if o.last == v {
+            // Wider: word by word against what was driven last, the blocks in `buf` (no
+            // allocation per export).
+            let nw = words(len) as usize;
+            let w = &self.img[slot..];
+            let same = o.last.len() == nw
+                && (0..nw)
+                    .all(|j| o.last[j] == word_at(w, lo + 64 * j as u32, len - 64 * j as u32));
+            if same {
                 continue;
             }
-            let b = blocks(&v, len);
-            o.last = v;
-            if !ctx.assign_wide_now(o.driver, Some(o.range), &b) {
+            o.last.resize(nw, 0);
+            self.buf.clear();
+            for j in 0..nw {
+                let x = word_at(w, lo + 64 * j as u32, len - 64 * j as u32);
+                o.last[j] = x;
+                let m = mask((len - 64 * j as u32).min(64));
+                for p in [x, m, 0, 0] {
+                    self.buf.extend_from_slice(&p.to_le_bytes());
+                }
+            }
+            if !ctx.assign_wide_now(o.driver, Some(o.range), &self.buf) {
                 ctx.assign_blocks(
                     o.driver,
                     Some(o.range),
                     Time::ZERO,
-                    &b,
+                    &self.buf,
                     DelayMode::Transport,
                 )?;
             }
@@ -206,19 +220,14 @@ impl RegionProc {
     }
 }
 
-/// Elements `lo .. lo + len` of `w` as words.
-fn extract(w: &[u64], lo: u32, len: u32) -> Vec<u64> {
-    (0..words(len))
-        .map(|j| {
-            let off = lo + 64 * j;
-            let (k, s) = ((off / 64) as usize, off % 64);
-            let mut x = w[k] >> s;
-            if s != 0 && k + 1 < w.len() {
-                x |= w[k + 1] << (64 - s);
-            }
-            x & mask((len - 64 * j).min(64))
-        })
-        .collect()
+/// The (at most 64) elements of `w` from element `off`, `left` of them or 64.
+fn word_at(w: &[u64], off: u32, left: u32) -> u64 {
+    let (k, s) = ((off / 64) as usize, off % 64);
+    let mut x = w[k] >> s;
+    if s != 0 && k + 1 < w.len() {
+        x |= w[k + 1] << (64 - s);
+    }
+    x & mask(left.min(64))
 }
 
 /// Two-state words as the kernel's plane blocks (`Ctx::assign_blocks`): `'0'` and `'1'`.

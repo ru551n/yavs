@@ -680,7 +680,7 @@ fn clocked_and_combinational_shapes_give_the_same_result() {
         assert!(normal[2].contains("acc=00 cnt=0"), "{normal:?}");
         assert_eq!(cycle, normal, "{t:?}\n{err}");
         assert!(
-            err.contains("cycle mode: 9 of 10 processes run cycle-based"),
+            err.contains("cycle mode: 11 of 12 processes run cycle-based"),
             "{err}"
         );
     }

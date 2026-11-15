@@ -1,7 +1,7 @@
 -- Clocked and combinational shapes of cycle mode against the normal mode: a `wait until` process
 -- with an enable, an asynchronous reset, variables with initial values, an array of vectors read
 -- and written at run-time indices, concurrent simple, conditional and selected assignments, a
--- `case` on a vector, an unrolled loop, constants and generics.
+-- `case` on a vector, an unrolled loop, slices chosen at run time, constants and generics.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -23,6 +23,8 @@ architecture a of cycle_shapes is
   signal flag : boolean;
   signal code : std_ulogic_vector(1 downto 0);
   signal q : std_ulogic := '0';
+  signal wide : std_ulogic_vector(8 * N - 1 downto 0) := (others => '0');
+  signal byte_out : std_ulogic_vector(7 downto 0);
 begin
   w : process
   begin
@@ -47,6 +49,13 @@ begin
     end if;
   end process;
   q <= din(0) when rising_edge(clk);
+  ws : process (clk)
+  begin
+    if rising_edge(clk) then
+      wide(8 * sel + 7 downto 8 * sel) <= std_ulogic_vector(din);
+    end if;
+  end process;
+  byte_out <= wide(8 * sel + 7 downto 8 * sel) xor wide(8 * N - 1 downto 8 * N - 8);
   mux <= regs(0) when sel = 0 else regs(1) xor regs(N - 1) when sel = 1 else not acc;
   pick <= regs(sel);
   flag <= acc > 100;
@@ -86,7 +95,8 @@ begin
       report "c=" & integer'image(c) & " acc=" & to_hstring(acc) & " cnt=" & integer'image(cnt)
         & " mux=" & to_hstring(mux) & " pick=" & to_hstring(pick) & " flag=" & boolean'image(flag)
         & " code=" & to_string(code) & " sum=" & to_hstring(sum) & " dec=" & to_hstring(dec)
-        & " q=" & std_ulogic'image(q) & " r0=" & to_hstring(regs(0)) & " r3=" & to_hstring(regs(N - 1));
+        & " q=" & std_ulogic'image(q) & " r0=" & to_hstring(regs(0)) & " r3=" & to_hstring(regs(N - 1))
+        & " wide=" & to_hstring(wide) & " bo=" & to_hstring(byte_out);
     end loop;
     wait;
   end process;

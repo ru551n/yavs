@@ -469,9 +469,9 @@ fn build(
     let mut state: Vec<(u32, u32)> = Vec::new();
     // Each function as pieces, a member's body each (`codegen::compile` cuts between them).
     let mut settle: Vec<codegen::Step> = Vec::new();
-    let mut edge: Vec<Vec<Op>> = Vec::new();
-    let mut init_fn: Vec<Vec<Op>> = Vec::new();
-    edge.push(
+    let mut edge: Vec<codegen::Step> = Vec::new();
+    let mut init_fn: Vec<codegen::Step> = Vec::new();
+    edge.push(codegen::Step::Ops(
         (next.iter())
             .map(|(&k, &s)| Op::Copy {
                 dst: Ref::Loc(s),
@@ -479,7 +479,7 @@ fn build(
                 len: klen(k),
             })
             .collect(),
-    );
+    ));
     let mut init: Vec<(u32, u64)> = Vec::new();
     let mut checks: Vec<(lower::Check, usize)> = Vec::new();
     let mut uninit = 0u64;
@@ -550,16 +550,82 @@ fn build(
         }
         Ok(ops)
     };
-    if std::env::var_os("YAVS_CYCLE_STATS").is_some() {
+    let stats = std::env::var_os("YAVS_CYCLE_STATS").is_some();
+    if stats {
         shapes(db, e, &sel, &next);
     }
+    // One body per shape: members of `SHARE_MIN` operations or more, not in a loop group, whose
+    // code is the same but for where their words lie; a combinational member's settle body, a
+    // clocked member's edge body.
+    let looped: std::collections::BTreeSet<usize> = (sel.loops.iter())
+        .flat_map(|l| sel.settle[l.at.clone()].iter().copied())
+        .collect();
+    let mut by_key: std::collections::HashMap<ShapeKey, Vec<usize>> = Default::default();
+    for (k, (_, b)) in sel.members.iter().enumerate() {
+        // A member with memory writes kept back for the commit keeps its own code.
+        if !looped.contains(&k)
+            && deferred[k].1.is_empty()
+            && b.ops.iter().map(codegen::weight_of).sum::<usize>() >= SHARE_MIN
+        {
+            by_key.entry(shape_key(b, &next)).or_default().push(k);
+        }
+    }
+    // In the order of their first members, so the code is the same at every run.
+    let mut by_key: Vec<Vec<usize>> = by_key.into_values().collect();
+    by_key.sort_unstable();
+    // Per member that shares: its shape and its blocks.
+    let mut shared: BTreeMap<usize, (usize, Blocks)> = BTreeMap::new();
+    // Per shape: its leader's body and blocks.
+    let mut leaders: Vec<(Vec<Op>, Blocks, Resolve)> = Vec::new();
+    for ks in by_key.into_iter().filter(|ks| ks.len() > 1) {
+        let body = |k: usize| {
+            let b = &sel.members[k].1;
+            shared_body(&b.ops, b.kind == Kind::Clocked, several)
+        };
+        let lead = blocks(&body(ks[0]), &sel.members[ks[0]].1, &rs[ks[0]], klen);
+        let mut members = Vec::new();
+        for &k in &ks {
+            let bl = blocks(&body(k), &sel.members[k].1, &rs[k], klen);
+            // The same blocks in the same order with the same lengths, or the member keeps
+            // its own code.
+            if bl.len() == lead.len()
+                && (bl.iter().zip(&lead)).all(|(x, y)| same_kind(x.0, y.0) && x.2 == y.2)
+            {
+                members.push((k, bl));
+            }
+        }
+        if members.len() > 1 {
+            let sh = leaders.len();
+            leaders.push((body(members[0].0), lead, rs[members[0].0]));
+            shared.extend(members.into_iter().map(|(k, bl)| (k, (sh, bl))));
+        }
+    }
+    if stats {
+        eprintln!(
+            "cycle stats: {} members share {} bodies",
+            shared.len(),
+            leaders.len()
+        );
+    }
+    let call = |k: usize| -> codegen::Step {
+        let (shape, bl) = &shared[&k];
+        codegen::Step::Shared {
+            shape: *shape,
+            table: bl.iter().map(|b| b.1).collect(),
+            sites: rs[k].sites,
+        }
+    };
     let confirm = codegen::confirm_on();
     let mut bodies: Vec<(Vec<Op>, bool)> = Vec::new();
     let mut groups: Vec<(Vec<(u32, u32)>, u32)> = Vec::new();
     let mut at = 0;
     for l in &sel.loops {
         for &k in &sel.settle[at..l.at.start] {
-            settle.push(codegen::Step::Ops(piece(k, &none)?));
+            if sel.members[k].1.kind != Kind::Clocked && shared.contains_key(&k) {
+                settle.push(call(k));
+            } else {
+                settle.push(codegen::Step::Ops(piece(k, &none)?));
+            }
         }
         at = l.at.end;
         let steps = &sel.settle[l.at.clone()];
@@ -611,30 +677,35 @@ fn build(
         groups.push((words, 0));
     }
     for &k in &sel.settle[at..] {
-        settle.push(codegen::Step::Ops(piece(k, &none)?));
+        if sel.members[k].1.kind != Kind::Clocked && shared.contains_key(&k) {
+            settle.push(call(k));
+        } else {
+            settle.push(codegen::Step::Ops(piece(k, &none)?));
+        }
     }
     // The edge: the clocked bodies of the classes whose edge happened (with one class only at its
     // edge, so behind no test), the commit; then the settle's functions.
     for (k, (_, b)) in sel.members.iter().enumerate() {
         let r = &rs[k];
-        init_fn.push(b.init_ops.iter().map(|op| r.op(op)).collect());
+        init_fn.push(codegen::Step::Ops(
+            b.init_ops.iter().map(|op| r.op(op)).collect(),
+        ));
         if b.kind != Kind::Clocked {
             continue;
         }
-        let body = if deferred[k].1.is_empty() {
-            &b.ops
+        if shared.contains_key(&k) {
+            edge.push(call(k));
         } else {
-            &deferred[k].0
-        };
-        let mut ops: Vec<Op> = body.iter().map(|op| r.op(op)).collect();
-        if several {
-            ops = vec![Op::If {
-                cond: Ref::Loc(r.edge),
-                then: ops,
-                else_: Vec::new(),
-            }];
+            // A body with memory writes kept back has them in `deferred`.
+            let ops = if deferred[k].1.is_empty() {
+                &b.ops
+            } else {
+                &deferred[k].0
+            };
+            let body = shared_body(ops, true, several);
+            let ops = body.iter().map(|op| r.op(op)).collect();
+            edge.push(codegen::Step::Ops(ops));
         }
-        edge.push(ops);
     }
     // The memory writes of this edge, in member and program order, then the next-state blocks.
     // A memory something outside reads keeps the flags of its writes for the export, which
@@ -691,7 +762,7 @@ fn build(
     }
     let mut c = commit(&next, &cur, klen);
     writes.append(&mut c);
-    edge.push(writes);
+    edge.push(codegen::Step::Ops(writes));
     let err = n;
     n += 2;
     // The save words of each loop group.
@@ -708,8 +779,43 @@ fn build(
         .position(|s| s.parent.is_none())
         .ok_or("the design has no top-level instance")?;
     let label = e.hier.dotted(yavs_elab::ScopeId(top as u32));
+    // Each shape on virtual words: its leader's blocks one after the other.
+    let shapes: Vec<codegen::Shape> = (leaders.iter())
+        .map(|(body, bl, r)| {
+            let mut v = Vec::new();
+            let mut at = 0;
+            for &(_, _, n) in bl {
+                v.push((at, n));
+                at += n;
+            }
+            let place = |b: Block| {
+                let j = (bl.iter())
+                    .position(|x| x.0 == b)
+                    .expect("every block the body addresses is listed");
+                v[j].0
+            };
+            let src = |x: Ref| match x {
+                Ref::Sig(k) => Ref::Loc(place(Block::Cur(k))),
+                Ref::Loc(s) => Ref::Loc(place(Block::Locals) + s),
+                Ref::Edge => Ref::Loc(place(Block::Edge)),
+            };
+            let dst = |x: Ref| match x {
+                Ref::Sig(k) if r.clocked && next.contains_key(&k) => {
+                    Ref::Loc(place(Block::Next(k)))
+                }
+                x => src(x),
+            };
+            codegen::Shape {
+                ops: body.iter().map(|op| op.map(&src, &dst, &|x| x)).collect(),
+                keep: (bl.iter())
+                    .flat_map(|&(_, w, n)| keep[w as usize..(w + n) as usize].iter().copied())
+                    .collect(),
+                blocks: v,
+            }
+        })
+        .collect();
     let code = Arc::new(codegen::compile(
-        &settle, &edge, &init_fn, &bodies, groups, &keep, err, &label,
+        &settle, &edge, &init_fn, &bodies, &shapes, groups, &keep, err, &label,
     )?);
     let whole = |k: u32| {
         let s = yavs_kernel::SignalId(k);
@@ -1020,33 +1126,15 @@ fn commit(
 /// within signals), as distinct shapes; the operations one body per shape would compile, also
 /// counting only shapes of at least some size; the largest shapes by operations times instances.
 fn shapes(db: &Db, e: &Elaborated, sel: &region::Selection, next: &BTreeMap<u32, u32>) {
-    let mut by: BTreeMap<String, (usize, usize, usize)> = BTreeMap::new();
+    let mut by: std::collections::HashMap<ShapeKey, (usize, usize, usize)> = Default::default();
     for (pi, b) in &sel.members {
-        let order = std::cell::RefCell::new(Vec::<u32>::new());
-        let ord = |r: Ref| match r {
-            Ref::Sig(k) => {
-                let mut o = order.borrow_mut();
-                let i = o.iter().position(|&x| x == k).unwrap_or_else(|| {
-                    o.push(k);
-                    o.len() - 1
-                });
-                Ref::Sig(i as u32)
-            }
-            r => r,
-        };
-        let key: Vec<Op> = (b.ops.iter().chain(&b.init_ops))
-            .map(|op| op.map(&ord, &ord, &|x| x))
-            .collect();
-        let sigs: Vec<bool> = (order.borrow().iter())
-            .map(|k| next.contains_key(k))
-            .collect();
-        let key = format!("{:?} {} {:?} {key:?} {sigs:?}", b.kind, b.locs, b.vars);
+        let key = shape_key(b, next);
         let w: usize = b.ops.iter().map(codegen::weight_of).sum();
         let e = by.entry(key).or_insert((0, w, *pi));
         e.0 += 1;
     }
     let mut v: Vec<_> = by.values().collect();
-    v.sort_by_key(|&&(n, w, _)| std::cmp::Reverse(n * w));
+    v.sort_by_key(|&&(n, w, pi)| (std::cmp::Reverse(n * w), pi));
     let all: usize = v.iter().map(|&&(n, w, _)| n * w).sum();
     let once: usize = v.iter().map(|&&(_, w, _)| w).sum();
     eprintln!(
@@ -1068,6 +1156,109 @@ fn shapes(db: &Db, e: &Elaborated, sel: &region::Selection, next: &BTreeMap<u32,
         );
     }
 }
+
+/// Members of at least this many operations whose code is the same but for where their words lie
+/// share one compiled body; below it a call per member would cost more than the code it saves.
+const SHARE_MIN: usize = 256;
+
+/// A place a member's code addresses, which each member of a shape has at an address of its own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Block {
+    /// The current words of kernel signal `k`, its next-state words, the member's slots, its
+    /// edge word.
+    Cur(u32),
+    Next(u32),
+    Locals,
+    Edge,
+}
+
+/// Blocks with their first word and length.
+type Blocks = Vec<(Block, u32, u32)>;
+
+fn same_kind(a: Block, b: Block) -> bool {
+    std::mem::discriminant(&a) == std::mem::discriminant(&b)
+}
+
+/// The body a shared member runs: a combinational member's operations; a clocked member's, behind
+/// its class's edge word when there are several classes.
+fn shared_body(ops: &[Op], clocked: bool, several: bool) -> Vec<Op> {
+    if clocked && several {
+        vec![Op::If {
+            cond: Ref::Edge,
+            then: ops.to_vec(),
+            else_: Vec::new(),
+        }]
+    } else {
+        ops.to_vec()
+    }
+}
+
+/// The blocks `ops` (of member `b`, resolved by `r`) address, in order of first use: each with its
+/// first word in the image and its length.
+fn blocks(ops: &[Op], b: &lower::Body, r: &Resolve, klen: impl Fn(u32) -> u32) -> Blocks {
+    let seen = std::cell::RefCell::new(Vec::<Block>::new());
+    let add = |x: Block| {
+        let mut s = seen.borrow_mut();
+        if !s.contains(&x) {
+            s.push(x);
+        }
+    };
+    let src = |x: Ref| {
+        add(match x {
+            Ref::Sig(k) => Block::Cur(k),
+            Ref::Loc(_) => Block::Locals,
+            Ref::Edge => Block::Edge,
+        });
+        x
+    };
+    let dst = |x: Ref| {
+        match x {
+            Ref::Sig(k) if r.clocked && r.next.contains_key(&k) => add(Block::Next(k)),
+            x => {
+                src(x);
+            }
+        }
+        x
+    };
+    for op in ops {
+        op.map(&src, &dst, &|x| x);
+    }
+    (seen.into_inner().into_iter())
+        .map(|x| match x {
+            Block::Cur(k) => (x, r.cur[&k], codegen::words(klen(k))),
+            Block::Next(k) => (x, r.next[&k], codegen::words(klen(k))),
+            Block::Locals => (x, r.base, b.locs.max(1)),
+            Block::Edge => (x, r.edge, 1),
+        })
+        .collect()
+}
+
+/// What makes the code of member `b` what it is, but for where its words lie: kind, slots, state
+/// variables, the operations with each kernel signal by its order of first use, and which of
+/// those have next-state words.
+fn shape_key(b: &lower::Body, next: &BTreeMap<u32, u32>) -> ShapeKey {
+    let order = std::cell::RefCell::new(Vec::<u32>::new());
+    let ord = |r: Ref| match r {
+        Ref::Sig(k) => {
+            let mut o = order.borrow_mut();
+            let i = o.iter().position(|&x| x == k).unwrap_or_else(|| {
+                o.push(k);
+                o.len() - 1
+            });
+            Ref::Sig(i as u32)
+        }
+        r => r,
+    };
+    let ops: Vec<Op> = (b.ops.iter().chain(&b.init_ops))
+        .map(|op| op.map(&ord, &ord, &|x| x))
+        .collect();
+    let sigs: Vec<bool> = (order.borrow().iter())
+        .map(|k| next.contains_key(k))
+        .collect();
+    (b.kind, b.locs, b.vars.clone(), ops, sigs)
+}
+
+type ShapeKey = (Kind, u32, Vec<(u32, u32)>, Vec<Op>, Vec<bool>);
 
 /// The operations of one member with every reference an image slot: a member's slots from
 /// `base`, a signal its current words, except the next-state words where a clocked member writes

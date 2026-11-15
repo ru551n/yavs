@@ -11,6 +11,7 @@
 //! The only `unsafe` of the crate: the region calls the generated code on its image.
 #![allow(unsafe_code)]
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use cranelift_codegen::ir::condcodes::IntCC;
@@ -27,6 +28,10 @@ use crate::lower::{Arith, Cmp, Gate, Op, Ref, ShiftK};
 /// site plus one.
 pub(crate) type Entry = unsafe extern "C" fn(*mut u64) -> u32;
 
+/// A function of a shared body ([`Shape`]): the image and the instance's table, the byte offset
+/// of each block; 0, or the failed check's site in the body plus one.
+type SharedEntry = unsafe extern "C" fn(*mut u64, *const usize) -> u32;
+
 /// The compiled functions of a region; the module owns their code.
 pub(crate) struct Code {
     _module: JITModule,
@@ -36,6 +41,8 @@ pub(crate) struct Code {
     groups: Vec<(Vec<(u32, u32)>, u32)>,
     /// The words the code addresses.
     words: usize,
+    /// By instance of a shared body: the byte offset in the image of each of its blocks.
+    tables: Vec<Box<[usize]>>,
 }
 
 /// One step of a trigger function at run time.
@@ -46,6 +53,8 @@ enum Run {
     Save(usize),
     /// The words of loop group `g` must equal those saved, or the run stops ([`UNSETTLED`]).
     Same(usize),
+    /// A function of a shared body on the instance of table `t`, its sites from `sites`.
+    Shared(SharedEntry, u32, u32),
 }
 
 /// A step of the settle as [`compile`] takes it.
@@ -58,6 +67,23 @@ pub(crate) enum Step {
     /// [`Run::Save`] and [`Run::Same`] of a loop group.
     Save(usize),
     Same(usize),
+    /// Shape `shape` of [`compile`]'s `shapes` on one member: the first word of each of its
+    /// blocks (in the order of [`Shape::blocks`]) and the member's first check site.
+    Shared {
+        shape: usize,
+        table: Vec<u32>,
+        sites: u32,
+    },
+}
+
+/// One compiled body for several members whose code is the same but for where their words lie:
+/// its operations on virtual words, the blocks (first virtual word, length) each member gives
+/// a place of its own in the image (a signal's words, its next-state words, its slots, its edge
+/// word), and which virtual words hold state.
+pub(crate) struct Shape {
+    pub ops: Vec<Op>,
+    pub blocks: Vec<(u32, u32)>,
+    pub keep: Vec<bool>,
 }
 
 /// The site [`Code::run`] gives when a loop group changed in a pass after its fixed point.
@@ -88,6 +114,13 @@ impl Code {
                     for &(w, c) in ws {
                         img.copy_within(w as usize..(w + c) as usize, at);
                         at += c as usize;
+                    }
+                }
+                Run::Shared(e, t, sites) => {
+                    // SAFETY: every block of every table lies below `words` (checked in `compile`).
+                    match unsafe { e(img.as_mut_ptr(), self.tables[t as usize].as_ptr()) } {
+                        0 => {}
+                        s => return Err(sites + s - 1),
                     }
                 }
                 Run::Same(g) => {
@@ -180,11 +213,14 @@ fn chunk() -> usize {
 
 /// A piece as parts of about `CHUNK` operations each, each but the last with `true` (its member
 /// goes on in the next part); see [`cut`].
-fn parts(ops: &[Op]) -> Vec<(Vec<Op>, bool)> {
+fn parts(ops: &[Op]) -> Vec<(Cow<'_, [Op]>, bool)> {
+    if weight(ops) <= chunk() {
+        return vec![(Cow::Borrowed(ops), false)];
+    }
     let ps = cut(ops, chunk());
     let n = ps.len();
     (ps.into_iter().enumerate())
-        .map(|(i, p)| (p, i + 1 < n))
+        .map(|(i, p)| (Cow::Owned(p), i + 1 < n))
         .collect()
 }
 
@@ -302,11 +338,12 @@ fn span(op: &Op) -> u32 {
 /// unless an element of it is addressed at run time. `name` labels the functions in the perf
 /// map.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn compile(
-    settle: &[Step],
-    edge: &[Vec<Op>],
-    init: &[Vec<Op>],
-    bodies: &[(Vec<Op>, bool)],
+pub(crate) fn compile<'a>(
+    settle: &'a [Step],
+    edge: &'a [Step],
+    init: &'a [Step],
+    bodies: &'a [(Vec<Op>, bool)],
+    shapes: &'a [Shape],
     groups: Vec<(Vec<(u32, u32)>, u32)>,
     keep: &[bool],
     err: u32,
@@ -346,12 +383,17 @@ pub(crate) fn compile(
     // The functions to compile (label, parts, whether checks exit), the loop bodies first; and
     // what each trigger function runs, a function by its index. A part says whether its member
     // goes on in the next one (`cut`).
-    type Fn = (String, Vec<(Vec<Op>, bool)>, bool);
-    let mut funs: Vec<Fn> = Vec::new();
+    // A function: label, parts, whether checks exit, the shape it is a body of.
+    type Fn<'a> = (String, Vec<(Cow<'a, [Op]>, bool)>, bool, Option<usize>);
+    let mut funs: Vec<Fn<'_>> = Vec::new();
     // Parts packed into functions of about `CHUNK` operations; returns the functions made.
-    let pack = |funs: &mut Vec<Fn>, what: &str, ps: Vec<(Vec<Op>, bool)>, checked: bool| {
+    let pack = |funs: &mut Vec<Fn<'a>>,
+                what: &str,
+                ps: Vec<(Cow<'a, [Op]>, bool)>,
+                checked: bool,
+                shape: Option<usize>| {
         let first = funs.len();
-        let mut cur: Vec<(Vec<Op>, bool)> = Vec::new();
+        let mut cur: Vec<(Cow<'a, [Op]>, bool)> = Vec::new();
         let mut w = 0;
         for (p, more) in ps {
             let pw = weight(&p);
@@ -360,6 +402,7 @@ pub(crate) fn compile(
                     format!("{what}_{}", funs.len()),
                     std::mem::take(&mut cur),
                     checked,
+                    shape,
                 ));
                 w = 0;
             }
@@ -367,26 +410,46 @@ pub(crate) fn compile(
             cur.push((p, more));
         }
         if !cur.is_empty() {
-            funs.push((format!("{what}_{}", funs.len()), cur, checked));
+            funs.push((format!("{what}_{}", funs.len()), cur, checked, shape));
         }
         first..funs.len()
     };
     let bodies: Vec<std::ops::Range<usize>> = (bodies.iter().enumerate())
-        .map(|(b, (ops, checked))| pack(&mut funs, &format!("loop_{b}"), parts(ops), *checked))
+        .map(|(b, (ops, checked))| {
+            pack(&mut funs, &format!("loop_{b}"), parts(ops), *checked, None)
+        })
         .collect();
-    let mut runs: [Vec<Result<usize, Run>>; 3] = Default::default();
-    let edge: Vec<Step> = edge.iter().map(|p| Step::Ops(p.clone())).collect();
-    let init: Vec<Step> = init.iter().map(|p| Step::Ops(p.clone())).collect();
-    for (f, (what, steps)) in [("settle", settle), ("edge", &edge[..]), ("init", &init[..])]
+    let shaped: Vec<std::ops::Range<usize>> = (shapes.iter().enumerate())
+        .map(|(k, sh)| {
+            pack(
+                &mut funs,
+                &format!("shape_{k}"),
+                parts(&sh.ops),
+                true,
+                Some(k),
+            )
+        })
+        .collect();
+    // What each trigger function runs: a function by its index, a function of a shared body
+    // with its table and first site, or a step of the runner.
+    enum Pend {
+        Fn(usize),
+        Shared(usize, u32, u32),
+        Run(Run),
+    }
+    let mut tables: Vec<Box<[usize]>> = Vec::new();
+    let mut runs: [Vec<Pend>; 3] = Default::default();
+    for (f, (what, steps)) in [("settle", settle), ("edge", edge), ("init", init)]
         .into_iter()
         .enumerate()
     {
-        let mut cur: Vec<(Vec<Op>, bool)> = Vec::new();
-        let flush = |funs: &mut Vec<Fn>, cur: &mut Vec<(Vec<Op>, bool)>, runs: &mut Vec<_>| {
-            if !cur.is_empty() {
-                runs.extend(pack(funs, what, std::mem::take(cur), true).map(Ok));
-            }
-        };
+        let mut cur: Vec<(Cow<'a, [Op]>, bool)> = Vec::new();
+        let flush =
+            |funs: &mut Vec<Fn<'a>>, cur: &mut Vec<(Cow<'a, [Op]>, bool)>, runs: &mut Vec<Pend>| {
+                if !cur.is_empty() {
+                    runs.extend(pack(funs, what, std::mem::take(cur), true, None).map(Pend::Fn));
+                }
+            };
         for st in steps {
             let r = match st {
                 Step::Ops(p) => {
@@ -395,14 +458,31 @@ pub(crate) fn compile(
                 }
                 Step::Call(b) => {
                     flush(&mut funs, &mut cur, &mut runs[f]);
-                    runs[f].extend(bodies[*b].clone().map(Ok));
+                    runs[f].extend(bodies[*b].clone().map(Pend::Fn));
                     continue;
                 }
-                Step::Save(g) => Err(Run::Save(*g)),
-                Step::Same(g) => Err(Run::Same(*g)),
+                Step::Shared {
+                    shape,
+                    table,
+                    sites,
+                } => {
+                    flush(&mut funs, &mut cur, &mut runs[f]);
+                    let blocks = &shapes[*shape].blocks;
+                    if table.len() != blocks.len()
+                        || (table.iter().zip(blocks)).any(|(&w, &(_, n))| (w + n) as usize > words)
+                    {
+                        return Err("a shared body's table does not fit its image".into());
+                    }
+                    let t = tables.len() as u32;
+                    tables.push(table.iter().map(|&w| w as usize * 8).collect());
+                    runs[f].extend(shaped[*shape].clone().map(|k| Pend::Shared(k, t, *sites)));
+                    continue;
+                }
+                Step::Save(g) => Run::Save(*g),
+                Step::Same(g) => Run::Same(*g),
             };
             flush(&mut funs, &mut cur, &mut runs[f]);
-            runs[f].push(r);
+            runs[f].push(Pend::Run(r));
         }
         flush(&mut funs, &mut cur, &mut runs[f]);
     }
@@ -411,11 +491,14 @@ pub(crate) fn compile(
     let stats = std::env::var_os("YAVS_CYCLE_STATS").is_some();
     let t0 = std::time::Instant::now();
     let mut ids = Vec::new();
-    for (sym, ops, checked) in &funs {
+    for (sym, ops, checked, shape) in &funs {
         let t = std::time::Instant::now();
         let sym = format!("cycle_{sym}_{name}");
         let mut sig = module.make_signature();
         sig.params.push(AbiParam::new(ptr));
+        if shape.is_some() {
+            sig.params.push(AbiParam::new(ptr));
+        }
         sig.returns.push(AbiParam::new(I32));
         let id = module
             .declare_function(&sym, Linkage::Local, &sig)
@@ -430,6 +513,17 @@ pub(crate) fn compile(
             b.switch_to_block(blk);
             b.seal_block(blk);
             let base = b.block_params(blk)[0];
+            // A shared body: each block's address, from the instance's table.
+            let mut blocks = Vec::new();
+            if let Some(k) = shape {
+                let tbl = b.block_params(blk)[1];
+                for (j, &(v, _)) in shapes[*k].blocks.iter().enumerate() {
+                    let off = b
+                        .ins()
+                        .load(ptr, MemFlagsData::trusted(), tbl, 8 * j as i32);
+                    blocks.push((v as i32 * 8, b.ins().iadd(base, off)));
+                }
+            }
             let mut g = Gen {
                 b,
                 base,
@@ -439,7 +533,8 @@ pub(crate) fn compile(
                 ptr,
                 cache: BTreeMap::new(),
                 cap: CACHE_MAX,
-                keep,
+                blocks,
+                keep: shape.map_or(keep, |k| &shapes[k].keep[..]),
                 zeros: std::collections::HashMap::new(),
             };
             // Each piece starts from memory: the words it keeps in registers are few, and a
@@ -501,12 +596,23 @@ pub(crate) fn compile(
             yavs_rt::perfmap::append(addr(*id) as usize, 4096, sym);
         }
     }
-    // SAFETY: every one is a function of signature `fn(ptr) -> u32` defined above.
-    let entry =
-        |k: usize| Run::Fn(unsafe { std::mem::transmute::<*const u8, Entry>(addr(ids[k].0)) });
     let mut entries: [Vec<Run>; 3] = Default::default();
     for (f, rs) in runs.iter().enumerate() {
-        entries[f] = rs.iter().map(|r| r.map_or_else(|x| x, entry)).collect();
+        entries[f] = (rs.iter())
+            .map(|r| match *r {
+                // SAFETY: a function of signature `fn(ptr) -> u32` defined above.
+                Pend::Fn(k) => {
+                    Run::Fn(unsafe { std::mem::transmute::<*const u8, Entry>(addr(ids[k].0)) })
+                }
+                // SAFETY: a function of a shape, `fn(ptr, ptr) -> u32`, defined above.
+                Pend::Shared(k, t, s) => Run::Shared(
+                    unsafe { std::mem::transmute::<*const u8, SharedEntry>(addr(ids[k].0)) },
+                    t,
+                    s,
+                ),
+                Pend::Run(r) => r,
+            })
+            .collect();
     }
     // The edge runs the settle after its own pieces.
     let after = entries[0].clone();
@@ -516,6 +622,7 @@ pub(crate) fn compile(
         entries,
         groups,
         words,
+        tables,
     })
 }
 
@@ -541,6 +648,9 @@ struct Gen<'a> {
     cache: BTreeMap<i32, (Value, bool)>,
     /// Most words in `cache` at once, for the piece being generated.
     cap: usize,
+    /// A shared body: the first virtual byte offset of each block and the block's address, in
+    /// order; a word's address is from the last block at or below it (`at`).
+    blocks: Vec<(i32, Value)>,
     keep: &'a [bool],
     /// Bits known to be zero of some values (constants, extracted bits, words built by inserts).
     zeros: std::collections::HashMap<Value, u64>,
@@ -553,16 +663,22 @@ impl Gen<'_> {
         }
     }
 
+    /// The address of the word at byte offset `off`: a base and an offset from it.
+    fn at(&self, off: i32) -> (Value, i32) {
+        match self.blocks.iter().rev().find(|(v, _)| *v <= off) {
+            Some(&(v, b)) => (b, off - v),
+            None => (self.base, off),
+        }
+    }
+
     /// Word `k` of `r`: from a register when it has one.
     fn ld(&mut self, r: Ref, k: u32) -> Value {
         let off = word(r) + k as i32 * 8;
         if let Some(&(v, _)) = self.cache.get(&off) {
             return v;
         }
-        let v = self
-            .b
-            .ins()
-            .load(I64, MemFlagsData::trusted(), self.base, off);
+        let (a, o) = self.at(off);
+        let v = self.b.ins().load(I64, MemFlagsData::trusted(), a, o);
         self.keep_in(off, v, false);
         v
     }
@@ -589,9 +705,8 @@ impl Gen<'_> {
     }
 
     fn store(&mut self, off: i32, v: Value) {
-        self.b
-            .ins()
-            .store(MemFlagsData::trusted(), v, self.base, off);
+        let (a, o) = self.at(off);
+        self.b.ins().store(MemFlagsData::trusted(), v, a, o);
     }
 
     /// The words that hold state, into memory (the end of the function).
@@ -979,8 +1094,9 @@ impl Gen<'_> {
         } else {
             self.b.ins().ireduce(self.ptr, w)
         };
-        let a = self.b.ins().iadd(self.base, w);
-        let a = self.b.ins().iadd_imm_s(a, i64::from(word(r)));
+        let (b, o) = self.at(word(r));
+        let a = self.b.ins().iadd(b, w);
+        let a = self.b.ins().iadd_imm_s(a, i64::from(o));
         let s = self.b.ins().band_imm_s(bit, 63);
         (a, s)
     }

@@ -2549,3 +2549,56 @@ fn members_cut_into_several_functions_give_the_same_result() {
         }
     }
 }
+
+/// Instances sharing one compiled body (`share.vhd`): two of one generic share one body, two of
+/// another generic (a constant folded into the code) another, each driving its own signals from
+/// its own input; a failed check in a shared body names its own instance. Also with every member
+/// cut into parts (`YAVS_CYCLE_CHUNK=7`).
+#[test]
+fn instances_of_one_shape_share_a_body_and_others_do_not() {
+    let dir = tempdir("cycle-share");
+    analyze(&dir, "share.vhd", include_str!("cycle/share.vhd"));
+    let lines = |out: &str| -> Vec<String> {
+        (out.lines())
+            .filter(|l| l.contains("c="))
+            .map(String::from)
+            .collect()
+    };
+    let (normal, err, rc) = run_env(&dir, &[], &["--tier=interp"], "cycle_share");
+    assert_eq!(rc, 0, "{err}");
+    let normal = lines(&normal);
+    assert_eq!(normal.len(), 10, "{normal:?}");
+    let (_, nerr, nrc) = run_env(&dir, &[], &["--tier=interp", "-gFAIL=true"], "cycle_share");
+    assert_eq!(nrc, 1, "{nerr}");
+    let failure: Vec<&str> = (nerr.lines())
+        .filter(|l| l.starts_with("error[E3009]") || l.contains("= note: at "))
+        .map(str::trim)
+        .collect();
+    assert_eq!(failure.len(), 2, "{nerr}");
+    assert!(failure[1].ends_with("cycle_share.u1.p"), "{nerr}");
+    for chunk in [None, Some("7")] {
+        let mut env = vec![("YAVS_CYCLE_STATS", "1")];
+        env.extend(chunk.map(|c| ("YAVS_CYCLE_CHUNK", c)));
+        let (out, err, rc) = run_env(&dir, &env, &["--tier=interp", "--cycle"], "cycle_share");
+        assert_eq!(rc, 0, "{chunk:?}: {err}");
+        assert_eq!(lines(&out), normal, "{chunk:?}");
+        assert!(
+            err.contains("cycle mode: 8 of 9 processes run cycle-based"),
+            "{err}"
+        );
+        assert!(
+            err.contains("cycle stats: 4 members share 2 bodies"),
+            "{chunk:?}: {err}"
+        );
+        let (_, err, rc) = run_env(
+            &dir,
+            &env,
+            &["--tier=interp", "--cycle", "-gFAIL=true"],
+            "cycle_share",
+        );
+        assert_eq!(rc, 1, "{chunk:?}: {err}");
+        for l in &failure {
+            assert!(err.contains(l), "{chunk:?}: {l}: {err}");
+        }
+    }
+}

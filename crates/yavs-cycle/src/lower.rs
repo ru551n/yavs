@@ -2737,6 +2737,29 @@ impl Lx<'_> {
                     _ => return None,
                 }))
             }
+            // A pure function of the design on constants: run by the analysis's evaluator.
+            ExprKind::Call {
+                callee,
+                method_of: None,
+                ..
+            } if (db.decls[*callee].kind.subprogram()).is_some_and(|sp| {
+                sp.kind == yavs_sem::decl::SubprogramKind::Function { pure: true }
+                    && matches!(sp.body, yavs_sem::decl::Body::Hir { .. })
+                    && !["ieee.", "std."]
+                        .iter()
+                        .any(|p| sp.mangled.as_str().starts_with(p))
+            }) =>
+            {
+                let mut known = self.consts.clone();
+                for f in &self.frames {
+                    for (d, b) in &f.binds {
+                        if let Bind::Const(c) = b {
+                            known.insert(*d, c.clone());
+                        }
+                    }
+                }
+                crate::check::const_value(db, self.e, self.p, known, x)
+            }
             _ => db.fold_with(x, &mut |c| self.fold(c)).ok().flatten(),
         }
     }

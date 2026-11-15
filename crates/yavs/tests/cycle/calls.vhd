@@ -20,6 +20,7 @@ package cycle_calls_pkg is
   function pop (d : std_ulogic_vector) return natural;
   function ends (d : std_ulogic_vector) return ends_t;
   function exit_or (d : std_ulogic_vector) return integer;
+  function tri (n : natural) return natural;
   procedure split (d : in std_ulogic_vector; signal lo_s : out std_ulogic; n : out natural;
                    acc : inout unsigned);
   procedure bump (x : out natural);
@@ -113,6 +114,16 @@ package body cycle_calls_pkg is
     return 7;
   end function;
 
+  -- 0 + 1 + ... + n, run during the lowering where its argument is a constant.
+  function tri (n : natural) return natural is
+    variable c : natural := 0;
+  begin
+    for i in 0 to n loop
+      c := c + i;
+    end loop;
+    return c;
+  end function;
+
   -- An early `return` leaves `n` unchanged: `out` scalars are passed by reference.
   procedure split (d : in std_ulogic_vector; signal lo_s : out std_ulogic; n : out natural;
                    acc : inout unsigned) is
@@ -155,7 +166,7 @@ architecture a of cycle_calls is
   signal a, b : std_ulogic_vector(W - 1 downto 0) := (others => '0');
   signal t : std_ulogic_vector(0 to W - 1) := (others => '0');
   signal k : integer range -4 to 4 := 0;
-  signal r1, r2, r3, r4, z : std_ulogic_vector(W - 1 downto 0);
+  signal r1, r2, r3, r4, z, zz : std_ulogic_vector(W - 1 downto 0);
   signal red : std_ulogic_vector(4 downto 0);
   signal pos, post, dv, cnt, enc, xo : integer range -1000 to 1000;
   signal ep : ends_t;
@@ -188,6 +199,17 @@ begin
       v(i downto 0) := rep(a(i), i + 1) xor v(i downto 0);
     end loop;
     z <= v;
+  end process;
+
+  -- A loop bound that a pure function of constants gives.
+  pf : process (all)
+    variable s : std_ulogic_vector(W - 1 downto 0);
+  begin
+    s := (others => '0');
+    for i in 0 to minimum(W - 1, tri(2)) loop
+      s(i) := a(W - 1 - i);
+    end loop;
+    zz <= s;
   end process;
 
   -- `next` and `exit` chosen at run time.
@@ -249,6 +271,7 @@ begin
       wait for 5 ns;
       report "c=" & integer'image(c) & " r1=" & to_hstring(r1) & " r2=" & to_hstring(r2)
         & " r3=" & to_hstring(r3) & " r4=" & to_hstring(r4) & " z=" & to_hstring(z)
+        & " zz=" & to_hstring(zz)
         & " red=" & to_string(red) & " pos=" & integer'image(pos) & " post=" & integer'image(post)
         & " dv=" & integer'image(dv) & " cnt=" & integer'image(cnt) & " enc=" & integer'image(enc)
         & " xo=" & integer'image(xo)

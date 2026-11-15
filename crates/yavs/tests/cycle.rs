@@ -905,7 +905,7 @@ fn subprogram_calls_equal_the_normal_mode_at_widths_around_a_word() {
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             // Every process but the testbench's `main`.
             assert!(
-                err.contains("cycle mode: 5 of 6 processes run cycle-based"),
+                err.contains("cycle mode: 6 of 7 processes run cycle-based"),
                 "{w}: {err}"
             );
         }

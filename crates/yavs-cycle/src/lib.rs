@@ -64,6 +64,10 @@ pub mod codes {
     pub const CLOCK_MADE: &str = "E4125";
     /// The analysis cannot prove the process fits (it does not follow a construct).
     pub const ANALYSIS: &str = "E4126";
+    /// A process outside the region reads the history of a signal the process drives
+    /// (`'active`, `'last_active`, `'last_event`, `'last_value`, `'transaction`, `'stable`,
+    /// `'quiet`, `'delayed`).
+    pub const HISTORY_READ: &str = "E4127";
 }
 
 /// What `--cycle` decided for a design: the region report and the region to build.

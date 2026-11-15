@@ -416,9 +416,32 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             Err(w) => out.push((pi, Why::NotYet(w))),
         }
     }
+    // The history processes read (A10), and the sources of implicit signals.
+    let mut memo = BTreeMap::new();
+    let hist: Vec<Vec<Hist>> = (0..e.procs.len())
+        .map(|pi| history_reads(db, e, pi, &mut memo))
+        .collect();
+    let mut implicit: BTreeSet<LeafId> = BTreeSet::new();
+    for l in &e.nets.leaves {
+        if let Some((_, src, _)) = l.implicit {
+            implicit.insert(src);
+        }
+        implicit.extend(l.implicit_more.iter().map(|x| x.0));
+    }
     // Leave out what the set as a whole does not allow yet, until nothing changes.
     loop {
         let mut gone: Vec<(usize, String)> = Vec::new();
+        // A signal whose history a process outside reads keeps its drivers out: the region
+        // keeps no history of what it drives (outside the subset).
+        let hist_gone = history_rule(db, e, &taken, &hist, &implicit);
+        if !hist_gone.is_empty() {
+            for (pi, r) in hist_gone {
+                if taken.remove(&pi).is_some() {
+                    out.push((pi, Why::Subset(r)));
+                }
+            }
+            continue;
+        }
         // Leaves with a source no process owns: a constant source, or a port edge or converted
         // port the kernel updates (a member would read its own driving value from the image,
         // not the resolved one).
@@ -991,6 +1014,395 @@ fn outside_reads(
     seen.extend(other.iter().copied());
     waited.extend(other);
     (seen, waited)
+}
+
+/// The members driving a signal whose history a process outside the region reads, each with
+/// the reason (the reading process and attribute); the sources of implicit signals count too.
+fn history_rule(
+    db: &Db,
+    e: &Elaborated,
+    taken: &BTreeMap<usize, (Fit, Body)>,
+    hist: &[Vec<Hist>],
+    implicit: &BTreeSet<LeafId>,
+) -> Vec<(usize, Reason)> {
+    let mut read: BTreeMap<LeafId, (usize, yavs_diag::Span, &str)> = BTreeMap::new();
+    let mut every: Option<(usize, yavs_diag::Span, &str)> = None;
+    for (pi, hs) in hist.iter().enumerate() {
+        if taken.contains_key(&pi) {
+            continue;
+        }
+        for (ls, span, what) in hs {
+            match ls {
+                Some(ls) => {
+                    for &l in ls {
+                        read.entry(l).or_insert((pi, *span, what));
+                    }
+                }
+                None => {
+                    every.get_or_insert((pi, *span, what));
+                }
+            }
+        }
+    }
+    let mut gone = Vec::new();
+    for &pi in taken.keys() {
+        for &d in &e.procs[pi].drivers {
+            let l = e.nets.drivers[d].leaf;
+            let text = match read.get(&l).or(every.as_ref()) {
+                Some(&(q, span, what)) => {
+                    let how = if what == "a call" {
+                        "calls a subprogram that reads the history of".to_string()
+                    } else if what == "an implicit signal" {
+                        "reads an implicit signal (`'stable`, `'quiet`, `'delayed` or \
+                         `'transaction`) of"
+                            .to_string()
+                    } else {
+                        format!("reads `'{what}` of")
+                    };
+                    (
+                        span,
+                        format!(
+                            "{} {how} {}, and the region keeps no history of the signals it \
+                             drives: its drivers stay in the event kernel",
+                            e.proc_label(&e.procs[q]),
+                            e.leaf_name(l)
+                        ),
+                    )
+                }
+                None if implicit.contains(&l) => (
+                    db.stmts[e.procs[pi].stmt].span,
+                    format!(
+                        "an implicit signal (`'stable`, `'quiet`, `'delayed` or `'transaction`) \
+                         of {} is read, and the region keeps no history of the signals it drives",
+                        e.leaf_name(l)
+                    ),
+                ),
+                None => continue,
+            };
+            gone.push((
+                pi,
+                Reason {
+                    code: crate::codes::HISTORY_READ,
+                    span: text.0,
+                    text: text.1,
+                },
+            ));
+            break;
+        }
+    }
+    gone
+}
+
+/// The signal history a process reads (amendment A10): leaves whose `'active`, `'last_active`,
+/// `'last_event`, `'last_value` it reads, with the attribute's position and name; `None` for the
+/// leaves when the prefix is a name the scan does not place (an external name), which stands for
+/// every leaf. Calls: a subprogram whose body (or one it calls) reads such an attribute counts
+/// as reading it of every signal it is given and every signal its body names. The implicit
+/// signals (`'stable`, `'quiet`, `'delayed`, `'transaction`) are in the nets (`history`).
+type Hist = (Option<Vec<LeafId>>, yavs_diag::Span, &'static str);
+
+fn hist_attr(a: yavs_sem::attr::PredefAttr) -> Option<&'static str> {
+    use yavs_sem::attr::PredefAttr::*;
+    Some(match a {
+        Active => "active",
+        LastActive => "last_active",
+        LastEvent => "last_event",
+        LastValue => "last_value",
+        Transaction => "transaction",
+        Stable => "stable",
+        Quiet => "quiet",
+        Delayed => "delayed",
+        _ => return None,
+    })
+}
+
+/// The object a name starts from, through aliases of objects; `None` for an external name or a
+/// prefix of another kind.
+fn name_root(db: &Db, mut x: ExprId) -> Option<yavs_sem::DeclId> {
+    use yavs_sem::decl::{Alias, DeclKind};
+    for _ in 0..64 {
+        match &db.exprs[x].kind {
+            ExprKind::Field { prefix, .. }
+            | ExprKind::Index { prefix, .. }
+            | ExprKind::Slice { prefix, .. } => x = *prefix,
+            ExprKind::Obj(d) => match &db.decls[*d].kind {
+                DeclKind::Alias(Alias::Object { target, .. }) => x = *target,
+                _ => return Some(*d),
+            },
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// What a subprogram's body (and what it calls) reads the history of: some formal (then every
+/// signal it is given counts), signals it names that are not its formals, or something the scan
+/// does not place (`opaque`: an external name, a call nested too deep).
+#[derive(Clone, Default)]
+struct HistSum {
+    formals: bool,
+    globals: Vec<yavs_sem::DeclId>,
+    opaque: bool,
+}
+
+impl HistSum {
+    fn any(&self) -> bool {
+        self.formals || self.opaque || !self.globals.is_empty()
+    }
+}
+
+fn is_formal(db: &Db, d: yavs_sem::DeclId) -> bool {
+    matches!(&db.decls[d].kind, yavs_sem::decl::DeclKind::Object(o)
+        if o.role == yavs_sem::decl::ObjRole::Param)
+}
+
+fn is_implicit(db: &Db, d: yavs_sem::DeclId) -> bool {
+    matches!(&db.decls[d].kind, yavs_sem::decl::DeclKind::Object(o)
+        if o.role == yavs_sem::decl::ObjRole::ImplicitSignal)
+}
+
+/// The names of signal objects an actual passes: into `sum` as formals (of the caller, a
+/// subprogram), globals, or opaque.
+fn actual_names(db: &Db, args: &[yavs_sem::hir::Actual], sum: &mut HistSum) {
+    let mut stack = Vec::new();
+    for a in args {
+        if !push_actual(a, &mut stack) {
+            sum.opaque = true;
+        }
+    }
+    for x in stack {
+        db.walk_expr(x, &mut |y| match db.exprs[y].kind {
+            ExprKind::External(_) => sum.opaque = true,
+            ExprKind::Obj(_) => match name_root(db, y) {
+                Some(d) if is_formal(db, d) => sum.formals = true,
+                Some(d) => sum.globals.push(d),
+                None => sum.opaque = true,
+            },
+            _ => {}
+        });
+    }
+}
+
+fn callee_history(
+    db: &Db,
+    d: yavs_sem::DeclId,
+    depth: u32,
+    memo: &mut BTreeMap<yavs_sem::DeclId, HistSum>,
+) -> HistSum {
+    use yavs_sem::decl::Body as B;
+    if let Some(v) = memo.get(&d) {
+        return v.clone();
+    }
+    if depth > 16 {
+        return HistSum {
+            opaque: true,
+            ..HistSum::default()
+        };
+    }
+    memo.insert(d, HistSum::default());
+    let Some(sp) = db.decls[d].kind.subprogram() else {
+        return HistSum::default();
+    };
+    // The edge functions of `ieee` read `'last_value` as part of an edge test, which the region
+    // gives right (it publishes every change as an event); nothing else of `std` and `ieee`
+    // reads history.
+    if ["ieee.", "std."]
+        .iter()
+        .any(|l| sp.mangled.as_str().starts_with(l))
+    {
+        return HistSum::default();
+    }
+    let B::Hir { stmts, .. } = &sp.body else {
+        return HistSum::default();
+    };
+    let mut all = Vec::new();
+    deep(db, stmts, &mut all);
+    let mut sum = HistSum::default();
+    let mut xs = Vec::new();
+    let mut calls: Vec<(yavs_sem::DeclId, Vec<yavs_sem::hir::Actual>)> = Vec::new();
+    for s in all {
+        if let StmtKind::ProcCall(c) = &db.stmts[s].kind {
+            calls.push((c.callee, c.args.iter().map(|a| a.actual.clone()).collect()));
+        }
+        db.stmt_exprs(s, &mut |x, _| xs.push(x));
+    }
+    for x in xs {
+        db.walk_expr(x, &mut |y| match &db.exprs[y].kind {
+            ExprKind::Attr {
+                attr,
+                prefix: yavs_sem::hir::AttrPrefix::Expr(pre),
+                ..
+            } if hist_attr(*attr).is_some() => match name_root(db, *pre) {
+                Some(r) if is_formal(db, r) => sum.formals = true,
+                Some(r) => sum.globals.push(r),
+                None => sum.opaque = true,
+            },
+            ExprKind::Obj(r) if is_implicit(db, *r) => sum.globals.push(*r),
+            ExprKind::Call { callee, args, .. } => {
+                calls.push((*callee, args.iter().map(|a| a.actual.clone()).collect()))
+            }
+            _ => {}
+        });
+    }
+    for (c, args) in calls {
+        let inner = callee_history(db, c, depth + 1, memo);
+        sum.opaque |= inner.opaque;
+        sum.globals.extend(inner.globals);
+        if inner.formals {
+            actual_names(db, &args, &mut sum);
+        }
+    }
+    memo.insert(d, sum.clone());
+    sum
+}
+
+/// The history process `pi` reads (see [`Hist`]).
+fn history_reads(
+    db: &Db,
+    e: &Elaborated,
+    pi: usize,
+    memo: &mut BTreeMap<yavs_sem::DeclId, HistSum>,
+) -> Vec<Hist> {
+    let p = &e.procs[pi];
+    let mut xs: Vec<ExprId> = Vec::new();
+    let mut out = Vec::new();
+    if let Some(pa) = &p.actual {
+        xs.push(pa.expr);
+    } else {
+        let body = match &db.stmts[p.stmt].kind {
+            StmtKind::Process { body, .. } => body.to_vec(),
+            _ => vec![p.stmt],
+        };
+        let mut all = Vec::new();
+        deep(db, &body, &mut all);
+        for s in all {
+            if let StmtKind::ProcCall(c) | StmtKind::ConcProcCall { call: c, .. } =
+                &db.stmts[s].kind
+            {
+                let args: Vec<_> = c.args.iter().map(|a| a.actual.clone()).collect();
+                out.extend(call_history(
+                    db,
+                    e,
+                    pi,
+                    c.callee,
+                    &args,
+                    db.stmts[s].span,
+                    memo,
+                ));
+            }
+            db.stmt_exprs(s, &mut |x, _| xs.push(x));
+        }
+    }
+    out.extend(expr_history(db, e, pi, &xs, memo));
+    out
+}
+
+/// The leaves of a signal object seen from process `pi`; an implicit signal's are its sources.
+fn sig_leaves(
+    e: &Elaborated,
+    pi: usize,
+    d: yavs_sem::DeclId,
+    implicit: bool,
+) -> Option<Vec<LeafId>> {
+    let o = e.signal(e.procs[pi].scope, d)?;
+    let (a, z) = e.nets.obj(o).leaves;
+    Some(if implicit {
+        (a.0..z.0)
+            .flat_map(|l| {
+                let leaf = e.nets.leaf(LeafId(l));
+                (leaf.implicit.map(|i| i.1).into_iter())
+                    .chain(leaf.implicit_more.iter().map(|x| x.0))
+            })
+            .collect()
+    } else {
+        (a.0..z.0).map(LeafId).collect()
+    })
+}
+
+/// What a call of `callee` counts as, if its body reads history: the signals it is given when
+/// it reads a formal's, and the signals it names (seen from the caller; a subprogram of a
+/// package names only package signals, which are never driven in the region).
+fn call_history(
+    db: &Db,
+    e: &Elaborated,
+    pi: usize,
+    callee: yavs_sem::DeclId,
+    args: &[yavs_sem::hir::Actual],
+    span: yavs_diag::Span,
+    memo: &mut BTreeMap<yavs_sem::DeclId, HistSum>,
+) -> Option<Hist> {
+    let sum = callee_history(db, callee, 0, memo);
+    if !sum.any() {
+        return None;
+    }
+    let mut names = HistSum {
+        globals: sum.globals.clone(),
+        opaque: sum.opaque,
+        ..HistSum::default()
+    };
+    if sum.formals {
+        actual_names(db, args, &mut names);
+    }
+    if names.opaque {
+        return Some((None, span, "a call"));
+    }
+    let mut ls = Vec::new();
+    for d in names.globals {
+        // A name that is no signal (a variable, a constant) reads no history; one the
+        // elaboration does not place from here stands for every leaf.
+        if !matches!(&db.decls[d].kind, yavs_sem::decl::DeclKind::Object(o)
+            if o.class == yavs_sem::decl::ObjClass::Signal)
+        {
+            continue;
+        }
+        match sig_leaves(e, pi, d, is_implicit(db, d)) {
+            Some(v) => ls.extend(v),
+            None => return Some((None, span, "a call")),
+        }
+    }
+    Some((Some(ls), span, "a call"))
+}
+
+fn expr_history(
+    db: &Db,
+    e: &Elaborated,
+    pi: usize,
+    xs: &[ExprId],
+    memo: &mut BTreeMap<yavs_sem::DeclId, HistSum>,
+) -> Vec<Hist> {
+    let mut out = Vec::new();
+    for &x in xs {
+        let mut calls = Vec::new();
+        db.walk_expr(x, &mut |y| match &db.exprs[y].kind {
+            ExprKind::Attr {
+                attr,
+                prefix: yavs_sem::hir::AttrPrefix::Expr(pre),
+                ..
+            } if hist_attr(*attr).is_some() => {
+                let name = hist_attr(*attr).expect("matched");
+                let ls = name_root(db, *pre).and_then(|d| sig_leaves(e, pi, d, false));
+                out.push((ls, db.exprs[y].span, name));
+            }
+            // An implicit signal (`'stable`, `'quiet`, `'delayed`, `'transaction`): its sources.
+            ExprKind::Obj(d) if is_implicit(db, *d) => {
+                out.push((
+                    sig_leaves(e, pi, *d, true),
+                    db.exprs[y].span,
+                    "an implicit signal",
+                ));
+            }
+            ExprKind::Call { callee, args, .. } => calls.push((
+                *callee,
+                args.iter().map(|a| a.actual.clone()).collect::<Vec<_>>(),
+                db.exprs[y].span,
+            )),
+            _ => {}
+        });
+        for (callee, args, span) in calls {
+            out.extend(call_history(db, e, pi, callee, &args, span, memo));
+        }
+    }
+    out
 }
 
 fn deep(db: &Db, body: &[StmtId], out: &mut Vec<StmtId>) {

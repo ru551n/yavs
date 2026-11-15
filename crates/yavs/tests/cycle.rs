@@ -1630,3 +1630,59 @@ fn asynchronous_resets_made_inside_the_region_give_the_same_result() {
         assert!(normal[22].ends_with("n9=FF"), "{normal:?}");
     }
 }
+
+#[test]
+fn drivers_of_signals_whose_history_is_read_outside_stay_out() {
+    let dir = tempdir("cycle-history");
+    analyze(&dir, "history.vhd", include_str!("cycle/history.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_history");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_history");
+        assert_eq!(normal.len(), 72, "{normal:?}");
+        // With the drivers in the region the redrives of `r` vanish (`'transaction`, `'active`).
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 2 of 8 processes run cycle-based"),
+            "{err}"
+        );
+        assert_eq!(row(&err, "cycle_history.dut.pn").0, "cycle-based:", "{err}");
+        for (label, what) in [
+            ("pq", "reads `'last_event` of cycle_history.q"),
+            ("pr", "reads `'active` of cycle_history.r"),
+            ("pt", "reads an implicit signal"),
+            (
+                "pk",
+                "calls a subprogram that reads the history of cycle_history.k",
+            ),
+        ] {
+            let (section, line) = row(&err, &format!("cycle_history.dut.{label}"));
+            assert_eq!(section, "outside the subset, in the event kernel:", "{err}");
+            assert!(
+                line.contains("E4127 cycle_history.main") && line.contains(what),
+                "{line}"
+            );
+        }
+    }
+    // Under `--cycle-strict` each is an error, though the reader is the testbench.
+    let o = yavs(
+        &dir,
+        &[
+            "run",
+            "--work=work:lib",
+            "--no-cache",
+            "--cycle-strict",
+            "cycle_history",
+        ],
+    );
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(2), "{err}");
+    for label in ["pq", "pr", "pt", "pk"] {
+        assert!(
+            err.contains(&format!(
+                "error[E4127]: process cycle_history.dut.{label} is outside what cycle mode can run"
+            )),
+            "{label}: {err}"
+        );
+    }
+    assert!(err.contains("history.vhd:81:59"), "{err}");
+}

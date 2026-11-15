@@ -644,6 +644,8 @@ Cycle mode (E4 and W4)
      - Clocks come from outside the region.
    * - _`E4126`
      - The analysis of cycle mode cannot prove that the process fits: it reads an external name, has a loop whose dependences do not settle, or uses a statement or name the analysis does not follow.
+   * - _`E4127`
+     - A process outside the cycle region reads the history of a signal this process drives: ``'active``, ``'last_active``, ``'last_event``, ``'last_value``, ``'transaction``, ``'stable``, ``'quiet`` or ``'delayed``, directly or in a subprogram it calls (an edge test such as ``rising_edge`` is not history here).
 
 Internal errors (E9)
 --------------------

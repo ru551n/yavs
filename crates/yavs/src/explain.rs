@@ -536,7 +536,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     // yavs-cycle: cycle mode (`yavs run --cycle`)
     (
         "E4101",
-        "`yavs run --cycle-strict` found a process below the top-level design unit that is in the subset cycle mode can run, but needs something cycle mode does not implement yet; the label names it. Every reason a process stays outside the subset has a code of its own (E4110 to E4126). A behavioural process (one that waits for a time, waits forever, has several waits, calls a procedure that waits, or uses files or text input and output) and every process of the top-level design unit, the testbench, stay in the event kernel without an error. `--cycle` alone runs the same selection and leaves such processes in the event kernel, listed in its report.",
+        "`yavs run --cycle-strict` found a process below the top-level design unit that is in the subset cycle mode can run, but needs something cycle mode does not implement yet; the label names it. Every reason a process stays outside the subset has a code of its own (E4110 to E4127). A behavioural process (one that waits for a time, waits forever, has several waits, calls a procedure that waits, or uses files or text input and output) and every process of the top-level design unit, the testbench, stay in the event kernel without an error. `--cycle` alone runs the same selection and leaves such processes in the event kernel, listed in its report.",
     ),
     (
         "E4102",
@@ -609,6 +609,10 @@ const EXPLAIN: &[(&str, &str)] = &[
     (
         "E4126",
         "The analysis of cycle mode cannot prove that the process fits: it reads an external name, has a loop whose dependences do not settle, or uses a statement or name the analysis does not follow. The label names the construct.",
+    ),
+    (
+        "E4127",
+        "A process outside the cycle region reads the history of a signal this process drives: `'active`, `'last_active`, `'last_event`, `'last_value`, `'transaction`, `'stable`, `'quiet` or `'delayed`, directly or in a subprogram it calls (an edge test such as `rising_edge` is not history here). The region publishes only the values that change and keeps no history of what it drives, so every process driving that signal stays in the event kernel. The label names the reading attribute.",
     ),
     // every stage
     (

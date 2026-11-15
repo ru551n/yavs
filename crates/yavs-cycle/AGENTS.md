@@ -120,6 +120,15 @@ YAVS_BIN=<release yavs> python3 -I tools/difftest/cyclegate.py   # the correctne
   `tests/cycle` and the bench designs in normal and cycle mode with one binary and fails on any difference the
   documented losses (A6) or the reviewed list `tools/difftest/cyclegate.expected` do not explain; a new entry in that list is a decision to accept the loss, not a way to silence the gate. It also shows how many
   processes joined per test, so a pass is not vacuous: read the summary's count of tests with a member.
+- When a recorded command file of the user's test runs exists, run `tools/difftest/cyclereplay.py` on it before every push
+  of cycle code too (README "Cycle mode gate"): it replays those runs normal and `--cycle` and compares the exit status, the
+  end time, the console and the files written. Five wrong results passed `cyclegate.py` and `cyclebig.py` and were found
+  on such runs (one test of a bench stopped one clock early: same verdict, same last message, another STOP time).
+- `crates/yavs/tests/cycle/recreset.vhd` (arrays of records under synchronous and asynchronous reset, one reset by a literal aggregate
+  that stays out), `cmpcount.vhd` (a counter with an enable feeding comparators), `fsmrec.vhd` (a state machine whose state is a
+  record, in the two-process style) and `handshake.vhd` (a request and acknowledge handshake between clocks of 10 ns and 7 ns) are run by
+  `cyclegate.py` only, not by `cargo test`: each has a monitor that stays outside the region and prints the registers at every
+  rising edge and 1 ns after it, so a one-clock difference is a difference of the console.
 - The gate has no large design: with realbench worlds prepared, `tools/difftest/cyclebig.py <yavs>` runs
   NEORV32 dual_full in both modes and compares exit status, console and the CPU's instruction traces (a
   minute). NEORV32's normal mode prints about 80 000 library metavalue warnings and configuration notes, all

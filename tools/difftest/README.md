@@ -130,6 +130,32 @@ a world is skipped with the command that makes it. `--selftest` checks the compa
 
     YAVS_REALBENCH_CACHE=<cache> python3 -I tools/difftest/cyclebig.py target/release/yavs
 
+A recorded command file extends the gate to runs it does not contain, the benches of a test runner.
+`cyclereplay.py` takes recorded `yavs run` command lines (one run per entry, with its working
+directory) and runs each normal and with `--cycle` with one binary (`--bin` or `YAVS_BIN`), each mode in its own
+copy of the run's output directory (its path is replaced in every argument, so the files a test
+writes land in the copy). It compares the exit status, the simulation end time (the times of the `stop` and
+`finish` events, else the last report), the console in the canonical form and every file the run wrote
+(a `?` in the normal mode's file matches any character). From the console it takes out the delta of report
+stamps, the cycle summary line and the reports and asserts of cycle-based processes, found through a
+`--cycle-report` run as `cyclegate.py` does; a `stop` or `finish` event is never taken out. The buckets are
+identical, documented (a lost failure of a cycle-based process may end the normal run, the rest is then not
+compared), differs (any other difference, with the first differing line and both end times; exit status 1),
+timeout (the cycle run does not finish in `--timeout` while the normal one does: not compared, listed) and
+skipped (the normal run does not finish). Each test shows `[members/processes in the region]` and the summary
+counts the tests with a member, so a pass is not vacuous. `--jobs` (default 2), `--filter`, `--budget SECONDS` (start no further test after that), `--mask REGEX` (text that differs between runs by itself, such as the name of a temporary directory a test makes), `--env K=V`,
+`--subst OLD=NEW`, `--prefix` (a command before every run, such as `tools/claim core --`), `--timeout`, `--memory`,
+`--json FILE`, `-v`, `--selftest`. A command file is JSON lines, `{"name", "cwd", "dir", "argv", "env"}`;
+`--record OUT_DIR...` writes it from the output directories of a VUnit run with yavs (`test_output/*/*/args.rsp`,
+the response file of each run), run in the directory the test runner ran in (`--cwd`):
+
+    python3 -I tools/difftest/cyclereplay.py --record <vunit out dir> --env K=V > cmds.jsonl
+    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclereplay.py cmds.jsonl --jobs 2 -v
+
+A test runner that has run the tests already needs no second run to record them: any simulator wrapper that
+exits at `run` still leaves each test's response file. The files are copied before each run; files written
+outside the output directory, or relative to the working directory, are not isolated or compared.
+
 ## Plugging yavs in
 
 `--candidate` takes a reference label (`sim1`, `sim2`: key `difftest` of its section in the untracked `tools/sims.local.conf`, with keys `difftest_relaxed` and `difftest_ignore`), `yavs` or any bash command template. The built-in `yavs`

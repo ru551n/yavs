@@ -33,7 +33,10 @@ W = re.compile(r"(?<![\w])W(?![\w])")
 CYCLE_TESTS = {
     "calls.vhd": [("cycle_calls", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
     "clocks.vhd": [("cycle_clocks", "", None)],
+    "cmpcount.vhd": [("cycle_cmpcount", "", None)],
     "consts.vhd": [("cycle_consts", "", None)],
+    "fsmrec.vhd": [("cycle_fsmrec", "", None)],
+    "handshake.vhd": [("cycle_handshake", "", None)],
     "history.vhd": [("cycle_history", "", None)],
     "inputs.vhd": [("cycle_inputs", "", None)],
     "inreset.vhd": [("cycle_inreset", "", None)],
@@ -43,6 +46,7 @@ CYCLE_TESTS = {
     "partial.vhd": [("cycle_partial", "", None)],
     "ports.vhd": [("cycle_ports", "", None)],
     "quiet.vhd": [("cycle_quiet", "", None)],
+    "recreset.vhd": [("cycle_recreset", "", None)],
     "recarr.vhd": [("cycle_recarr", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
     "reset.vhd": [("cycle_reset", "", None), ("cycle_reset", "-gCOMB=true", None)],
     "shapes.vhd": [("cycle_shapes", "", None)],

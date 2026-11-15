@@ -402,7 +402,7 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
 
 /// Lay out the image, schedule and compile the region, and make its kernel process.
 fn build(
-    _db: &Db,
+    db: &Db,
     e: &Elaborated,
     sel: region::Selection,
     metas: Arc<Metas>,
@@ -523,6 +523,9 @@ fn build(
         }
         Ok(ops)
     };
+    if std::env::var_os("YAVS_CYCLE_STATS").is_some() {
+        shapes(db, e, &sel, &next);
+    }
     let confirm = codegen::confirm_on();
     let mut bodies: Vec<(Vec<Op>, bool)> = Vec::new();
     let mut groups: Vec<(Vec<(u32, u32)>, u32)> = Vec::new();
@@ -825,6 +828,60 @@ fn commit(
             len: klen(k),
         })
         .collect()
+}
+
+/// Developers (`YAVS_CYCLE_STATS=1`): members whose code would be the same but for where their
+/// signals and slots lie (everything folded into the code the same: constants, widths, offsets
+/// within signals), as distinct shapes; the operations one body per shape would compile, also
+/// counting only shapes of at least some size; the largest shapes by operations times instances.
+fn shapes(db: &Db, e: &Elaborated, sel: &region::Selection, next: &BTreeMap<u32, u32>) {
+    let mut by: BTreeMap<String, (usize, usize, usize)> = BTreeMap::new();
+    for (pi, b) in &sel.members {
+        let order = std::cell::RefCell::new(Vec::<u32>::new());
+        let ord = |r: Ref| match r {
+            Ref::Sig(k) => {
+                let mut o = order.borrow_mut();
+                let i = o.iter().position(|&x| x == k).unwrap_or_else(|| {
+                    o.push(k);
+                    o.len() - 1
+                });
+                Ref::Sig(i as u32)
+            }
+            r => r,
+        };
+        let key: Vec<Op> = (b.ops.iter().chain(&b.init_ops))
+            .map(|op| op.map(&ord, &ord, &|x| x))
+            .collect();
+        let sigs: Vec<bool> = (order.borrow().iter())
+            .map(|k| next.contains_key(k))
+            .collect();
+        let key = format!("{:?} {} {:?} {key:?} {sigs:?}", b.kind, b.locs, b.vars);
+        let w: usize = b.ops.iter().map(codegen::weight_of).sum();
+        let e = by.entry(key).or_insert((0, w, *pi));
+        e.0 += 1;
+    }
+    let mut v: Vec<_> = by.values().collect();
+    v.sort_by_key(|&&(n, w, _)| std::cmp::Reverse(n * w));
+    let all: usize = v.iter().map(|&&(n, w, _)| n * w).sum();
+    let once: usize = v.iter().map(|&&(_, w, _)| w).sum();
+    eprintln!(
+        "cycle stats: {} members, {} shapes, {all} operations, {once} with one body per shape",
+        sel.members.len(),
+        v.len()
+    );
+    for t in [16, 64, 256, 1024] {
+        let saved: usize = (v.iter())
+            .filter(|&&&(_, w, _)| w >= t)
+            .map(|&&(n, w, _)| (n - 1) * w)
+            .sum();
+        eprintln!("cycle stats:   shapes of {t} operations or more: {saved} operations saved");
+    }
+    for &&(n, w, pi) in v.iter().take(8) {
+        eprintln!(
+            "cycle stats:   {n} x {w} operations, {}",
+            region::where_(db, e, pi)
+        );
+    }
 }
 
 /// The operations of one member with every reference an image slot: a member's slots from

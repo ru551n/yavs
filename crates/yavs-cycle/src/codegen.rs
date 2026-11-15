@@ -152,12 +152,15 @@ const CHUNK: usize = 4000;
 
 /// The operations of `ops`, nested ones included.
 fn weight(ops: &[Op]) -> usize {
-    ops.iter()
-        .map(|o| match o {
-            Op::If { then, else_, .. } => 1 + weight(then) + weight(else_),
-            _ => 1,
-        })
-        .sum()
+    ops.iter().map(weight_of).sum()
+}
+
+/// The operations of `o`, nested ones included.
+pub(crate) fn weight_of(o: &Op) -> usize {
+    match o {
+        Op::If { then, else_, .. } => 1 + weight(then) + weight(else_),
+        _ => 1,
+    }
 }
 
 /// Compile the trigger functions: the settle as steps, the edge's own pieces (the settle follows
@@ -194,6 +197,15 @@ pub(crate) fn compile(
             "false"
         },
     )?;
+    // Developers: `YAVS_CYCLE_FLAGS=name=value,...` sets more Cranelift flags (to measure them).
+    if let Some(v) = std::env::var_os("YAVS_CYCLE_FLAGS") {
+        for kv in v.to_string_lossy().split(',').filter(|kv| !kv.is_empty()) {
+            let (k, v) = kv
+                .split_once('=')
+                .ok_or("YAVS_CYCLE_FLAGS takes name=value pairs")?;
+            set(&mut flags, k, v)?;
+        }
+    }
     let isa = cranelift_native::builder()
         .map_err(|e| e.to_string())?
         .finish(settings::Flags::new(flags))
@@ -253,8 +265,13 @@ pub(crate) fn compile(
             funs.push((format!("{what}_{}", funs.len()), cur, true));
         }
     }
+    // Developers: `YAVS_CYCLE_STATS=1` prints each function's operations, Cranelift instructions,
+    // machine code bytes and compile time.
+    let stats = std::env::var_os("YAVS_CYCLE_STATS").is_some();
+    let t0 = std::time::Instant::now();
     let mut ids = Vec::new();
     for (sym, ops, checked) in &funs {
+        let t = std::time::Instant::now();
         let sym = format!("cycle_{sym}_{name}");
         let mut sig = module.make_signature();
         sig.params.push(AbiParam::new(ptr));
@@ -300,15 +317,31 @@ pub(crate) fn compile(
         // Developers: `YAVS_CYCLE_DISASM=1` prints the machine code of each function.
         let disasm = std::env::var_os("YAVS_CYCLE_DISASM").is_some();
         ctx.set_disasm(disasm);
+        let n_ir = ctx.func.dfg.num_insts();
         module
             .define_function(id, &mut ctx)
             .map_err(|e| format!("{e:?}"))?;
         if disasm && let Some(text) = ctx.compiled_code().and_then(|c| c.vcode.as_ref()) {
             eprintln!("{sym}:\n{text}");
         }
+        if stats {
+            let bytes = ctx.compiled_code().map_or(0, |c| c.code_info().total_size);
+            eprintln!(
+                "cycle stats: {sym}: {} operations, {n_ir} instructions, {bytes} bytes, {} us",
+                ops.iter().map(|p| weight(p)).sum::<usize>(),
+                t.elapsed().as_micros()
+            );
+        }
         ids.push((id, sym));
     }
     module.finalize_definitions().map_err(|e| e.to_string())?;
+    if stats {
+        eprintln!(
+            "cycle stats: {} functions in {} ms",
+            ids.len(),
+            t0.elapsed().as_millis()
+        );
+    }
     let addr = |id: FuncId| module.get_finalized_function(id);
     if perf {
         for (id, sym) in &ids {

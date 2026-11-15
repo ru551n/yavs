@@ -693,9 +693,29 @@ Compiled tiers: Cranelift
      - any value
      - unset
      - ``run``
+   * - ``YAVS_CYCLE_FLAGS``
+     - Developers: more Cranelift settings for the code of a cycle region (``--cycle``), as ``name=value`` pairs separated by commas (for example ``opt_level=none``), to measure what they cost; a name or value Cranelift does not know is an internal error of the region.
+     - ``name=value,...``
+     - unset
+     - ``run``
+   * - ``YAVS_CYCLE_FLAGS``
+     - Developers: more Cranelift settings for the code of a cycle region (``--cycle``), as ``name=value`` pairs separated by commas (for example ``opt_level=none``), to measure what they cost; a name or value Cranelift does not know is an internal error of the region.
+     - ``name=value,...``
+     - unset
+     - ``run``
    * - ``YAVS_CYCLE_IMPORT_CHECK``
      - ``1``: a cycle region (``--cycle``), which reads only the inputs that changed since its last wake, reads all of them again after each wake and stops with an internal error if one differs.
      - ``1``
+     - unset
+     - ``run``
+   * - ``YAVS_CYCLE_STATS``
+     - Developers: prints on standard error, for a cycle region (``--cycle``), each compiled function's operations, Cranelift instructions, machine code bytes and compile time, and how many of its processes would compile to the same code (shapes).
+     - any value
+     - unset
+     - ``run``
+   * - ``YAVS_CYCLE_STATS``
+     - Developers: prints on standard error, for a cycle region (``--cycle``), each compiled function's operations, Cranelift instructions, machine code bytes and compile time, and how many of its processes would compile to the same code (shapes).
+     - any value
      - unset
      - ``run``
 

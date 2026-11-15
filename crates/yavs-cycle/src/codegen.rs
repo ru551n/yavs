@@ -234,6 +234,9 @@ pub(crate) fn compile(
     })
 }
 
+/// Most words a member keeps in registers at once (`Gen::keep_in`).
+const CACHE_MAX: usize = 256;
+
 struct Gen<'a> {
     b: FunctionBuilder<'a>,
     base: Value,
@@ -266,13 +269,29 @@ impl Gen<'_> {
             .b
             .ins()
             .load(I64, MemFlagsData::trusted(), self.base, off);
-        self.cache.insert(off, (v, false));
+        self.keep_in(off, v, false);
         v
     }
 
     /// Word `k` of `r` is `v` from here on; memory follows at `write_back` or `spill`.
     fn st(&mut self, r: Ref, k: u32, v: Value) {
-        self.cache.insert(word(r) + k as i32 * 8, (v, true));
+        self.keep_in(word(r) + k as i32 * 8, v, true);
+    }
+
+    /// Word `off` in a register. Past `CACHE_MAX` words every changed one goes to memory and the
+    /// cache starts again: a register allocator's work grows faster than the values live at once.
+    fn keep_in(&mut self, off: i32, v: Value, dirty: bool) {
+        if self.cache.len() >= CACHE_MAX && !self.cache.contains_key(&off) {
+            let changed: Vec<(i32, Value)> = (self.cache.iter())
+                .filter(|(_, (_, d))| *d)
+                .map(|(&o, &(v, _))| (o, v))
+                .collect();
+            for (o, v) in changed {
+                self.store(o, v);
+            }
+            self.cache.clear();
+        }
+        self.cache.insert(off, (v, dirty));
     }
 
     fn store(&mut self, off: i32, v: Value) {

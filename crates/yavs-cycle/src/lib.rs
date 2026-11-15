@@ -331,6 +331,18 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
             names.join(", ")
         );
     }
+    for l in &sel.loops {
+        let _ = writeln!(
+            report,
+            "    in the region: a loop group of {} process{}, {} process runs per settle ({} passes \
+             of all would be {})",
+            l.procs,
+            if l.procs == 1 { "" } else { "es" },
+            l.at.len(),
+            l.k,
+            l.procs * l.k as usize
+        );
+    }
     let metas = Arc::new(Metas::default());
     if sel.members.is_empty() {
         return Ok(Plan {
@@ -442,7 +454,7 @@ fn build(
     let several = sel.clocks.len() > 1;
     let mut state: Vec<(u32, u32)> = Vec::new();
     // Each function as pieces, a member's body each (`codegen::compile` cuts between them).
-    let mut settle: Vec<Vec<Op>> = Vec::new();
+    let mut settle: Vec<codegen::Step> = Vec::new();
     let mut edge: Vec<Vec<Op>> = Vec::new();
     let mut init_fn: Vec<Vec<Op>> = Vec::new();
     edge.push(
@@ -458,6 +470,7 @@ fn build(
     let mut checks: Vec<(lower::Check, usize)> = Vec::new();
     let mut uninit = 0u64;
     // Each member's slots and resolution.
+    let none = BTreeMap::new();
     let mut rs: Vec<Resolve> = Vec::new();
     for (pi, b) in &sel.members {
         let base = n;
@@ -480,27 +493,97 @@ fn build(
             edge: class.map_or(signal_words, |k| edge_words[k]),
             cur: &cur,
             next: &next,
+            snap: &none,
         });
     }
     // The settle: the combinational members and, while their reset holds, the reset branches
-    // of clocked ones (written to the current words: the commit is past).
-    for &k in &sel.settle {
+    // of clocked ones (written to the current words: the commit is past). A member of a loop group
+    // is a body of its own, run at each pass level of what it drives: checked at its last run, on
+    // settled values, and without checks before.
+    let piece = |k: usize, snap: &BTreeMap<u32, u32>| -> Result<Vec<Op>, String> {
         let (_, b) = &sel.members[k];
-        let r = &rs[k];
-        let ops: Vec<Op> = if b.kind == Kind::Clocked {
-            let piece = region::reset_piece(&b.ops).ok_or("a reset branch of another shape")?;
-            let r = Resolve {
-                clocked: false,
-                ..*r
-            };
-            piece.iter().map(|op| r.op(op)).collect()
-        } else {
-            b.ops.iter().map(|op| r.op(op)).collect()
+        let mut ops: Vec<Op> = (snap.iter())
+            .map(|(&s, &w)| Op::Copy {
+                dst: Ref::Loc(w),
+                src: Ref::Loc(cur[&s]),
+                len: klen(s),
+            })
+            .collect();
+        let r = Resolve {
+            clocked: false,
+            snap,
+            ..rs[k]
         };
-        settle.push(ops);
+        if b.kind == Kind::Clocked {
+            let piece = region::reset_piece(&b.ops).ok_or("a reset branch of another shape")?;
+            ops.extend(piece.iter().map(|op| r.op(op)));
+        } else {
+            ops.extend(b.ops.iter().map(|op| r.op(op)));
+        }
+        Ok(ops)
+    };
+    let confirm = codegen::confirm_on();
+    let mut bodies: Vec<(Vec<Op>, bool)> = Vec::new();
+    let mut groups: Vec<(Vec<(u32, u32)>, u32)> = Vec::new();
+    let mut at = 0;
+    for l in &sel.loops {
+        for &k in &sel.settle[at..l.at.start] {
+            settle.push(codegen::Step::Ops(piece(k, &none)?));
+        }
+        at = l.at.end;
+        let steps = &sel.settle[l.at.clone()];
+        // Per member: its bodies (checked, and unchecked when it runs more than once).
+        let mut body: BTreeMap<usize, (usize, Option<usize>)> = BTreeMap::new();
+        let mut ks: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+        for &k in steps {
+            if body.contains_key(&k) {
+                continue;
+            }
+            let b = &sel.members[k].1;
+            ks.extend(b.writes.iter().map(|&w| ksig(w)));
+            // It may read what it drives: from a copy made at its start, the values from before
+            // it ran, as a process reads them (its writes are in place).
+            let mut snap: BTreeMap<u32, u32> = BTreeMap::new();
+            for &l in b.reads.intersection(&b.writes) {
+                snap.entry(ksig(l)).or_insert_with(|| {
+                    n += codegen::words(klen(ksig(l)));
+                    n - codegen::words(klen(ksig(l)))
+                });
+            }
+            let ops = piece(k, &snap)?;
+            let early = (steps.iter().filter(|&&s| s == k).count() > 1).then(|| {
+                bodies.push((ops.clone(), false));
+                bodies.len() - 1
+            });
+            bodies.push((ops, true));
+            body.insert(k, (bodies.len() - 1, early));
+        }
+        for (i, &k) in steps.iter().enumerate() {
+            let (checked, early) = body[&k];
+            let last = !steps[i + 1..].contains(&k);
+            settle.push(codegen::Step::Call(if last {
+                checked
+            } else {
+                early.expect("a member run twice has a body without checks")
+            }));
+        }
+        // Debug builds: one more pass changes nothing the group drives.
+        let words: Vec<(u32, u32)> = (ks.into_iter())
+            .map(|k| (cur[&k], codegen::words(klen(k))))
+            .collect();
+        if confirm {
+            let g = groups.len();
+            settle.push(codegen::Step::Save(g));
+            settle.extend(body.values().map(|b| codegen::Step::Call(b.0)));
+            settle.push(codegen::Step::Same(g));
+        }
+        groups.push((words, 0));
+    }
+    for &k in &sel.settle[at..] {
+        settle.push(codegen::Step::Ops(piece(k, &none)?));
     }
     // The edge: the clocked bodies of the classes whose edge happened (with one class only at its
-    // edge, so behind no test), the commit, the settle.
+    // edge, so behind no test), the commit; then the settle's functions.
     for (k, (_, b)) in sel.members.iter().enumerate() {
         let r = &rs[k];
         init_fn.push(b.init_ops.iter().map(|op| r.op(op)).collect());
@@ -518,9 +601,13 @@ fn build(
         edge.push(ops);
     }
     edge.push(commit(&next, &cur, klen));
-    edge.extend(settle.iter().cloned());
     let err = n;
     n += 2;
+    // The save words of each loop group.
+    for g in &mut groups {
+        g.1 = n;
+        n += g.0.iter().map(|w| w.1).sum::<u32>();
+    }
     let mut keep = vec![false; n as usize];
     keep[..signal_words as usize].fill(true);
     for (w, c) in state {
@@ -531,10 +618,7 @@ fn build(
         .ok_or("the design has no top-level instance")?;
     let label = e.hier.dotted(yavs_elab::ScopeId(top as u32));
     let code = Arc::new(codegen::compile(
-        [&settle, &edge, &init_fn],
-        &keep,
-        err,
-        &label,
+        &settle, &edge, &init_fn, &bodies, groups, &keep, err, &label,
     )?);
     let whole = |k: u32| {
         let s = yavs_kernel::SignalId(k);
@@ -753,21 +837,25 @@ struct Resolve<'a> {
     edge: u32,
     cur: &'a BTreeMap<u32, u32>,
     next: &'a BTreeMap<u32, u32>,
+    /// Signals read from a copy made at the piece's start (a loop group's piece reading what it
+    /// drives), and the copy's words.
+    snap: &'a BTreeMap<u32, u32>,
 }
 
 impl Resolve<'_> {
     fn src(&self, r: Ref) -> Ref {
         match r {
-            Ref::Sig(k) => Ref::Loc(self.cur[&k]),
-            Ref::Loc(s) => Ref::Loc(self.base + s),
-            Ref::Edge => Ref::Loc(self.edge),
+            Ref::Sig(k) => Ref::Loc(*self.snap.get(&k).unwrap_or(&self.cur[&k])),
+            r => self.dst(r),
         }
     }
 
     fn dst(&self, r: Ref) -> Ref {
         match r {
             Ref::Sig(k) if self.clocked && self.next.contains_key(&k) => Ref::Loc(self.next[&k]),
-            r => self.src(r),
+            Ref::Sig(k) => Ref::Loc(self.cur[&k]),
+            Ref::Loc(s) => Ref::Loc(self.base + s),
+            Ref::Edge => Ref::Loc(self.edge),
         }
     }
 

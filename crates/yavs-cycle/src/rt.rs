@@ -282,6 +282,12 @@ impl RegionProc {
     /// The code at `site` failed: the error of the normal mode, in the member process.
     #[cold]
     fn failed(&self, ctx: &Ctx<'_>, site: u32) -> SimError {
+        if site == crate::codegen::UNSETTLED {
+            return ctx.error(ErrorKind::Internal(
+                "cycle mode: a loop group of the region changed in a pass after its fixed point"
+                    .into(),
+            ));
+        }
         let (a, b) = (self.img[self.err] as i64, self.img[self.err + 1] as i64);
         let Some((check, pi, name)) = self.checks.get(site as usize) else {
             return ctx.error(ErrorKind::Internal(format!(

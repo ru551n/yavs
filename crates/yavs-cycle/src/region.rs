@@ -28,9 +28,12 @@ pub(crate) enum Why {
 /// The region: members (clocked first, then combinational in dependency order) and the boundary.
 pub(crate) struct Selection {
     pub members: Vec<(usize, Body)>,
-    /// The pieces of the settle, as indices into `members`: the combinational members and the
-    /// reset branches of clocked ones, in dependency order.
+    /// The steps of the settle, as indices into `members`: the combinational members and the
+    /// reset branches of clocked ones, in dependency order; a member of a loop group once per
+    /// pass level of what it drives.
     pub settle: Vec<usize>,
+    /// The loop groups of the members, as spans of `settle`.
+    pub loops: Vec<Loop>,
     pub out: Vec<(usize, Why)>,
     /// The edge classes: each clock and edge the clocked members use, in the order met.
     pub clocks: Vec<Clock>,
@@ -50,6 +53,15 @@ pub(crate) struct Selection {
     /// Leaves a clocked member writes and a clocked member reads: written to a next-state
     /// block, committed after all clocked bodies ran.
     pub next: BTreeSet<LeafId>,
+}
+
+/// A loop group of the settle: its steps, each member run at the pass levels of what it drives
+/// (`dep::Group::runs`), its last run the one on settled values.
+pub(crate) struct Loop {
+    pub at: std::ops::Range<usize>,
+    /// Its members, and the passes of all of them in order that the runs replace (the report).
+    pub procs: usize,
+    pub k: u32,
 }
 
 /// Kernel parts of leaves.
@@ -380,6 +392,7 @@ fn analyse(db: &Db, e: &Elaborated, fits: &BTreeMap<usize, Fit>) -> dep::Analysi
     }
     for g in &mut a.groups {
         g.procs.retain(|&p| p < n);
+        g.runs.retain(|r| r.0 < n);
     }
     a.groups.retain(|g| !g.procs.is_empty());
     a.order.retain(|&p| p < n);
@@ -388,7 +401,7 @@ fn analyse(db: &Db, e: &Elaborated, fits: &BTreeMap<usize, Fit>) -> dep::Analysi
 
 pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
     let (fits, mut out, groups) = subset(db, e);
-    let nfits = fits.len();
+    let mut nfits = fits.len();
     let forced = !db.facts().forces.is_empty();
     let mut taken: BTreeMap<usize, (Fit, Body)> = BTreeMap::new();
     for (pi, f) in fits {
@@ -436,6 +449,8 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             for (pi, r) in hist_gone {
                 if taken.remove(&pi).is_some() {
                     out.push((pi, Why::Subset(r)));
+                    // Outside the subset after all: not counted as fitting.
+                    nfits -= 1;
                 }
             }
             continue;
@@ -503,28 +518,12 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         if gone.is_empty() {
             gone = cross_delta(db, e, &taken);
         }
-        // Loop groups need several passes or a split, which the schedule does not do yet.
-        let leaving: BTreeSet<usize> = gone.iter().map(|g| g.0).collect();
-        let fits: BTreeMap<usize, Fit> = (taken.iter())
-            .filter(|(pi, _)| !leaving.contains(pi))
-            .map(|(pi, (f, _))| (*pi, f.clone()))
-            .collect();
-        let a = analyse(db, e, &fits);
-        for g in &a.groups {
-            for &pi in &g.procs {
-                gone.push((pi, format!(
-                    "it is in a loop group of {} process{} (reading, through {} or itself, what \
-                     it drives) that needs {} passes, or a split into {} pieces; cycle mode \
-                     runs one pass and does not split processes yet",
-                    g.procs.len(),
-                    if g.procs.len() == 1 { "" } else { "es" },
-                    if g.procs.len() == 1 { "nothing else" } else { "the others" },
-                    g.k,
-                    g.slices
-                )));
-            }
-        }
         if gone.is_empty() {
+            // The order and the loop groups of what is left: a group runs as a loop of passes.
+            let fits: BTreeMap<usize, Fit> = (taken.iter())
+                .map(|(pi, (f, _))| (*pi, f.clone()))
+                .collect();
+            let a = analyse(db, e, &fits);
             let mut members = Vec::new();
             let order: Vec<usize> = a
                 .order
@@ -557,12 +556,44 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
                 .map(|(k, m)| (m.0, k))
                 .collect();
             let mut settle = Vec::new();
-            for pi in order {
-                if let Some(b) = rest.remove(&pi) {
+            // Each group's members are contiguous in the order, in the order of a pass.
+            let group_of: BTreeMap<usize, usize> = (a.groups.iter().enumerate())
+                .flat_map(|(g, x)| x.procs.iter().map(move |&pi| (pi, g)))
+                .collect();
+            let mut loops: Vec<Loop> = Vec::new();
+            // The step of each member placed so far.
+            let mut step: BTreeMap<usize, usize> = BTreeMap::new();
+            let mut place = |pi: usize, members: &mut Vec<(usize, Body)>| -> Option<usize> {
+                if let Some(&k) = step.get(&pi) {
+                    return Some(k);
+                }
+                let k = if let Some(b) = rest.remove(&pi) {
                     members.push((pi, b));
-                    settle.push(members.len() - 1);
-                } else if let Some(k) = resets.remove(&pi) {
-                    settle.push(k);
+                    members.len() - 1
+                } else {
+                    resets.remove(&pi)?
+                };
+                step.insert(pi, k);
+                Some(k)
+            };
+            let mut placed: BTreeSet<usize> = BTreeSet::new();
+            for pi in order {
+                match group_of.get(&pi) {
+                    // The whole group at its first member (its members are contiguous).
+                    Some(&g) if placed.insert(g) => {
+                        let at = settle.len();
+                        for &(q, _) in &a.groups[g].runs {
+                            let k = place(q, &mut members).expect("a group member is a piece");
+                            settle.push(k);
+                        }
+                        loops.push(Loop {
+                            at: at..settle.len(),
+                            procs: a.groups[g].procs.len(),
+                            k: a.groups[g].k,
+                        });
+                    }
+                    Some(_) => {}
+                    None => settle.extend(place(pi, &mut members)),
                 }
             }
             // Members the dependence order does not list (no outputs): any place.
@@ -575,6 +606,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             out.sort_by_key(|o| o.0);
             let mut sel = boundary(db, e, members, out, &reset_reads);
             sel.settle = settle;
+            sel.loops = loops;
             sel.groups = groups;
             sel.fits = nfits;
             return sel;
@@ -884,6 +916,7 @@ fn boundary(
     Selection {
         members,
         settle: Vec::new(),
+        loops: Vec::new(),
         out,
         clocks,
         groups: Vec::new(),

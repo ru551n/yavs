@@ -684,8 +684,8 @@ Compiled tiers: Cranelift
      - ``1`` in a debug build, else ``0``
      - ``run``
    * - ``YAVS_CYCLE_CHECKS``
-     - ``off``: the code of a cycle region (``--cycle``) leaves out its integer overflow and range checks and clamps an index chosen at run time into its array, to measure what the checks cost. Results are wrong where a check would have failed.
-     - ``off``
+     - ``off``: the code of a cycle region (``--cycle``) leaves out its integer overflow and range checks and clamps an index chosen at run time into its array, to measure what the checks cost. Results are wrong where a check would have failed. ``all``: the checks, and after the processes of a loop group (processes reading through one another what they drive) one more run of each, which must change nothing; a change stops the run with an internal error (a debug build always does this).
+     - ``off``, ``all``
      - checks on
      - ``run``
    * - ``YAVS_CYCLE_DISASM``

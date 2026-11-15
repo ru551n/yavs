@@ -30,10 +30,43 @@ pub(crate) type Entry = unsafe extern "C" fn(*mut u64) -> u32;
 /// The compiled functions of a region; the module owns their code.
 pub(crate) struct Code {
     _module: JITModule,
-    /// By [`Fun`]: the functions it is cut into, called in order.
-    entries: [Vec<Entry>; 3],
+    /// By [`Fun`]: what it runs, in order.
+    entries: [Vec<Run>; 3],
+    /// The words each loop group drives: (first, count), and where [`Run::Save`] copies them.
+    groups: Vec<(Vec<(u32, u32)>, u32)>,
     /// The words the code addresses.
     words: usize,
+}
+
+/// One step of a trigger function at run time.
+#[derive(Clone, Copy)]
+enum Run {
+    Fn(Entry),
+    /// The words of loop group `g`, saved.
+    Save(usize),
+    /// The words of loop group `g` must equal those saved, or the run stops ([`UNSETTLED`]).
+    Same(usize),
+}
+
+/// A step of the settle as [`compile`] takes it.
+pub(crate) enum Step {
+    /// Operations, cut into functions with their neighbours.
+    Ops(Vec<Op>),
+    /// Body `b` of [`compile`]'s `bodies`, a function of its own (a member of a loop group,
+    /// run at several steps).
+    Call(usize),
+    /// [`Run::Save`] and [`Run::Same`] of a loop group.
+    Save(usize),
+    Same(usize),
+}
+
+/// The site [`Code::run`] gives when a loop group changed in a pass after its fixed point.
+pub(crate) const UNSETTLED: u32 = u32::MAX;
+
+/// A pass after a loop group's schedule confirms its fixed point (debug builds,
+/// `YAVS_CYCLE_CHECKS=all`).
+pub(crate) fn confirm_on() -> bool {
+    cfg!(debug_assertions) || std::env::var_os("YAVS_CYCLE_CHECKS").is_some_and(|v| v == "all")
 }
 
 impl Code {
@@ -43,11 +76,30 @@ impl Code {
             img.len() >= self.words,
             "the image is smaller than the code's words"
         );
-        for f in &self.entries[f as usize] {
-            // SAFETY: the code reads and writes only words below `words`, checked above.
-            match unsafe { f(img.as_mut_ptr()) } {
-                0 => {}
-                s => return Err(s - 1),
+        for r in &self.entries[f as usize] {
+            match *r {
+                // SAFETY: the code reads and writes only words below `words`, checked above.
+                Run::Fn(e) => match unsafe { e(img.as_mut_ptr()) } {
+                    0 => {}
+                    s => return Err(s - 1),
+                },
+                Run::Save(g) => {
+                    let (ws, mut at) = (&self.groups[g].0, self.groups[g].1 as usize);
+                    for &(w, c) in ws {
+                        img.copy_within(w as usize..(w + c) as usize, at);
+                        at += c as usize;
+                    }
+                }
+                Run::Same(g) => {
+                    let (ws, mut at) = (&self.groups[g].0, self.groups[g].1 as usize);
+                    for &(w, c) in ws {
+                        let (w, c) = (w as usize, c as usize);
+                        if img[w..w + c] != img[at..at + c] {
+                            return Err(UNSETTLED);
+                        }
+                        at += c;
+                    }
+                }
             }
         }
         Ok(())
@@ -108,14 +160,23 @@ fn weight(ops: &[Op]) -> usize {
         .sum()
 }
 
-/// Compile the trigger functions (by [`Fun`]), each given as pieces that need nothing from one
-/// another but memory (the bodies of members). Every `Ref` of them is an image slot
-/// (`Ref::Loc`); `err` is the first of the two error words; `keep[w]`: word `w` holds state
-/// between calls (signals, variables of clocked processes), every other word is scratch, which
-/// the code keeps in registers and never stores unless an element of it is addressed at run
-/// time. `name` labels the functions in the perf map.
+/// Compile the trigger functions: the settle as steps, the edge's own pieces (the settle follows
+/// them) and the initialisation's, each piece needing nothing from another but memory (the
+/// bodies of members); `bodies` are the loop groups' members, each a function of its own, compiled
+/// with checks or without (an early run of a member may see values not settled yet: no check
+/// exits it, a division by zero divides by one), `groups` the words each loop group drives and
+/// its save words. Every `Ref` is an image slot (`Ref::Loc`); `err` is the first of the two
+/// error words; `keep[w]`: word `w` holds state between calls (signals, variables of clocked
+/// processes), every other word is scratch, which the code keeps in registers and never stores
+/// unless an element of it is addressed at run time. `name` labels the functions in the perf
+/// map.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compile(
-    funs: [&[Vec<Op>]; 3],
+    settle: &[Step],
+    edge: &[Vec<Op>],
+    init: &[Vec<Op>],
+    bodies: &[(Vec<Op>, bool)],
+    groups: Vec<(Vec<(u32, u32)>, u32)>,
     keep: &[bool],
     err: u32,
     name: &str,
@@ -141,28 +202,60 @@ pub(crate) fn compile(
     let mut module = JITModule::new(jb);
     let ptr = module.target_config().pointer_type();
     let checks = checks_on();
-    let mut ids = Vec::new();
     let perf = std::env::var_os("YAVS_CLIFT_PERFMAP").is_some();
-    let mut chunks: Vec<(usize, Vec<&Vec<Op>>)> = Vec::new();
-    for (f, pieces) in funs.iter().enumerate() {
-        let mut cur: Vec<&Vec<Op>> = Vec::new();
+    // The functions to compile (label, pieces, whether checks exit), the loop bodies first; and
+    // what each trigger function runs, a function by its index.
+    let mut funs: Vec<(String, Vec<&[Op]>, bool)> = (bodies.iter().enumerate())
+        .map(|(b, (ops, checked))| (format!("loop_{b}"), vec![&ops[..]], *checked))
+        .collect();
+    let mut runs: [Vec<Result<usize, Run>>; 3] = Default::default();
+    let edge: Vec<Step> = edge.iter().map(|p| Step::Ops(p.clone())).collect();
+    let init: Vec<Step> = init.iter().map(|p| Step::Ops(p.clone())).collect();
+    for (f, (what, steps)) in [("settle", settle), ("edge", &edge[..]), ("init", &init[..])]
+        .into_iter()
+        .enumerate()
+    {
+        let mut cur: Vec<&[Op]> = Vec::new();
         let mut w = 0;
-        for p in pieces.iter() {
-            if w > 0 && w + weight(p) > CHUNK {
-                chunks.push((f, std::mem::take(&mut cur)));
+        for st in steps {
+            let r = match st {
+                Step::Ops(p) => {
+                    if w > 0 && w + weight(p) > CHUNK {
+                        runs[f].push(Ok(funs.len()));
+                        funs.push((
+                            format!("{what}_{}", funs.len()),
+                            std::mem::take(&mut cur),
+                            true,
+                        ));
+                        w = 0;
+                    }
+                    w += weight(p);
+                    cur.push(p);
+                    continue;
+                }
+                Step::Call(b) => Ok(*b),
+                Step::Save(g) => Err(Run::Save(*g)),
+                Step::Same(g) => Err(Run::Same(*g)),
+            };
+            if !cur.is_empty() {
+                runs[f].push(Ok(funs.len()));
+                funs.push((
+                    format!("{what}_{}", funs.len()),
+                    std::mem::take(&mut cur),
+                    true,
+                ));
                 w = 0;
             }
-            w += weight(p);
-            cur.push(p);
+            runs[f].push(r);
         }
-        // Every function has one entry at least, maybe empty.
-        if !cur.is_empty() || !chunks.iter().any(|c| c.0 == f) {
-            chunks.push((f, cur));
+        if !cur.is_empty() {
+            runs[f].push(Ok(funs.len()));
+            funs.push((format!("{what}_{}", funs.len()), cur, true));
         }
     }
-    for (k, (f, ops)) in chunks.iter().enumerate() {
-        let what = ["settle", "edge", "init"][*f];
-        let sym = format!("cycle_{what}_{k}_{name}");
+    let mut ids = Vec::new();
+    for (sym, ops, checked) in &funs {
+        let sym = format!("cycle_{sym}_{name}");
         let mut sig = module.make_signature();
         sig.params.push(AbiParam::new(ptr));
         sig.returns.push(AbiParam::new(I32));
@@ -183,7 +276,8 @@ pub(crate) fn compile(
                 b,
                 base,
                 err: err as i32 * 8,
-                checks,
+                checks: checks && *checked,
+                exits: *checked,
                 ptr,
                 cache: BTreeMap::new(),
                 keep,
@@ -212,24 +306,30 @@ pub(crate) fn compile(
         if disasm && let Some(text) = ctx.compiled_code().and_then(|c| c.vcode.as_ref()) {
             eprintln!("{sym}:\n{text}");
         }
-        ids.push((*f, id, sym));
+        ids.push((id, sym));
     }
     module.finalize_definitions().map_err(|e| e.to_string())?;
     let addr = |id: FuncId| module.get_finalized_function(id);
     if perf {
-        for (_, id, sym) in &ids {
+        for (id, sym) in &ids {
             // The size is not kept by the module; one page is an upper bound for a label.
             yavs_rt::perfmap::append(addr(*id) as usize, 4096, sym);
         }
     }
-    let mut entries: [Vec<Entry>; 3] = Default::default();
-    for (f, id, _) in &ids {
-        // SAFETY: every one is a function of signature `fn(ptr) -> u32` defined above.
-        entries[*f].push(unsafe { std::mem::transmute::<*const u8, Entry>(addr(*id)) });
+    // SAFETY: every one is a function of signature `fn(ptr) -> u32` defined above.
+    let entry =
+        |k: usize| Run::Fn(unsafe { std::mem::transmute::<*const u8, Entry>(addr(ids[k].0)) });
+    let mut entries: [Vec<Run>; 3] = Default::default();
+    for (f, rs) in runs.iter().enumerate() {
+        entries[f] = rs.iter().map(|r| r.map_or_else(|x| x, entry)).collect();
     }
+    // The edge runs the settle after its own pieces.
+    let after = entries[0].clone();
+    entries[1].extend(after);
     Ok(Code {
         _module: module,
         entries,
+        groups,
         words,
     })
 }
@@ -243,6 +343,9 @@ struct Gen<'a> {
     /// Byte offset of the first error word.
     err: i32,
     checks: bool,
+    /// A failed check (a zero divisor: the one check `checks` off keeps) exits the function;
+    /// without, a division by zero divides by one.
+    exits: bool,
     ptr: cranelift_codegen::ir::Type,
     /// The words in registers, by byte offset: their value and whether memory is behind it. Every
     /// value dominates the code that follows (a branch drops what it made at its join).
@@ -422,6 +525,17 @@ impl Gen<'_> {
 
     /// A check: `fail` (an `I8` truth value) jumps to a cold block that stores `vals` in the
     /// error words and returns `site + 1`.
+    /// The divisor `y` of `x`: a failed check where `fail` (zero, or `MIN / -1`); without exits,
+    /// one instead, so the machine division never traps.
+    fn div_guard(&mut self, fail: Value, site: u32, x: Value, y: Value) -> Value {
+        if self.exits {
+            self.check(fail, site, &[x, y]);
+            return y;
+        }
+        let one = self.konst(1);
+        self.b.ins().select(fail, one, y)
+    }
+
     fn check(&mut self, fail: Value, site: u32, vals: &[Value]) {
         let bad = self.b.create_block();
         let ok = self.b.create_block();
@@ -1012,7 +1126,7 @@ impl Gen<'_> {
                 } else {
                     z
                 };
-                self.check(f, *site, &[x, y]);
+                let y = self.div_guard(f, *site, x, y);
                 let r = match (op, signed) {
                     (Arith::Div, false) => self.b.ins().udiv(x, y),
                     (Arith::Div, true) => self.b.ins().sdiv(x, y),
@@ -1236,7 +1350,7 @@ impl Gen<'_> {
                 let mn = self.b.ins().icmp_imm_s(IntCC::Equal, x, i64::MIN);
                 let ov = self.b.ins().band(m1, mn);
                 let f = self.b.ins().bor(z, ov);
-                self.check(f, site, &[x, y]);
+                let y = self.div_guard(f, site, x, y);
                 let r = match op {
                     Arith::Div => self.b.ins().sdiv(x, y),
                     _ => self.b.ins().srem(x, y),

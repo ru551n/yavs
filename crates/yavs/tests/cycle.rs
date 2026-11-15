@@ -1796,7 +1796,7 @@ fn cycle_strict_names_the_code_of_each_reason() {
     }
     // In the subset but not implemented yet: the code of that.
     assert!(
-        err.contains("error[E4101]: process sub_tb.dut.levels cannot run cycle-based yet"),
+        err.contains("error[E4101]: process sub_tb.dut.async_two cannot run cycle-based yet"),
         "{err}"
     );
     // The testbench, the top-level unit, is exempt, behavioural or not.
@@ -2132,5 +2132,135 @@ fn an_element_chosen_at_run_time_depends_on_its_index() {
         // Hand-checked: din 03, k1 3, k2 4; rot(din) is "10000001" indexed 0 to 7, k4 4.
         assert!(normal[0].ends_with("fo=55 fb='0'"), "{normal:?}");
         assert_eq!(cycle, normal, "{t:?}\n{err}");
+    }
+}
+
+#[test]
+fn loop_groups_run_in_the_region_and_give_the_same_result() {
+    let dir = tempdir("cycle-loops");
+    analyze(&dir, "loops.vhd", include_str!("cycle/loops.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_loops");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_loops");
+        assert_eq!(normal.len(), 12, "{normal:?}");
+        // Hand-checked at 5 ns (din 0D, din2 00, the reset held, the first edge one delta later):
+        // every group settled, ob x3 from 1 ns before.
+        assert!(
+            normal[0].ends_with("o1=11 x3=1D t=57 q=14 w2=15 fo=33 rq=00 ob=1D"),
+            "{normal:?}"
+        );
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 11 of 14 processes run cycle-based"),
+            "{err}"
+        );
+        let names = [
+            "cycle_loops.pa",
+            "cycle_loops.pb",
+            "cycle_loops.ca",
+            "cycle_loops.cb",
+            "cycle_loops.cc",
+            "cycle_loops.sr",
+            "cycle_loops.pw",
+            "cycle_loops.pq",
+            "cycle_loops.pf",
+            "cycle_loops.pg",
+            "cycle_loops.pr",
+        ];
+        for (name, section) in sections(&err, &names) {
+            assert_eq!(section, "cycle-based:", "{name}\n{err}");
+        }
+        for group in [
+            "loop group of 2 processes: 2 passes, or 3 pieces after a split: cycle_loops.pa, \
+             cycle_loops.pb",
+            "loop group of 3 processes: 3 passes, or 6 pieces after a split: cycle_loops.ca, \
+             cycle_loops.cb, cycle_loops.cc",
+            // `TBL(k2)`: an element of a constant depends on its index.
+            "loop group of 2 processes: 2 passes, or 3 pieces after a split: cycle_loops.pf, \
+             cycle_loops.pg",
+            "loop group of 1 process: 2 passes, or 2 pieces after a split: cycle_loops.sr",
+            "loop group of 2 processes: 2 passes, or 3 pieces after a split: cycle_loops.pw, \
+             cycle_loops.pq",
+        ] {
+            assert!(err.contains(group), "{group}\n{err}");
+        }
+    }
+}
+
+#[test]
+fn a_check_failing_in_a_loop_group_stops_the_run_as_in_the_normal_mode() {
+    let dir = tempdir("cycle-loops-fail");
+    analyze(&dir, "loops.vhd", include_str!("cycle/loops.vhd"));
+    for mode in [None, Some("--cycle")] {
+        let mut args = vec![
+            "run",
+            "--work=work:lib",
+            "--no-cache",
+            "--tier=interp",
+            "-gFAIL=true",
+        ];
+        args.extend(mode);
+        args.push("cycle_loops");
+        let o = yavs(&dir, &args);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "{mode:?}: {err}");
+        assert!(
+            err.contains("error[E3009]: value 8 outside of INTEGER range 0 to 7 for signal K2")
+                && err.contains("in process cycle_loops.pg"),
+            "{mode:?}: {err}"
+        );
+    }
+}
+
+const UNSETTLED_CHECK: &str = "\
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+entity cycle_early is
+end entity;
+architecture a of cycle_early is
+  type table_t is array (0 to 6) of unsigned(7 downto 0);
+  constant TBL : table_t := (x\"10\", x\"11\", x\"12\", x\"13\", x\"14\", x\"15\", x\"16\");
+  signal din, h, x, y, r2 : unsigned(7 downto 0) := x\"03\";
+  signal r1 : unsigned(7 downto 0);
+begin
+  h <= din;
+  x <= h + h;
+  r : process (all)
+  begin
+    r2 <= din;
+    r1 <= TBL(to_integer(x - y));
+  end process;
+  y <= r2;
+  main : process
+  begin
+    wait for 1 ns;
+    report \"r1=\" & to_hstring(r1);
+    din <= x\"05\";
+    wait for 1 ns;
+    report \"r1=\" & to_hstring(r1);
+    wait;
+  end process;
+end architecture;
+";
+
+/// `r` and `y` form a loop group; after din goes from 3 to 5, `r`'s first run sees x = 10 and the
+/// old y = 3 (index 7, out of range), which the normal mode never evaluates: only the run on
+/// settled values is checked.
+#[test]
+fn a_check_on_values_not_settled_yet_does_not_stop_the_run() {
+    let dir = tempdir("cycle-early");
+    analyze(&dir, "early.vhd", UNSETTLED_CHECK);
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_early");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_early");
+        assert_eq!(normal.len(), 2, "{normal:?}");
+        assert!(normal[1].ends_with("r1=15"), "{normal:?}");
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 4 of 5 processes run cycle-based"),
+            "{err}"
+        );
+        assert_eq!(row(&err, "cycle_early.r").0, "cycle-based:", "{err}");
     }
 }

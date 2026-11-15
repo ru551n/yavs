@@ -141,6 +141,10 @@ pub(crate) struct Group {
     /// The pieces the group's processes split into, one per process and pass level, so that
     /// one ordered pass suffices.
     pub slices: usize,
+    /// Each process of the group with each pass level of the elements it drives, by level and
+    /// then in the order of a pass: running each process whole at those points reaches the fixed
+    /// point, its last run on settled values only.
+    pub runs: Vec<(usize, u32)>,
 }
 
 pub(crate) struct Analysis {
@@ -377,6 +381,7 @@ pub(crate) fn analyse(
                 procs: c.iter().map(|&i| procs[i as usize].0).collect(),
                 k: 1,
                 slices: 0,
+                runs: Vec::new(),
             });
         }
     }
@@ -425,6 +430,8 @@ pub(crate) fn analyse(
     }
     for (g, l) in groups.iter_mut().zip(levels) {
         g.slices = l.len();
+        g.runs = l.into_iter().collect();
+        g.runs.sort_by_key(|&(p, b)| (b, rank[pidx[&p]]));
     }
     Analysis {
         cycles,
@@ -587,6 +594,7 @@ mod tests {
         assert_eq!(a.groups.len(), 1);
         assert_eq!(a.groups[0].k, 3);
         assert_eq!(a.groups[0].slices, 3);
+        assert_eq!(a.groups[0].runs, [(7, 0), (7, 1), (7, 2)]);
     }
 
     #[test]
@@ -618,6 +626,8 @@ mod tests {
         assert!(a.cycles.is_empty());
         assert_eq!(a.groups.len(), 1);
         assert_eq!(a.groups[0].k, 2);
+        // p2 (qa first in the order) runs before p1, then again for qb.
+        assert_eq!(a.groups[0].runs, [(2, 0), (1, 0), (2, 1)]);
         // A chain without a loop needs no group, and orders the reader after the writer.
         let a = run(&[
             (1, vec![out(10, 0, 1, &[(11, 0, 1)])]),

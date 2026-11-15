@@ -16939,6 +16939,8 @@ the next run".
 - **References:** corpus `composite/aggregate_scalar_impure` (hand: sim2's values on every line except where the range
   is not leftmost, `(1 to 2 => t, others => t)` giving `3 1 2 4` by the #909 choice order where sim2 counts in element
   order and sim1 gives `2 1 1 2`), catalogue `aggregate-range-impure-scalar`.
+- **User decision 2026-11-15:** keep the #909 choice order, including where the range is not leftmost
+  (`(1 to 2 => t, others => t)` gives `3 1 2 4`, matching neither reference); do not switch to element order.
 
 ## Memo of pure calls: judged at the 64th call whatever it finds, and two slots per key (yavs-interp `pmemo.rs`, yavs-clift `Gen::memo_inline`, 2026-11-15)
 

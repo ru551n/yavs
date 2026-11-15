@@ -215,26 +215,34 @@ fn inputs_settled_at_the_next_edge_give_the_same_result() {
         let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_lazy");
         // Hand-checked: 24 edges; the bus model sees `ready` in 6 of its 10 handshakes (`busy`
         // is `cnt(1)` of the edge before); the monitor's `q` follows `a xor ae xor b` an edge
-        // late (1 at 11 ns: `b` was 0, `a` toggled after the first edge and back twice by 3 ns).
+        // late (1 at 11 ns: `b` was 0, `a` toggled after the first edge and back twice by 3 ns);
+        // `r` is reset to `rv` while `ext` and not `q2` hold, from 4 ns after an edge: 0 at 5 ns,
+        // 1 at 6 ns after `rv` toggled, 1 at 15 ns (`rv` still 1).
+        let has = |s: &str| normal.iter().any(|l| l.ends_with(s));
         assert!(
-            normal.len() == 25
-                && normal[1].ends_with("11000000fs+0: q=1 q2=0 tq=2 ready=0")
-                && normal[24].ends_with("q=0 q2=0 tq=4 handshakes=6"),
+            normal.len() == 41
+                && has("11000000fs+0: q=1 q2=0 tq=2 ready=0")
+                && has("5000000fs+0: r=0")
+                && has("6000000fs+0: r=1")
+                && has("15000000fs+0: r=1")
+                && normal[40].ends_with("q=0 q2=0 tq=4 handshakes=6"),
             "{t:?} {normal:?}"
         );
         assert_eq!(cycle, normal, "{t:?}\n{err}");
         assert!(
-            err.contains("cycle mode: 4 of 8 processes run cycle-based"),
+            err.contains("cycle mode: 6 of 11 processes run cycle-based"),
             "{err}"
         );
-        // `valid` reaches an output the bus model reads, `sel` the index check of `look`; `a`,
-        // `ae` and `b` reach only the register `q`.
+        // `valid` reaches an output the bus model reads, `sel` the index check of `look`, `ext`
+        // the register `r` through the reset it makes, `rv` through the reset branch; `a`, `ae`
+        // and `b` reach only the register `q`.
         assert!(
             err.contains(
-                "wakes: 2 settled at once, through combinational code to what outside sees \
+                "wakes: 4 settled at once, through combinational code to what outside sees \
                  (cycle_lazy.valid to cycle_lazy.ready read by cycle_lazy.bus_model, \
-                 cycle_lazy.sel to a check in cycle_lazy.look); 3 read when they change and \
-                 settled at the next edge"
+                 cycle_lazy.sel to a check in cycle_lazy.look, cycle_lazy.ext to cycle_lazy.r \
+                 read by cycle_lazy.rmon, cycle_lazy.rv to cycle_lazy.r read by cycle_lazy.rmon); \
+                 3 read when they change and settled at the next edge"
             ),
             "{err}"
         );

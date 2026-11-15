@@ -4,7 +4,10 @@
 -- the clock), `b` between edges, `a` after the edge (from a clocked stimulus process) and twice
 -- more between two edges, back to its value. `valid` reaches the output `ready` through combinational logic, and a bus model
 -- outside looks at `ready` two deltas after raising `valid`; `sel` reaches the register `tq`
--- through a table look-up. Monitors outside print the registers 1 ns after each edge.
+-- through a table look-up. `ext` makes the asynchronous reset `arst` of `r` through combinational
+-- logic, and the reset branch copies `rv`: both are settled at once, a monitor reads `r` after
+-- `ext` rises and after `rv` changes while the reset holds, between edges.
+-- Monitors outside print the registers 1 ns after each edge.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -20,6 +23,7 @@ architecture a of cycle_lazy is
   signal t, tq : std_ulogic_vector(3 downto 0) := (others => '0');
   signal cnt : unsigned(3 downto 0) := (others => '0');
   signal handshakes : natural := 0;
+  signal ext, arst, r, rv : std_ulogic := '0';
 begin
   -- The region.
   comb : process (a, ae, b)
@@ -46,6 +50,37 @@ begin
       cnt <= cnt + 1;
       busy <= cnt(1);
     end if;
+  end process;
+
+  mkrst : process (ext, q2)
+  begin
+    arst <= ext and not q2;
+  end process;
+
+  areg : process (clk, arst, rv)
+  begin
+    if arst = '1' then
+      r <= rv;
+    elsif rising_edge(clk) then
+      r <= '1';
+    end if;
+  end process;
+
+  -- Outside: pulses `ext` between edges and reads `r` 2 ns later.
+  rmon : process
+  begin
+    for i in 1 to 8 loop
+      wait until rising_edge(clk);
+      wait for 4 ns;
+      ext <= '1';
+      wait for 1 ns;
+      report "r=" & to_string(r);
+      rv <= not rv;
+      wait for 1 ns;
+      report "r=" & to_string(r);
+      ext <= '0';
+    end loop;
+    wait;
   end process;
 
   -- Outside: the clock, `ae` in the delta of the edge at every fourth edge, and `b`.

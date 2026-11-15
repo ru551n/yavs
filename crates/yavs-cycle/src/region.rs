@@ -1091,9 +1091,9 @@ fn boundary(
     }
 }
 
-/// The wakes with a combinational path (combinational members, reset branches; leaf by leaf, a
-/// read reaching every leaf the code writes) to an exported output or to combinational code
-/// with a check: a change of such an input is visible before the next edge.
+/// The wakes with a combinational path (combinational members, reset branches and the resets
+/// themselves; leaf by leaf, a read reaching every leaf the code writes) to an exported output or
+/// to combinational code with a check: a change of such an input is visible before the next edge.
 fn at_once(
     members: &[(usize, Body)],
     reset_reads: &BTreeSet<LeafId>,
@@ -1106,9 +1106,11 @@ fn at_once(
     for (pi, b) in members {
         let reads: Vec<LeafId> = match b.kind {
             Kind::Comb => b.reads.iter().copied().collect(),
-            Kind::Clocked if b.reset.is_some() => {
-                b.reads.intersection(reset_reads).copied().collect()
-            }
+            // A reset branch: what it reads and the reset itself (made inside, it is no wake).
+            Kind::Clocked if let Some((r, ..)) = b.reset => (b.reads.intersection(reset_reads))
+                .copied()
+                .chain([r])
+                .collect(),
             Kind::Clocked => continue,
         };
         for r in reads {

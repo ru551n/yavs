@@ -62,6 +62,15 @@ pub const OBJ_DIR: &str = "obj";
 pub const OBJ_MAX_ENTRIES: usize = 16384;
 pub const OBJ_MAX_BYTES: u64 = 256 << 20;
 
+/// The subdirectory of [`DIR`] that holds the machine code of cycle mode's regions
+/// ([`Store::cycle_of_library`]), under limits of its own: one design and generics make about
+/// 3 MB of it, and a suite with many of them would push the compiled tier's code out of [`OBJ_DIR`].
+pub const CYCLE_DIR: &str = "cycle";
+
+/// Entries and bytes kept in [`CYCLE_DIR`].
+pub const CYCLE_MAX_ENTRIES: usize = 16384;
+pub const CYCLE_MAX_BYTES: u64 = 512 << 20;
+
 /// The subdirectory of [`DIR`] that holds the analysed-unit cache ([`Store::units_of_library`]):
 /// one entry per design unit of the library (`yavs_sem::units`), under limits of their own.
 pub const UNIT_DIR: &str = "units";
@@ -301,6 +310,18 @@ impl Store {
         Store {
             dir: lib.join(DIR).join(OBJ_DIR),
             limits: (OBJ_MAX_ENTRIES, OBJ_MAX_BYTES),
+            touch: true,
+            direct: true,
+            count: unknown(),
+        }
+    }
+
+    /// The store of cycle mode's machine code of library directory `lib` ([`CYCLE_DIR`]);
+    /// [`Store::clean`] of the library's store removes it as well.
+    pub fn cycle_of_library(lib: &Path) -> Store {
+        Store {
+            dir: lib.join(DIR).join(CYCLE_DIR),
+            limits: (CYCLE_MAX_ENTRIES, CYCLE_MAX_BYTES),
             touch: true,
             direct: true,
             count: unknown(),
@@ -656,13 +677,14 @@ impl Store {
         .collect()
     }
 
-    /// Remove every entry (and leftover temporary files), the compiled code in [`OBJ_DIR`], and
-    /// the directory itself.
+    /// Remove every entry (and leftover temporary files), the compiled code in [`OBJ_DIR`] and
+    /// [`CYCLE_DIR`], the analysed units, and the directory itself.
     pub fn clean(&self) -> std::io::Result<Cleaned> {
         let mut c = Cleaned::default();
         for (sub, limits) in [
             (OBJ_DIR, (OBJ_MAX_ENTRIES, OBJ_MAX_BYTES)),
             (UNIT_DIR, (UNIT_MAX_ENTRIES, UNIT_MAX_BYTES)),
+            (CYCLE_DIR, (CYCLE_MAX_ENTRIES, CYCLE_MAX_BYTES)),
         ] {
             let dir = self.dir.join(sub);
             if dir.is_dir() {
@@ -950,24 +972,28 @@ mod tests {
         let _ = fs::remove_file(s.dir().join(SWEPT));
     }
 
-    /// Compiled code has a store of its own inside the library's: its entries do not count
-    /// against the library's limit, and cleaning the library removes them too.
+    /// Compiled code, and cycle mode's, have stores of their own inside the library's: their
+    /// entries do not count against the library's limit or each other's, and cleaning the
+    /// library removes them too.
     #[test]
     fn objects_have_limits_of_their_own_and_are_cleaned_with_the_library() {
         let d = tempfile::tempdir().unwrap();
         let lib = small(d.path(), (2, MAX_BYTES));
         let obj = Store::objects_of_library(d.path());
-        assert!(obj.dir().starts_with(lib.dir()));
+        let cyc = Store::cycle_of_library(d.path());
+        assert!(obj.dir().starts_with(lib.dir()) && cyc.dir().starts_with(lib.dir()));
+        assert_ne!(obj.dir(), cyc.dir());
         lib.put("t", &key("a"), b"stage");
         for i in 0..5 {
             obj.put("obj", &key(&i.to_string()), b"code");
+            cyc.put("cycle", &key(&i.to_string()), b"code");
         }
-        assert_eq!(obj.entries().len(), 5);
+        assert_eq!((obj.entries().len(), cyc.entries().len()), (5, 5));
         lib.put("t", &key("b"), b"stage");
         assert_eq!(lib.get("t", &key("a")).as_deref(), Some(&b"stage"[..]));
         assert_eq!(lib.get("t", &key("b")).as_deref(), Some(&b"stage"[..]));
         let c = lib.clean().unwrap();
-        assert_eq!(c.entries, 5 + 2);
+        assert_eq!(c.entries, 5 + 5 + 2);
         assert!(!lib.dir().exists());
     }
 

@@ -2807,7 +2807,7 @@ fn region_code_from_the_cache_gives_the_same_result() {
     };
     let want = normal(&["--tier=interp"]);
     assert!(want.ends_with("cnt=44 acc=738"), "{want}");
-    let obj = dir.join("lib").join("yavs-cache").join("obj");
+    let obj = dir.join("lib").join("yavs-cache").join("cycle");
     let entries = || -> Vec<std::path::PathBuf> {
         (std::fs::read_dir(&obj).into_iter().flatten().flatten())
             .map(|e| e.path())

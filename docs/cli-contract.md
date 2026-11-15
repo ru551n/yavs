@@ -261,10 +261,11 @@ identical to a run without it, at any `--threads`.
   LLVM tier kept its modules there as `obj-<key>.img`.) `route-<key>.img`, one per design, holds how each compiled function
   first called the others, so that an unchanged design makes the same bodies in every run (#1035).
 - With `--cycle` or `--cycle-strict` the machine code of every function of the cycle region is kept in
-  `<dir>/yavs-cache/obj/cycle-<key>.img` of the work library (the function's body, the target with its Cranelift
+  `<dir>/yavs-cache/cycle/cycle-<key>.img` of the work library (the function's body, the target with its Cranelift
   settings, the yavs build); a later run that makes a function with the same key links it instead of compiling it,
   so test cases of one design and generics compile the region once. The region is still selected and lowered
-  every run. Same rules and limits as the entries above.
+  every run. Same rules as the entries above; the directory keeps at most 16384 entries and 512 MiB, apart from
+  the compiled tier's.
   `clifpre-<key>.img`, one per function, names the `clif-<key>.img` of its code and the symbols it
   refers to, under a key of everything the code depends on, so a warm run links without translating.
 - **Analysed units** (#537, #539, user decision 2026-10-22, `docs/decisions.md` "Analysed-unit

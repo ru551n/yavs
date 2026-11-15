@@ -159,7 +159,7 @@ pub(crate) enum Fun {
     Init,
 }
 
-/// The kind of the entries of compiled region functions in the objects store.
+/// The kind of the entries of compiled region functions in their store (`yavs_cache::CYCLE_DIR`).
 const KIND: &str = "cycle";
 
 // ponytail: one store per process, as the compiled tier's (a run simulates one design).
@@ -168,7 +168,7 @@ static STORE: Mutex<Option<Store>> = Mutex::new(None);
 /// Keep the machine code of the region's functions in the compilation cache of library directory
 /// `lib` from now on (`None`: compile every function).
 pub fn set_cache(lib: Option<&Path>) {
-    *STORE.lock().unwrap_or_else(PoisonError::into_inner) = lib.map(Store::objects_of_library);
+    *STORE.lock().unwrap_or_else(PoisonError::into_inner) = lib.map(Store::cycle_of_library);
 }
 
 /// The store as Cranelift's cache of compiled functions. Cranelift's key covers the function body

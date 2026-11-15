@@ -229,7 +229,7 @@ def one(item, jobs_args):
                 shutil.rmtree(base / kind, ignore_errors=True)
                 if (base / "cold" / "lib").is_dir():  # (none when the analysis failed)
                     shutil.copytree(base / "cold" / "lib", base / kind / "lib")
-                res["cached"] = any((base / kind / "lib" / "yavs-cache" / "obj").glob("cycle-*.img"))
+                res["cached"] = any((base / kind / "lib" / "yavs-cache" / "cycle").glob("cycle-*.img"))
             rc, out, err = D.run(t, vhd, hdr, base / kind, 1, "", not jobs_args.no_sandbox,
                                  fresh=not (kind == "cycle" and jobs_args.warm))
             if kind == "cycle" and jobs_args.warm:

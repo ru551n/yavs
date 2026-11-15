@@ -14,7 +14,7 @@ use yavs_sem::hir::{
 use yavs_sem::implicit::Family;
 use yavs_sem::stat::{ConstValue, Elems};
 use yavs_sem::types::{Constraint, Direction, RangeC, TypeKind};
-use yavs_sem::{Db, DeclId, ExprId, StmtId, SubtypeId, TypeId};
+use yavs_sem::{Db, DeclId, ExprId, Id, StmtId, SubtypeId, TypeId};
 
 use crate::codegen::{mask, words};
 
@@ -768,6 +768,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         p,
         vars: HashMap::new(),
         consts: HashMap::new(),
+        known: HashMap::new(),
         frames: Vec::new(),
         pend: Vec::new(),
         loop_flags: HashMap::new(),
@@ -828,6 +829,11 @@ struct Lx<'a> {
     vars: HashMap<DeclId, Val>,
     /// The parameters of the loops being unrolled, with their value in this iteration.
     consts: HashMap<DeclId, ConstValue>,
+    /// Integer and enumeration variables (process variables, and locals and formals of inlined
+    /// calls) whose value is known at this point of the body, by their word: assigned a value
+    /// elaboration knows on every path here. Reads of them fold (`lo := 0; hi := lo + 7;
+    /// v(hi downto lo)` is a static slice).
+    known: HashMap<u32, ConstValue>,
     /// The calls being inlined, the innermost last.
     frames: Vec<Frame>,
     /// The jumps (`return`, `exit`, `next`) the current path may have taken since the start of
@@ -1071,12 +1077,32 @@ impl Lx<'_> {
         self.checks.len() as u32 - 1
     }
 
-    /// The operations `f` makes, apart; the current list is restored whatever `f` returns.
+    /// The operations `f` makes, apart, as code that may or may not run: the current list is
+    /// restored whatever `f` returns, and only the variable values known both before and after
+    /// it stay known.
     fn capture(&mut self, f: impl FnOnce(&mut Self) -> R<()>) -> R<Vec<Op>> {
+        let (ops, after) = self.capture_known(f)?;
+        self.known.retain(|w, c| after.get(w) == Some(c));
+        Ok(ops)
+    }
+
+    /// The same, giving the values known after `f` and leaving those known before it.
+    fn capture_known(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> R<()>,
+    ) -> R<(Vec<Op>, HashMap<u32, ConstValue>)> {
         let outer = std::mem::take(&mut self.ops);
+        let before = self.known.clone();
         let r = f(self);
         let inner = std::mem::replace(&mut self.ops, outer);
-        r.map(|()| inner)
+        let after = std::mem::replace(&mut self.known, before);
+        r.map(|()| (inner, after))
+    }
+
+    /// The values known after one of two branches ran.
+    fn join_known(&mut self, a: HashMap<u32, ConstValue>, b: &HashMap<u32, ConstValue>) {
+        self.known = a;
+        self.known.retain(|w, c| b.get(w) == Some(c));
     }
 
     /// A statement list. After a statement that may have jumped (`return`, `exit`, `next`), each
@@ -1206,8 +1232,30 @@ impl Lx<'_> {
         if self.signal_rooted(&dst) {
             return Err("an assignment target that is not a variable".into());
         }
+        let c = self.fold(v);
         let src = self.expr_h(v, Some(&dst))?;
-        self.assign(&dst, src)
+        self.assign(&dst, src)?;
+        self.learn(&dst, c);
+        Ok(())
+    }
+
+    /// After `dst := x` (`c` the value of `x` when elaboration knows it, folded before the
+    /// assignment): `dst`'s value, when it is a whole integer or enumeration variable (`assign`
+    /// forgot what it held before).
+    fn learn(&mut self, dst: &Val, c: Option<ConstValue>) {
+        if let Val::Int(IntV { r: Ref::Loc(w), .. }) = dst
+            && let Some(c @ (ConstValue::Int(_) | ConstValue::Enum(_))) = c
+        {
+            self.known.insert(*w, c);
+        }
+    }
+
+    /// The value of the integer or enumeration variable at `v` when it is known here.
+    fn known_val(&self, v: &Val) -> Option<ConstValue> {
+        match v {
+            Val::Int(IntV { r: Ref::Loc(w), .. }) => self.known.get(w).cloned(),
+            _ => None,
+        }
     }
 
     fn signal_rhs(&mut self, target: &Target, rhs: &Rhs<Waveform>) -> R<()> {
@@ -1289,11 +1337,12 @@ impl Lx<'_> {
             };
         }
         let cond = self.cond(*c)?;
-        let then = self.capture(|lx| lx.branch(*b))?;
+        let (then, kt) = self.capture_known(|lx| lx.branch(*b))?;
         let pt = std::mem::take(&mut self.pend);
-        let else_ = self.capture(|lx| lx.if_chain(rest))?;
+        let (else_, ke) = self.capture_known(|lx| lx.if_chain(rest))?;
         let pe = std::mem::take(&mut self.pend);
         self.pend = merge_branches(pt, pe);
+        self.join_known(kt, &ke);
         self.ops.push(Op::If { cond, then, else_ });
         Ok(())
     }
@@ -1307,11 +1356,12 @@ impl Lx<'_> {
         let Some(cond) = c else {
             return self.branch(*b);
         };
-        let then = self.capture(|lx| lx.branch(*b))?;
+        let (then, kt) = self.capture_known(|lx| lx.branch(*b))?;
         let pt = std::mem::take(&mut self.pend);
-        let else_ = self.capture(|lx| lx.ref_chain(rest))?;
+        let (else_, ke) = self.capture_known(|lx| lx.ref_chain(rest))?;
         let pe = std::mem::take(&mut self.pend);
         self.pend = merge_branches(pt, pe);
+        self.join_known(kt, &ke);
         self.ops.push(Op::If {
             cond: *cond,
             then,
@@ -1661,10 +1711,12 @@ impl Lx<'_> {
 
     /// The index range of the array object or value `x` names, without reading it.
     fn name_bounds(&mut self, x: ExprId) -> R<Bounds> {
-        let (n, l) = (self.ops.len(), self.locs);
+        let (n, l, k) = (self.ops.len(), self.locs, self.known.clone());
         let v = self.name(x, true);
         self.ops.truncate(n);
         self.locs = self.locs.max(l);
+        // The code is dropped: so is what it would have made known.
+        self.known = k;
         match v? {
             Val::Part(Part { at: Some(_), .. }) => {
                 Err("an attribute of an element chosen at run time".into())
@@ -1833,6 +1885,9 @@ impl Lx<'_> {
             (Val::Int(d), Val::Int(s)) => {
                 if let Some(l) = d.leaf {
                     self.writes.insert(l);
+                }
+                if let Ref::Loc(w) = d.r {
+                    self.known.remove(&w);
                 }
                 // The subtype of the target: checked unless the value cannot leave it.
                 if (s.lo < d.lo || s.hi > d.hi)
@@ -2094,8 +2149,8 @@ impl Lx<'_> {
     }
 
     /// A slice with bounds chosen at run time and a length known during elaboration (`a(i + 7
-    /// downto i)`): the length from the bounds with every value elaboration does not know taken
-    /// as 0, 1 and 7, checked at run time.
+    /// downto i)`): the length from the bounds in four trials, each giving every unknown name
+    /// a value of its own (one name, one value), the same in all four, and checked at run time.
     fn dynamic_slice(&mut self, prefix: ExprId, range: &RangeC, target: bool) -> R<Val> {
         let unknown = || {
             "a slice whose length is not known during elaboration is not supported in cycle mode \
@@ -2105,16 +2160,16 @@ impl Lx<'_> {
         let RangeC::Explicit { left, dir, right } = range else {
             return Err(unknown());
         };
-        let len = |lx: &Self, v: i64| -> Option<i64> {
-            let (l, r) = (lx.probe(*left, v)?, lx.probe(*right, v)?);
-            Some(if *dir == Direction::Downto {
-                l - r
+        let len = |lx: &Self, t: u64| -> Option<i64> {
+            let (l, r) = (lx.probe(*left, t)?, lx.probe(*right, t)?);
+            if *dir == Direction::Downto {
+                l.checked_sub(r)
             } else {
-                r - l
-            })
+                r.checked_sub(l)
+            }
         };
         let d = len(self, 0).ok_or_else(unknown)?;
-        if d < 0 || len(self, 1) != Some(d) || len(self, 7) != Some(d) {
+        if d < 0 || (1..4).any(|t| len(self, t) != Some(d)) {
             return Err(unknown());
         }
         let mut p = self.array_part(prefix, target)?;
@@ -2168,9 +2223,11 @@ impl Lx<'_> {
         Ok(Val::Part(p))
     }
 
-    /// The integer value of `x` with every integer subexpression elaboration does not know taken
-    /// as `v` (the length of a slice chosen at run time).
-    fn probe(&self, x: ExprId, v: i64) -> Option<i64> {
+    /// The integer value of `x` in trial `t` (the length of a slice chosen at run time): every
+    /// integer subexpression elaboration does not know takes a value of its own, the same for
+    /// every use of one object (or of one source text), so `hi downto lo` of two variables is
+    /// not taken for a slice of one element. The length is checked at run time either way.
+    fn probe(&self, x: ExprId, t: u64) -> Option<i64> {
         if let Some(c) = self.fold(x) {
             return c.as_int();
         }
@@ -2188,13 +2245,25 @@ impl Lx<'_> {
                     Some(yavs_sem::decl::Body::Implicit(_))
                 ) =>
             {
-                db.fold_with(x, &mut |c| self.probe(c, v).map(ConstValue::Int))
+                db.fold_with(x, &mut |c| self.probe(c, t).map(ConstValue::Int))
                     .ok()
                     .flatten()?
                     .as_int()
             }
-            ExprKind::ImplicitConv { operand } => self.probe(*operand, v),
-            _ => Some(v),
+            ExprKind::ImplicitConv { operand } => self.probe(*operand, t),
+            ExprKind::Obj(d) => Some(trial_value(d.index() as u64, t)),
+            _ => {
+                use std::hash::{Hash, Hasher};
+                let sp = db.exprs[x].span;
+                let f = db.sources.get(sp.file);
+                let text = (f.text())
+                    .get(f.text_offset(sp.start)..f.text_offset(sp.end))?
+                    .split_whitespace()
+                    .collect::<String>();
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                text.hash(&mut h);
+                Some(trial_value(h.finish() | 1 << 63, t))
+            }
         }
     }
 
@@ -2718,13 +2787,18 @@ impl Lx<'_> {
                 if let Some(b) = self.bound(*d) {
                     return match b {
                         Bind::Const(c) => Some(c),
-                        Bind::Val(_) => None,
+                        Bind::Val(v) => self.known_val(&v),
                     };
                 }
                 if let Some(c) = self.consts.get(d) {
                     return Some(c.clone());
                 }
                 match &db.decls[*d].kind {
+                    yavs_sem::decl::DeclKind::Object(o)
+                        if o.class == yavs_sem::decl::ObjClass::Variable =>
+                    {
+                        self.known_val(self.vars.get(d)?)
+                    }
                     yavs_sem::decl::DeclKind::Object(o)
                         if o.class == yavs_sem::decl::ObjClass::Constant =>
                     {
@@ -4585,6 +4659,7 @@ impl Lx<'_> {
             });
         }
         let depth = self.frames.len();
+        let base = self.locs;
         self.frames.push(Frame {
             callee,
             binds,
@@ -4599,6 +4674,8 @@ impl Lx<'_> {
             e => e,
         };
         let frame = self.frames.pop().expect("pushed above");
+        // The call's own words are not read again.
+        self.known.retain(|w, _| *w < base);
         let jumps = std::mem::replace(&mut self.pend, saved);
         r?;
         if jumps.iter().any(|j| j.tgt != Tgt::Ret(depth)) {
@@ -4929,8 +5006,10 @@ impl Lx<'_> {
                     let v = self.layout(o.subtype, d)?;
                     match o.default {
                         Some(init) => {
+                            let c = self.fold(init);
                             let s = self.expr_h(init, Some(&v))?;
                             self.assign(&v, s)?;
+                            self.learn(&v, c);
                         }
                         None => self.start(&v),
                     }
@@ -5157,4 +5236,16 @@ fn elem_of(b: Bounds, i: i64) -> Option<u32> {
         Direction::Downto => b.left - i,
     };
     (0..n).contains(&p).then(|| (n - 1 - p) as u32)
+}
+
+/// The value an unknown name with `key` takes in trial `t` of `Lx::probe`: 0 in trial 0, else one
+/// of 1 to 4096 mixed from the key and the trial.
+fn trial_value(key: u64, t: u64) -> i64 {
+    if t == 0 {
+        return 0;
+    }
+    let mut z = key.wrapping_add(t.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    ((z ^ (z >> 31)) % 4096) as i64 + 1
 }

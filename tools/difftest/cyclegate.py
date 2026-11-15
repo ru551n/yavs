@@ -26,8 +26,9 @@ CYC = "$YAVS_RUN_FLAGS"  # the one place `yavs run` takes its extra flags in D.Y
 NORMAL = D.YAVS
 CYCLE = D.YAVS.replace(CYC, "--cycle " + CYC)
 
-# crates/yavs/tests/cycle/*.vhd: file -> [(top, extra run flags, text edit)]. numeric.vhd has the
-# width token W; subset.vhd is a checker test (never run by its test) and stays out.
+# crates/yavs/tests/cycle/*.vhd: file -> [(top, extra run flags, text edit)]. numeric.vhd, calls.vhd,
+# recarr.vhd and slices.vhd have the width token W; subset.vhd is a checker test (never run by its
+# test) and stays out.
 W = re.compile(r"(?<![\w])W(?![\w])")
 CYCLE_TESTS = {
     "calls.vhd": [("cycle_calls", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
@@ -45,6 +46,7 @@ CYCLE_TESTS = {
     "recarr.vhd": [("cycle_recarr", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
     "reset.vhd": [("cycle_reset", "", None), ("cycle_reset", "-gCOMB=true", None)],
     "shapes.vhd": [("cycle_shapes", "", None)],
+    "slices.vhd": [("cycle_slices", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
 }
 
 

@@ -5,4 +5,4 @@ sigassign/conversion_copies.vhd	2565f2d7	'U values read as 0 and intermediate de
 sigassign/logic_gates.vhd	df38a7e5	all nine values driven into the region's inputs read as 0 (D4), the testbench's own assert of the X results then fails
 sigassign/mux_gates.vhd	85862bf2	all nine values driven into the region read as 0 (D3 to D5) and fewer delta cycles; reviewed at the class level only
 sigassign/prog_exprs.vhd	eddfb3e2	all nine values driven into the region read as 0 (D3 to D5) and fewer delta cycles; reviewed at the class level only
-cycle/inputs.vhd:cycle_inputs	dae98c37	metavalues driven into the region read as 0 (D4, D5): only the `qm` column of the testbench's notes differs (`XX01` and `UUUU` in the normal mode)
+cycle/inputs.vhd:cycle_inputs	e5dbe2fb	metavalues driven into the region read as 0 (D4, D5): only the `qm` column of the testbench's notes differs (`XX01` and `UUUU` in the normal mode)

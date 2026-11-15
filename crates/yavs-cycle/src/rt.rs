@@ -86,6 +86,59 @@ impl RamWrite {
     }
 }
 
+impl Out {
+    /// The image words its elements are in.
+    fn words(&self) -> std::ops::Range<usize> {
+        let (slot, lo, len) = (
+            self.slot as usize,
+            self.range.offset as usize,
+            self.range.len as usize,
+        );
+        if self.bytes != 0 {
+            // Integers: a word each, from `slot`.
+            return slot..slot + len;
+        }
+        slot + lo / 64..slot + (lo + len - 1) / 64 + 1
+    }
+}
+
+/// Outputs whose words are adjacent in the image (`outs[outs]`, ordered by word), compared at
+/// each export as one slice with their copy at the last one (`RegionProc::shadow` from `sh`):
+/// when no word changed none of them is looked at. Memories are in no span (their writes
+/// say what changed).
+pub(crate) struct Span {
+    pub words: std::ops::Range<usize>,
+    pub sh: usize,
+    pub outs: std::ops::Range<usize>,
+}
+
+/// Order `outs` by their first word, the memories last, and join the others of adjacent or shared
+/// words into spans; the length of the copy they need.
+pub(crate) fn spans(outs: &mut [Out]) -> (Vec<Span>, usize) {
+    outs.sort_by_key(|o| (!o.ram.is_empty(), o.words().start, o.range.offset));
+    let mut v: Vec<Span> = Vec::new();
+    for (i, o) in outs.iter().enumerate().filter(|(_, o)| o.ram.is_empty()) {
+        let w = o.words();
+        match v.last_mut() {
+            Some(sp) if w.start <= sp.words.end => {
+                sp.words.end = sp.words.end.max(w.end);
+                sp.outs.end = i + 1;
+            }
+            _ => v.push(Span {
+                words: w,
+                sh: 0,
+                outs: i..i + 1,
+            }),
+        }
+    }
+    let mut n = 0;
+    for sp in &mut v {
+        sp.sh = n;
+        n += sp.words.len();
+    }
+    (v, n)
+}
+
 pub(crate) struct RegionProc {
     pub code: Arc<Code>,
     pub img: Vec<u64>,
@@ -103,6 +156,9 @@ pub(crate) struct RegionProc {
     /// The first export, which drives every output, is done.
     pub exported: bool,
     pub outs: Vec<Out>,
+    pub spans: Vec<Span>,
+    /// The words of every span as the last export left them.
+    pub shadow: Vec<u64>,
     /// Per edge class: the clock element, the edge test of `Ctx::edge_by` and the word that
     /// tells the code whether the edge happened.
     pub clocks: Vec<(SigRef, u8, usize)>,
@@ -230,8 +286,22 @@ impl RegionProc {
     #[inline(never)]
     fn export(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         let all = !std::mem::replace(&mut self.exported, true);
+        for sp in &self.spans {
+            if !all && self.img[sp.words.clone()] == self.shadow[sp.sh..sp.sh + sp.words.len()] {
+                continue;
+            }
+            for o in &mut self.outs[sp.outs.clone()] {
+                let w = o.words();
+                let at = sp.sh + w.start - sp.words.start;
+                if all || self.img[w.clone()] != self.shadow[at..at + w.len()] {
+                    Self::export_one(ctx, &self.img, &mut self.buf, o, all)?;
+                }
+            }
+            self.shadow[sp.sh..sp.sh + sp.words.len()].copy_from_slice(&self.img[sp.words.clone()]);
+        }
         let mut written: Vec<usize> = Vec::new();
-        for o in &mut self.outs {
+        let first = self.spans.last().map_or(0, |sp| sp.outs.end);
+        for o in &mut self.outs[first..] {
             let slot = o.slot as usize;
             if !o.ram.is_empty() && !all {
                 // A memory: the 64-element words its writes of this wake touched, each driven once.
@@ -258,103 +328,115 @@ impl RegionProc {
                 continue;
             }
             written.extend(o.ram.iter().map(|wr| wr.flag));
-            if o.bytes != 0 {
-                // Integers the checks kept in their subtype, a word each: their low bytes are the
-                // values.
-                let w = &self.img[slot..][..o.range.len as usize];
-                let same = !all
-                    && match w {
-                        [v] => *v == o.last,
-                        w => *w == o.wide[..],
-                    };
-                if same {
-                    continue;
-                }
-                match w {
-                    [v] => o.last = *v,
-                    w => {
-                        o.wide.clear();
-                        o.wide.extend_from_slice(w);
-                    }
-                }
-                self.buf.clear();
-                for v in w.iter().rev() {
-                    self.buf
-                        .extend_from_slice(&v.to_le_bytes()[..o.bytes as usize]);
-                }
-                if !ctx.assign_bytes_now(o.driver, o.range, &self.buf) {
-                    ctx.assign_bytes(
-                        o.driver,
-                        Some(o.range),
-                        Time::ZERO,
-                        &self.buf,
-                        DelayMode::Transport,
-                    )?;
-                }
-                continue;
-            }
-            let (lo, len) = (o.range.offset, o.range.len);
-            if len <= 64 && lo % 64 + len <= 64 {
-                // One word (a register, or a driver of a pack).
-                let v = self.img[slot + lo as usize / 64] >> (lo % 64) & mask(len);
-                if v == o.last && !all {
-                    continue;
-                }
-                o.last = v;
-                // The whole driver, once per run, only when it changed: the kernel's short entry.
-                if !ctx.publish_planes(o.driver, [v, mask(len), 0, 0])
-                    && !ctx.assign_planes_now(o.driver, Some(o.range), [v, mask(len), 0, 0])
-                {
-                    let b = blocks(&[v], len);
-                    ctx.assign_blocks(
-                        o.driver,
-                        Some(o.range),
-                        Time::ZERO,
-                        &b,
-                        DelayMode::Transport,
-                    )?;
-                }
-                continue;
-            }
-            // Wider: word by word against what was driven last, the blocks in `buf` (no
-            // allocation per export).
-            let nw = words(len) as usize;
-            let w = &self.img[slot..];
+            Self::export_one(ctx, &self.img, &mut self.buf, o, all)?;
+        }
+        for f in written {
+            self.img[f] = 0;
+        }
+        Ok(())
+    }
+
+    /// Drive output `o` when its value differs from what was driven last (or `all`).
+    #[inline(always)]
+    fn export_one(
+        ctx: &mut Ctx<'_>,
+        img: &[u64],
+        buf: &mut Vec<u8>,
+        o: &mut Out,
+        all: bool,
+    ) -> Result<(), SimError> {
+        let slot = o.slot as usize;
+        if o.bytes != 0 {
+            // Integers the checks kept in their subtype, a word each: their low bytes are the
+            // values.
+            let w = &img[slot..][..o.range.len as usize];
             let same = !all
-                && if lo % 64 == 0 {
-                    // At a word boundary: whole words compared as they are, the last masked.
-                    let (k, full, rest) = ((lo / 64) as usize, (len / 64) as usize, len % 64);
-                    w[k..k + full] == o.wide[..full]
-                        && (rest == 0 || w[k + full] & mask(rest) == o.wide[full])
-                } else {
-                    (0..nw)
-                        .all(|j| o.wide[j] == word_at(w, lo + 64 * j as u32, len - 64 * j as u32))
+                && match w {
+                    [v] => *v == o.last,
+                    w => *w == o.wide[..],
                 };
             if same {
-                continue;
+                return Ok(());
             }
-            o.wide.resize(nw, 0);
-            self.buf.clear();
-            for j in 0..nw {
-                let x = word_at(w, lo + 64 * j as u32, len - 64 * j as u32);
-                o.wide[j] = x;
-                let m = mask((len - 64 * j as u32).min(64));
-                for p in [x, m, 0, 0] {
-                    self.buf.extend_from_slice(&p.to_le_bytes());
+            match w {
+                [v] => o.last = *v,
+                w => {
+                    o.wide.clear();
+                    o.wide.extend_from_slice(w);
                 }
             }
-            if !ctx.assign_wide_now(o.driver, Some(o.range), &self.buf) {
+            buf.clear();
+            for v in w.iter().rev() {
+                buf.extend_from_slice(&v.to_le_bytes()[..o.bytes as usize]);
+            }
+            if !ctx.assign_bytes_now(o.driver, o.range, buf) {
+                ctx.assign_bytes(
+                    o.driver,
+                    Some(o.range),
+                    Time::ZERO,
+                    buf,
+                    DelayMode::Transport,
+                )?;
+            }
+            return Ok(());
+        }
+        let (lo, len) = (o.range.offset, o.range.len);
+        if len <= 64 && lo % 64 + len <= 64 {
+            // One word (a register, or a driver of a pack).
+            let v = img[slot + lo as usize / 64] >> (lo % 64) & mask(len);
+            if v == o.last && !all {
+                return Ok(());
+            }
+            o.last = v;
+            // The whole driver, once per run, only when it changed: the kernel's short entry.
+            if !ctx.publish_planes(o.driver, [v, mask(len), 0, 0])
+                && !ctx.assign_planes_now(o.driver, Some(o.range), [v, mask(len), 0, 0])
+            {
+                let b = blocks(&[v], len);
                 ctx.assign_blocks(
                     o.driver,
                     Some(o.range),
                     Time::ZERO,
-                    &self.buf,
+                    &b,
                     DelayMode::Transport,
                 )?;
             }
+            return Ok(());
         }
-        for f in written {
-            self.img[f] = 0;
+        // Wider: word by word against what was driven last, the blocks in `buf` (no
+        // allocation per export).
+        let nw = words(len) as usize;
+        let w = &img[slot..];
+        let same = !all
+            && if lo % 64 == 0 {
+                // At a word boundary: whole words compared as they are, the last masked.
+                let (k, full, rest) = ((lo / 64) as usize, (len / 64) as usize, len % 64);
+                w[k..k + full] == o.wide[..full]
+                    && (rest == 0 || w[k + full] & mask(rest) == o.wide[full])
+            } else {
+                (0..nw).all(|j| o.wide[j] == word_at(w, lo + 64 * j as u32, len - 64 * j as u32))
+            };
+        if same {
+            return Ok(());
+        }
+        o.wide.resize(nw, 0);
+        buf.clear();
+        for j in 0..nw {
+            let x = word_at(w, lo + 64 * j as u32, len - 64 * j as u32);
+            o.wide[j] = x;
+            let m = mask((len - 64 * j as u32).min(64));
+            for p in [x, m, 0, 0] {
+                buf.extend_from_slice(&p.to_le_bytes());
+            }
+        }
+        if !ctx.assign_wide_now(o.driver, Some(o.range), buf) {
+            ctx.assign_blocks(
+                o.driver,
+                Some(o.range),
+                Time::ZERO,
+                buf,
+                DelayMode::Transport,
+            )?;
         }
         Ok(())
     }

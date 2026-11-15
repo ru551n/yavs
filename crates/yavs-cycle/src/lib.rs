@@ -874,6 +874,8 @@ fn build(
                 ram: ram_writes.get(&d.signal.0).cloned().unwrap_or_default(),
             });
         }
+        let mut outs: Vec<rt::Out> = outs.into_values().collect();
+        let (spans, shadow) = rt::spans(&mut outs);
         let mut img = vec![0u64; words];
         for &(w, v) in &init {
             img[w as usize] = v;
@@ -888,7 +890,9 @@ fn build(
             looked: false,
             check: import_check,
             exported: false,
-            outs: outs.into_values().collect(),
+            outs,
+            spans,
+            shadow: vec![0; shadow],
             clocks: clocks.clone(),
             clocks_only,
             waits: waits.clone(),

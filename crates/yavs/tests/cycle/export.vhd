@@ -4,7 +4,8 @@
 -- member and by the testbench; outputs a local function reads by name and local procedures wait
 -- on, by name and through a formal; outputs a local function reads only in a declaration's
 -- initial value and in an allocator's initial value; an output compared with the predefined `=`
--- of a local type.
+-- of a local type; a wide output whose high word alone changes; a record field that crosses a
+-- word boundary of its pack and changes only above it.
 -- `inner` is read by members only: it is not exported.
 library ieee;
 use ieee.std_logic_1164.all;
@@ -17,8 +18,14 @@ architecture a of cycle_export is
     b : std_ulogic_vector(3 downto 0);
   end record;
   type state_t is (idle, busy);
+  type pk_t is record
+    a : std_ulogic_vector(59 downto 0);
+    b : std_ulogic_vector(9 downto 0);
+  end record;
   signal clk : std_ulogic := '0';
   signal st : state_t := idle;
+  signal hw : std_ulogic_vector(99 downto 0);
+  signal pk : pk_t := ((others => '0'), (others => '0'));
   signal cnt : unsigned(7 downto 0) := (others => '0');
   signal v : std_ulogic_vector(7 downto 0);
   signal r : rec_t;
@@ -27,7 +34,7 @@ architecture a of cycle_export is
   signal both, inner : unsigned(7 downto 0);
   signal acc : unsigned(7 downto 0) := (others => '0');
   signal viaf, viap, viaformal, viad, vian : std_ulogic := '0';
-  signal n_v3, n_ra, n_w, n_pulse, n_p, n_f, n_cnt : natural := 0;
+  signal n_v3, n_ra, n_w, n_pulse, n_p, n_f, n_cnt, n_hw, n_pk : natural := 0;
 
   impure function peek return std_ulogic is
   begin
@@ -69,6 +76,7 @@ begin
       viaformal <= cnt(3);
       viad <= cnt(4);
       vian <= cnt(5);
+      pk.b <= std_ulogic_vector(cnt(7 downto 4)) & "000000";
     end if;
   end process;
 
@@ -79,6 +87,7 @@ begin
     both <= cnt + 3;
     inner <= cnt + 5;
     st <= busy when cnt(0) = '1' else idle;
+    hw <= std_ulogic_vector(cnt(3 downto 0)) & (95 downto 0 => '0');
   end process;
 
   -- Outside the region (incomplete lists): the events of what they wait on.
@@ -102,6 +111,16 @@ begin
     n_pulse <= n_pulse + 1;
   end process;
 
+  on_hw : process (hw)
+  begin
+    n_hw <= n_hw + 1;
+  end process;
+
+  on_pk : process (pk.b)
+  begin
+    n_pk <= n_pk + 1;
+  end process;
+
   -- Outside (several waits): waits through local procedures.
   watcher : process
   begin
@@ -122,7 +141,8 @@ begin
       clk <= '1';
       wait for 5 ns;
       sum := sum + to_integer(cnt) + to_integer(unsigned(v)) + to_integer(both)
-             + to_integer(unsigned(r.b));
+             + to_integer(unsigned(r.b)) + to_integer(unsigned(hw(99 downto 96)))
+             + to_integer(unsigned(pk.b(9 downto 6)));
       if peek = '1' then
         ones := ones + 1;
       end if;
@@ -149,7 +169,7 @@ begin
       & " nd=" & to_string(nd) & " nn=" & to_string(nn);
     report "events v3=" & to_string(n_v3) & " ra=" & to_string(n_ra) & " w=" & to_string(n_w)
       & " pulse=" & to_string(n_pulse) & " p=" & to_string(n_p) & " f=" & to_string(n_f)
-      & " cnt=" & to_string(n_cnt);
+      & " cnt=" & to_string(n_cnt) & " hw=" & to_string(n_hw) & " pk=" & to_string(n_pk);
     wait;
   end process;
 end architecture;

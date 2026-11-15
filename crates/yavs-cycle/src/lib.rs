@@ -266,7 +266,8 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
     let w = (left.iter().flat_map(|g| &g.1).chain(&members))
         .map(|r| r.0.chars().count())
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .min(60); // one long name does not pad every row
     let plural =
         |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
     if !sel.out.is_empty() {

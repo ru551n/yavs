@@ -1222,3 +1222,19 @@ fn cycle_strict_names_the_code_of_each_reason() {
     assert!(!err.contains("process sub_tb.timed"), "{err}");
     assert!(!err.contains("process sub_tb.logger"), "{err}");
 }
+
+#[test]
+fn ports_collapsed_into_parts_of_their_actuals_give_the_same_result() {
+    let dir = tempdir("cycle-ports");
+    analyze(&dir, "ports.vhd", include_str!("cycle/ports.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_ports");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_ports");
+        assert_eq!(normal.len(), 6, "{normal:?}");
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 2 of 3 processes run cycle-based"),
+            "{err}"
+        );
+    }
+}

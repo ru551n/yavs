@@ -55,7 +55,7 @@ begin
     variable s : unsigned(7 downto 0);
   begin
     s := MAGIC;
-    for i in 0 to N - 1 loop
+    for i in regs'range loop
       s := s xor regs(i);
     end loop;
     sum <= s;

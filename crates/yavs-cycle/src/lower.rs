@@ -1483,7 +1483,7 @@ impl Lx<'_> {
             RangeC::Attr {
                 prefix: AttrPrefix::Expr(x),
                 reverse,
-                dim: 0,
+                dim: 1,
             } => {
                 let b = self.name_bounds(*x)?;
                 Ok((if *reverse { reversed(b) } else { b }, None))
@@ -1491,7 +1491,7 @@ impl Lx<'_> {
             RangeC::Attr {
                 prefix: AttrPrefix::Subtype(st),
                 reverse,
-                dim: 0,
+                dim: 1,
             } => {
                 let b = self.subtype_bounds(*st)?;
                 Ok((if *reverse { reversed(b) } else { b }, None))
@@ -1935,12 +1935,6 @@ impl Lx<'_> {
                     ));
                 };
                 let so = e.nets.obj(obj);
-                if !so.parts.is_empty() {
-                    return Err(format!(
-                        "the port `{}`, collapsed into part of its actual",
-                        decl.name
-                    ));
-                }
                 let mut next = so.leaves.0.0;
                 let v = self.tree(&so.shape, d, &mut |_| {
                     next += 1;
@@ -1952,7 +1946,7 @@ impl Lx<'_> {
                         decl.name
                     ));
                 }
-                self.place_sig(v)
+                self.place_sig(v, so)
             }
             ObjClass::Variable => {
                 if let Some(v) = self.vars.get(&d) {
@@ -2046,8 +2040,9 @@ impl Lx<'_> {
         }
     }
 
-    /// A signal's leaves (numbered `Loc(leaf)` by `tree`) at their kernel signal and offset.
-    fn place_sig(&self, v: Val) -> R<Val> {
+    /// A signal's leaves (numbered `Loc(leaf)` by `tree`) at their kernel signal and offset; a
+    /// port collapsed into part of its actual's leaves at that part.
+    fn place_sig(&self, v: Val, so: &yavs_elab::SigObj) -> R<Val> {
         let nets = &self.e.nets;
         let leaf_of = |r: Ref| match r {
             Ref::Loc(l) => Ok(LeafId(l)),
@@ -2057,7 +2052,9 @@ impl Lx<'_> {
             Val::Part(mut p) => {
                 let l = leaf_of(p.r)?;
                 let leaf = nets.leaf(l);
-                if leaf.ty.len != p.len || leaf.ty.elem != yavs_kernel::Elem::Logic {
+                let part = so.part((l.0 - so.leaves.0.0) as usize);
+                let (off, len) = part.map_or((0, leaf.ty.len), |r| (r.offset, r.len));
+                if len != p.len || leaf.ty.elem != yavs_kernel::Elem::Logic {
                     return Err(format!(
                         "the signal {}, whose kernel form differs",
                         self.e.leaf_name(l)
@@ -2068,7 +2065,7 @@ impl Lx<'_> {
                 }
                 let at = nets.loc[l.index()];
                 p.r = Ref::Sig(at.signal.0);
-                p.lo = at.base;
+                p.lo = at.base + off;
                 p.full = nets.signal_len(at.signal);
                 p.leaf = Some(l);
                 Ok(Val::Part(p))
@@ -2078,6 +2075,7 @@ impl Lx<'_> {
                 let leaf = nets.leaf(l);
                 let at = nets.loc[l.index()];
                 if leaf.ty.len != 1
+                    || !so.parts.is_empty()
                     || !matches!(leaf.ty.elem, yavs_kernel::Elem::Bytes(1 | 4 | 8))
                     || nets.signal_len(at.signal) != 1
                     || leaf.implicit.is_some()
@@ -2093,7 +2091,7 @@ impl Lx<'_> {
             }
             Val::Rec(fs) => fs
                 .into_iter()
-                .map(|f| self.place_sig(f))
+                .map(|f| self.place_sig(f, so))
                 .collect::<R<Vec<_>>>()
                 .map(Val::Rec),
         }
@@ -2260,7 +2258,16 @@ impl Lx<'_> {
                     yavs_sem::decl::DeclKind::Object(o)
                         if o.class == yavs_sem::decl::ObjClass::Constant =>
                     {
-                        self.e.value(self.p.scope, *d).cloned()
+                        // A constant of the regions around the process, else of a package.
+                        (self.e.value(self.p.scope, *d))
+                            .or_else(|| {
+                                (self.e.hier.scopes.iter().enumerate())
+                                    .filter(|(_, sc)| {
+                                        matches!(sc.kind, yavs_elab::ScopeKind::Package { .. })
+                                    })
+                                    .find_map(|(k, _)| self.e.model_vals.get(k)?.get(d))
+                            })
+                            .cloned()
                     }
                     _ => None,
                 }
@@ -2293,7 +2300,28 @@ impl Lx<'_> {
                 _ => {}
             }
         }
-        Err("a value that is not known during elaboration".into())
+        Err(format!(
+            "a value that is not known during elaboration (`{}`)",
+            self.text(x)
+        ))
+    }
+
+    /// The source text of `x`, short, on one line (reasons in the region report).
+    fn text(&self, x: ExprId) -> String {
+        let sp = self.db.exprs[x].span;
+        let f = self.db.sources.get(sp.file);
+        let (a, b) = (f.text_offset(sp.start), f.text_offset(sp.end));
+        let t: String = f
+            .text()
+            .get(a..b)
+            .unwrap_or("")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        match t.char_indices().nth(40) {
+            Some((k, _)) => format!("{}...", &t[..k]),
+            None => t,
+        }
     }
 
     fn expr(&mut self, x: ExprId) -> R<Val> {

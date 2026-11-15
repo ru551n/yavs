@@ -224,9 +224,10 @@ pub struct RunArgs {
     vhpi: Vec<String>,
     /// Cycle mode: the processes that can run cycle-based (clocked and combinational ones in
     /// what it supports) run as one region on a static schedule with compiled code; the rest
-    /// stays in the event kernel. A report on standard error lists both, with reasons. Not with
-    /// a debug session, `--wave`, `--cov` or `--vhpi` (E4102). The strict form is
-    /// `--cycle-strict`, given instead of this option.
+    /// stays in the event kernel. One line on standard error says how many processes joined;
+    /// `--cycle-report` lists them all, with reasons. Not with a debug session, `--wave`,
+    /// `--cov` or `--vhpi` (E4102). The strict form is `--cycle-strict`, given instead of this
+    /// option.
     #[arg(long, conflicts_with = "cycle_strict")]
     cycle: bool,
     /// Cycle mode in its strict form, instead of `--cycle`: the same selection, but a process
@@ -235,6 +236,15 @@ pub struct RunArgs {
     /// the code of the reason (E4110 to E4127), not implemented yet E4101.
     #[arg(long)]
     cycle_strict: bool,
+    /// Analyse the design for cycle mode and print the region report to standard error, or
+    /// with FILE write it there: the summary, the processes that stay in the event kernel
+    /// grouped by reason (most common first), the asserts and reports cycle mode does not
+    /// evaluate, the clocks, the loop groups, the boundary and the cycle-based processes. Nothing is
+    /// compiled or simulated; the exit status is 0. Given instead of `--cycle` and
+    /// `--cycle-strict`. An unwritable FILE is E4103, before any work.
+    #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true,
+          conflicts_with_all = ["cycle", "cycle_strict"])]
+    cycle_report: Option<Option<String>>,
     // The text names the tiers this build has, so it is built by `tier_help`.
     #[arg(long, value_enum, help = tier_help())]
     tier: Option<TierArg>,
@@ -535,6 +545,11 @@ impl RunArgs {
     /// Whether the run goes through the debug server: a client or the console drives it.
     fn debugged(&self) -> bool {
         self.dap.is_some() || self.interactive || !self.do_commands.is_empty()
+    }
+
+    /// Whether cycle mode analyses the design: `--cycle`, `--cycle-strict` or `--cycle-report`.
+    fn cycle_on(&self) -> bool {
+        self.cycle || self.cycle_strict || self.cycle_report.is_some()
     }
 
     /// The option `--cycle` cannot be used with: it observes or changes signals inside the
@@ -1507,7 +1522,7 @@ fn prepare(
         a.tier() == TierArg::Clift,
         collapse,
         // Cycle mode lowers code that reads constants a plain run evaluates only when needed.
-        a.cycle || a.cycle_strict,
+        a.cycle_on(),
         format,
         color,
         encoding,
@@ -1792,6 +1807,25 @@ fn run_design(
         out.emit(&SourceMap::default(), &d);
         return out.finish(2);
     }
+    // A report file that cannot be written fails before any work.
+    let mut report_file = None;
+    if let Some(Some(path)) = &a.cycle_report {
+        match std::fs::File::create(path) {
+            Ok(f) => report_file = Some(f),
+            Err(err) => {
+                let mut out = Out::new(format, color);
+                out.emit(
+                    &SourceMap::default(),
+                    &Diagnostic::error(
+                        yavs_cycle::codes::REPORT_FILE,
+                        format!("cannot write the cycle report file `{path}`"),
+                    )
+                    .with_note(err.to_string()),
+                );
+                return out.finish(2);
+            }
+        }
+    }
     // Cycle mode cannot serve what observes or changes signals inside its region.
     if (a.cycle || a.cycle_strict)
         && let Some(option) = a.not_with_cycle()
@@ -1930,13 +1964,32 @@ fn run_design(
     }
     // Cycle mode: select and compile the region while the analysis is still there.
     let mut cycle_metas = None;
-    if a.cycle || a.cycle_strict {
-        match yavs_cycle::plan(&db, &e, a.cycle_strict) {
+    if a.cycle_on() {
+        let mode = match (a.cycle_strict, a.cycle_report.is_some()) {
+            (true, _) => yavs_cycle::Mode::Strict,
+            (_, true) => yavs_cycle::Mode::Report,
+            _ => yavs_cycle::Mode::Run,
+        };
+        match yavs_cycle::plan(&db, &e, mode) {
             Ok(plan) => {
-                eprint!("{}", plan.report);
-                if plan.verdicts_only {
+                if mode == yavs_cycle::Mode::Report {
+                    use std::io::Write as _;
+                    let written = match &mut report_file {
+                        Some(f) => f.write_all(plan.report.as_bytes()),
+                        None => std::io::stderr().write_all(plan.report.as_bytes()),
+                    };
+                    if let Err(err) = written {
+                        let mut d = Diagnostic::error(
+                            yavs_cycle::codes::REPORT_FILE,
+                            "cannot write the cycle report",
+                        );
+                        d = d.with_note(err.to_string());
+                        out.emit(&SourceMap::default(), &d);
+                        return out.finish(2);
+                    }
                     return out.finish(0);
                 }
+                eprint!("{}", plan.summary);
                 e.region = plan.region;
                 cycle_metas = Some(plan.metas);
             }

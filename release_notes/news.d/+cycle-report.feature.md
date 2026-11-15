@@ -1,0 +1,1 @@
+`yavs run --cycle-report[=FILE]` shows what cycle mode would do with a design without running it: the processes that stay in the event kernel grouped by reason, most common first, the clocks and the loop groups. `--cycle` itself now prints one summary line instead of the full report.

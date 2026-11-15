@@ -499,13 +499,19 @@ Arguments:
 
 .. option:: --cycle
 
-   Cycle mode: the processes that can run cycle-based (clocked and combinational ones in what it supports) run as one region on a static schedule with compiled code; the rest stays in the event kernel. A report on standard error lists both, with reasons. Not with a debug session, ``--wave``, ``--cov`` or ``--vhpi`` (E4102). The strict form is ``--cycle-strict``, given instead of this option.
+   Cycle mode: the processes that can run cycle-based (clocked and combinational ones in what it supports) run as one region on a static schedule with compiled code; the rest stays in the event kernel. One line on standard error says how many processes joined; ``--cycle-report`` lists them all, with reasons. Not with a debug session, ``--wave``, ``--cov`` or ``--vhpi`` (E4102). The strict form is ``--cycle-strict``, given instead of this option.
 
    Cannot be combined with ``--cycle-strict``.
 
 .. option:: --cycle-strict
 
    Cycle mode in its strict form, instead of ``--cycle``: the same selection, but a process below the top-level design unit that is not behavioural and cannot run cycle-based is an error, all of them listed, and the run stops before simulation: outside the subset with the code of the reason (E4110 to E4127), not implemented yet E4101.
+
+.. option:: --cycle-report, --cycle-report=FILE
+
+   Analyse the design for cycle mode and print the region report to standard error, or with FILE write it there: the summary, the processes that stay in the event kernel grouped by reason (most common first), the asserts and reports cycle mode does not evaluate, the clocks, the loop groups, the boundary and the cycle-based processes. Nothing is compiled or simulated; the exit status is 0. Given instead of ``--cycle`` and ``--cycle-strict``. An unwritable FILE is E4103, before any work.
+
+   Cannot be combined with ``--cycle``, ``--cycle-strict``.
 
 .. option:: --tier=interp|auto|clift|clift-auto
 
@@ -575,7 +581,7 @@ Arguments:
 
    May be repeated.
 
-Diagnostics named above: ``E0105``, ``E0106``, ``E0107``, ``E0120``, ``E0136``, ``E0701``, ``E0801``, ``E0901``, ``E0902``, ``E3002``, ``E4101``, ``E4102``, ``E4110``, ``E4127``; ``yavs --explain CODE`` explains each.
+Diagnostics named above: ``E0105``, ``E0106``, ``E0107``, ``E0120``, ``E0136``, ``E0701``, ``E0801``, ``E0901``, ``E0902``, ``E3002``, ``E4101``, ``E4102``, ``E4103``, ``E4110``, ``E4127``; ``yavs --explain CODE`` explains each.
 
 ``yavs cov merge``
 ------------------

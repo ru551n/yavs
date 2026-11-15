@@ -1,7 +1,7 @@
 -- The subset checker of cycle mode: one process per reason a process stays outside the subset
 -- (each line named by `subset_reasons_are_reported_with_their_code_and_position`), behavioural
 -- processes, and processes of every shape that fits. Only the verdicts are tested
--- (`YAVS_CYCLE_VERDICTS=1`): the design is not run.
+-- (`--cycle-report`): the design is not run.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;

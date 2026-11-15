@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Correctness gate of cycle mode: run the difftest corpus, the designs of
 crates/yavs/tests/cycle and the bench RTL designs twice with the same yavs binary,
-normal and `--cycle`, and compare console output and exit status. Stdlib only.
+normal and `--cycle`, and compare console output and exit status; a third run with `--cycle-report`
+(analysis only) gives the members of each test. Stdlib only.
 
 Buckets: identical; documented (differs only by what cycle mode drops by design: the delta of
 a report stamp, reports and asserts of member processes, delta cycles a monitor no longer
@@ -76,12 +77,11 @@ def items(only):
 
 # ---------------------------------------------------------------- the region report
 def split_report(err):
-    """(stderr without the region report, members, dropped, text of the report). Members are the
-    LRM paths of the processes that joined ('-' for an unlabelled one); dropped is the number
-    of asserts and reports compiled to nothing in each (same keys)."""
+    """(stderr without the region summary or report, its lines). The summary line of `--cycle` and
+    the report of `--cycle-report` both start with "cycle mode: N of M processes"."""
     lines = err.splitlines()
     rep, i = [], len(lines)
-    for k, l in enumerate(lines):  # the report comes after the warnings of elaboration
+    for k, l in enumerate(lines):  # it comes after the warnings of elaboration
         if re.match(r"cycle mode: \d+ of \d+ processes", l):
             i = k + 1
             rep = [l]
@@ -90,20 +90,22 @@ def split_report(err):
                 i += 1
             break
     lines = lines[: i - len(rep)] + lines[i:]
-    rest = [l for l in lines if not l.startswith("cycle mode: ")]  # the metavalue summary line
+    return "\n".join(l for l in lines if not l.startswith("cycle mode: ")), rep  # not the metavalue summary
+
+
+def held_asserts(rep):
+    """(members, dropped) of a report: the LRM paths of the processes that hold asserts and reports
+    compiled to nothing ('-' for an unlabelled one), and the number of those asserts and reports."""
     members, dropped, on = set(), 0, False
     for l in rep[1:]:
         if re.match(r"^  \S", l):
-            on = l == "  cycle-based:"
+            on = " not evaluated in cycle mode, held by " in l
         elif on:
-            name, _, what = l.strip().partition("  ")
-            m = re.search(r"(\d+) asserts? (?:and|or) reports? not evaluated", what)
-            n = int(m.group(1)) if m else 0
-            if n:
-                bare = re.sub(r" \(\S+:\d+\)$", "", name)  # a labelled process shows its place too
-                members.update({D.lrm_path(bare), "-"} if bare != name else {D.lrm_path(name)})
-                dropped += n
-    return "\n".join(rest), members, dropped, rep
+            n, _, name = l.strip().partition("  ")
+            bare = re.sub(r" \(\S+:\d+\)$", "", name)  # a labelled process shows its place too
+            members.update({D.lrm_path(bare), "-"} if bare != name else {D.lrm_path(name)})
+            dropped += int(n)
+    return members, dropped
 
 
 def count_members(rep):
@@ -204,14 +206,17 @@ def one(item, jobs_args):
     res = {"name": name, "bucket": "", "why": "", "members": 0, "procs": 0}
     try:
         outs = []
-        for kind, t in (("normal", tn), ("cycle", tc)):
+        tr = tc.replace("--cycle ", "--cycle-report ", 1)  # the members: analysis only
+        for kind, t in (("normal", tn), ("cycle", tc), ("report", tr)):
             rc, out, err = D.run(t, vhd, hdr, base / kind, 1, "", not jobs_args.no_sandbox)
             outs.append((rc, out, err))
-        (nrc, nout, nerr), (crc, cout, cerr) = outs
+        (nrc, nout, nerr), (crc, cout, cerr), (_, _, rerr) = outs
         if nrc in (97, 98, 124) and hdr["exit"] != nrc:
             res.update(bucket="skipped", why={97: "analysis fails", 98: "elaboration fails", 124: "timeout"}[nrc] + " in the normal mode")
         else:
-            cerr, members, dropped, rep = split_report(cerr)
+            cerr, _ = split_report(cerr)
+            rep = split_report(rerr)[1]
+            members, dropped = held_asserts(rep)
             res["members"], res["procs"] = count_members(rep)
             if crc != 0 and nrc == 0 and re.search(r"E41\d\d", cerr) and "E9999" not in cerr:
                 res.update(bucket="refused", why=re.search(r"E41\d\d", cerr).group(0))
@@ -246,9 +251,11 @@ def selftest():
     e = ["exit\t1", "diag\terror\t5\t1\t:tb:m\tbad", "out\tdone"]
     assert classify(e, ["exit\t0", "out\tdone"], lost)[0] == "documented"  # a lost error changes the exit status
     assert classify(e, ["exit\t0", "out\tdone"], lambda p: False)[0] == "differs"
-    rep = "cycle mode: 2 of 5 processes run cycle-based, on the rising edge of clk\n  cycle-based:\n    tb.dut.p  clocked, 2 asserts and reports not evaluated in cycle mode\n    tb.q (a.vhd:3)  combinational, 1 assert or report not evaluated in cycle mode\n  subset: 2\nreal\n"
-    e, mem, dr, r = split_report(rep)
-    assert (e, mem, dr, count_members(r)) == ("real", {":tb:dut:p", ":tb:q", "-"}, 3, (2, 5)), (e, mem, dr)
+    rep = "cycle mode: 2 of 5 processes run cycle-based, on the rising edge of clk\n  3 processes stay in the event kernel:\n    E4119 a latch (3 processes):\n      tb.l (a.vhd:9)  E4119 it is a latch (a.vhd:9)\n  3 asserts and reports not evaluated in cycle mode, held by 2 cycle-based processes:\n       2  tb.dut.p\n       1  tb.q (a.vhd:3)\n  subset: 2\n  cycle-based, 2 processes:\n    tb.dut.p  clocked\nreal\n"
+    e, r = split_report(rep)
+    assert (e, held_asserts(r), count_members(r)) == ("real", ({":tb:dut:p", ":tb:q", "-"}, 3), (2, 5)), (e, held_asserts(r))
+    e, r = split_report("cycle mode: 2 of 5 processes run cycle-based, 3 in the event kernel (see --cycle-report)\nreal\n")
+    assert (e, held_asserts(r), count_members(r)) == ("real", (set(), 0), (2, 5)), e
     print("selftest ok")
 
 

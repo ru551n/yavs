@@ -102,8 +102,9 @@ to stderr in the reference simulator and stdout in the second reference simulato
 
 `cyclegate.py` runs the corpus, the designs of `crates/yavs/tests/cycle` and the bench designs of
 `tools/bench/designs` twice with the same binary (`YAVS_BIN`, flags of `YAVS_RUN_FLAGS` for both), normal and
-`--cycle`, and compares exit status and console output in the canonical form (the region report is taken out
-of stderr). Buckets: identical; documented (only the delta of report stamps, reports and asserts of member
+`--cycle`, and compares exit status and console output in the canonical form (the summary line of cycle mode is
+taken out of stderr). A third run with `--cycle-report` (analysis only) gives the members of each test and which
+of them hold asserts and reports. Buckets: identical; documented (only the delta of report stamps, reports and asserts of member
 processes that cycle mode does not evaluate, or delta cycles a monitor no longer sees, shown by the lines
 themselves; a vanished report counts as a member's when its process path is one of a member with dropped asserts,
 or `-` for an unlabelled process while such a member exists); known (differs, and `cyclegate.expected` lists the

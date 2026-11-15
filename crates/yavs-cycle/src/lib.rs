@@ -28,6 +28,8 @@ pub mod codes {
     pub const LEFT_OUT: &str = "E4101";
     /// `--cycle` with an option that observes or changes signals inside the region.
     pub const NOT_WITH: &str = "E4102";
+    /// The file of `--cycle-report=FILE` cannot be written.
+    pub const REPORT_FILE: &str = "E4103";
     /// A wait other than the one `wait until <edge>;` of a clocked process.
     pub const WAIT: &str = "E4110";
     /// `after`, `transport`, `reject`, a waveform of several elements.
@@ -70,15 +72,53 @@ pub mod codes {
     pub const HISTORY_READ: &str = "E4127";
 }
 
-/// What `--cycle` decided for a design: the region report and the region to build.
+/// What the command line asked of cycle mode.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// `--cycle`: leave out what does not fit, say so in the summary line.
+    Run,
+    /// `--cycle-strict`: what does not fit below the top-level unit is an error.
+    Strict,
+    /// `--cycle-report`: the region report only; nothing is compiled or run.
+    Report,
+}
+
+/// What cycle mode decided for a design: the region report and the region to build.
 pub struct Plan {
     /// The region report: what joined and what stays in the event kernel, with reasons.
     pub report: String,
+    /// One line for `--cycle`: how many processes joined (ends with a newline).
+    pub summary: String,
+    /// None under [`Mode::Report`] and when no process joined.
     pub region: Option<Region>,
     /// What the region read as 0 for a metavalue, for [`Metas::summary`] after the run.
     pub metas: Arc<Metas>,
-    /// Only the report was asked for (`YAVS_CYCLE_VERDICTS=1`): stop before simulation.
-    pub verdicts_only: bool,
+}
+
+/// A short name of what a code stands for, for the headings of the region report.
+fn title(code: &str) -> &'static str {
+    use codes::*;
+    match code {
+        WAIT => "a wait that is not the clock edge",
+        DELAY => "a delay, `transport`, `reject` or a waveform",
+        HISTORY => "signal history read",
+        NOT_TWO_STATE => "a real or time value computed at run time",
+        TESTBENCH => "a shared variable, protected object or access value",
+        GUARDED => "a postponed process or a guarded signal",
+        FORCE => "`force` or `release`",
+        CALL => "a call the analysis cannot follow",
+        HIGH_Z => "a `'Z'` value",
+        LATCH => "a latch",
+        STATE => "a variable read before it is assigned",
+        SENSITIVITY => "an incomplete sensitivity list",
+        LOOP => "a combinational loop",
+        SHAPE => "a clocked process of another shape",
+        SHARED => "a signal with another source",
+        CLOCK_MADE => "a clock made inside the region",
+        ANALYSIS => "the analysis cannot prove it fits",
+        HISTORY_READ => "its history is read outside the region",
+        _ => "",
+    }
 }
 
 /// Elements the region read as 0 because they held a metavalue (`'U'`, `'X'`, `'Z'`, `'W'`,
@@ -116,15 +156,14 @@ fn at(db: &Db, span: yavs_diag::Span) -> String {
     format!("{file}:{}", f.line_col(span.start).0)
 }
 
-/// Select the region of `e` and compile it. Under `strict`, a process left out that is
+/// Select the region of `e` and compile it. Under [`Mode::Strict`], a process left out that is
 /// neither in the top-level design unit nor behavioural is an error with the code of its
-/// reason, all of them listed. With `YAVS_CYCLE_VERDICTS=1` (a developer switch) only the
-/// report is made: [`Plan::verdicts_only`], nothing compiled, nothing to run.
-pub fn plan(db: &Db, e: &Elaborated, strict: bool) -> Result<Plan, Vec<Diagnostic>> {
-    let verdicts_only = std::env::var_os("YAVS_CYCLE_VERDICTS").is_some_and(|v| v == "1");
+/// reason, all of them listed. Under [`Mode::Report`] only the report is made, nothing is
+/// compiled.
+pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>> {
     let sel = region::select(db, e);
     let label = |pi: usize| e.hier.proc_label(&e.procs[pi], yavs_elab::Case::Lrm);
-    if strict && !verdicts_only {
+    if mode == Mode::Strict {
         let errs: Vec<Diagnostic> = (sel.out.iter())
             .filter(|(pi, why)| {
                 !region::in_top_unit(e, *pi) && !matches!(why, region::Why::Behavioural(_))
@@ -161,11 +200,15 @@ pub fn plan(db: &Db, e: &Elaborated, strict: bool) -> Result<Plan, Vec<Diagnosti
     }
     let mut report = String::new();
     let total = e.procs.len();
-    let _ = write!(
-        report,
+    let head = format!(
         "cycle mode: {} of {total} processes run cycle-based",
         sel.members.len()
     );
+    let summary = match total - sel.members.len() {
+        0 => format!("{head}\n"),
+        n => format!("{head}, {n} in the event kernel (see --cycle-report)\n"),
+    };
+    report.push_str(&head);
     let edges: Vec<String> = (sel.clocks.iter())
         .map(|c| {
             format!(
@@ -180,54 +223,83 @@ pub fn plan(db: &Db, e: &Elaborated, strict: bool) -> Result<Plan, Vec<Diagnosti
         let _ = write!(report, ", on {}", edges.join(" and "));
     }
     report.push('\n');
-    // Sections of rows (where, what).
-    let mut sections: Vec<(&str, Vec<(String, String)>)> = vec![
-        ("cycle-based", Vec::new()),
-        ("outside the subset, in the event kernel", Vec::new()),
-        ("behavioural, in the event kernel", Vec::new()),
-        (
-            "in the subset, not implemented in cycle mode yet",
-            Vec::new(),
-        ),
-    ];
-    for (pi, b) in &sel.members {
-        let k = match b.kind {
-            Kind::Clocked => "clocked",
-            Kind::Comb => "combinational",
-        };
-        let mut k = match b.dropped {
-            0 => k.to_string(),
-            1 => format!("{k}, 1 assert or report not evaluated in cycle mode"),
-            n => format!("{k}, {n} asserts and reports not evaluated in cycle mode"),
-        };
-        match b.metas {
-            0 => {}
-            1 => k.push_str(", 1 literal with a metavalue read as 0"),
-            n => {
-                let _ = write!(k, ", {n} literals with a metavalue read as 0");
-            }
-        }
-        sections[0].1.push((region::where_(db, e, *pi), k));
-    }
+    // The processes left out, grouped by reason (its code; behavioural processes and the ones
+    // not implemented yet are one group each), the most common first. Rows: where, what.
+    let mut left: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for (pi, why) in &sel.out {
-        let (i, text) = match why {
-            region::Why::Subset(r) => (1, format!("{} {} ({})", r.code, r.text, at(db, r.span))),
-            region::Why::Behavioural(w) => (2, w.clone()),
-            region::Why::NotYet(w) => (3, w.clone()),
+        let (head, text) = match why {
+            region::Why::Subset(r) => (
+                format!("{} {}", r.code, title(r.code)),
+                format!("{} {} ({})", r.code, r.text, at(db, r.span)),
+            ),
+            region::Why::Behavioural(w) => {
+                ("behavioural, in the event kernel".to_string(), w.clone())
+            }
+            region::Why::NotYet(w) => (
+                format!("{} not implemented in cycle mode yet", codes::LEFT_OUT),
+                w.clone(),
+            ),
         };
-        sections[i].1.push((region::where_(db, e, *pi), text));
+        left.entry(head)
+            .or_default()
+            .push((region::where_(db, e, *pi), text));
     }
-    let w = (sections.iter().flat_map(|s| &s.1))
+    let mut left: Vec<_> = left.into_iter().collect();
+    left.sort_by_key(|g| std::cmp::Reverse(g.1.len()));
+    let members: Vec<(String, String)> = (sel.members.iter())
+        .map(|(pi, b)| {
+            let k = match b.kind {
+                Kind::Clocked => "clocked",
+                Kind::Comb => "combinational",
+            };
+            let mut k = k.to_string();
+            match b.metas {
+                0 => {}
+                1 => k.push_str(", 1 literal with a metavalue read as 0"),
+                n => {
+                    let _ = write!(k, ", {n} literals with a metavalue read as 0");
+                }
+            }
+            (region::where_(db, e, *pi), k)
+        })
+        .collect();
+    let w = (left.iter().flat_map(|g| &g.1).chain(&members))
         .map(|r| r.0.chars().count())
         .max()
         .unwrap_or(0);
-    for (title, rows) in &sections {
-        if rows.is_empty() {
-            continue;
-        }
-        let _ = writeln!(report, "  {title}:");
+    let plural =
+        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+    if !sel.out.is_empty() {
+        let _ = writeln!(
+            report,
+            "  {} stay in the event kernel:",
+            plural(sel.out.len(), "process", "processes")
+        );
+    }
+    for (head, rows) in &left {
+        let _ = writeln!(
+            report,
+            "    {head} ({}):",
+            plural(rows.len(), "process", "processes")
+        );
         for (name, what) in rows {
-            let _ = writeln!(report, "    {name:<w$}  {what}");
+            let _ = writeln!(report, "      {name:<w$}  {what}");
+        }
+    }
+    // Asserts and reports in members are compiled to nothing.
+    let held: Vec<(String, u32)> = (sel.members.iter())
+        .filter(|(_, b)| b.dropped > 0)
+        .map(|(pi, b)| (region::where_(db, e, *pi), b.dropped))
+        .collect();
+    if !held.is_empty() {
+        let _ = writeln!(
+            report,
+            "  {} and reports not evaluated in cycle mode, held by {}:",
+            plural(held.iter().map(|h| h.1 as usize).sum(), "assert", "asserts"),
+            plural(held.len(), "cycle-based process", "cycle-based processes")
+        );
+        for (name, n) in &held {
+            let _ = writeln!(report, "    {n:>4}  {name}");
         }
     }
     let _ = writeln!(
@@ -253,22 +325,13 @@ pub fn plan(db: &Db, e: &Elaborated, strict: bool) -> Result<Plan, Vec<Diagnosti
             names.join(", ")
         );
     }
-    if sel.dropped > 0 {
-        let _ = writeln!(
-            report,
-            "  {} assert{} and report{} in processes that fit, not evaluated in cycle mode",
-            sel.dropped,
-            if sel.dropped == 1 { "" } else { "s" },
-            if sel.dropped == 1 { "" } else { "s" },
-        );
-    }
     let metas = Arc::new(Metas::default());
-    if sel.members.is_empty() || verdicts_only {
+    if sel.members.is_empty() {
         return Ok(Plan {
             report,
+            summary,
             region: None,
             metas,
-            verdicts_only,
         });
     }
     let name = |l: &LeafId| e.leaf_name(*l);
@@ -285,6 +348,22 @@ pub fn plan(db: &Db, e: &Elaborated, strict: bool) -> Result<Plan, Vec<Diagnosti
             v => format!(" ({})", v.join(", ")),
         }
     );
+    let _ = writeln!(
+        report,
+        "  cycle-based, {}:",
+        plural(members.len(), "process", "processes")
+    );
+    for (name, what) in &members {
+        let _ = writeln!(report, "    {name:<w$}  {what}");
+    }
+    if mode == Mode::Report {
+        return Ok(Plan {
+            report,
+            summary,
+            region: None,
+            metas,
+        });
+    }
     let region = build(db, e, sel, metas.clone()).map_err(|m| {
         vec![
             Diagnostic::error(
@@ -296,9 +375,9 @@ pub fn plan(db: &Db, e: &Elaborated, strict: bool) -> Result<Plan, Vec<Diagnosti
     })?;
     Ok(Plan {
         report,
+        summary,
         region: Some(region),
         metas,
-        verdicts_only,
     })
 }
 

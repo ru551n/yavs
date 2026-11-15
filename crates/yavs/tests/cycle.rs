@@ -26,6 +26,25 @@ fn analyze(dir: &Path, file: &str, text: &str) {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }
 
+/// `err`, the standard error of a run with `flags`, followed by the region report of the same
+/// design when it ran in cycle mode (a `--cycle-report` run, which analyses and stops): the
+/// membership rows are read there, a cycle run prints one line.
+fn with_report(dir: &Path, flags: &[&str], top: &str, mut err: String) -> String {
+    if flags
+        .iter()
+        .any(|f| matches!(*f, "--cycle" | "--cycle-strict"))
+    {
+        let mut args = vec!["run", "--work=work:lib", "--no-cache"];
+        args.extend(flags.iter().filter(|f| !f.starts_with("--cycle")));
+        args.extend(["--cycle-report", top]);
+        let o = yavs(dir, &args);
+        let report = String::from_utf8_lossy(&o.stderr);
+        assert!(o.status.success() && o.stdout.is_empty(), "{top}: {report}");
+        err.push_str(&report);
+    }
+    err
+}
+
 /// The report lines of a successful run and its standard error.
 fn run(dir: &Path, flags: &[&str], top: &str) -> (Vec<String>, String) {
     let mut args = vec!["run", "--work=work:lib", "--no-cache"];
@@ -37,6 +56,7 @@ fn run(dir: &Path, flags: &[&str], top: &str) -> (Vec<String>, String) {
         String::from_utf8_lossy(&o.stderr).into_owned(),
     );
     assert!(o.status.success(), "{top} {flags:?}: {out}{err}");
+    let err = with_report(dir, flags, top, err);
     let lines = out
         .lines()
         .filter(|l| l.contains("="))
@@ -281,6 +301,123 @@ fn cycle_and_cycle_strict_are_alternatives() {
     assert!(
         err.contains("the argument '--cycle' cannot be used with '--cycle-strict'"),
         "{err}"
+    );
+}
+
+#[test]
+fn cycle_report_is_a_third_mode_exclusive_with_the_other_two() {
+    let dir = tempdir("cycle-report-excl");
+    for other in ["--cycle", "--cycle-strict"] {
+        let o = yavs(
+            &dir,
+            &["run", "--work=work:lib", other, "--cycle-report", "top"],
+        );
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(2), "{other}: {err}");
+        assert!(
+            err.contains("cannot be used with") && err.contains("--cycle-report"),
+            "{other}: {err}"
+        );
+    }
+}
+
+#[test]
+fn cycle_report_prints_the_report_and_runs_nothing() {
+    let dir = tempdir("cycle-report");
+    analyze(&dir, "partial.vhd", include_str!("cycle/partial.vhd"));
+    // The testbench would print `acc=... q=...`; nothing runs, so nothing is printed.
+    let report = |flags: &[&str]| {
+        let mut args = vec!["run", "--work=work:lib", "--no-cache", "--tier=interp"];
+        args.extend(flags);
+        args.push("cycle_partial");
+        yavs(&dir, &args)
+    };
+    let o = report(&["--cycle-report"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success() && o.stdout.is_empty(), "{err}");
+    assert!(
+        err.starts_with("cycle mode: 5 of 7 processes run cycle-based")
+            && err.contains("cycle_partial.dut.pick (partial.vhd:66)"),
+        "{err}"
+    );
+    // With a file the report goes there.
+    let file = dir.join("report.txt");
+    let o = report(&[&format!("--cycle-report={}", file.display())]);
+    assert!(o.status.success() && o.stdout.is_empty() && o.stderr.is_empty());
+    let text = std::fs::read_to_string(&file).expect("the report file");
+    assert_eq!(text, err);
+    // An unwritable file fails before any work: not even the top-level name is looked up.
+    let o = yavs(
+        &dir,
+        &[
+            "run",
+            "--work=work:lib",
+            "--cycle-report=no/such/dir/r.txt",
+            "nothing",
+        ],
+    );
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(2), "{err}");
+    assert!(
+        err.contains("error[E4103]: cannot write the cycle report file `no/such/dir/r.txt`"),
+        "{err}"
+    );
+}
+
+#[test]
+fn plain_cycle_prints_one_summary_line() {
+    let dir = tempdir("cycle-summary");
+    analyze(&dir, "partial.vhd", include_str!("cycle/partial.vhd"));
+    let o = yavs(
+        &dir,
+        &[
+            "run",
+            "--work=work:lib",
+            "--no-cache",
+            "--cycle",
+            "cycle_partial",
+        ],
+    );
+    // One line, then the count of metavalues the region read as 0, which is its own line.
+    let err = String::from_utf8_lossy(&o.stderr);
+    let mut lines = err.lines();
+    assert_eq!(
+        lines.next(),
+        Some(
+            "cycle mode: 5 of 7 processes run cycle-based, 2 in the event kernel (see --cycle-report)"
+        )
+    );
+    assert!(
+        lines.all(|l| l.contains("metavalue elements read as 0")),
+        "{err}"
+    );
+}
+
+#[test]
+fn the_report_groups_what_stays_out_by_reason_most_common_first() {
+    let dir = tempdir("cycle-groups");
+    analyze(&dir, "subset.vhd", include_str!("cycle/subset.vhd"));
+    let report = verdicts(&dir, "sub_tb");
+    let counts: Vec<(usize, &str)> = (report.lines())
+        .filter_map(|l| {
+            let l = l.strip_prefix("    ")?.strip_suffix("):")?;
+            let (head, n) = l.rsplit_once(" (")?;
+            Some((n.split(' ').next()?.parse().ok()?, head))
+        })
+        .collect();
+    // Every code, the behavioural group and the one not implemented yet.
+    assert!(counts.len() > 15, "{report}");
+    assert!(counts.windows(2).all(|w| w[0].0 >= w[1].0), "{counts:?}");
+    assert!(counts[0].1.starts_with("E4122 "), "{counts:?}");
+    assert!(
+        report.contains("    behavioural, in the event kernel (6 processes):"),
+        "{report}"
+    );
+    // The processes of a group are listed under its heading.
+    let i = report.find("    E4118 ").expect("a group of E4118");
+    assert!(
+        report[i..].contains("\n      sub_tb.dut.high_z "),
+        "{report}"
     );
 }
 
@@ -1131,6 +1268,7 @@ fn run_text(dir: &Path, flags: &[&str], top: &str) -> (String, String) {
         String::from_utf8_lossy(&o.stderr).into_owned(),
     );
     assert!(o.status.success(), "{top} {flags:?}: {out}{err}");
+    let err = with_report(dir, flags, top, err);
     let mut text = String::new();
     for l in out.lines() {
         match l.split_once("fs+") {
@@ -1297,14 +1435,13 @@ fn verdicts(dir: &Path, top: &str) -> String {
     let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
         .current_dir(dir)
         .env("YAVS_STD_CACHE", "off")
-        .env("YAVS_CYCLE_VERDICTS", "1")
         .args([
             "--color",
             "never",
             "run",
             "--work=work:lib",
             "--no-cache",
-            "--cycle",
+            "--cycle-report",
             top,
         ])
         .output()
@@ -1315,12 +1452,19 @@ fn verdicts(dir: &Path, top: &str) -> String {
     err
 }
 
-/// The report row of process `label`, and the section it is in.
+/// The report row of process `label`, and the section it is in: the heading above it, ending
+/// with a colon, as the sections of the report read before it was grouped by reason.
 fn row<'a>(report: &'a str, label: &str) -> (&'a str, &'a str) {
     let mut section = "";
     for l in report.lines() {
-        if l.starts_with("  ") && !l.starts_with("    ") {
-            section = l.trim();
+        if l.ends_with(':') {
+            section = match l.trim() {
+                h if h.starts_with("cycle-based") => "cycle-based:",
+                h if h.starts_with("behavioural") => "behavioural, in the event kernel:",
+                h if h.starts_with("E4101") => "in the subset, not implemented in cycle mode yet:",
+                h if h.starts_with('E') => "outside the subset, in the event kernel:",
+                h => h,
+            };
         }
         if l.trim_start().starts_with(&format!("{label} (")) {
             return (section, l);
@@ -1507,7 +1651,7 @@ fn every_shape_of_the_subset_fits() {
     );
     // Asserts and reports are counted, never a reason to stay out.
     assert!(
-        report.contains("3 asserts and reports in processes that fit, not evaluated"),
+        report.contains("2 asserts and reports not evaluated in cycle mode, held by 2 cycle-based"),
         "{report}"
     );
 }

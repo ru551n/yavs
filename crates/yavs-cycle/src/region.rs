@@ -36,9 +36,8 @@ pub(crate) struct Selection {
     pub clocks: Vec<Clock>,
     /// Loop groups of the processes in the subset (before what is implemented is known).
     pub groups: Vec<dep::Group>,
-    /// Processes in the subset, and asserts and reports they hold.
+    /// Processes in the subset.
     pub fits: usize,
-    pub dropped: u32,
     /// Leaves members drive, and of those the ones something outside reads (exported).
     pub driven: BTreeSet<LeafId>,
     pub outputs: BTreeSet<LeafId>,
@@ -390,7 +389,6 @@ fn analyse(db: &Db, e: &Elaborated, fits: &BTreeMap<usize, Fit>) -> dep::Analysi
 pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
     let (fits, mut out, groups) = subset(db, e);
     let nfits = fits.len();
-    let dropped = fits.values().map(|f| f.dropped).sum();
     let forced = !db.facts().forces.is_empty();
     let mut taken: BTreeMap<usize, (Fit, Body)> = BTreeMap::new();
     for (pi, f) in fits {
@@ -579,7 +577,6 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             sel.settle = settle;
             sel.groups = groups;
             sel.fits = nfits;
-            sel.dropped = dropped;
             return sel;
         }
         for (pi, w) in gone {
@@ -891,7 +888,6 @@ fn boundary(
         clocks,
         groups: Vec::new(),
         fits: 0,
-        dropped: 0,
         driven,
         outputs,
         waited,

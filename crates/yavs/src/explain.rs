@@ -536,11 +536,15 @@ const EXPLAIN: &[(&str, &str)] = &[
     // yavs-cycle: cycle mode (`yavs run --cycle`)
     (
         "E4101",
-        "`yavs run --cycle-strict` found a process below the top-level design unit that is in the subset cycle mode can run, but needs something cycle mode does not implement yet; the label names it. Every reason a process stays outside the subset has a code of its own (E4110 to E4127). A behavioural process (one that waits for a time, waits forever, has several waits, calls a procedure that waits, or uses files or text input and output) and every process of the top-level design unit, the testbench, stay in the event kernel without an error. `--cycle` alone runs the same selection and leaves such processes in the event kernel, listed in its report.",
+        "`yavs run --cycle-strict` found a process below the top-level design unit that is in the subset cycle mode can run, but needs something cycle mode does not implement yet; the label names it. Every reason a process stays outside the subset has a code of its own (E4110 to E4127). A behavioural process (one that waits for a time, waits forever, has several waits, calls a procedure that waits, or uses files or text input and output) and every process of the top-level design unit, the testbench, stay in the event kernel without an error. `--cycle` alone runs the same selection and leaves such processes in the event kernel; `--cycle-report` lists them with their reasons.",
     ),
     (
         "E4102",
         "`yavs run --cycle` cannot be used with an option that observes or changes signals inside the cycle region: a debug session, `--wave`, `--cov` or `--vhpi`. Cycle mode keeps those signals in an image of its own and updates the kernel only with what processes outside the region read. Run without `--cycle` for these.",
+    ),
+    (
+        "E4103",
+        "The file given to `yavs run --cycle-report=FILE` cannot be created or written (missing directory, permissions, full disk). The check is made before any work, so a run does not end with its report lost.",
     ),
     (
         "E4110",

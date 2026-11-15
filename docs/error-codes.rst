@@ -610,6 +610,8 @@ Cycle mode (E4 and W4)
      - ``yavs run --cycle-strict`` found a process below the top-level design unit that is in the subset cycle mode can run, but needs something cycle mode does not implement yet; the label names it.
    * - _`E4102`
      - ``yavs run --cycle`` cannot be used with an option that observes or changes signals inside the cycle region: a debug session, ``--wave``, ``--cov`` or ``--vhpi``.
+   * - _`E4103`
+     - The file given to ``yavs run --cycle-report=FILE`` cannot be created or written (missing directory, permissions, full disk).
    * - _`E4110`
      - Cycle mode takes a process with a wait only in one shape: ``wait until <edge>;`` as the first statement, the only wait, a clocked process (``rising_edge(clk)``, ``falling_edge(clk)`` or ``clk'event and clk = '1'``, optionally followed by ``and`` more conditions).
    * - _`E4111`

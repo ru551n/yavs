@@ -693,6 +693,11 @@ Compiled tiers: Cranelift
      - any value
      - unset
      - ``run``
+   * - ``YAVS_CYCLE_IMPORT_CHECK``
+     - ``1``: a cycle region (``--cycle``), which reads only the inputs that changed since its last wake, reads all of them again after each wake and stops with an internal error if one differs.
+     - ``1``
+     - unset
+     - ``run``
    * - ``YAVS_CYCLE_VERDICTS``
      - ``1``: ``--cycle`` prints its region report, what fits cycle mode and why the rest does not, and stops before simulation; nothing is compiled.
      - ``1``

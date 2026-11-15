@@ -444,12 +444,12 @@ fn boundary_values_and_metavalues_become_two_state_and_are_counted() {
             err.contains("clocked, 1 literal with a metavalue read as 0"),
             "{err}"
         );
-        // At initialisation: 5 in `din`, 9 in `q` and 4 in `lit` (no initial value); then the 5
-        // of `din` at each of the 2 edges.
+        // At initialisation: 5 in `din`, 9 in `q` and 4 in `lit` (no initial value); `din`
+        // never changes, so it is not read again.
         assert!(
             err.contains(
-                "cycle mode: 28 metavalue elements read as 0 (18 at initialisation, 10 at the \
-                 region's inputs)"
+                "cycle mode: 18 metavalue elements read as 0 (18 at initialisation, 0 at changes \
+                 of the region's inputs)"
             ),
             "{err}"
         );
@@ -1743,4 +1743,52 @@ fn drivers_of_signals_whose_history_is_read_outside_stay_out() {
         );
     }
     assert!(err.contains("history.vhd:81:59"), "{err}");
+}
+
+/// The region reads only the inputs that changed since its last wake (`tests/cycle/inputs.vhd`):
+/// inputs no wake is made for, changed between edges, changed back, changed in the delta of the
+/// edge and at time 0, a wide input changed in one word, an output read and driven back outside.
+#[test]
+fn inputs_read_only_when_they_changed_give_the_same_result() {
+    let dir = tempdir("cycle-inputs");
+    analyze(&dir, "inputs.vhd", include_str!("cycle/inputs.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_inputs");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_inputs");
+        assert_eq!(normal.len(), 8, "{normal:?}");
+        // Hand-checked: edge i samples what iteration i - 1 set. At edge 3 `s` held a5 (changed
+        // back only in odd iterations), at edge 4 00; `w(101 to 103)` set, `n` 21, `e` toggled in
+        // the edge's delta (4 times), `z` set at time 0, `m` its metavalues, `f` from `y(1)` of
+        // the time before the edge, `y` from `c` (4) and `qs`, `wm` with `w(104)`, `r.a` toggled 3
+        // times and `r.b` as it started.
+        assert!(normal[2].contains("i=3 qs=A5 "), "{normal:?}");
+        assert!(
+            normal[3].contains(
+                "i=4 qs=00 qw=000000E000000000 qn=21 qe=0 qz=1 qf=1 qm=XX01 y=0100 wm=0000001E \
+                 qr=11"
+            ),
+            "{normal:?}"
+        );
+        // Two-state: `m` reads as 0 for its metavalues.
+        let want: Vec<String> = normal
+            .iter()
+            .map(|l| {
+                l.replace("qm=UUUU", "qm=0000")
+                    .replace("qm=XX01", "qm=0001")
+            })
+            .collect();
+        assert_eq!(cycle, want, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 3 of 5 processes run cycle-based"),
+            "{err}"
+        );
+        // The 4 of `m` at initialisation, then its 2 once, at its change.
+        assert!(
+            err.contains(
+                "cycle mode: 6 metavalue elements read as 0 (4 at initialisation, 2 at changes of \
+                 the region's inputs)"
+            ),
+            "{err}"
+        );
+    }
 }

@@ -83,7 +83,7 @@ pub struct Plan {
 
 /// Elements the region read as 0 because they held a metavalue (`'U'`, `'X'`, `'Z'`, `'W'`,
 /// `'-'`): at initialisation (signals and variables without an initial value included), and at
-/// the inputs, counted at every read.
+/// the inputs, counted when a chunk of them is read again after a change.
 #[derive(Default)]
 pub struct Metas {
     pub init: AtomicU64,
@@ -99,8 +99,8 @@ impl Metas {
         );
         (i + n != 0).then(|| {
             format!(
-                "cycle mode: {} metavalue elements read as 0 ({i} at initialisation, {n} at the \
-                 region's inputs)\n",
+                "cycle mode: {} metavalue elements read as 0 ({i} at initialisation, {n} at \
+                 changes of the region's inputs)\n",
                 i + n
             )
         })
@@ -466,21 +466,53 @@ fn build(
             bytes: bytes(k),
         })
         .collect();
-    // Inputs leaf by leaf: a kernel signal may also hold leaves the region drives.
-    let inputs: Vec<_> = (sel.inputs.iter())
-        .filter(|&&l| nets.leaf(l).ty.len > 0)
-        .map(|&l| {
-            let len = nets.leaf(l).ty.len;
-            let at = nets.loc[l.index()];
-            rt::Read {
-                r: nets.kref(l, Range::new(0, len)),
-                slot: cur[&at.signal.0],
+    // Inputs leaf by leaf (a kernel signal may also hold leaves the region drives), a leaf of
+    // its own signal in chunks of one word, grouped by kernel signal: each chunk is read when the
+    // kernel counted a change of it.
+    let mut by_sig: BTreeMap<u32, Vec<(rt::Read, Range)>> = BTreeMap::new();
+    for &l in sel.inputs.iter().filter(|&&l| nets.leaf(l).ty.len > 0) {
+        let len = nets.leaf(l).ty.len;
+        let at = nets.loc[l.index()];
+        let (slot, b) = (cur[&at.signal.0], bytes(at.signal.0));
+        let step = if at.base == 0 && b == 0 { 64 } else { len };
+        let chunks = by_sig.entry(at.signal.0).or_default();
+        for k in (0..len).step_by(step as usize) {
+            let part = Range::new(k, step.min(len - k));
+            let read = rt::Read {
+                r: nets.kref(l, part),
+                slot: slot + k / 64,
                 lo: at.base,
-                len,
-                bytes: bytes(at.signal.0),
-            }
-        })
-        .collect();
+                len: part.len,
+                bytes: b,
+            };
+            chunks.push((read, nets.kpart(l, part).1));
+        }
+    }
+    let (mut chunks, mut ins) = (Vec::new(), Vec::new());
+    let import_check = std::env::var_os("YAVS_CYCLE_IMPORT_CHECK").is_some_and(|v| v == "1");
+    for (k, rs) in by_sig {
+        let items = (rs.iter().enumerate())
+            .map(|(i, &(_, r))| yavs_kernel::ImageItem {
+                sig: yavs_kernel::SignalId(k),
+                k: r.offset,
+                len: r.len,
+                voff: 8 * i as u32,
+                vsize: 8,
+                kind: yavs_kernel::ImageKind::Count,
+            })
+            .collect::<Vec<_>>();
+        ins.push(rt::InSig {
+            spec: yavs_kernel::ImageSpec {
+                size: 8 * items.len() as u32,
+                items: items.into(),
+            },
+            at: chunks.len() as u32,
+            n: rs.len() as u32,
+            id: None,
+            seen: 0,
+        });
+        chunks.extend(rs.into_iter().map(|c| c.0));
+    }
     // Each class: its clock element, the edge test of `Ctx::edge_by`, its word.
     let clocks: Vec<(yavs_kernel::SigRef, u8, usize)> = (sel.clocks.iter().zip(&edge_words))
         .map(|(c, &w)| {
@@ -580,7 +612,11 @@ fn build(
             code: code.clone(),
             img,
             leaves: all.clone(),
-            inputs: inputs.clone(),
+            seen: vec![0; chunks.len()],
+            chunks: chunks.clone(),
+            ins: ins.clone(),
+            looked: false,
+            check: import_check,
             outs: outs.into_values().collect(),
             clocks: clocks.clone(),
             clocks_only,

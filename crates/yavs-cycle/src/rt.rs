@@ -1,13 +1,14 @@
-//! The region's kernel process: it reads its inputs from the kernel into the image (nine values
-//! to two: `'1'` and `'H'` are 1, everything else 0, the metavalues counted), runs the compiled
-//! trigger function, and drives the outputs that changed with zero delay through the drivers of
-//! the member processes (`'0'` and `'1'`).
+//! The region's kernel process: it reads the inputs that changed since its last wake from the
+//! kernel into the image (nine values to two: `'1'` and `'H'` are 1, everything else 0, the
+//! metavalues counted), runs the compiled trigger function, and drives the outputs that changed
+//! with zero delay through the drivers of the member processes (`'0'` and `'1'`).
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use yavs_kernel::{
-    Ctx, DelayMode, DriverId, ErrorKind, ProcId, Process, Range, SigRef, SimError, Time,
+    Ctx, DelayMode, DriverId, ErrorKind, ImageSpec, NO_IMAGE, ProcId, Process, Range, SigRef,
+    SimError, Time,
 };
 
 use crate::codegen::{Code, Fun, mask, words};
@@ -22,6 +23,18 @@ pub(crate) struct Read {
     pub lo: u32,
     pub len: u32,
     pub bytes: u32,
+}
+
+/// The input chunks of one kernel signal, `RegionProc::chunks[at .. at + n]`, and the kernel
+/// image (`ImageKind::Count`, one item per chunk) that counts the updates that changed each.
+#[derive(Clone)]
+pub(crate) struct InSig {
+    pub spec: ImageSpec,
+    pub at: u32,
+    pub n: u32,
+    /// The image once made (`None`: every chunk is read at every wake), and its writes seen.
+    pub id: Option<u32>,
+    pub seen: u64,
 }
 
 /// One kernel driver whose elements the region exports: elements `range` of the words `slot` of
@@ -41,8 +54,15 @@ pub(crate) struct RegionProc {
     pub img: Vec<u64>,
     /// Every kernel signal of the region, whole: read once at initialisation.
     pub leaves: Vec<Read>,
-    /// Leaves read from the kernel at every wake.
-    pub inputs: Vec<Read>,
+    /// The inputs in chunks of at most 64 elements (a word of the image), read when their count
+    /// moved past `seen`; grouped by kernel signal in `ins`.
+    pub chunks: Vec<Read>,
+    pub seen: Vec<u64>,
+    pub ins: Vec<InSig>,
+    /// The images of `ins` were looked up (the wake after initialisation).
+    pub looked: bool,
+    /// `YAVS_CYCLE_IMPORT_CHECK=1`: after each import every chunk is read again and compared.
+    pub check: bool,
     pub outs: Vec<Out>,
     /// Per edge class: the clock element, the edge test of `Ctx::edge_by` and the word that
     /// tells the code whether the edge happened.
@@ -99,15 +119,76 @@ impl RegionProc {
             let (p0, p1) = (w(0), w(1));
             metas += u64::from((!p1 & m).count_ones());
             let v = p0 & p1 & m;
-            if rd.lo == 0 {
+            if nw > 1 {
                 img[slot + j] = v;
             } else {
-                // A leaf inside a pack of at most 64 elements: one word.
+                // One word (a chunk, or a leaf inside a pack of at most 64 elements): only its
+                // elements, the other leaves of the word may not be read again now.
                 let mm = m << rd.lo;
                 img[slot] = img[slot] & !mm | v << rd.lo & mm;
             }
         }
         Ok(metas)
+    }
+
+    /// Read the input chunks that changed since the last wake (all of a signal without an
+    /// image); whether any was read. A count moves when an update changed an element of the
+    /// chunk (or of its word's cover): back to an old value included, so nothing is missed.
+    fn import(&mut self, ctx: &Ctx<'_>) -> Result<bool, SimError> {
+        if !self.looked {
+            self.looked = true;
+            for g in &mut self.ins {
+                g.id = ctx.image_id(&g.spec).filter(|&id| id != NO_IMAGE);
+            }
+        }
+        let (mut metas, mut any) = (0, false);
+        for g in &mut self.ins {
+            let counts = match g.id {
+                Some(id) => {
+                    let w = ctx.image_writes(id);
+                    if w == g.seen {
+                        continue;
+                    }
+                    g.seen = w;
+                    ctx.image(id)
+                }
+                None => None,
+            };
+            for (k, i) in (g.at as usize..(g.at + g.n) as usize).enumerate() {
+                if let Some(b) = counts {
+                    let n = u64::from_le_bytes(b[8 * k..8 * k + 8].try_into().expect("8 bytes"));
+                    if n == self.seen[i] {
+                        continue;
+                    }
+                    self.seen[i] = n;
+                }
+                metas += Self::read(ctx, &mut self.img, &mut self.buf, &self.chunks[i])?;
+                any = true;
+            }
+        }
+        if metas != 0 {
+            self.metas.inputs.fetch_add(metas, Ordering::Relaxed);
+        }
+        if self.check {
+            self.check_import(ctx)?;
+        }
+        Ok(any)
+    }
+
+    /// Every input chunk read again: the image must hold what the kernel holds.
+    #[cold]
+    fn check_import(&mut self, ctx: &Ctx<'_>) -> Result<(), SimError> {
+        let mut img = self.img.clone();
+        for rd in &self.chunks {
+            Self::read(ctx, &mut img, &mut self.buf, rd)?;
+            if img != self.img {
+                return Err(ctx.error(ErrorKind::Internal(format!(
+                    "cycle mode: the input {:?} changed in the kernel and was not read again",
+                    rd.r
+                ))));
+            }
+        }
+        Ok(())
     }
 
     /// Drive every output whose value differs from what was driven last (all of them the first
@@ -239,6 +320,10 @@ impl Process for RegionProc {
                 metas += Self::read(ctx, &mut self.img, &mut self.buf, rd)?;
             }
             self.metas.init.fetch_add(metas, Ordering::Relaxed);
+            // From the next update on the kernel counts the changes of each input chunk.
+            for g in &self.ins {
+                ctx.image_ask(g.spec.clone());
+            }
             self.run_code(ctx, Fun::Init)?;
             // A reset that holds at time 0 applies (its branch is in the settle), as when the
             // normal mode runs every process once.
@@ -265,15 +350,11 @@ impl Process for RegionProc {
             }
             return Ok(());
         }
-        let mut metas = 0;
-        for rd in &self.inputs {
-            metas += Self::read(ctx, &mut self.img, &mut self.buf, rd)?;
+        // Without an edge and with no input changed the settle would give what it gave last.
+        if self.import(ctx)? || edge {
+            self.run_code(ctx, if edge { Fun::Edge } else { Fun::Settle })?;
+            self.export(ctx)?;
         }
-        if metas != 0 {
-            self.metas.inputs.fetch_add(metas, Ordering::Relaxed);
-        }
-        self.run_code(ctx, if edge { Fun::Edge } else { Fun::Settle })?;
-        self.export(ctx)?;
         if !ctx.wait_same() {
             for &w in &self.waits {
                 ctx.wait_on(w)?;

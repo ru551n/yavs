@@ -1873,3 +1873,82 @@ fn record_images_of_many_lanes_follow_their_lanes() {
     assert!(bad.lock().unwrap().is_empty(), "{:?}", bad.lock().unwrap());
     assert!(checks.load(std::sync::atomic::Ordering::Relaxed) > 100);
 }
+
+/// `ImageKind::Count` items count the updates that changed an element of their leaf: a change of
+/// the other leaf leaves the count alone, a change back to the old value counts too, and the
+/// changes before the first look (from the update after the ask on) are all counted.
+#[test]
+fn count_items_count_the_changes_of_their_leaf() {
+    let mut b = Builder::new();
+    let s = b.signal(
+        "s",
+        SignalType::logic(8),
+        &"00000000".parse::<LogicVec>().unwrap(),
+    );
+    let d = b.driver(s);
+    let mut k = 0u32;
+    b.process(
+        "drive",
+        NONE,
+        &[d],
+        p(move |c| {
+            k += 1;
+            // Elements 0 to 3 at steps 1, 2 (back to the old value) and 5; 4 to 7 at step 3.
+            let (r, v) = match k {
+                1 | 5 => (Range::new(0, 4), "1010"),
+                2 => (Range::new(0, 4), "0000"),
+                3 => (Range::new(4, 4), "1111"),
+                _ => (Range::new(0, 4), "0000"),
+            };
+            if k <= 5 && k != 4 {
+                let v = v.parse::<LogicVec>().unwrap();
+                c.assign(d, Some(r), &[(Time::ZERO, &v)], DelayMode::INERTIAL)?;
+            }
+            c.wait_for(ns(1))
+        }),
+    );
+    let spec = ImageSpec {
+        size: 16,
+        items: Box::new([
+            ImageItem {
+                sig: s,
+                k: 0,
+                len: 4,
+                voff: 0,
+                vsize: 8,
+                kind: ImageKind::Count,
+            },
+            ImageItem {
+                sig: s,
+                k: 4,
+                len: 4,
+                voff: 8,
+                vsize: 8,
+                kind: ImageKind::Count,
+            },
+        ]),
+    };
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let got = seen.clone();
+    let mut step = 0;
+    b.process(
+        "count",
+        NONE,
+        &[],
+        p(move |c| {
+            if step == 0 {
+                c.image_ask(spec.clone());
+            } else if step == 3 || step == 7 {
+                let id = c.image_id(&spec).expect("made");
+                let b = c.image(id).expect("bytes");
+                let n = |o: usize| u64::from_le_bytes(b[o..o + 8].try_into().unwrap());
+                got.lock().unwrap().push((n(0), n(8), c.image_writes(id)));
+            }
+            step += 1;
+            c.wait_for(ns(1))
+        }),
+    );
+    let mut sim = b.build(Config::default()).unwrap();
+    sim.run_until(ns(10)).unwrap();
+    assert_eq!(*seen.lock().unwrap(), [(2, 1, 3), (3, 1, 4)]);
+}

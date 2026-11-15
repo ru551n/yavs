@@ -288,17 +288,25 @@ impl RegionProc {
     fn export(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         let all = !std::mem::replace(&mut self.exported, true);
         for sp in &self.spans {
-            if !all && self.img[sp.words.clone()] == self.shadow[sp.sh..sp.sh + sp.words.len()] {
+            let n = sp.words.len();
+            if !all && same(&self.img[sp.words.clone()], &self.shadow[sp.sh..sp.sh + n]) {
                 continue;
             }
             for o in &mut self.outs[sp.outs.clone()] {
+                // An output of one word compares with what it drove last itself.
                 let w = o.words();
                 let at = sp.sh + w.start - sp.words.start;
-                if all || self.img[w.clone()] != self.shadow[at..at + w.len()] {
+                if all
+                    || w.len() == 1
+                    || !same(&self.img[w.clone()], &self.shadow[at..at + w.len()])
+                {
                     Self::export_one(ctx, &self.img, &mut self.buf, o, all)?;
                 }
             }
-            self.shadow[sp.sh..sp.sh + sp.words.len()].copy_from_slice(&self.img[sp.words.clone()]);
+            copy(
+                &mut self.shadow[sp.sh..sp.sh + n],
+                &self.img[sp.words.clone()],
+            );
         }
         let mut written: Vec<usize> = Vec::new();
         let first = self.spans.last().map_or(0, |sp| sp.outs.end);
@@ -466,6 +474,26 @@ impl RegionProc {
         self.code
             .run(&mut self.img, f)
             .map_err(|site| self.failed(ctx, site))
+    }
+}
+
+/// `a == b` for slices of one length, a loop for a few words (no call of `memcmp`).
+#[inline(always)]
+fn same(a: &[u64], b: &[u64]) -> bool {
+    if a.len() <= 8 {
+        a.iter().zip(b).all(|(x, y)| x == y)
+    } else {
+        a == b
+    }
+}
+
+/// `copy_from_slice`, a loop for a few words (no call of `memcpy`).
+#[inline(always)]
+fn copy(to: &mut [u64], from: &[u64]) {
+    if to.len() <= 8 {
+        to.iter_mut().zip(from).for_each(|(t, f)| *t = *f);
+    } else {
+        to.copy_from_slice(from);
     }
 }
 

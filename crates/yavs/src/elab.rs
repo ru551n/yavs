@@ -1922,11 +1922,13 @@ fn run_design(
         out.emit(&none, &token_gone(why));
     }
     // Cycle mode: select and compile the region while the analysis is still there.
+    let mut cycle_metas = None;
     if a.cycle || a.cycle_strict {
         match yavs_cycle::plan(&db, &e, a.cycle_strict) {
             Ok(plan) => {
                 eprint!("{}", plan.report);
                 e.region = plan.region;
+                cycle_metas = Some(plan.metas);
             }
             Err(ds) => {
                 for d in &ds {
@@ -2400,6 +2402,9 @@ fn run_design(
                 yavs_elab::assert_summary_text(rt.as_deref(), &db.sources)
             ),
         }
+    }
+    if let Some(line) = cycle_metas.as_ref().and_then(|m| m.summary()) {
+        eprint!("{line}");
     }
     if let Some((path, err)) = activity_error {
         out.emit(

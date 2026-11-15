@@ -30,6 +30,13 @@ pub(crate) const MAX_BYTES: usize = 1024;
 const WARM: u32 = 64;
 /// Calls that must repeat one made before, out of every `RATE`, for the memo to stay on.
 const RATE: u32 = 8;
+/// Trials a function whose body is dear (`MemoSig::dear`) and that at most `VOTES` processes
+/// call gets after its first was given up: the `k`th starts `RETRY << 3 (k - 1)` calls after
+/// the last ended, runs `WARM << 2 k` calls and starts with a full table, so keys that come back
+/// only later in the run (a phase of distinct keys first, a cycle longer than the first trial)
+/// are seen. The process votes (`Machine::memo_vote`) when it gives the function up for good.
+const RETRIES: u8 = 2;
+const RETRY: u32 = 1024;
 /// Processes that give a function's memo up before it is off for all of them (fewer when fewer
 /// processes call it: off once every caller gave it up, #762).
 const VOTES: u32 = 3;
@@ -224,7 +231,13 @@ pub(crate) struct Memo {
     pub func: u32,
     slots: Vec<Option<Box<Slot>>>,
     calls: u32,
+    /// Hits of the current trial.
     hits: u32,
+    /// The call at which the current trial is judged, or (memo off) the next starts; 0 once
+    /// the function is kept or given up for good.
+    until: u32,
+    /// Trials given up so far.
+    tries: u8,
     /// Entries replaced by another key since the table last grew.
     evicted: usize,
     off: bool,
@@ -287,6 +300,8 @@ pub(crate) enum Look {
     Off,
     /// The memo of the function has just been turned off in this process.
     GaveUp,
+    /// It has, until a later trial (`RETRIES`).
+    Paused,
     /// A call with this key was made: slot `.0` holds its result.
     Hit(usize),
     /// None was: remember the call when it ends ([`State::keep`]).
@@ -309,6 +324,8 @@ impl State {
                     slots: Vec::new(),
                     calls: 0,
                     hits: 0,
+                    until: WARM,
+                    tries: 0,
                     evicted: 0,
                     off: false,
                     shown: None,
@@ -341,17 +358,22 @@ impl State {
     fn unkeyed(&mut self, at: usize) -> bool {
         let m = &mut self.memos[at];
         m.calls += 1;
-        let give_up = !m.off && m.calls == WARM && m.hits < WARM / RATE;
+        let judged = !m.off && m.calls == m.until;
+        let give_up = judged && m.hits < (WARM << (2 * m.tries)) / RATE;
         if give_up {
             m.off = true;
             m.slots = Vec::new();
+        }
+        if judged {
+            m.until = 0;
         }
         give_up
     }
 
     /// Look the call of the function of memo `at` with the key in `self.key` up. Counts the
-    /// call, and judges the function after `WARM` calls.
-    fn look(&mut self, at: usize) -> Look {
+    /// call, and judges the function at the end of its trial (`dear`: its body is, see
+    /// `RETRIES`).
+    fn look(&mut self, at: usize, dear: bool) -> Look {
         let hash = hash(&self.key);
         let key = &self.key;
         let m = &mut self.memos[at];
@@ -359,7 +381,8 @@ impl State {
             Look::Off
         } else {
             if m.slots.is_empty() {
-                m.slots.resize_with(FIRST, || None);
+                m.slots
+                    .resize_with(if m.tries == 0 { FIRST } else { LAST }, || None);
             }
             let (i, j) = ways(hash, m.slots.len());
             m.calls += 1;
@@ -375,13 +398,24 @@ impl State {
                 None
             };
             m.hits += u32::from(at.is_some());
-            // Judged at the `WARM`-th call whatever it finds: a hit there used to skip the
-            // judgement, so a function with few hits stayed on for good.
-            if m.calls == WARM && m.hits < WARM / RATE {
-                m.off = true;
-                m.slots = Vec::new();
-                Look::GaveUp
-            } else if let Some(i) = at {
+            // Judged at the end of the trial whatever the call finds: a hit there used to skip
+            // the judgement, so a function with few hits stayed on for good.
+            if m.calls == m.until {
+                if m.hits < (WARM << (2 * m.tries)) / RATE {
+                    m.off = true;
+                    m.slots = Vec::new();
+                    if dear && m.tries < RETRIES {
+                        // No vote yet: the process takes it up again later (`retry`).
+                        m.until = m.calls + (RETRY << (3 * m.tries));
+                        m.tries += 1;
+                        return Look::Paused;
+                    }
+                    m.until = 0;
+                    return Look::GaveUp;
+                }
+                m.until = 0;
+            }
+            if let Some(i) = at {
                 HITS.fetch_add(1, Ordering::Relaxed);
                 Look::Hit(i)
             } else {
@@ -389,6 +423,24 @@ impl State {
                 Look::Miss
             }
         }
+    }
+
+    /// A call of the function of memo `at`, which this process gave up: true when it is taken
+    /// up again for a new trial with it.
+    fn retry(&mut self, at: usize) -> bool {
+        let m = &mut self.memos[at];
+        if m.until == 0 {
+            return false;
+        }
+        m.calls += 1;
+        if m.calls != m.until {
+            return false;
+        }
+        m.off = false;
+        m.hits = 0;
+        m.evicted = 0;
+        m.until = m.calls + (WARM << (2 * m.tries));
+        true
     }
 
     /// The result in slot `i` of memo `at` (from [`Look::Hit`]).
@@ -401,7 +453,7 @@ impl State {
     /// A function whose entry another holds stays with the host.
     fn show(&mut self, at: usize) {
         let m = &mut self.memos[at];
-        if m.shown.is_some() || m.off || m.calls < WARM || m.slots.is_empty() {
+        if m.shown.is_some() || m.off || m.until != 0 || m.slots.is_empty() {
             return;
         }
         let d = self.dir.get_or_insert_with(MemoDir::new);
@@ -541,7 +593,7 @@ impl Machine {
         }
         // (A memo made here is on: `fresh` is read after the key below.)
         let at = st.index(func.0);
-        if st.memos[at].off {
+        if st.memos[at].off && !st.retry(at) {
             self.pm = Some(st);
             return Ok(Probe::No);
         }
@@ -562,7 +614,7 @@ impl Machine {
             }
             return Ok(Probe::No);
         }
-        let look = st.look(at);
+        let look = st.look(at, sig.dear);
         if std::mem::take(&mut st.fresh) {
             self.memo_user(prog, func);
         }
@@ -578,6 +630,21 @@ impl Machine {
             Look::GaveUp => {
                 self.pm = Some(st);
                 self.memo_vote(prog, func);
+                Ok(Probe::No)
+            }
+            Look::Paused => {
+                // Many callers: given up for good, as their trials would cost each of them.
+                let many = prog
+                    .func(func)
+                    .and_then(|c| self.rt.pre(func, c))
+                    .is_none_or(|p| p.memo_users.load(Ordering::Relaxed) > VOTES);
+                if many {
+                    st.memos[at].until = 0;
+                }
+                self.pm = Some(st);
+                if many {
+                    self.memo_vote(prog, func);
+                }
                 Ok(Probe::No)
             }
             Look::Hit(i) => {
@@ -1014,7 +1081,7 @@ mod tests {
         let at = st.index(7);
         let look = |st: &mut State, k: u64| {
             st.key = k.to_le_bytes().to_vec();
-            let l = st.look(at);
+            let l = st.look(at, false);
             if matches!(l, Look::Miss) {
                 let key = st.key.clone();
                 st.keep(7, hash(&key), &key, Val::Word(k));
@@ -1028,6 +1095,40 @@ mod tests {
         const { assert!(WARM / RATE > 1) };
         assert!(matches!(look(&mut st, u64::from(WARM - 2)), Look::GaveUp));
         assert!(st.is_off(7));
+    }
+
+    /// A function whose calls repeat only after a first phase of distinct keys: a dear body
+    /// gets a later trial that keeps it, a cheap one is given up for good at its `WARM`-th call.
+    #[test]
+    fn a_dear_function_is_taken_up_again_later() {
+        for dear in [true, false] {
+            let mut st = State::default();
+            let at = st.index(3);
+            let (mut hits, mut gave_up) = (0, 0);
+            for c in 0..4000u64 {
+                let k = if c < 300 { 1000 + c } else { c % 16 };
+                if st.memos[at].off && !st.retry(at) {
+                    continue;
+                }
+                st.key = k.to_le_bytes().to_vec();
+                match st.look(at, dear) {
+                    Look::Hit(_) => hits += 1,
+                    Look::Miss => {
+                        let key = st.key.clone();
+                        st.keep(3, hash(&key), &key, Val::Word(k));
+                    }
+                    Look::GaveUp => gave_up += 1,
+                    Look::Off | Look::Paused => {}
+                }
+            }
+            if dear {
+                assert_eq!(gave_up, 0);
+                assert!(!st.is_off(3) && hits > 2500, "{hits} hits");
+            } else {
+                assert_eq!((gave_up, hits), (1, 0));
+                assert!(st.is_off(3));
+            }
+        }
     }
 
     /// Keys that differ only in the upper bytes of their last word (a string's text) spread over
@@ -1076,14 +1177,14 @@ mod tests {
         let at = st.index(5);
         for k in &keys {
             st.key = k.clone();
-            assert!(matches!(st.look(at), Look::Miss));
+            assert!(matches!(st.look(at, false), Look::Miss));
             st.keep(5, hash(k), k, Val::Word(1));
         }
         let hits = keys
             .iter()
             .filter(|k| {
                 st.key = k.to_vec();
-                matches!(st.look(at), Look::Hit(_))
+                matches!(st.look(at, false), Look::Hit(_))
             })
             .count();
         assert!(hits >= 12, "{hits} of 16 hit");

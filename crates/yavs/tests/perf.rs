@@ -788,17 +788,34 @@ case!(
         ("ops", Max(10324))
     ]
 );
-// Two processes whose calls of a pure function never repeat: both give its memo up, which turns it
-// off for all (#762: three votes were needed, so it stayed on the call path of compiled callers).
+// Two processes whose calls of a pure function never repeat: both give its memo up at their 64th
+// call. Its body has a loop and two processes call it, so each takes it up again later
+// (`pmemo::RETRIES`, after 1024 more calls: not in this run) and votes only then; with more callers
+// it is off for all at once (`memo_callers`; #762: three votes were needed, so it stayed on the
+// call path of compiled callers).
 case!(
     memo_giveup,
     "acc=",
     &[],
-    [
-        ("pmemo_off", Min(1)),
-        ("pmemo_runs", Max(130)),
-        ("ops", Max(19388))
-    ]
+    [("pmemo_runs", Max(130)), ("ops", Max(19388))]
+);
+// Eight processes whose calls of a pure function with a loop never repeat: more callers than
+// votes, so their first give-ups turn it off for all and none takes it up again (1416 runs with
+// later trials).
+case!(
+    memo_callers,
+    "acc=32152",
+    &[],
+    [("pmemo_off", Min(1)), ("pmemo_runs", Max(520))]
+);
+// A pure function with a loop whose first 300 calls do not repeat and whose later ones repeat
+// 16 keys: given up at its 64th call, taken up again 1024 calls later and kept (63 runs, no hits,
+// with one judgement).
+case!(
+    memo_retry,
+    "s=856422",
+    &[],
+    [("pmemo_hits", Min(1840)), ("pmemo_runs", Max(82))]
 );
 // The digit loop of a textio HRead (#744): a result-table nibble stored into the slice
 // `sv(4 * i to 4 * i + 3)` and `is_x` on the same slice, 8 digits of each of 3 words, 16 times.
@@ -2033,6 +2050,18 @@ mod clift {
             ("pmemo_runs", Max(65)),
             ("cb_memo", Max(150)),
             ("clift_memo_unprobed_sites", Min(1)),
+        ]
+    );
+    // The later trial of `memo_retry` keeps the function; compiled callers then read its table
+    // inline.
+    clift_case!(
+        memo_retry,
+        "memo_retry",
+        "s=856422",
+        [
+            ("pmemo_hits", Min(1840)),
+            ("pmemo_inline_hits", Min(1600)),
+            ("pmemo_runs", Max(82)),
         ]
     );
     // Functions and procedures that read signals run on native frames (#519): 900 calls, no step.

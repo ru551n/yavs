@@ -41,6 +41,7 @@ the thin slice on `tools/bench/designs/rec_pair.vhd`.
 | Decision | Why | Source |
 |---|---|---|
 | Members keep their kernel process (no code, no drivers); the region process comes after all others and owns their drivers | Process ids index `Elaborated::procs` (profiles, hang reports, run-time diagnostics) | `yavs-elab` `build.rs` |
+| Inside the region the mode is for speed: `assert` and `report` of members are compiled to nothing (counted per process in the report), and no simulation-only bookkeeping (ieee warnings, range checks, history of region signals) is built into region code | The user's direction for this mode (2026-11-15); processes outside keep full semantics | design.md amendment A6 |
 | Values are four planes in milestone 1 (`Block`), gates are calls into `yavs-logic`; uninitialised state is `U`, as the kernel holds it | The milestone measures the image and the schedule before two-state values (design 5.8) | design.md 5.8, 9 |
 | A signal leaf is exported when anything outside may read it: a non-member's names (whole objects), a port edge, an implicit signal, a guard, a package signal; a non-member that calls a subprogram declared outside a package, or an external name anywhere, exports every leaf | Sound by over-approximation: a missed reader would see a stale value | design.md 1.3 |
 | A combinational member must satisfy `Db::pure_comb_reads` and its sensitivity list must name every leaf it reads | It runs on every settle, not only on events of its list | design.md 3.1, D7 |

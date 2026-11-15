@@ -140,6 +140,8 @@ pub(crate) struct Body {
     pub writes: BTreeSet<LeafId>,
     /// `Loc` slots used, `0 .. locs`.
     pub locs: u32,
+    /// Asserts and reports left out (not evaluated in cycle mode).
+    pub dropped: u32,
 }
 
 /// A value or a place: a part of one block, or a record of them.
@@ -191,6 +193,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         reads: BTreeSet::new(),
         writes: BTreeSet::new(),
         locs: 0,
+        dropped: 0,
     };
     // `if <edge> then ... end if;` with the kernel's edge trigger (design 1.1).
     if let Some(t) = p.trigger {
@@ -229,6 +232,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
             reads: lx.reads,
             writes: lx.writes,
             locs: lx.locs,
+            dropped: lx.dropped,
         });
     }
     if matches!(sensitivity, yavs_sem::hir::Sensitivity::None) {
@@ -236,7 +240,16 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
     }
     // What an activation does must be a function of the signals it reads: no state kept in
     // variables from one activation to the next (design 3.1).
-    if db.pure_comb_reads(*scope, body).is_none() {
+    // Asserts and reports are not evaluated in the region, so they do not count here.
+    let kept: Vec<StmtId> = (body.iter().copied())
+        .filter(|&s| {
+            !matches!(
+                db.stmts[s].kind,
+                StmtKind::Assert { .. } | StmtKind::Report { .. }
+            )
+        })
+        .collect();
+    if db.pure_comb_reads(*scope, &kept).is_none() {
         return Err(
             "a combinational process that keeps state in a variable or does more than assign \
              signals and variables"
@@ -271,6 +284,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         reads: lx.reads,
         writes: lx.writes,
         locs: lx.locs,
+        dropped: lx.dropped,
     })
 }
 
@@ -284,6 +298,7 @@ struct Lx<'a> {
     reads: BTreeSet<LeafId>,
     writes: BTreeSet<LeafId>,
     locs: u32,
+    dropped: u32,
 }
 
 impl Lx<'_> {
@@ -357,8 +372,10 @@ impl Lx<'_> {
             }
             StmtKind::Loop { .. } => Err("a loop is not supported in cycle mode yet".into()),
             StmtKind::Wait { .. } => Err("a wait statement runs in the event kernel".into()),
+            // Simulation-only: compiled to nothing, counted for the report (amendment A6).
             StmtKind::Assert { .. } | StmtKind::Report { .. } => {
-                Err("an assertion or report is not supported in cycle mode yet".into())
+                self.dropped += 1;
+                Ok(())
             }
             StmtKind::ProcCall(_) => {
                 Err("a procedure call is not supported in cycle mode yet".into())

@@ -3,7 +3,8 @@
 -- not supported yet) and the concurrent `q <= r` stay in the event kernel. Values cross the
 -- boundary both ways: `a` from the region to `pick`, `b` back from `pick` into the region, `din`
 -- from the testbench into a combinational member (it wakes the region), `r` out through `q`; the
--- scalars `en` in and `t` out. `n` is read by the clocked process that writes it.
+-- scalars `en` in and `t` out. `n` is read by the clocked process that writes it. The assert of
+-- `reg` is not evaluated in cycle mode and does not keep it out.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -56,6 +57,8 @@ begin
       r <= a xor b xor std_ulogic_vector(n) xor e2;
       n <= n + 3;
       t <= a(0) xor en;
+      -- Not evaluated in cycle mode (it never fails here).
+      assert a = (a xor b xor b) report "xor is not its own inverse" severity failure;
     end if;
   end process;
 

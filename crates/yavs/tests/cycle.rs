@@ -109,7 +109,7 @@ fn a_region_with_processes_left_out_gives_the_same_result() {
             "{err}"
         );
         assert!(
-            err.contains("cycle_partial.dut.pick (partial.vhd:44)")
+            err.contains("cycle_partial.dut.pick (partial.vhd:45)")
                 && err.contains("an `if` statement in the body is not supported"),
             "{err}"
         );
@@ -142,9 +142,9 @@ fn cycle_strict_refuses_rtl_that_cannot_join() {
         err.contains("error[E4101]: process cycle_partial.dut.pick cannot run cycle-based"),
         "{err}"
     );
-    assert!(err.contains("partial.vhd:44:3"), "{err}");
+    assert!(err.contains("partial.vhd:45:3"), "{err}");
     assert!(
-        err.contains("error[E4101]: process cycle_partial.dut.q <= ... (partial.vhd:62)"),
+        err.contains("error[E4101]: process cycle_partial.dut.q <= ... (partial.vhd:65)"),
         "{err}"
     );
     assert!(!err.contains("cycle_partial.main"), "{err}");

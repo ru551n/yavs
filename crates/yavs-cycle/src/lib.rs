@@ -90,7 +90,12 @@ pub fn plan(db: &Db, e: &Elaborated, strict: bool) -> Result<Plan, Vec<Diagnosti
             Kind::Clocked => "clocked",
             Kind::Comb => "combinational",
         };
-        rows.push((region::where_(db, e, *pi), k.into()));
+        let k = match b.dropped {
+            0 => k.to_string(),
+            1 => format!("{k}, 1 assert or report not evaluated in cycle mode"),
+            n => format!("{k}, {n} asserts and reports not evaluated in cycle mode"),
+        };
+        rows.push((region::where_(db, e, *pi), k));
     }
     let joined = rows.len();
     for (pi, why) in &sel.out {

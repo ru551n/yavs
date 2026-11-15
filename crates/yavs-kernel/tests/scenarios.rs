@@ -2178,6 +2178,7 @@ fn a_quiet_signal_has_events_once_something_waits_on_it() {
     let mut want = vec![("read", ns(25), 3)];
     want.extend((4..=11).map(|k| ("woken", ns(10 * (k - 1)), k)));
     assert_eq!(got, want);
-    // No events before the wait (initialisation included): the eight changes it saw.
-    assert_eq!(sim.stats().events, 8);
+    // No events before the wait but at initialisation (which takes the usual update): one plus
+    // the eight changes it saw.
+    assert_eq!(sim.stats().events, 9);
 }

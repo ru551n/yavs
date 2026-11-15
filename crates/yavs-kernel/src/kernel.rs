@@ -1198,7 +1198,7 @@ pub struct SimControl {
     directb: Vec<OutB>,
     /// Signals with direct transactions (`commit_out`) for the next update.
     direct_sigs: Vec<u32>,
-    /// A signal is quiet (`Builder::quiet`): `phase` finishes such signals at the end of the
+    /// A signal is quiet (`Builder::quiet`): `cycle` finishes such signals at the end of the
     /// processes of each cycle (`Phase::EndOfProcesses` is then in `phase_mask`).
     quiet_any: bool,
     ops: Vec<SignalOp>,
@@ -1884,7 +1884,8 @@ impl SimControl {
             s.quiet &= !read && s.quiet_ok();
             sim.quiet_any |= s.quiet;
         }
-        // `phase` finishes the quiet signals: no test of its own in a run without them.
+        // `cycle` finishes the quiet signals behind this bit: no test of its own in a run
+        // without them.
         if sim.quiet_any {
             sim.phase_mask |= 1 << Phase::EndOfProcesses as u32;
         }
@@ -3043,7 +3044,14 @@ impl SimControl {
         } else {
             self.run_batch(ready, false, false)?;
         }
-        self.phase(Phase::EndOfProcesses);
+        // The bit is in `phase_mask` when a signal is quiet: a plain run tests nothing more, and
+        // `phase` stays small enough to be inlined.
+        if self.phase_mask & 1 << Phase::EndOfProcesses as u32 != 0 {
+            if self.quiet_any && !self.direct_sigs.is_empty() {
+                self.finish_quiet();
+            }
+            self.phase(Phase::EndOfProcesses);
+        }
         self.last_delta()
     }
 
@@ -5424,9 +5432,6 @@ impl SimControl {
         let bit = 1u16 << phase as u32;
         if self.phase_mask & bit == 0 {
             return;
-        }
-        if phase == Phase::EndOfProcesses && self.quiet_any && !self.direct_sigs.is_empty() {
-            self.finish_quiet();
         }
         let serial = if phase == Phase::NextCycle {
             std::mem::replace(&mut self.serial_ran, false)

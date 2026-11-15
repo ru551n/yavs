@@ -15,7 +15,9 @@ use crate::codegen::{Code, Fun, mask, words};
 use crate::lower::Check;
 
 /// A kernel range read into the image: its words `slot`, from element `lo` there, `len`
-/// elements; or, for a byte signal (`bytes` 4 or 8, else 0), one integer.
+/// elements; or, for a byte signal (`bytes` 1, 4 or 8, else 0), `len` integers, one per word,
+/// the last element of the range in word `slot` (the image keeps arrays from the right, the
+/// kernel's byte signals from the left).
 #[derive(Clone)]
 pub(crate) struct Read {
     pub r: SigRef,
@@ -38,7 +40,7 @@ pub(crate) struct InSig {
 }
 
 /// One kernel driver whose elements the region exports: elements `range` of the words `slot` of
-/// its kernel signal (an integer: the word).
+/// its kernel signal (integers: the words from `slot` on, its last element first).
 pub(crate) struct Out {
     pub driver: DriverId,
     pub range: Range,
@@ -91,22 +93,17 @@ impl RegionProc {
     /// `rd` from the kernel into the image: inserted at its place, metavalues as 0; returns how
     /// many elements were metavalues.
     fn read(ctx: &Ctx<'_>, img: &mut [u64], buf: &mut Vec<u8>, rd: &Read) -> Result<u64, SimError> {
-        if rd.bytes == 1 {
-            let mut b = [0u8; 1];
-            ctx.read_into(rd.r, &mut b)?;
-            img[rd.slot as usize] = u64::from(b[0]);
-            return Ok(0);
-        }
-        if rd.bytes == 4 {
-            let mut b = [0u8; 4];
-            ctx.read_into(rd.r, &mut b)?;
-            img[rd.slot as usize] = i64::from(i32::from_le_bytes(b)) as u64;
-            return Ok(0);
-        }
-        if rd.bytes == 8 {
-            let mut b = [0u8; 8];
-            ctx.read_into(rd.r, &mut b)?;
-            img[rd.slot as usize] = u64::from_le_bytes(b);
+        if rd.bytes != 0 {
+            let (n, b) = (rd.len.max(1) as usize, rd.bytes as usize);
+            buf.resize(n * b, 0);
+            ctx.read_into(rd.r, buf)?;
+            for (j, x) in buf.chunks_exact(b).enumerate() {
+                img[rd.slot as usize + n - 1 - j] = match *x {
+                    [a] => u64::from(a),
+                    [a, b, c, d] => i64::from(i32::from_le_bytes([a, b, c, d])) as u64,
+                    _ => u64::from_le_bytes(x.try_into().expect("8 bytes")),
+                };
+            }
             return Ok(0);
         }
         let nw = words(rd.len) as usize;
@@ -204,15 +201,37 @@ impl RegionProc {
         for o in &mut self.outs {
             let slot = o.slot as usize;
             if o.bytes != 0 {
-                let v = self.img[slot];
-                if v == o.last && !all {
+                // Integers the checks kept in their subtype, a word each: their low bytes are the
+                // values.
+                let w = &self.img[slot..][..o.range.len as usize];
+                let same = !all
+                    && match w {
+                        [v] => *v == o.last,
+                        w => *w == o.wide[..],
+                    };
+                if same {
                     continue;
                 }
-                o.last = v;
-                // An integer the checks kept in its subtype: its low bytes are the value.
-                let b = &v.to_le_bytes()[..o.bytes as usize];
-                if !ctx.assign_bytes_now(o.driver, o.range, b) {
-                    ctx.assign_bytes(o.driver, Some(o.range), Time::ZERO, b, DelayMode::Transport)?;
+                match w {
+                    [v] => o.last = *v,
+                    w => {
+                        o.wide.clear();
+                        o.wide.extend_from_slice(w);
+                    }
+                }
+                self.buf.clear();
+                for v in w.iter().rev() {
+                    self.buf
+                        .extend_from_slice(&v.to_le_bytes()[..o.bytes as usize]);
+                }
+                if !ctx.assign_bytes_now(o.driver, o.range, &self.buf) {
+                    ctx.assign_bytes(
+                        o.driver,
+                        Some(o.range),
+                        Time::ZERO,
+                        &self.buf,
+                        DelayMode::Transport,
+                    )?;
                 }
                 continue;
             }

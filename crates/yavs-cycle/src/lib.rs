@@ -409,18 +409,16 @@ fn build(
 ) -> Result<Region, String> {
     let nets = &e.nets;
     let ksig = |l: LeafId| nets.loc[l.index()].signal.0;
-    // A kernel signal of logic elements: its length; a byte signal (an integer): one word.
+    // A kernel signal of logic elements: its length; a byte signal (integers or enumerations): a
+    // word per element.
     let bytes = |k: u32| match nets.leaf(nets.packs[k as usize].0).ty.elem {
         yavs_kernel::Elem::Bytes(b) => b,
         yavs_kernel::Elem::Logic => 0,
     };
     let logic = |k: u32| bytes(k) == 0;
     let klen = |k: u32| {
-        if logic(k) {
-            nets.signal_len(yavs_kernel::SignalId(k))
-        } else {
-            64
-        }
+        let n = nets.signal_len(yavs_kernel::SignalId(k));
+        if logic(k) { n } else { 64 * n }
     };
     // Image: the words of each kernel signal of the region (its leaves at their kernel offsets),
     // then next-state words, then the slots of each member, then two words for a failed check.
@@ -759,6 +757,9 @@ fn build(
             .collect(),
     );
     let sig_bytes: BTreeMap<u32, u32> = cur.keys().map(|&k| (k, bytes(k))).collect();
+    let sig_len: BTreeMap<u32, u32> = (cur.keys())
+        .map(|&k| (k, nets.signal_len(yavs_kernel::SignalId(k))))
+        .collect();
     let words = n as usize;
     let make: yavs_elab::RegionMake = Arc::new(move |ds: &[RegionDriver]| {
         // One export per kernel driver with an exported leaf: its range of the signal's words.
@@ -768,6 +769,11 @@ fn build(
                 return Err(SimError::new(yavs_kernel::ErrorKind::Internal(
                     "cycle mode: an exported signal without words".into(),
                 )));
+            };
+            // Integers: the image keeps the signal's elements from the right.
+            let slot = match sig_bytes[&d.signal.0] {
+                0 => slot,
+                _ => slot + sig_len[&d.signal.0] - d.range.offset - d.range.len,
             };
             outs.entry(d.driver.0).or_insert(rt::Out {
                 driver: d.driver,

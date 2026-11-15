@@ -1645,8 +1645,12 @@ impl Lx<'_> {
         self.ops.truncate(n);
         self.locs = self.locs.max(l);
         match v? {
-            Val::Part(Part { dims, at: None, .. }) if dims.n > 0 => Ok(dims.b[0]),
-            _ => Err("an attribute of something that is not an array with a known range".into()),
+            Val::Part(Part { at: Some(_), .. }) => {
+                Err("an attribute of an element chosen at run time".into())
+            }
+            v => outer(&v).ok_or_else(|| {
+                "an attribute of something that is not an array with a known range".into()
+            }),
         }
     }
 
@@ -1959,37 +1963,32 @@ impl Lx<'_> {
                 let [i] = &indices[..] else {
                     return Err("an index of a multi-dimensional array".into());
                 };
-                let mut p = self.array_part(*prefix, target)?;
-                let b = p
-                    .dims
-                    .first()
-                    .ok_or("an index of a value with no index range")?;
-                let ew = p.dims.elem_len();
-                match self.static_int(*i) {
-                    Ok(i) => {
-                        let el = elem_of(b, i).ok_or("an index outside its array's range")?;
-                        p.lo += el * ew;
-                    }
+                let v = self.array_val(*prefix, target)?;
+                let b = outer(&v).ok_or("an index of a value with no index range")?;
+                let ix = match self.static_int(*i) {
+                    Ok(i) => Ok(elem_of(b, i).ok_or("an index outside its array's range")?),
                     Err(_) => {
                         let i = self.expr(*i)?;
-                        let i = self.int(i)?;
-                        p.at = Some((i.r, b, ew));
+                        Err(self.int(i)?.r)
                     }
-                }
-                p.len = ew;
-                p.dims = p.dims.rest();
-                Ok(Val::Part(p))
+                };
+                at_each(v, b, &mut |mut p| {
+                    let ew = p.dims.elem_len();
+                    match ix {
+                        Ok(el) => p.lo += el * ew,
+                        Err(r) => p.at = Some((r, b, ew)),
+                    }
+                    p.len = ew;
+                    p.dims = p.dims.rest();
+                    p
+                })
             }
             ExprKind::Slice { prefix, range } => {
                 let Ok((sb, _)) = self.static_range(range) else {
                     return self.dynamic_slice(*prefix, range, target);
                 };
-                let mut p = self.array_part(*prefix, target)?;
-                let b = p
-                    .dims
-                    .first()
-                    .ok_or("a slice of a value with no index range")?;
-                let ew = p.dims.elem_len();
+                let v = self.array_val(*prefix, target)?;
+                let b = outer(&v).ok_or("a slice of a value with no index range")?;
                 if sb.dir != b.dir {
                     return Err("a slice in the other direction than its array".into());
                 }
@@ -2000,10 +1999,13 @@ impl Lx<'_> {
                 // The slice's rightmost element is its element 0.
                 let lo = elem_of(b, sb.right).ok_or("a slice outside its array's range")?;
                 elem_of(b, sb.left).ok_or("a slice outside its array's range")?;
-                p.lo += lo * ew;
-                p.len = n * ew;
-                p.dims = p.dims.with_first(sb);
-                Ok(Val::Part(p))
+                at_each(v, b, &mut |mut p| {
+                    let ew = p.dims.elem_len();
+                    p.lo += lo * ew;
+                    p.len = n * ew;
+                    p.dims = p.dims.with_first(sb);
+                    p
+                })
             }
             _ => Err("a name that is not supported in cycle mode yet".into()),
         }
@@ -2115,15 +2117,33 @@ impl Lx<'_> {
     }
 
     fn array_part(&mut self, prefix: ExprId, target: bool) -> R<Part> {
-        match self.name(prefix, target)? {
-            Val::Part(p) if p.at.is_none() => Ok(p),
+        match self.array_val(prefix, target)? {
+            Val::Part(p) => Ok(p),
+            _ => Err("an index or slice of a record or an integer".into()),
+        }
+    }
+
+    /// The array `prefix` names: a logic array, or an array of records (a record of arrays, one
+    /// per field, whose outermost index range is the array's).
+    fn array_val(&mut self, prefix: ExprId, target: bool) -> R<Val> {
+        let v = self.name(prefix, target)?;
+        self.no_at(v, target)
+    }
+
+    fn no_at(&mut self, v: Val, target: bool) -> R<Val> {
+        match v {
+            Val::Part(p) if p.at.is_none() => Ok(Val::Part(p)),
             // A part of an element chosen at run time, read: the element first.
             Val::Part(p) if !target => {
                 self.note_reads(&Val::Part(p));
-                Ok(self.materialise(p))
+                Ok(Val::Part(self.materialise(p)))
             }
             Val::Part(_) => Err("an index or slice of an element chosen at run time".into()),
-            _ => Err("an index or slice of a record or an integer".into()),
+            Val::Rec(fs) => (fs.into_iter())
+                .map(|f| self.no_at(f, target))
+                .collect::<R<Vec<_>>>()
+                .map(Val::Rec),
+            Val::Int(_) => Err("an index or slice of an integer".into()),
         }
     }
 
@@ -2386,6 +2406,14 @@ impl Lx<'_> {
             Shape::Scalar { .. } => {
                 Err("a value of a real or physical type is not supported in cycle mode yet".into())
             }
+            Shape::Array { dims, elem, .. } if matches!(**elem, Shape::Record { .. }) => {
+                let [b] = &dims[..] else {
+                    return Err(
+                        "a multi-dimensional array is not supported in cycle mode yet".into(),
+                    );
+                };
+                self.fields_of(elem, *b, d, leaf)
+            }
             Shape::Array { .. } => {
                 let ds = self.logic_dims(shape)?;
                 let n = u64::from(ds.elem_len()) * ds.b[0].len();
@@ -2414,6 +2442,44 @@ impl Lx<'_> {
                 .collect::<R<Vec<_>>>()
                 .map(Val::Rec),
         }
+    }
+
+    /// The leaves of an array of records of index range `outer` and element shape `shape`, struct
+    /// of arrays as the kernel keeps them: each field an array over the elements.
+    fn fields_of(
+        &self,
+        shape: &Shape,
+        outer: Bounds,
+        d: DeclId,
+        leaf: &mut dyn FnMut(u32) -> Ref,
+    ) -> R<Val> {
+        if let Shape::Record { fields, .. } = shape {
+            return (fields.iter())
+                .map(|(_, f)| self.fields_of(f, outer, d, leaf))
+                .collect::<R<Vec<_>>>()
+                .map(Val::Rec);
+        }
+        let ds = Dims::wrap(outer, self.logic_dims(shape)?)
+            .ok_or_else(|| "an array nested more than four deep".to_string())?;
+        let n = u64::from(ds.elem_len()) * ds.b[0].len();
+        if n == 0 || n > 1 << 20 {
+            return Err(format!(
+                "a vector of {n} elements (cycle mode takes 1 to 2**20 for now)"
+            ));
+        }
+        let n = n as u32;
+        Ok(Val::Part(Part {
+            r: leaf(n),
+            lo: 0,
+            len: n,
+            full: n,
+            dims: ds,
+            fresh: false,
+            leaf: None,
+            at: None,
+            obj: Some(d),
+            lit: None,
+        }))
     }
 
     /// The index ranges of an array of logic elements (or of such arrays).
@@ -3773,6 +3839,27 @@ impl Lx<'_> {
                 }
             }
         }
+    }
+}
+
+/// The outermost index range of an array value (of its first leaf for an array of records).
+fn outer(v: &Val) -> Option<Bounds> {
+    match v {
+        Val::Part(p) => p.dims.first(),
+        Val::Rec(fs) => outer(fs.first()?),
+        Val::Int(_) => None,
+    }
+}
+
+/// `f` on every leaf of array value `v`, all of outermost index range `b`.
+fn at_each(v: Val, b: Bounds, f: &mut dyn FnMut(Part) -> Part) -> R<Val> {
+    match v {
+        Val::Part(p) if p.dims.first() == Some(b) => Ok(Val::Part(f(p))),
+        Val::Rec(fs) => (fs.into_iter())
+            .map(|x| at_each(x, b, f))
+            .collect::<R<Vec<_>>>()
+            .map(Val::Rec),
+        _ => Err("an index or slice of a value with no index range".into()),
     }
 }
 

@@ -878,6 +878,29 @@ fn subprogram_calls_equal_the_normal_mode_at_widths_around_a_word() {
 }
 
 #[test]
+fn arrays_of_records_equal_the_normal_mode_at_widths_around_a_word() {
+    let dir = tempdir("cycle-recarr");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("recarr{w}.vhd"),
+            &with_width(include_str!("cycle/recarr.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_recarr");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_recarr");
+            assert_eq!(normal.len(), 16, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            // Every process but the testbench's `main_p`.
+            assert!(
+                err.contains("cycle mode: 7 of 8 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
+#[test]
 fn clocked_and_combinational_shapes_give_the_same_result() {
     let dir = tempdir("cycle-shapes");
     analyze(&dir, "shapes.vhd", include_str!("cycle/shapes.vhd"));

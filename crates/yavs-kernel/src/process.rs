@@ -2755,6 +2755,42 @@ impl Ctx<'_> {
         self.assign_planes_fast(d, r, Time::ZERO, planes, None, DelayMode::Transport)
     }
 
+    /// `assign_planes_now` of the whole of direct driver `d` (at most 64 elements) for a caller
+    /// that assigns each of its drivers at most once per run and only with a value other than
+    /// the one it drove last (cycle mode's export): no skip test and no search for earlier
+    /// entries of the driver. False, nothing done, where `assign_planes_now` must run.
+    #[inline]
+    pub fn publish_planes(&mut self, d: DriverId, planes: [u64; 4]) -> bool {
+        let Some(info) = self.sh.drivers.get(d.0 as usize) else {
+            return false;
+        };
+        let len = info.range.len;
+        if !info.direct
+            || info.owner != self.pid
+            || len == 0
+            || len > 64
+            || !self.st.calm(info.local as usize)
+        {
+            return false;
+        }
+        debug_assert!(
+            !self.has_entries(info, 1) && !self.has_entries(info, 2),
+            "publish_planes: a second assignment of a driver in one run"
+        );
+        let m = yavs_logic::wide::nmask(len as usize);
+        self.mark_entries(info, 2);
+        self.st.act |= ACT_ASSIGNED;
+        self.st.gate_off(info.local);
+        self.st.outv.push(OutV {
+            sig: info.signal.0,
+            slot: info.slot,
+            elem: info.range.offset,
+            len,
+            planes: planes.map(|p| p & m),
+        });
+        true
+    }
+
     /// `assign_planes_now` of more than 64 elements, the plane blocks as `assign_blocks` takes
     /// them: the fast case only, false (nothing done) where `assign_blocks` must run.
     #[inline]

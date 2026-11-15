@@ -11,6 +11,8 @@
 //! The only `unsafe` of the crate: the region calls the generated code on its image.
 #![allow(unsafe_code)]
 
+use std::collections::BTreeMap;
+
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::{I32, I64};
 use cranelift_codegen::ir::{AbiParam, Block as CBlock, InstBuilder, MemFlagsData, Value};
@@ -81,15 +83,18 @@ fn word(r: Ref) -> i32 {
 }
 
 /// Compile the two trigger functions. Every `Ref` of `settle` and `edge` is an image slot
-/// (`Ref::Loc`); `err` is the first of the two error words. `name` labels the functions in the
-/// perf map.
+/// (`Ref::Loc`); `err` is the first of the two error words; `keep[w]`: word `w` holds state
+/// between calls (signals, variables of clocked processes), every other word is scratch, which
+/// the code keeps in registers and never stores unless an element of it is addressed at run
+/// time. `name` labels the functions in the perf map.
 pub(crate) fn compile(
     settle: &[Op],
     edge: &[Op],
-    words: usize,
+    keep: &[bool],
     err: u32,
     name: &str,
 ) -> Result<Code, String> {
+    let words = keep.len();
     let mut flags = settings::builder();
     let set = |f: &mut settings::Builder, k: &str, v: &str| f.set(k, v).map_err(|e| e.to_string());
     set(&mut flags, "opt_level", "speed")?;
@@ -136,15 +141,25 @@ pub(crate) fn compile(
                 err: err as i32 * 8,
                 checks,
                 ptr,
+                cache: BTreeMap::new(),
+                keep,
+                zeros: std::collections::HashMap::new(),
             };
             g.ops(ops);
+            g.write_back();
             let zero = g.b.ins().iconst(I32, 0);
             g.b.ins().return_(&[zero]);
             g.b.finalize(module.target_config());
         }
+        // Developers: `YAVS_CYCLE_DISASM=1` prints the machine code of each function.
+        let disasm = std::env::var_os("YAVS_CYCLE_DISASM").is_some();
+        ctx.set_disasm(disasm);
         module
             .define_function(id, &mut ctx)
             .map_err(|e| format!("{e:?}"))?;
+        if disasm && let Some(text) = ctx.compiled_code().and_then(|c| c.vcode.as_ref()) {
+            eprintln!("{sym}:\n{text}");
+        }
         ids.push((id, sym));
     }
     module.finalize_definitions().map_err(|e| e.to_string())?;
@@ -178,6 +193,12 @@ struct Gen<'a> {
     err: i32,
     checks: bool,
     ptr: cranelift_codegen::ir::Type,
+    /// The words in registers, by byte offset: their value and whether memory is behind it. Every
+    /// value dominates the code that follows (a branch drops what it made at its join).
+    cache: BTreeMap<i32, (Value, bool)>,
+    keep: &'a [bool],
+    /// Bits known to be zero of some values (constants, extracted bits, words built by inserts).
+    zeros: std::collections::HashMap<Value, u64>,
 }
 
 impl Gen<'_> {
@@ -187,24 +208,62 @@ impl Gen<'_> {
         }
     }
 
-    fn load_at(&mut self, off: i32) -> Value {
+    /// Word `k` of `r`: from a register when it has one.
+    fn ld(&mut self, r: Ref, k: u32) -> Value {
+        let off = word(r) + k as i32 * 8;
+        if let Some(&(v, _)) = self.cache.get(&off) {
+            return v;
+        }
+        let v = self
+            .b
+            .ins()
+            .load(I64, MemFlagsData::trusted(), self.base, off);
+        self.cache.insert(off, (v, false));
+        v
+    }
+
+    /// Word `k` of `r` is `v` from here on; memory follows at `write_back` or `spill`.
+    fn st(&mut self, r: Ref, k: u32, v: Value) {
+        self.cache.insert(word(r) + k as i32 * 8, (v, true));
+    }
+
+    fn store(&mut self, off: i32, v: Value) {
         self.b
             .ins()
-            .load(I64, MemFlagsData::trusted(), self.base, off)
+            .store(MemFlagsData::trusted(), v, self.base, off);
     }
 
-    /// Word `k` of `r`.
-    fn ld(&mut self, r: Ref, k: u32) -> Value {
-        self.load_at(word(r) + k as i32 * 8)
+    /// The words that hold state, into memory (the end of the function).
+    fn write_back(&mut self) {
+        let dirty: Vec<(i32, Value)> = (self.cache.iter())
+            .filter(|(off, (_, d))| *d && self.keep[**off as usize / 8])
+            .map(|(&off, &(v, _))| (off, v))
+            .collect();
+        for (off, v) in dirty {
+            self.store(off, v);
+        }
     }
 
-    fn st(&mut self, r: Ref, k: u32, v: Value) {
-        self.b.ins().store(
-            MemFlagsData::trusted(),
-            v,
-            self.base,
-            word(r) + k as i32 * 8,
-        );
+    /// Words `k0 ..= k1` of `r` into memory, scratch ones too: code is about to address one of
+    /// their elements at run time.
+    fn spill(&mut self, r: Ref, k0: u32, k1: u32) {
+        for k in k0..=k1 {
+            let off = word(r) + k as i32 * 8;
+            if let Some((v, d)) = self.cache.get_mut(&off)
+                && *d
+            {
+                *d = false;
+                let v = *v;
+                self.store(off, v);
+            }
+        }
+    }
+
+    /// Words `k0 ..= k1` of `r` changed in memory.
+    fn forget(&mut self, r: Ref, k0: u32, k1: u32) {
+        for k in k0..=k1 {
+            self.cache.remove(&(word(r) + k as i32 * 8));
+        }
     }
 
     fn lds(&mut self, r: Ref, len: u32) -> Vec<Value> {
@@ -218,7 +277,9 @@ impl Gen<'_> {
     }
 
     fn konst(&mut self, v: u64) -> Value {
-        self.b.ins().iconst(I64, v as i64)
+        let x = self.b.ins().iconst(I64, v as i64);
+        self.zeros.insert(x, !v);
+        x
     }
 
     /// The top word of a value of `len` elements with the bits above `len` cleared.
@@ -230,21 +291,32 @@ impl Gen<'_> {
         }
     }
 
-    /// `n` (at most 64) bits of the words `v` from bit `off`, in the low bits.
-    fn bits(&mut self, v: &[Value], off: u32, n: u32) -> Value {
+    /// `n` (at most 64) bits of the words `v` from bit `off`, in the low bits; `full`: the bits
+    /// of `v` from `full` on are zero, so no mask is needed past them.
+    fn bits(&mut self, v: &[Value], off: u32, n: u32, full: u32) -> Value {
         let (k, s) = ((off / 64) as usize, off % 64);
         let mut x = v[k];
+        let mut end = 64 * (k as u32 + 1);
         if s != 0 {
             x = self.b.ins().ushr_imm_s(x, i64::from(s));
             if s + n > 64 {
                 let h = self.b.ins().ishl_imm_s(v[k + 1], i64::from(64 - s));
                 x = self.b.ins().bor(x, h);
+                end = off + 64;
             }
         }
-        if n < 64 {
+        if n < 64 && off + n < full.min(end) {
             x = self.b.ins().band_imm_s(x, mask(n) as i64);
         }
+        if n < 64 {
+            self.zeros.insert(x, !mask(n));
+        }
         x
+    }
+
+    /// The bits of `v` known to be zero.
+    fn zero(&self, v: Value) -> u64 {
+        self.zeros.get(&v).copied().unwrap_or(0)
     }
 
     /// `d` with bits `lo .. lo + len` taken from `s` (`len` elements).
@@ -253,16 +325,26 @@ impl Gen<'_> {
         while a < lo + len {
             let k = a / 64;
             let b = (lo + len).min(k * 64 + 64);
-            let x = self.bits(s, a - lo, b - a);
+            let x = self.bits(s, a - lo, b - a, len);
             let sh = a - k * 64;
             let m = mask(b - a) << sh;
-            let keep = self.b.ins().band_imm_s(d[k as usize], !m as i64);
+            let dk = d[k as usize];
+            let zd = self.zero(dk);
+            // Bits known to be zero need no clearing (a word built field by field from 0).
+            let keep = if zd & m == m {
+                dk
+            } else {
+                self.b.ins().band_imm_s(dk, !m as i64)
+            };
             let x = if sh != 0 {
                 self.b.ins().ishl_imm_s(x, i64::from(sh))
             } else {
                 x
             };
-            d[k as usize] = self.b.ins().bor(keep, x);
+            let r = self.b.ins().bor(keep, x);
+            let zx = self.zero(x) << sh | mask(sh);
+            self.zeros.insert(r, (zd | m) & (zx | !m));
+            d[k as usize] = r;
             a = b;
         }
     }
@@ -395,7 +477,13 @@ impl Gen<'_> {
                 self.top(&mut v, *len);
                 self.sts(*dst, &v);
             }
-            Op::Extract { dst, src, lo, len } => {
+            Op::Extract {
+                dst,
+                src,
+                lo,
+                len,
+                full,
+            } => {
                 // Only the source words the bits are in.
                 let (k0, k1) = (lo / 64, (lo + len - 1) / 64);
                 let mut s: Vec<Value> = Vec::new();
@@ -410,7 +498,7 @@ impl Gen<'_> {
                     .map(|j| {
                         let off = lo + 64 * j;
                         let n = (*len - 64 * j).min(64);
-                        self.bits(&s, off, n)
+                        self.bits(&s, off, n, *full)
                     })
                     .collect();
                 self.sts(*dst, &v);
@@ -550,6 +638,7 @@ impl Gen<'_> {
                 site,
             } => {
                 let bit = self.element(*idx, *left, *down, *n, *lo, *site);
+                self.spill(*src, lo / 64, (lo + n - 1) / 64);
                 let (a, s) = self.bit_addr(*src, bit);
                 let w = self.b.ins().load(I64, MemFlagsData::trusted(), a, 0);
                 let x = self.b.ins().ushr(w, s);
@@ -568,6 +657,9 @@ impl Gen<'_> {
             } => {
                 let v = self.ld(*src, 0);
                 let bit = self.element(*idx, *left, *down, *n, *lo, *site);
+                let (k0, k1) = (lo / 64, (lo + n - 1) / 64);
+                self.spill(*dst, k0, k1);
+                self.forget(*dst, k0, k1);
                 let (a, s) = self.bit_addr(*dst, bit);
                 let w = self.b.ins().load(I64, MemFlagsData::trusted(), a, 0);
                 let one = self.konst(1);
@@ -585,15 +677,45 @@ impl Gen<'_> {
                     self.b.create_block(),
                     self.b.create_block(),
                 );
+                // Memory holds every word before the branches; each starts from the words in
+                // registers, stores what it changed before the join, and the join reads those
+                // from memory again.
+                let dirty: Vec<(i32, Value)> = (self.cache.iter_mut())
+                    .filter(|(_, (_, d))| *d)
+                    .map(|(&off, (v, d))| {
+                        *d = false;
+                        (off, *v)
+                    })
+                    .collect();
+                for (off, v) in dirty {
+                    self.store(off, v);
+                }
                 self.b.ins().brif(c, t, &[], e, &[]);
+                let before = self.cache.clone();
+                let mut touched = Vec::new();
                 for (blk, body) in [(t, then), (e, else_)] {
                     self.b.switch_to_block(blk);
                     self.b.seal_block(blk);
+                    self.cache = before.clone();
                     self.ops(body);
+                    let made: Vec<(i32, Value, bool)> = (self.cache.iter())
+                        .filter(|(off, x)| before.get(off) != Some(x))
+                        .map(|(&off, &(v, d))| (off, v, d))
+                        .collect();
+                    for (off, v, d) in made {
+                        if d {
+                            self.store(off, v);
+                        }
+                        touched.push(off);
+                    }
                     self.b.ins().jump(j, &[]);
                 }
                 self.b.switch_to_block(j);
                 self.b.seal_block(j);
+                self.cache = before;
+                for off in touched {
+                    self.cache.remove(&off);
+                }
             }
         }
     }

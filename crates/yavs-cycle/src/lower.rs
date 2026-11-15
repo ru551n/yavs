@@ -18,7 +18,7 @@ use crate::codegen::{mask, words};
 /// Words of the region's state: the current value of a kernel signal (all the leaves the kernel
 /// keeps in it, each at its kernel offset), or a slot of the process (a leaf of a variable, a
 /// temporary), numbered per body.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(crate) enum Ref {
     Sig(u32),
     Loc(u32),
@@ -151,12 +151,13 @@ pub(crate) enum Op {
         a: Ref,
         len: u32,
     },
-    /// Elements `lo .. lo + len` of `src` as a value of `len` elements.
+    /// Elements `lo .. lo + len` of `src` (of `full` elements) as a value of `len` elements.
     Extract {
         dst: Ref,
         src: Ref,
         lo: u32,
         len: u32,
+        full: u32,
     },
     /// `src`'s `len` elements into elements `lo .. lo + len` of `dst`.
     Insert {
@@ -299,6 +300,9 @@ pub(crate) struct Body {
     pub locs: u32,
     /// Initial values of slots other than 0: integer variables start at their `'left`.
     pub init: Vec<(u32, u64)>,
+    /// The words of the variables (first, count): in a clocked process, state kept from one
+    /// edge to the next.
+    pub vars: Vec<(u32, u32)>,
     /// Asserts and reports left out (not evaluated in cycle mode).
     pub dropped: u32,
     /// Literals with a metavalue (`'U'`, `'X'`, `'W'`, `'-'`), read as 0.
@@ -382,6 +386,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         writes: BTreeSet::new(),
         locs: 0,
         init: Vec::new(),
+        var_words: Vec::new(),
         dropped: 0,
         metas: 0,
         uninit: 0,
@@ -489,6 +494,7 @@ struct Lx<'a> {
     writes: BTreeSet<LeafId>,
     locs: u32,
     init: Vec<(u32, u64)>,
+    var_words: Vec<(u32, u32)>,
     dropped: u32,
     metas: u32,
     uninit: u64,
@@ -505,6 +511,7 @@ impl Lx<'_> {
             writes: self.writes,
             locs: self.locs,
             init: self.init,
+            vars: self.var_words,
             dropped: self.dropped,
             metas: self.metas,
             uninit: self.uninit,
@@ -677,6 +684,7 @@ impl Lx<'_> {
                 // Leaves at the same places of two blocks (the packs of two signals of one
                 // record type) are copied together: one blend per pair of blocks.
                 let mut groups: Vec<(Ref, Ref, Vec<u64>, u32)> = Vec::new();
+                self.zero_covered(&pairs);
                 for (d, s) in pairs {
                     let (Val::Part(d), Val::Part(s)) = (&d, &s) else {
                         self.assign(&d, s)?;
@@ -763,6 +771,7 @@ impl Lx<'_> {
                         src: s.r,
                         lo: s.lo,
                         len: s.len,
+                        full: s.full,
                     }),
                     (false, _) => {
                         let s = self.whole(s);
@@ -812,6 +821,46 @@ impl Lx<'_> {
         }
     }
 
+    /// Words of a target that the leaves of a record assignment insert into and cover whole are
+    /// set to 0 first: code builds them field by field without clearing each field.
+    fn zero_covered(&mut self, pairs: &[(Val, Val)]) {
+        let mut cover: Vec<(Ref, u32, Vec<u64>)> = Vec::new();
+        let mut read = BTreeSet::new();
+        for (d, s) in pairs {
+            if let Val::Part(s) = s {
+                read.insert(s.r);
+            }
+            let (Val::Part(d), Val::Part(s)) = (d, s) else {
+                continue;
+            };
+            // Only what goes through an insert (not the blends of equal places).
+            if d.at.is_some()
+                || (d.lo == 0 && d.len == d.full)
+                || (d.lo == s.lo && d.full == s.full)
+            {
+                continue;
+            }
+            let i = match cover.iter().position(|c| c.0 == d.r) {
+                Some(i) => i,
+                None => {
+                    cover.push((d.r, d.full, vec![0; words(d.full) as usize]));
+                    cover.len() - 1
+                }
+            };
+            set_bits(&mut cover[i].2, d.lo, d.len);
+        }
+        for (r, full, m) in cover {
+            let mut all = vec![0; words(full) as usize];
+            set_bits(&mut all, 0, full);
+            if m == all && !read.contains(&r) {
+                self.ops.push(Op::Lit {
+                    dst: r,
+                    val: vec![0; all.len()].into(),
+                });
+            }
+        }
+    }
+
     fn index_site(&mut self, p: &Part, b: Bounds) -> u32 {
         let what = p
             .obj
@@ -851,6 +900,7 @@ impl Lx<'_> {
             src: p.r,
             lo: p.lo,
             len: p.len,
+            full: p.full,
         });
         t
     }
@@ -1031,10 +1081,16 @@ impl Lx<'_> {
             Val::Part(mut p) => {
                 p.r = self.loc(words(p.full));
                 self.uninit += u64::from(p.full);
+                if let Ref::Loc(w) = p.r {
+                    self.var_words.push((w, words(p.full)));
+                }
                 Val::Part(p)
             }
             Val::Int(mut i) => {
                 i.r = self.loc(1);
+                if let Ref::Loc(w) = i.r {
+                    self.var_words.push((w, 1));
+                }
                 let left = if i.down { i.hi } else { i.lo };
                 if let Ref::Loc(w) = i.r
                     && left != 0

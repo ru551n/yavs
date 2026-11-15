@@ -130,7 +130,10 @@ impl RegionProc {
                 }
                 o.last.clear();
                 o.last.push(v);
-                if !ctx.assign_planes_now(o.driver, Some(o.range), [v, mask(len), 0, 0]) {
+                // The whole driver, once per run, only when it changed: the kernel's short entry.
+                if !ctx.publish_planes(o.driver, [v, mask(len), 0, 0])
+                    && !ctx.assign_planes_now(o.driver, Some(o.range), [v, mask(len), 0, 0])
+                {
                     let b = blocks(&[v], len);
                     ctx.assign_blocks(
                         o.driver,

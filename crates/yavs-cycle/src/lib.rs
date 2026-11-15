@@ -231,6 +231,9 @@ fn build(
             n - codegen::words(klen(k))
         });
     }
+    // Signals hold state between calls; so do the variables of clocked processes.
+    let signal_words = n;
+    let mut state: Vec<(u32, u32)> = Vec::new();
     let mut settle = Vec::new();
     let mut edge = Vec::new();
     for (&k, &s) in &next {
@@ -252,6 +255,9 @@ fn build(
         checks.extend(b.checks.iter().map(|c| (c.clone(), *pi)));
         uninit += b.uninit;
         let clocked = b.kind == Kind::Clocked;
+        if clocked {
+            state.extend(b.vars.iter().map(|&(w, c)| (base + w, c)));
+        }
         if !clocked && !committed {
             commit(&mut edge, &next, &cur, klen);
             committed = true;
@@ -276,11 +282,16 @@ fn build(
     }
     let err = n;
     n += 2;
+    let mut keep = vec![false; n as usize];
+    keep[..signal_words as usize].fill(true);
+    for (w, c) in state {
+        keep[w as usize..(w + c) as usize].fill(true);
+    }
     let top = (e.hier.scopes.iter())
         .position(|s| s.parent.is_none())
         .ok_or("the design has no top-level instance")?;
     let label = e.hier.dotted(yavs_elab::ScopeId(top as u32));
-    let code = Arc::new(codegen::compile(&settle, &edge, n as usize, err, &label)?);
+    let code = Arc::new(codegen::compile(&settle, &edge, &keep, err, &label)?);
     let whole = |k: u32| {
         let s = yavs_kernel::SignalId(k);
         s.slice(0, nets.signal_len(s))
@@ -469,11 +480,18 @@ impl Resolve<'_> {
                 a: s(*a),
                 len: *len,
             },
-            Op::Extract { dst, src, lo, len } => Op::Extract {
+            Op::Extract {
+                dst,
+                src,
+                lo,
+                len,
+                full,
+            } => Op::Extract {
                 dst: d(*dst),
                 src: s(*src),
                 lo: *lo,
                 len: *len,
+                full: *full,
             },
             Op::Insert { dst, src, lo, len } => Op::Insert {
                 dst: d(*dst),

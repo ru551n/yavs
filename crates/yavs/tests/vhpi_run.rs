@@ -1888,6 +1888,8 @@ fn vhpi_folds_nested_generic_arithmetic() {
         constant c1 : bit_vector(N - 1 downto 0) := (others => '1');\n\
         constant c2 : bit_vector(2 * N + 1 downto 0) := (others => '1');\n\
         constant c5 : bit_vector((N + 1) / 2 - 1 downto 0) := (others => '1');\n\
+        constant c3 : integer := N + 1;\n\
+        constant c4 : integer := 2 * N + 1;\n\
         signal s : bit;\n\
         attribute one : integer;\n\
         attribute two : integer;\n\
@@ -1907,6 +1909,8 @@ fn vhpi_folds_nested_generic_arithmetic() {
             "top:c1 size=3",
             "top:c2 size=8",
             "top:c5 size=2",
+            "top:c3 rc=0 value=4",
+            "top:c4 rc=0 value=7",
             "one rc=0 value=4",
             "two rc=0 value=7",
             "three rc=0 value=5",

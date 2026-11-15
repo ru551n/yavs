@@ -1140,14 +1140,15 @@ impl Builder<'_> {
                 )
             }
             None => {
-                let v = s.and_then(|s| e.value(s, d));
-                let v = v.or_else(|| o.default.and_then(|x| db.value(x)));
+                // Elaboration never evaluates a constant nothing reads: fold its default.
+                let v = s.and_then(|s| e.value(s, d)).cloned();
+                let v = v.or_else(|| o.default.and_then(|x| self.fold(x, s)));
                 (
-                    self.layout(o.subtype, v, s),
+                    self.layout(o.subtype, v.as_ref(), s),
                     Origin::Decl {
                         scope: s,
                         decl: d,
-                        value: v.cloned(),
+                        value: v,
                     },
                 )
             }

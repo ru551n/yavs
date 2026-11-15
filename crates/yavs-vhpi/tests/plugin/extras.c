@@ -213,6 +213,14 @@ PLUGIN_EXPORT void nested(void) {
   const char *cs[] = {"top:c1", "top:c2", "top:c5"};
   for (int i = 0; i < 3; i++)
     vhpi_printf("%s size=%d\n", cs[i], (int)vhpi_get(vhpiSizeP, vhpi_handle_by_name(cs[i], NULL)));
+  const char *vs[] = {"top:c3", "top:c4"};
+  for (int i = 0; i < 2; i++) {
+    vhpiValueT v;
+    memset(&v, 0, sizeof v);
+    v.format = vhpiIntVal;
+    int rc = vhpi_get_value(vhpi_handle_by_name(vs[i], NULL), &v);
+    vhpi_printf("%s rc=%d value=%d\n", vs[i], rc, (int)v.value.intg);
+  }
   vhpiHandleT it = vhpi_iterator(vhpiAttrSpecs, vhpi_handle_by_name("top:s", NULL));
   for (vhpiHandleT a; it && (a = vhpi_scan(it));) {
     vhpiValueT v;

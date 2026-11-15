@@ -1238,3 +1238,28 @@ fn ports_collapsed_into_parts_of_their_actuals_give_the_same_result() {
         );
     }
 }
+
+#[test]
+fn asynchronous_resets_between_edges_give_the_same_result() {
+    let dir = tempdir("cycle-reset");
+    analyze(&dir, "reset.vhd", include_str!("cycle/reset.vhd"));
+    for (generic, members) in [("-gCOMB=false", "3 of 5"), ("-gCOMB=true", "4 of 6")] {
+        for t in tiers() {
+            let flags = [&t[..], &[generic]].concat();
+            let (normal, _) = run(&dir, &flags, "cycle_reset");
+            let (cycle, err) = run(&dir, &[&flags[..], &["--cycle"]].concat(), "cycle_reset");
+            // Hand-checked: the reset pulses before edges 5 and 13 and the level held at edge 9.
+            assert_eq!(normal.len(), 20, "{normal:?}");
+            assert!(normal[8].contains("n=09 m=40"), "{normal:?}");
+            assert_eq!(cycle, normal, "{generic} {t:?}\n{err}");
+            assert!(
+                err.contains(&format!("cycle mode: {members} processes run cycle-based")),
+                "{err}"
+            );
+            assert!(
+                err.contains("its asynchronous reset is made inside the region"),
+                "{err}"
+            );
+        }
+    }
+}

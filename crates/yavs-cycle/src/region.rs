@@ -402,6 +402,24 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
                 ));
                 continue;
             }
+            // A reset made inside the region: the lowering applies a reset branch only at the
+            // region's wakes, before it settles, so it would act one wake late.
+            if let Some((r, ..)) = b.reset
+                && let Some(q) = (drivers.get(&r).into_iter().flatten())
+                    .map(|o| o.0)
+                    .find(|q| taken.contains_key(q))
+            {
+                gone.push((
+                    pi,
+                    format!(
+                        "its asynchronous reset is made inside the region, by {}; cycle mode \
+                         applies a reset only when an event of it from outside wakes the region \
+                         (not implemented yet)",
+                        e.proc_label(&e.procs[q])
+                    ),
+                ));
+                continue;
+            }
             if let Some(c) = b.clock {
                 if clock.is_some_and(|k| k != c) {
                     gone.push((

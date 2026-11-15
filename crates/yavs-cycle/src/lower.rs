@@ -619,9 +619,9 @@ struct Part {
     /// The signal leaf the part is of (reads and writes of the body are counted by leaf).
     leaf: Option<LeafId>,
     /// Elements of the array from element `lo`, chosen at run time: the index of the first (the
-    /// rightmost of a slice), the array's index range and the width of one of its elements; the
-    /// part is `len` wide.
-    at: Option<(Ref, Bounds, u32)>,
+    /// rightmost of a slice), the array's index range, the width of one of its elements, and where
+    /// in that element the part starts (a field or slice of the element); the part is `len` wide.
+    at: Option<(Ref, Bounds, u32, u32)>,
     /// The object a name starts from (messages of index checks).
     obj: Option<DeclId>,
     /// A literal with a metavalue element: its `std_ulogic` codes (`Lx::lits`), since no
@@ -1769,7 +1769,7 @@ impl Lx<'_> {
                 if let Some(l) = d.leaf {
                     self.writes.insert(l);
                 }
-                if let Some((idx, b, stride)) = d.at {
+                if let Some((idx, b, stride, _)) = d.at {
                     // ponytail: a big array signal written at a run-time index is a RAM, whose
                     // next-state copy would cost the whole array per edge; RAMs are the next step.
                     if matches!(d.r, Ref::Sig(_)) && d.full > 4096 {
@@ -1962,7 +1962,7 @@ impl Lx<'_> {
 
     /// A dynamic element read into a temporary; any other part as it is.
     fn materialise(&mut self, p: Part) -> Part {
-        let Some((idx, b, stride)) = p.at else {
+        let Some((idx, b, stride, _)) = p.at else {
             return p;
         };
         let site = self.index_site(&p, b);
@@ -2031,7 +2031,8 @@ impl Lx<'_> {
                 let [i] = &indices[..] else {
                     return Err("an index of a multi-dimensional array".into());
                 };
-                let v = self.array_val(*prefix, target)?;
+                // An element chosen at run time keeps its index for a static selection in it.
+                let v = self.name(*prefix, target)?;
                 let b = outer(&v).ok_or("an index of a value with no index range")?;
                 let ix = match self.static_int(*i) {
                     Ok(i) => Ok(elem_of(b, i).ok_or("an index outside its array's range")?),
@@ -2040,11 +2041,21 @@ impl Lx<'_> {
                         Err(self.int(i)?.r)
                     }
                 };
+                let v = if ix.is_err() {
+                    self.no_at(v, target)?
+                } else {
+                    v
+                };
                 at_each(v, b, &mut |mut p| {
                     let ew = p.dims.elem_len();
                     match ix {
-                        Ok(el) => p.lo += el * ew,
-                        Err(r) => p.at = Some((r, b, ew)),
+                        Ok(el) => {
+                            p.lo += el * ew;
+                            if let Some(at) = &mut p.at {
+                                at.3 += el * ew;
+                            }
+                        }
+                        Err(r) => p.at = Some((r, b, ew, 0)),
                     }
                     p.len = ew;
                     p.dims = p.dims.rest();
@@ -2055,7 +2066,7 @@ impl Lx<'_> {
                 let Ok((sb, _)) = self.static_range(range) else {
                     return self.dynamic_slice(*prefix, range, target);
                 };
-                let v = self.array_val(*prefix, target)?;
+                let v = self.name(*prefix, target)?;
                 let b = outer(&v).ok_or("a slice of a value with no index range")?;
                 if sb.dir != b.dir {
                     return Err("a slice in the other direction than its array".into());
@@ -2070,6 +2081,9 @@ impl Lx<'_> {
                 at_each(v, b, &mut |mut p| {
                     let ew = p.dims.elem_len();
                     p.lo += lo * ew;
+                    if let Some(at) = &mut p.at {
+                        at.3 += lo * ew;
+                    }
                     p.len = n * ew;
                     p.dims = p.dims.with_first(sb);
                     p
@@ -2147,7 +2161,7 @@ impl Lx<'_> {
             hi: d,
             site,
         });
-        p.at = Some((r.r, b, ew));
+        p.at = Some((r.r, b, ew, 0));
         p.len = (d as u32 + 1) * ew;
         // Its index range is the bounds' at run time: no index or slice of it is taken.
         p.dims = Dims::NONE;
@@ -2430,15 +2444,16 @@ impl Lx<'_> {
             Val::Part(p) => {
                 if let Some(l) = p.leaf {
                     let base = nets.loc[l.index()].base;
-                    let n = match p.at {
-                        Some((_, b, stride)) => stride * b.len() as u32,
-                        None => p.len,
+                    // An element chosen at run time: the whole array it is of.
+                    let (lo, n) = match p.at {
+                        Some((_, b, stride, off)) => (p.lo - off, stride * b.len() as u32),
+                        None => (p.lo, p.len),
                     };
                     self.reads.insert(l);
                     // An array of integers: a word per element.
                     let (lo, n) = match p.int {
-                        Some(_) => (p.lo / 64, n / 64),
-                        None => (p.lo, n),
+                        Some(_) => (lo / 64, n / 64),
+                        None => (lo, n),
                     };
                     self.rparts.push((l, lo - base, n));
                 }
@@ -2715,18 +2730,16 @@ impl Lx<'_> {
                 }
             }
             ExprKind::ImplicitConv { operand } => self.fold(*operand),
-            // `d'length` and its friends of an array formal or local of an inlined call.
+            // `x'length` and its friends of an array object whose range is fixed: a formal or
+            // local of an inlined call, a signal, a variable of the process.
             ExprKind::Attr {
                 attr,
                 prefix: AttrPrefix::Expr(p),
                 args,
             } if args.is_empty()
                 && let ExprKind::Obj(d) = db.exprs[*p].kind
-                && let Some(Bind::Val(Val::Part(v))) = self.bound(d)
-                && v.dims.n > 0
-                && v.at.is_none() =>
+                && let Some(b) = self.obj_bounds(d) =>
             {
-                let b = v.dims.b[0];
                 let (lo, hi) = b.low_high();
                 Some(ConstValue::Int(match attr {
                     PredefAttr::Length => b.len() as i64,
@@ -2761,6 +2774,34 @@ impl Lx<'_> {
                 crate::check::const_value(db, self.e, self.p, known, x)
             }
             _ => db.fold_with(x, &mut |c| self.fold(c)).ok().flatten(),
+        }
+    }
+
+    /// The index range of array object `d` when it is fixed, without lowering anything.
+    fn obj_bounds(&self, d: DeclId) -> Option<Bounds> {
+        if let Some(b) = self.bound(d) {
+            return match b {
+                Bind::Val(Val::Part(v)) if v.dims.n > 0 && v.at.is_none() => Some(v.dims.b[0]),
+                _ => None,
+            };
+        }
+        let shape = match &self.db.decls[d].kind {
+            yavs_sem::decl::DeclKind::Object(o) => match o.class {
+                yavs_sem::decl::ObjClass::Signal => {
+                    &self.e.nets.obj(self.e.signal(self.p.scope, d)?).shape
+                }
+                yavs_sem::decl::ObjClass::Variable => {
+                    let up = (self.e.hier.scope(self.p.scope).parent, d);
+                    (self.e.var_shapes.get(&(Some(self.p.scope), d)))
+                        .or_else(|| self.e.var_shapes.get(&up))?
+                }
+                _ => return None,
+            },
+            _ => return None,
+        };
+        match shape {
+            Shape::Array { dims, .. } => dims.first().copied(),
+            _ => None,
         }
     }
 

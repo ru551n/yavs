@@ -1,6 +1,7 @@
 -- Arrays of records in cycle mode against the normal mode on 0/1 inputs, for a width that the test
 -- fills in: signals (a bus fabric of one process per port, an index chosen at run time, slices, an
--- array of records in a `to` range) and a variable of a clocked process written at a run-time index.
+-- array of records in a `to` range, slices and elements of a field of an element chosen at run
+-- time) and a variable of a clocked process written at a run-time index.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -28,6 +29,7 @@ architecture a of cycle_recarr is
   signal pick, last : req_t;
   signal mid : req_arr_t(0 to 1);
   signal regs : req_arr_t(0 to 3);
+  signal pick2 : std_ulogic_vector(W - W / 2 + 1 downto 0);
 begin
   ports : for i in 0 to 3 generate
     port_p : process (main)
@@ -54,6 +56,7 @@ begin
     pick <= dev(to_integer(k));
     pick.addr <= dev(to_integer(k)).addr xor up(to_integer(k) + 2).addr;
     mid <= dev(1 to 2);
+    pick2 <= dev(to_integer(k)).addr(W - 1 downto W / 2) & up(to_integer(k) + 2).tag(2 downto 1);
   end process;
 
   reg : process (clk)
@@ -68,6 +71,8 @@ begin
       v(to_integer(k)) := main;
       v(1).stb := not v(1).stb;
       v(3).addr := v(2).addr xor v(0).addr;
+      v(to_integer(k)).addr(W - 1 downto W / 2) := not main.addr(W - 1 downto W / 2);
+      v(to_integer(not k)).tag(1) := main.stb;
       regs <= v;
       last <= v(to_integer(not k));
     end if;
@@ -95,7 +100,8 @@ begin
         & to_string(up(5).tag) & " pick=" & to_hstring(pick.addr) & std_ulogic'image(pick.stb)
         & to_string(pick.tag) & " mid=" & std_ulogic'image(mid(0).stb) & to_string(mid(1).tag)
         & " regs=" & to_hstring(regs(0).addr) & to_hstring(regs(3).addr) & std_ulogic'image(regs(1).stb)
-        & to_string(regs(2).tag) & " last=" & to_hstring(last.addr) & std_ulogic'image(last.stb);
+        & to_string(regs(2).tag) & " last=" & to_hstring(last.addr) & std_ulogic'image(last.stb)
+        & " pick2=" & to_string(pick2);
     end loop;
     wait;
   end process;

@@ -861,7 +861,8 @@ impl Gen<'_> {
                 down,
                 site,
             } => {
-                let count = w / stride;
+                // Array elements the value spans: one for a part of one element.
+                let count = (w / stride).max(1);
                 let bit = self.element(*idx, *left, *down, *n, *stride, count, *lo, *site);
                 let end = lo + n * stride;
                 // The word after the value too: an element may reach into it.
@@ -882,7 +883,8 @@ impl Gen<'_> {
                 site,
             } => {
                 let v = self.lds(*src, *w);
-                let count = w / stride;
+                // Array elements the value spans: one for a part of one element.
+                let count = (w / stride).max(1);
                 let bit = self.element(*idx, *left, *down, *n, *stride, count, *lo, *site);
                 let (k0, k1) = (lo / 64, (lo + n * stride).div_ceil(64));
                 self.spill(*dst, k0, k1);

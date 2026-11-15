@@ -160,6 +160,7 @@ use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 use work.cycle_calls_pkg.all;
 entity cycle_calls is
+  generic (gw : positive := W);
 end entity;
 architecture a of cycle_calls is
   signal clk : std_ulogic := '0';
@@ -167,6 +168,7 @@ architecture a of cycle_calls is
   signal t : std_ulogic_vector(0 to W - 1) := (others => '0');
   signal k : integer range -4 to 4 := 0;
   signal r1, r2, r3, r4, z, zz : std_ulogic_vector(W - 1 downto 0);
+  signal zg : std_ulogic_vector(W / 2 downto 0);
   signal red : std_ulogic_vector(4 downto 0);
   signal pos, post, dv, cnt, enc, xo : integer range -1000 to 1000;
   signal ep : ends_t;
@@ -201,10 +203,14 @@ begin
     z <= v;
   end process;
 
-  -- A loop bound that a pure function of constants gives.
+  -- A loop bound that a pure function of constants gives; a slice whose bounds are attributes of
+  -- objects in arithmetic.
   pf : process (all)
     variable s : std_ulogic_vector(W - 1 downto 0);
+    variable g : std_ulogic_vector(gw / 2 downto 0);
   begin
+    g := a(a'high downto a'length - g'length);
+    zg <= g;
     s := (others => '0');
     for i in 0 to minimum(W - 1, tri(2)) loop
       s(i) := a(W - 1 - i);
@@ -271,7 +277,7 @@ begin
       wait for 5 ns;
       report "c=" & integer'image(c) & " r1=" & to_hstring(r1) & " r2=" & to_hstring(r2)
         & " r3=" & to_hstring(r3) & " r4=" & to_hstring(r4) & " z=" & to_hstring(z)
-        & " zz=" & to_hstring(zz)
+        & " zz=" & to_hstring(zz) & " zg=" & to_string(zg)
         & " red=" & to_string(red) & " pos=" & integer'image(pos) & " post=" & integer'image(post)
         & " dv=" & integer'image(dv) & " cnt=" & integer'image(cnt) & " enc=" & integer'image(enc)
         & " xo=" & integer'image(xo)

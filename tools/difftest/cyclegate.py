@@ -29,11 +29,15 @@ CYCLE = D.YAVS.replace(CYC, "--cycle " + CYC)
 # width token W; subset.vhd is a checker test (never run by its test) and stays out.
 W = re.compile(r"(?<![\w])W(?![\w])")
 CYCLE_TESTS = {
+    "calls.vhd": [("cycle_calls", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
+    "consts.vhd": [("cycle_consts", "", None)],
+    "intarr.vhd": [("cycle_intarr", "", None)],
     "ints.vhd": [("cycle_ints", "", None)],
     "numeric.vhd": [("cycle_ops2", "", lambda s, w=w: W.sub(str(w), s)) for w in (8, 63, 65)],
     "partial.vhd": [("cycle_partial", "", None)],
     "ports.vhd": [("cycle_ports", "", None)],
     "quiet.vhd": [("cycle_quiet", "", None)],
+    "recarr.vhd": [("cycle_recarr", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
     "reset.vhd": [("cycle_reset", "", None), ("cycle_reset", "-gCOMB=true", None)],
     "shapes.vhd": [("cycle_shapes", "", None)],
 }

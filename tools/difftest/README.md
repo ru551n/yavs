@@ -116,6 +116,19 @@ the region, and the summary counts the tests with at least one member. `--only c
 
     YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclegate.py
 
+The gate has no large design. `cyclebig.py` is its optional companion: it runs realbench worlds (made by
+`tools/realbench/run.py --prepare` under `YAVS_REALBENCH_CACHE`, named `<test>-<label>`, `--label` default `yavs`)
+normal and `--cycle` with one binary for the test's own stop time, each mode in a copy of the world, and compares
+exit status, the console (standard output without report records) and every text file the run wrote in its
+working directory (on NEORV32 the CPU's instruction traces and the UART logs). A `?` in the normal mode's file
+matches any character (a metavalue digit, read as 0 in cycle mode). Reports are counted, not compared: NEORV32
+prints about 80 000 library metavalue warnings and configuration notes from processes that join the region, and
+cycle mode evaluates none of them. A run that compared nothing (no member, or no output) fails. Default test
+`neorv32_dual_full` (under a minute per mode); `--tests microwatt_coremark_short` is opt-in (minutes). A test without
+a world is skipped with the command that makes it. `--selftest` checks the comparison:
+
+    YAVS_REALBENCH_CACHE=<cache> python3 -I tools/difftest/cyclebig.py target/release/yavs
+
 ## Plugging yavs in
 
 `--candidate` takes a reference label (`sim1`, `sim2`: key `difftest` of its section in the untracked `tools/sims.local.conf`, with keys `difftest_relaxed` and `difftest_ignore`), `yavs` or any bash command template. The built-in `yavs`

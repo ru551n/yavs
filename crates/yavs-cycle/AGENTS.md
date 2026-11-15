@@ -118,6 +118,11 @@ YAVS_BIN=<release yavs> python3 -I tools/difftest/cyclegate.py   # the correctne
   `tests/cycle` and the bench designs in normal and cycle mode with one binary and fails on any difference the
   documented losses (A6) or the reviewed list `tools/difftest/cyclegate.expected` do not explain; a new entry in that list is a decision to accept the loss, not a way to silence the gate. It also shows how many
   processes joined per test, so a pass is not vacuous: read the summary's count of tests with a member.
+- The gate has no large design: with realbench worlds prepared, `tools/difftest/cyclebig.py <yavs>` runs
+  NEORV32 dual_full in both modes and compares exit status, console and the CPU's instruction traces (a
+  minute). NEORV32's normal mode prints about 80 000 library metavalue warnings and configuration notes, all
+  from member processes; `--cycle` prints none of them by design, and no UART text in either mode (its
+  built-in program does not print).
 
 - Codes owned: `E4100`-`E4199`, `W4100`-`W4199` (in use: `E4101`, `E4102`, `E4110` to `E4127`, `lib.rs` `codes`).
 - `YAVS_CYCLE_VERDICTS=1 yavs run --cycle ...` prints the report and stops before compiling or

@@ -15991,7 +15991,8 @@ Never-taken tests take no branch-target entry, so what pays is a test removed, n
   of run 1) compiled early in run 2 moved that run's compile budget, and run 3 recompiled about 110 ms that run 2 no
   longer reached (all threads run 3 1.15). (7) Pricing a lost subprogram as a compile, not a link of the cache, and
   letting a run whose lost tries were subprograms alone become the base: neither changed that run 3.
-- **A lost subprogram is not priced as a link** (agent; kept as a guard, not shown to matter on the measured designs). A subprogram compiled early that the profile's verdict puts
+- **A lost subprogram is not priced as a link** (SUPERSEDED 2026-11-15 by "`--tier=auto`: a lost function keeps its link
+  price": measured to cost, see there) (agent; kept as a guard, not shown to matter on the measured designs). A subprogram compiled early that the profile's verdict puts
   on the loss list keeps its code in the cache; priced as a link (`cached`), every later run would take that code at
   once (`uvvm_axistream_vvc`: the frame-mode code of `convert_byte_array_to_slv_array`, lost in run 2, linked in run
   3). Such a subprogram is priced as a compile, as before it was ever compiled; processes a trial lost keep their
@@ -16834,3 +16835,32 @@ earlier runs saw a function `unrepaid` held.
   highest, `hdlm_unsigned_divider` 1.019 (copy 0.992), retires the same instructions with both binaries in one world
   (172.9 M a run from run 3), as do `vai_weight_buffer` (314.0 M) and `uvvm_func_cov` (within its own spread): their
   counts differ by world, not by binary.
+
+## `--tier=auto`: a lost function keeps its link price (yavs-rt `auto.rs` `Worker::cached`, perf/policy3, 2026-11-15)
+
+Supersedes "A lost subprogram is not priced as a link" in "`--tier=auto`: a subprogram that loops in one call is hot for
+the next run".
+
+- **Finding** (agent, policy2 and policy3, traces of `uvvm_axistream_vvc`, 8 + 16 fresh worlds x 16 to 24 runs per
+  build). `axistream_expect` (4546 IR instructions) is linked from the cache by the count rule at about 70 to 350 ms
+  in every warm run. Once the profile names it hot, a run compiles it early (linked at about 50 to 130 ms) and the run
+  as a whole is judged against the run before (`profile::better`, 3 percent less work). The two states differ by
+  about 2 percent (runs 9 to 24, median 15.59 G instructions early-linked against 15.94 G count-linked, 354 and 402
+  runs), under the bar and within the noise of one pair of runs: it was kept only where the run before had paid its
+  fresh compile (0.74 to 0.87) and lost where the run before had linked it by the count (0.987, 0.990, 0.994). Lost,
+  it was priced as a compile (`cached` false), so the count rule held it until its seen time repaid about 200 ms of
+  compile: linked at 620 to 670 ms, +1.3 to 1.4 G a run (about 8 percent) in every later run, in 3 of 24 worlds of
+  base within 24 runs. The guard against this was kept without a measured gain.
+- **Decision** (agent). A function the profile lost keeps the price of a link when the cache holds it: lost means only
+  "not compiled early". It goes back to the state it had before it was compiled early (the count rule's link).
+- **Measured** (agent, `uvvm_axistream_vvc`, 16 fresh worlds x 24 runs, base, a byte copy, the change, traced): worlds
+  that lost `axistream_expect`: base 2 (linked at 646 and 670 ms after, +1.27 and +1.42 G a run against the other
+  worlds), copy 0, change 2 (linked at 150 to 350 ms after, +0.6 and 0.0 G). Sums over the 24 runs level (1.000,
+  copy 1.001): the loss comes late and rarely. The broad set (realbench, bench, test runner cells) is in the policy3
+  report.
+- **Measurement** (agent, 2026-11-15). The memo of pure calls (`yavs-interp` `pmemo.rs`) hashes argument bytes into
+  direct-mapped tables, so the text of a path the VHDL reads moves its hits: `vunit_logging` retired 158.9 to 169.0 M
+  instructions a warm run by the 6 letters of its `output path` alone (16 paths; memo off: 192.10 to 192.22 M). The
+  timing tools passed each world's own path in the test runner's `runner_cfg`, which gave each binary of a comparison
+  a fixed bias of up to a few percent on VUnit tests that an A/A did not cancel; `tools/realbench` and `tools/bench`
+  now pass a relative `output path`. Not a user-visible defect: a few percent, fixed for a given path.

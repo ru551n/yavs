@@ -2602,20 +2602,15 @@ impl Worker {
     }
 
     /// Whether the compilation cache holds the object of `id`: an earlier run compiled a function
-    /// of its name and size (`listed`). A function of the cache costs `FIRST_HIT`, whatever its kind.
-    /// Never with `YAVS_AUTO_PRICE=model` (the model's price and `Heat::threshold` for every
-    /// function, cold or warm: counts that do not depend on the cache, #728), and never for a
-    /// subprogram the profile lost (compiled early, no faster, `early_loop`): its code stays in
-    /// the cache, and priced as a link every later run would take it at once. Worked out once.
+    /// of its name and size (`listed`). A function of the cache costs `FIRST_HIT`, whatever its kind,
+    /// also one the profile lost: lost only means not compiled early (priced as a compile, a lost
+    /// subprogram the count rule had linked was held for good, docs/decisions.md). Never with
+    /// `YAVS_AUTO_PRICE=model` (the model's price and `Heat::threshold` for every function, cold or
+    /// warm: counts that do not depend on the cache, #728). Worked out once.
     fn cached(&self, id: FuncId) -> bool {
         static MODEL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *self.in_cache[id.0 as usize].get_or_init(|| {
             !*MODEL.get_or_init(|| std::env::var("YAVS_AUTO_PRICE").is_ok_and(|v| v == "model"))
-                && !(self.earlier.lost.contains(&id.0)
-                    && self
-                        .prog
-                        .raw(id)
-                        .is_some_and(|f| f.kind != FuncKind::Process))
                 && self.generator.cache_enabled()
                 && self
                     .prog
@@ -5569,8 +5564,6 @@ mod tests {
         assert!(w.early_kind(p), "processes keep their own filter");
     }
 
-    /// A subprogram the profile lost is not priced as a link of the cache: its code stays there,
-    /// and a later run would link it at once though compiling it early gained nothing.
     /// A held function the last run compiled or linked (`Profile::made`) but the cache's list does
     /// not name (its line lost: a run ended by a crash or a kill) is looked up in the store once
     /// (`lost_line`, `relink`), so the code there is linked rather than held for good (#1148); not
@@ -5633,8 +5626,11 @@ mod tests {
         }
     }
 
+    /// A function the profile lost keeps the price of a link of the cache: priced as a compile, a
+    /// subprogram the count rule linked before it was compiled early and judged no better was held
+    /// for good (`uvvm_axistream_vvc`'s `axistream_expect`, docs/decisions.md).
     #[test]
-    fn a_subprogram_the_profile_lost_is_not_priced_as_a_link() {
+    fn a_function_the_profile_lost_keeps_its_link_price() {
         struct Cached;
         impl crate::Generator for Cached {
             fn compile(
@@ -5666,7 +5662,10 @@ mod tests {
         let (w, p, g) = fresh(false);
         assert!(w.cached(g) && w.cached(p));
         let (w, p, g) = fresh(true);
-        assert!(!w.cached(g), "a subprogram the profile lost");
+        assert!(
+            w.cached(g),
+            "a subprogram the profile lost keeps its link price"
+        );
         assert!(w.cached(p), "a process lost by its trial keeps its price");
     }
 

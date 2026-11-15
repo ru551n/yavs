@@ -10,7 +10,7 @@ use yavs_kernel::{
     Ctx, DelayMode, DriverId, ErrorKind, ProcId, Process, Range, SigRef, SimError, Time,
 };
 
-use crate::codegen::{Code, mask, words};
+use crate::codegen::{Code, Fun, mask, words};
 use crate::lower::Check;
 
 /// A kernel range read into the image: its words `slot`, from element `lo` there, `len`
@@ -56,6 +56,10 @@ pub(crate) struct RegionProc {
     pub metas: Arc<crate::Metas>,
     /// Elements of member variables without an initial value, counted at initialisation.
     pub uninit: u64,
+    /// The word that tells the code whether the clock edge happened.
+    pub edge_word: usize,
+    /// A member has an asynchronous reset: the edge function runs at every wake.
+    pub has_reset: bool,
     pub buf: Vec<u8>,
 }
 
@@ -63,6 +67,12 @@ impl RegionProc {
     /// `rd` from the kernel into the image: inserted at its place, metavalues as 0; returns how
     /// many elements were metavalues.
     fn read(ctx: &Ctx<'_>, img: &mut [u64], buf: &mut Vec<u8>, rd: &Read) -> Result<u64, SimError> {
+        if rd.bytes == 1 {
+            let mut b = [0u8; 1];
+            ctx.read_into(rd.r, &mut b)?;
+            img[rd.slot as usize] = u64::from(b[0]);
+            return Ok(0);
+        }
         if rd.bytes == 4 {
             let mut b = [0u8; 4];
             ctx.read_into(rd.r, &mut b)?;
@@ -178,10 +188,21 @@ impl RegionProc {
         e
     }
 
-    fn run_code(&mut self, ctx: &Ctx<'_>, edge: bool) -> Result<(), SimError> {
+    fn run_code(&mut self, ctx: &Ctx<'_>, f: Fun) -> Result<(), SimError> {
         self.code
-            .run(&mut self.img, edge)
+            .run(&mut self.img, f)
             .map_err(|site| self.failed(ctx, site))
+    }
+
+    /// The edge function where the edge happened or a reset may hold, else the settle function.
+    fn wake(&mut self, ctx: &Ctx<'_>, edge: bool) -> Result<(), SimError> {
+        self.img[self.edge_word] = u64::from(edge);
+        let f = if edge || self.has_reset {
+            Fun::Edge
+        } else {
+            Fun::Settle
+        };
+        self.run_code(ctx, f)
     }
 }
 
@@ -221,7 +242,9 @@ impl Process for RegionProc {
                 metas += Self::read(ctx, &mut self.img, &mut self.buf, rd)?;
             }
             self.metas.init.fetch_add(metas, Ordering::Relaxed);
-            self.run_code(ctx, false)?;
+            self.run_code(ctx, Fun::Init)?;
+            // A reset that holds at time 0 applies, as when the normal mode runs every process once.
+            self.wake(ctx, false)?;
             self.export(ctx)?;
             for &w in &self.waits {
                 ctx.wait_on(w)?;
@@ -240,7 +263,7 @@ impl Process for RegionProc {
             Some((r, kind)) => ctx.edge_by(r, kind)? == Some(true),
             None => false,
         };
-        self.run_code(ctx, edge)?;
+        self.wake(ctx, edge)?;
         self.export(ctx)?;
         if !ctx.wait_same() {
             for &w in &self.waits {

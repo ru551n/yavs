@@ -21,7 +21,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
-use crate::lower::{Arith, Cmp, Gate, Op, Ref};
+use crate::lower::{Arith, Cmp, Gate, Op, Ref, ShiftK};
 
 /// One compiled trigger function: the address of the image's first word; 0, or the failed check's
 /// site plus one.
@@ -30,26 +30,27 @@ pub(crate) type Entry = unsafe extern "C" fn(*mut u64) -> u32;
 /// The compiled functions of a region; the module owns their code.
 pub(crate) struct Code {
     _module: JITModule,
-    settle: Entry,
-    edge: Entry,
+    /// By [`Fun`]: the functions it is cut into, called in order.
+    entries: [Vec<Entry>; 3],
     /// The words the code addresses.
     words: usize,
 }
 
 impl Code {
-    /// Run the settle function (`edge` false) or the edge function on `img`: `Err(site)` when a
-    /// check failed.
-    pub(crate) fn run(&self, img: &mut [u64], edge: bool) -> Result<(), u32> {
+    /// Run function `f` on `img`: `Err(site)` when a check failed.
+    pub(crate) fn run(&self, img: &mut [u64], f: Fun) -> Result<(), u32> {
         assert!(
             img.len() >= self.words,
             "the image is smaller than the code's words"
         );
-        let f = if edge { self.edge } else { self.settle };
-        // SAFETY: the code reads and writes only words below `words`, checked above.
-        match unsafe { f(img.as_mut_ptr()) } {
-            0 => Ok(()),
-            s => Err(s - 1),
+        for f in &self.entries[f as usize] {
+            // SAFETY: the code reads and writes only words below `words`, checked above.
+            match unsafe { f(img.as_mut_ptr()) } {
+                0 => {}
+                s => return Err(s - 1),
+            }
         }
+        Ok(())
     }
 }
 
@@ -57,6 +58,17 @@ impl Code {
 unsafe impl Send for Code {}
 // SAFETY: as above, nothing in it is mutated after `compile`.
 unsafe impl Sync for Code {}
+
+/// The trigger functions of a region.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Fun {
+    /// The combinational bodies.
+    Settle,
+    /// The clocked bodies, the commit, the combinational bodies.
+    Edge,
+    /// Once, before the first settle: initial values of the variables.
+    Init,
+}
 
 /// Ones in the low `len` bits.
 pub(crate) fn mask(len: u32) -> u64 {
@@ -76,20 +88,34 @@ pub(crate) fn checks_on() -> bool {
 fn word(r: Ref) -> i32 {
     match r {
         Ref::Loc(s) => (s * 8) as i32,
-        Ref::Sig(_) => {
+        Ref::Sig(_) | Ref::Edge => {
             unreachable!("signal references are resolved to slots before code generation")
         }
     }
 }
 
-/// Compile the two trigger functions. Every `Ref` of `settle` and `edge` is an image slot
+/// Operations per compiled function, about: Cranelift's register allocation grows faster than
+/// the function, so a long trigger function is cut between members into several.
+const CHUNK: usize = 4000;
+
+/// The operations of `ops`, nested ones included.
+fn weight(ops: &[Op]) -> usize {
+    ops.iter()
+        .map(|o| match o {
+            Op::If { then, else_, .. } => 1 + weight(then) + weight(else_),
+            _ => 1,
+        })
+        .sum()
+}
+
+/// Compile the trigger functions (by [`Fun`]), each given as pieces that need nothing from one
+/// another but memory (the bodies of members). Every `Ref` of them is an image slot
 /// (`Ref::Loc`); `err` is the first of the two error words; `keep[w]`: word `w` holds state
 /// between calls (signals, variables of clocked processes), every other word is scratch, which
 /// the code keeps in registers and never stores unless an element of it is addressed at run
 /// time. `name` labels the functions in the perf map.
 pub(crate) fn compile(
-    settle: &[Op],
-    edge: &[Op],
+    funs: [&[Vec<Op>]; 3],
     keep: &[bool],
     err: u32,
     name: &str,
@@ -117,8 +143,26 @@ pub(crate) fn compile(
     let checks = checks_on();
     let mut ids = Vec::new();
     let perf = std::env::var_os("YAVS_CLIFT_PERFMAP").is_some();
-    for (what, ops) in [("settle", settle), ("edge", edge)] {
-        let sym = format!("cycle_{what}_{name}");
+    let mut chunks: Vec<(usize, Vec<&Vec<Op>>)> = Vec::new();
+    for (f, pieces) in funs.iter().enumerate() {
+        let mut cur: Vec<&Vec<Op>> = Vec::new();
+        let mut w = 0;
+        for p in pieces.iter() {
+            if w > 0 && w + weight(p) > CHUNK {
+                chunks.push((f, std::mem::take(&mut cur)));
+                w = 0;
+            }
+            w += weight(p);
+            cur.push(p);
+        }
+        // Every function has one entry at least, maybe empty.
+        if !cur.is_empty() || !chunks.iter().any(|c| c.0 == f) {
+            chunks.push((f, cur));
+        }
+    }
+    for (k, (f, ops)) in chunks.iter().enumerate() {
+        let what = ["settle", "edge", "init"][*f];
+        let sym = format!("cycle_{what}_{k}_{name}");
         let mut sig = module.make_signature();
         sig.params.push(AbiParam::new(ptr));
         sig.returns.push(AbiParam::new(I32));
@@ -145,8 +189,16 @@ pub(crate) fn compile(
                 keep,
                 zeros: std::collections::HashMap::new(),
             };
-            g.ops(ops);
-            g.write_back();
+            // Each piece starts from memory: the words it keeps in registers are few, and a
+            // branch saves and forgets only those.
+            for p in ops {
+                for op in p.iter() {
+                    g.op(op);
+                }
+                g.write_back();
+                g.cache.clear();
+                g.zeros.clear();
+            }
             let zero = g.b.ins().iconst(I32, 0);
             g.b.ins().return_(&[zero]);
             g.b.finalize(module.target_config());
@@ -160,28 +212,24 @@ pub(crate) fn compile(
         if disasm && let Some(text) = ctx.compiled_code().and_then(|c| c.vcode.as_ref()) {
             eprintln!("{sym}:\n{text}");
         }
-        ids.push((id, sym));
+        ids.push((*f, id, sym));
     }
     module.finalize_definitions().map_err(|e| e.to_string())?;
     let addr = |id: FuncId| module.get_finalized_function(id);
-    let (settle, edge) = (addr(ids[0].0), addr(ids[1].0));
     if perf {
-        for (id, sym) in &ids {
+        for (_, id, sym) in &ids {
             // The size is not kept by the module; one page is an upper bound for a label.
             yavs_rt::perfmap::append(addr(*id) as usize, 4096, sym);
         }
     }
-    // SAFETY: both are functions of signature `fn(ptr) -> u32` defined above.
-    let (settle, edge) = unsafe {
-        (
-            std::mem::transmute::<*const u8, Entry>(settle),
-            std::mem::transmute::<*const u8, Entry>(edge),
-        )
-    };
+    let mut entries: [Vec<Entry>; 3] = Default::default();
+    for (f, id, _) in &ids {
+        // SAFETY: every one is a function of signature `fn(ptr) -> u32` defined above.
+        entries[*f].push(unsafe { std::mem::transmute::<*const u8, Entry>(addr(*id)) });
+    }
     Ok(Code {
         _module: module,
-        settle,
-        edge,
+        entries,
         words,
     })
 }
@@ -377,8 +425,19 @@ impl Gen<'_> {
     }
 
     /// The element of a dynamic index: `idx - left` (ascending) or `left - idx`, checked to be
-    /// below `n` (or clamped to 0 when checks are off); returns its bit, `lo + n - 1 - p`.
-    fn element(&mut self, idx: Ref, left: i64, down: bool, n: u32, lo: u32, site: u32) -> Value {
+    /// below `n` (or clamped to 0 when checks are off); returns its first bit,
+    /// `lo + (n - 1 - p) * w`.
+    #[allow(clippy::too_many_arguments)]
+    fn element(
+        &mut self,
+        idx: Ref,
+        left: i64,
+        down: bool,
+        n: u32,
+        w: u32,
+        lo: u32,
+        site: u32,
+    ) -> Value {
         let i = self.ld(idx, 0);
         let p = if down {
             let l = self.b.ins().iconst(I64, left);
@@ -397,8 +456,179 @@ impl Gen<'_> {
             let z = self.konst(0);
             self.b.ins().select(out, z, p)
         };
-        let l = self.b.ins().iconst(I64, i64::from(lo + n - 1));
-        self.b.ins().isub(l, p)
+        let l = self.b.ins().iconst(I64, i64::from(n - 1));
+        let e = self.b.ins().isub(l, p);
+        let e = if w == 1 {
+            e
+        } else {
+            self.b.ins().imul_imm_s(e, i64::from(w))
+        };
+        self.b.ins().iadd_imm_s(e, i64::from(lo))
+    }
+
+    /// `x << (64 - s)` for `s` in `0 .. 64`: 0 when `s` is 0 (a shift by 64 is a shift by 0).
+    fn shl_rest(&mut self, x: Value, s: Value) -> Value {
+        let t = self.b.ins().ishl_imm_s(x, 1);
+        let k = self.b.ins().iconst(I64, 63);
+        let r = self.b.ins().isub(k, s);
+        self.b.ins().ishl(t, r)
+    }
+
+    /// `x >> (64 - s)` for `s` in `0 .. 64`: 0 when `s` is 0.
+    fn ushr_rest(&mut self, x: Value, s: Value) -> Value {
+        let t = self.b.ins().ushr_imm_s(x, 1);
+        let k = self.b.ins().iconst(I64, 63);
+        let r = self.b.ins().isub(k, s);
+        self.b.ins().ushr(t, r)
+    }
+
+    /// Whether a `w`-element field at a bit `lo + k * w` never crosses a word.
+    fn aligned(lo: u32, w: u32) -> bool {
+        w.is_power_of_two() && w <= 64 && lo.is_multiple_of(w)
+    }
+
+    /// The `w` bits of `r` from the run-time bit `bit` (memory holds them, see `spill`).
+    fn dyn_read(&mut self, r: Ref, bit: Value, w: u32, one_word: bool) -> Vec<Value> {
+        (0..words(w))
+            .map(|j| {
+                let b = if j == 0 {
+                    bit
+                } else {
+                    self.b.ins().iadd_imm_s(bit, i64::from(64 * j))
+                };
+                let (a, s) = self.bit_addr(r, b);
+                let lo = self.b.ins().load(I64, MemFlagsData::trusted(), a, 0);
+                let mut x = self.b.ins().ushr(lo, s);
+                if !one_word {
+                    // The next word may lie past the value: its bits are masked off below.
+                    let hi = self.b.ins().load(I64, MemFlagsData::trusted(), a, 8);
+                    let h = self.shl_rest(hi, s);
+                    x = self.b.ins().bor(x, h);
+                }
+                let n = (w - 64 * j).min(64);
+                if n < 64 {
+                    x = self.b.ins().band_imm_s(x, mask(n) as i64);
+                    self.zeros.insert(x, !mask(n));
+                }
+                x
+            })
+            .collect()
+    }
+
+    /// The `w` bits `v` into `r` from the run-time bit `bit`, in memory.
+    fn dyn_write(&mut self, r: Ref, bit: Value, w: u32, v: &[Value], one_word: bool) {
+        for (j, &x) in v.iter().enumerate() {
+            let b = if j == 0 {
+                bit
+            } else {
+                self.b.ins().iadd_imm_s(bit, 64 * j as i64)
+            };
+            let n = (w - 64 * j as u32).min(64);
+            let (a, s) = self.bit_addr(r, b);
+            let m = self.konst(mask(n));
+            let w0 = self.b.ins().load(I64, MemFlagsData::trusted(), a, 0);
+            let ms = self.b.ins().ishl(m, s);
+            let keep = self.b.ins().band_not(w0, ms);
+            let xs = self.b.ins().ishl(x, s);
+            let w0 = self.b.ins().bor(keep, xs);
+            self.b.ins().store(MemFlagsData::trusted(), w0, a, 0);
+            if !one_word {
+                // The bits that cross into the next word (none when `s` is 0); its other bits are
+                // stored back unchanged.
+                let w1 = self.b.ins().load(I64, MemFlagsData::trusted(), a, 8);
+                let mh = self.ushr_rest(m, s);
+                let keep = self.b.ins().band_not(w1, mh);
+                let xh = self.ushr_rest(x, s);
+                let w1 = self.b.ins().bor(keep, xh);
+                self.b.ins().store(MemFlagsData::trusted(), w1, a, 8);
+            }
+        }
+    }
+
+    /// The value of `len` elements in `v` sign- or zero-extended to `to` elements.
+    fn extend(&mut self, v: &[Value], len: u32, to: u32, signed: bool) -> Vec<Value> {
+        let mut out: Vec<Value> = v[..words(len.min(to)) as usize].to_vec();
+        if to <= len {
+            self.top(&mut out, to);
+            return out;
+        }
+        let k = ((len - 1) / 64) as usize;
+        let fill = if signed {
+            // The sign bit spread over a word: `(x << (63 - b)) >> 63`, arithmetic; the bits
+            // above it in its word are zero (the invariant), so an OR sets them.
+            let b = (len - 1) % 64;
+            let t = self.b.ins().ishl_imm_s(v[k], i64::from(63 - b));
+            let f = self.b.ins().sshr_imm_s(t, 63);
+            if b != 63 {
+                let hi = self.b.ins().band_imm_s(f, (!mask(b + 1)) as i64);
+                out[k] = self.b.ins().bor(out[k], hi);
+            }
+            f
+        } else {
+            self.konst(0)
+        };
+        out.resize(words(to) as usize, fill);
+        self.top(&mut out, to);
+        out
+    }
+
+    /// `x < y` (`le`: `<=`) of two values of `n` words, unsigned, or signed by the top word.
+    fn less(&mut self, x: &[Value], y: &[Value], signed: bool, le: bool) -> Value {
+        // From the low word up: the result so far, overridden where a higher word differs.
+        let mut r = if le {
+            self.b.ins().iconst(cranelift_codegen::ir::types::I8, 1)
+        } else {
+            self.b.ins().iconst(cranelift_codegen::ir::types::I8, 0)
+        };
+        let nw = x.len();
+        for k in 0..nw {
+            let top = k + 1 == nw;
+            let lt = if top && signed {
+                IntCC::SignedLessThan
+            } else {
+                IntCC::UnsignedLessThan
+            };
+            let l = self.b.ins().icmp(lt, x[k], y[k]);
+            let e = self.b.ins().icmp(IntCC::Equal, x[k], y[k]);
+            r = self.b.ins().select(e, r, l);
+        }
+        r
+    }
+
+    /// The product of `x` and `y` modulo `2 ** (64 * nw)`, schoolbook on words.
+    fn mul_words(&mut self, x: &[Value], y: &[Value], nw: usize) -> Vec<Value> {
+        let zero = self.konst(0);
+        let mut acc = vec![zero; nw];
+        for (i, &a) in x.iter().enumerate().take(nw) {
+            let mut carry = zero;
+            for (j, &bb) in y.iter().enumerate() {
+                let k = i + j;
+                if k >= nw {
+                    break;
+                }
+                let lo = self.b.ins().imul(a, bb);
+                let hi = if k + 1 < nw {
+                    self.b.ins().umulhi(a, bb)
+                } else {
+                    zero
+                };
+                // acc[k] + lo + carry, with the carries into the next word.
+                let s1 = self.b.ins().iadd(acc[k], lo);
+                let c1 = self.b.ins().icmp(IntCC::UnsignedLessThan, s1, lo);
+                let s2 = self.b.ins().iadd(s1, carry);
+                let c2 = self.b.ins().icmp(IntCC::UnsignedLessThan, s2, carry);
+                acc[k] = s2;
+                let c1 = self.bool_of(c1);
+                let c2 = self.bool_of(c2);
+                let c = self.b.ins().iadd(c1, c2);
+                carry = self.b.ins().iadd(hi, c);
+            }
+            let k = i + y.len();
+            if k < nw {
+                acc[k] = self.b.ins().iadd(acc[k], carry);
+            }
+        }
+        acc
     }
 
     /// The address of the word holding bit `bit` of `r`, and the bit's place in it.
@@ -484,39 +714,27 @@ impl Gen<'_> {
                 len,
                 full,
             } => {
-                // Only the source words the bits are in.
+                // Only the source words the bits are in, from word `k0`.
                 let (k0, k1) = (lo / 64, (lo + len - 1) / 64);
-                let mut s: Vec<Value> = Vec::new();
-                for k in 0..=k1 {
-                    s.push(if k < k0 {
-                        self.konst(0)
-                    } else {
-                        self.ld(*src, k)
-                    });
-                }
+                let s: Vec<Value> = (k0..=k1).map(|k| self.ld(*src, k)).collect();
+                let base = 64 * k0;
                 let v: Vec<Value> = (0..words(*len))
                     .map(|j| {
-                        let off = lo + 64 * j;
+                        let off = lo + 64 * j - base;
                         let n = (*len - 64 * j).min(64);
-                        self.bits(&s, off, n, *full)
+                        self.bits(&s, off, n, full.saturating_sub(base))
                     })
                     .collect();
                 self.sts(*dst, &v);
             }
             Op::Insert { dst, src, lo, len } => {
                 let s = self.lds(*src, *len);
+                // Only the words the elements go into, from word `k0`.
                 let (k0, k1) = (lo / 64, (lo + len - 1) / 64);
-                let mut d: Vec<Value> = Vec::new();
-                for k in 0..=k1 {
-                    d.push(if k < k0 {
-                        self.konst(0)
-                    } else {
-                        self.ld(*dst, k)
-                    });
-                }
-                self.insert(&mut d, &s, *lo, *len);
+                let mut d: Vec<Value> = (k0..=k1).map(|k| self.ld(*dst, k)).collect();
+                self.insert(&mut d, &s, lo - 64 * k0, *len);
                 for k in k0..=k1 {
-                    self.st(*dst, k, d[k as usize]);
+                    self.st(*dst, k, d[(k - k0) as usize]);
                 }
             }
             Op::Cat {
@@ -632,43 +850,264 @@ impl Gen<'_> {
                 src,
                 lo,
                 n,
+                w,
                 idx,
                 left,
                 down,
                 site,
             } => {
-                let bit = self.element(*idx, *left, *down, *n, *lo, *site);
-                self.spill(*src, lo / 64, (lo + n - 1) / 64);
-                let (a, s) = self.bit_addr(*src, bit);
-                let w = self.b.ins().load(I64, MemFlagsData::trusted(), a, 0);
-                let x = self.b.ins().ushr(w, s);
-                let x = self.b.ins().band_imm_s(x, 1);
-                self.st(*dst, 0, x);
+                let bit = self.element(*idx, *left, *down, *n, *w, *lo, *site);
+                let end = lo + n * w;
+                // The word after the value too: an element may reach into it.
+                self.spill(*src, lo / 64, end.div_ceil(64));
+                let v = self.dyn_read(*src, bit, *w, Self::aligned(*lo, *w));
+                self.sts(*dst, &v);
             }
             Op::IndexWrite {
                 dst,
                 src,
                 lo,
                 n,
+                w,
                 idx,
                 left,
                 down,
                 site,
             } => {
-                let v = self.ld(*src, 0);
-                let bit = self.element(*idx, *left, *down, *n, *lo, *site);
-                let (k0, k1) = (lo / 64, (lo + n - 1) / 64);
+                let v = self.lds(*src, *w);
+                let bit = self.element(*idx, *left, *down, *n, *w, *lo, *site);
+                let (k0, k1) = (lo / 64, (lo + n * w).div_ceil(64));
                 self.spill(*dst, k0, k1);
                 self.forget(*dst, k0, k1);
-                let (a, s) = self.bit_addr(*dst, bit);
-                let w = self.b.ins().load(I64, MemFlagsData::trusted(), a, 0);
-                let one = self.konst(1);
-                let m = self.b.ins().ishl(one, s);
-                let m = self.b.ins().bnot(m);
-                let w = self.b.ins().band(w, m);
-                let x = self.b.ins().ishl(v, s);
-                let w = self.b.ins().bor(w, x);
-                self.b.ins().store(MemFlagsData::trusted(), w, a, 0);
+                self.dyn_write(*dst, bit, *w, &v, Self::aligned(*lo, *w));
+            }
+            Op::Select { dst, c, a, b, len } => {
+                let c = self.ld(*c, 0);
+                let (x, y) = (self.lds(*a, *len), self.lds(*b, *len));
+                let v: Vec<Value> = (x.iter().zip(&y))
+                    .map(|(&x, &y)| self.b.ins().select(c, x, y))
+                    .collect();
+                self.sts(*dst, &v);
+            }
+            Op::Splat { dst, a, len } => {
+                let x = self.ld(*a, 0);
+                let z = self.konst(0);
+                let ones = self.b.ins().isub(z, x);
+                let mut v = vec![ones; words(*len) as usize];
+                self.top(&mut v, *len);
+                self.sts(*dst, &v);
+            }
+            Op::Ext {
+                dst,
+                src,
+                from,
+                to,
+                signed,
+            } => {
+                let x = self.lds(*src, *from);
+                let v = self.extend(&x, *from, *to, *signed);
+                self.sts(*dst, &v);
+            }
+            Op::VCmp {
+                cmp,
+                signed,
+                dst,
+                a,
+                b,
+                len,
+            } => {
+                let full = 64 * words(*len);
+                let x = self.lds(*a, *len);
+                let y = self.lds(*b, *len);
+                let (x, y) = if *signed {
+                    (
+                        self.extend(&x, *len, full, true),
+                        self.extend(&y, *len, full, true),
+                    )
+                } else {
+                    (x, y)
+                };
+                let c = match cmp {
+                    Cmp::Lt => self.less(&x, &y, *signed, false),
+                    Cmp::Le => self.less(&x, &y, *signed, true),
+                    Cmp::Gt => self.less(&y, &x, *signed, false),
+                    Cmp::Ge => self.less(&y, &x, *signed, true),
+                    Cmp::Eq | Cmp::Ne => {
+                        let mut d = self.konst(0);
+                        for (&x, &y) in x.iter().zip(&y) {
+                            let t = self.b.ins().bxor(x, y);
+                            d = self.b.ins().bor(d, t);
+                        }
+                        let cc = if *cmp == Cmp::Ne {
+                            IntCC::NotEqual
+                        } else {
+                            IntCC::Equal
+                        };
+                        self.b.ins().icmp_imm_s(cc, d, 0)
+                    }
+                };
+                let r = self.bool_of(c);
+                self.st(*dst, 0, r);
+            }
+            Op::Mul { dst, a, b, len } => {
+                let (x, y) = (self.lds(*a, *len), self.lds(*b, *len));
+                let mut v = self.mul_words(&x, &y, words(*len) as usize);
+                self.top(&mut v, *len);
+                self.sts(*dst, &v);
+            }
+            Op::VDiv {
+                op,
+                signed,
+                dst,
+                a,
+                b,
+                len,
+                site,
+            } => {
+                // One word (`len` at most 64): extend to the word, divide, cut back.
+                let x = self.ld(*a, 0);
+                let y = self.ld(*b, 0);
+                let (x, y) = if *signed {
+                    let e = |g: &mut Self, v| g.extend(&[v], *len, 64, true)[0];
+                    (e(self, x), e(self, y))
+                } else {
+                    (x, y)
+                };
+                let z = self.b.ins().icmp_imm_s(IntCC::Equal, y, 0);
+                // `MIN / -1` traps in the machine: only a 64-element signed operand can be it.
+                let f = if *signed && *len == 64 {
+                    let m1 = self.b.ins().icmp_imm_s(IntCC::Equal, y, -1);
+                    let mn = self.b.ins().icmp_imm_s(IntCC::Equal, x, i64::MIN);
+                    let ov = self.b.ins().band(m1, mn);
+                    self.b.ins().bor(z, ov)
+                } else {
+                    z
+                };
+                self.check(f, *site, &[x, y]);
+                let r = match (op, signed) {
+                    (Arith::Div, false) => self.b.ins().udiv(x, y),
+                    (Arith::Div, true) => self.b.ins().sdiv(x, y),
+                    (_, false) => self.b.ins().urem(x, y),
+                    (_, true) => {
+                        let r = self.b.ins().srem(x, y);
+                        if *op == Arith::Mod {
+                            self.mod_fix(r, y)
+                        } else {
+                            r
+                        }
+                    }
+                };
+                let mut v = vec![r];
+                self.top(&mut v, *len);
+                self.st(*dst, 0, v[0]);
+            }
+            Op::Shift { k, dst, a, len, n } => {
+                // One word: the count from the integer word `n`, at least 0.
+                let x = self.ld(*a, 0);
+                let c = self.ld(*n, 0);
+                let l = i64::from(*len);
+                let r = match k {
+                    ShiftK::Sll | ShiftK::Srl | ShiftK::Sra => {
+                        let big = self
+                            .b
+                            .ins()
+                            .icmp_imm_s(IntCC::UnsignedGreaterThanOrEqual, c, l);
+                        let x2 = if *k == ShiftK::Sra {
+                            self.extend(&[x], *len, 64, true)[0]
+                        } else {
+                            x
+                        };
+                        let cm = self.b.ins().band_imm_s(c, 63);
+                        let s = match k {
+                            ShiftK::Sll => self.b.ins().ishl(x2, cm),
+                            ShiftK::Srl => self.b.ins().ushr(x2, cm),
+                            _ => self.b.ins().sshr(x2, cm),
+                        };
+                        let full = if *k == ShiftK::Sra {
+                            self.b.ins().sshr_imm_s(x2, 63)
+                        } else {
+                            self.konst(0)
+                        };
+                        self.b.ins().select(big, full, s)
+                    }
+                    ShiftK::Rol | ShiftK::Ror => {
+                        // By `m = c mod len`: `x << p | x >> q` with `p + q = len`, both below 64
+                        // unless `m` is 0, which is `x` itself.
+                        let m = self.b.ins().urem_imm_s(c, l);
+                        let lk = self.b.ins().iconst(I64, l);
+                        let back = self.b.ins().isub(lk, m);
+                        let (p, q) = if *k == ShiftK::Rol {
+                            (m, back)
+                        } else {
+                            (back, m)
+                        };
+                        let hi = self.b.ins().ishl(x, p);
+                        let lo = self.b.ins().ushr(x, q);
+                        let r = self.b.ins().bor(hi, lo);
+                        let none = self.b.ins().icmp_imm_s(IntCC::Equal, m, 0);
+                        self.b.ins().select(none, x, r)
+                    }
+                };
+                let mut v = vec![r];
+                self.top(&mut v, *len);
+                self.st(*dst, 0, v[0]);
+            }
+            Op::Reduce { g, dst, a, len } => {
+                let x = self.lds(*a, *len);
+                let r = match g {
+                    Gate::And | Gate::Nand => {
+                        let mut d = self.konst(0);
+                        for (k, &w) in x.iter().enumerate() {
+                            let m = mask((*len - 64 * k as u32).min(64));
+                            let t = self.b.ins().bxor_imm_s(w, m as i64);
+                            d = self.b.ins().bor(d, t);
+                        }
+                        self.b.ins().icmp_imm_s(IntCC::Equal, d, 0)
+                    }
+                    Gate::Or | Gate::Nor => {
+                        let mut d = self.konst(0);
+                        for &w in &x {
+                            d = self.b.ins().bor(d, w);
+                        }
+                        self.b.ins().icmp_imm_s(IntCC::NotEqual, d, 0)
+                    }
+                    Gate::Xor | Gate::Xnor => {
+                        let mut d = self.konst(0);
+                        for &w in &x {
+                            d = self.b.ins().bxor(d, w);
+                        }
+                        let p = self.b.ins().popcnt(d);
+                        let p = self.b.ins().band_imm_s(p, 1);
+                        self.b.ins().icmp_imm_s(IntCC::NotEqual, p, 0)
+                    }
+                };
+                let mut r = self.bool_of(r);
+                if matches!(g, Gate::Nand | Gate::Nor | Gate::Xnor) {
+                    r = self.b.ins().bxor_imm_s(r, 1);
+                }
+                self.st(*dst, 0, r);
+            }
+            Op::ToInt {
+                dst,
+                a,
+                len,
+                signed,
+            } => {
+                let x = self.ld(*a, 0);
+                let r = if *signed {
+                    self.extend(&[x], *len, 64, true)[0]
+                } else {
+                    x
+                };
+                self.st(*dst, 0, r);
+            }
+            Op::FromInt { dst, a, len } => {
+                let x = self.ld(*a, 0);
+                let s = self.b.ins().sshr_imm_s(x, 63);
+                let mut v = vec![s; words(*len) as usize];
+                v[0] = x;
+                self.top(&mut v, *len);
+                self.sts(*dst, &v);
             }
             Op::If { cond, then, else_ } => {
                 let c = self.ld(*cond, 0);
@@ -708,6 +1147,8 @@ impl Gen<'_> {
                         }
                         touched.push(off);
                     }
+                    // Words the branch dropped (it wrote them in memory) are stale after it too.
+                    touched.extend(before.keys().filter(|k| !self.cache.contains_key(k)));
                     self.b.ins().jump(j, &[]);
                 }
                 self.b.switch_to_block(j);
@@ -718,6 +1159,17 @@ impl Gen<'_> {
                 }
             }
         }
+    }
+
+    /// `mod` from the remainder `r` of a division by `y`: the sign of the divisor (LRM 9.2.7),
+    /// `r + y` when `r` and `y` differ in sign.
+    fn mod_fix(&mut self, r: Value, y: Value) -> Value {
+        let s = self.b.ins().bxor(r, y);
+        let neg = self.b.ins().icmp_imm_s(IntCC::SignedLessThan, s, 0);
+        let nz = self.b.ins().icmp_imm_s(IntCC::NotEqual, r, 0);
+        let fix = self.b.ins().band(neg, nz);
+        let ry = self.b.ins().iadd(r, y);
+        self.b.ins().select(fix, ry, r)
     }
 
     /// Whether `x` is outside `lo ..= hi`.
@@ -761,13 +1213,7 @@ impl Gen<'_> {
                     _ => self.b.ins().srem(x, y),
                 };
                 let r = if op == Arith::Mod {
-                    // The sign of the divisor (LRM 9.2.7): `r + y` when `r` and `y` differ in sign.
-                    let s = self.b.ins().bxor(r, y);
-                    let neg = self.b.ins().icmp_imm_s(IntCC::SignedLessThan, s, 0);
-                    let nz = self.b.ins().icmp_imm_s(IntCC::NotEqual, r, 0);
-                    let fix = self.b.ins().band(neg, nz);
-                    let ry = self.b.ins().iadd(r, y);
-                    self.b.ins().select(fix, ry, r)
+                    self.mod_fix(r, y)
                 } else {
                     r
                 };

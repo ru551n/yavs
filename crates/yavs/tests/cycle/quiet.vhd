@@ -26,12 +26,12 @@ begin
       last <= cnt;
     end if;
   end process;
-  -- Outside the region (a `wait until` process), idle-skipped by the kernel: it must still see
-  -- every change of `cnt`.
+  -- Outside the region (a `wait until` process with a `'Z'` that two-state values cannot hold),
+  -- idle-skipped by the kernel: it must still see every change of `cnt`.
   copy : process
   begin
     wait until rising_edge(clk);
-    seen <= cnt;
+    seen <= cnt when cnt /= 255 else (others => 'Z');
   end process;
   -- Outside the region: counts the events of `nxt`.
   watch : process (nxt)

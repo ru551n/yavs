@@ -233,16 +233,24 @@ fn build(
     }
     // Signals hold state between calls; so do the variables of clocked processes.
     let signal_words = n;
+    // 1 when the clock edge happened in this wake (`Ref::Edge`).
+    let edge_word = n;
+    n += 1;
+    let has_reset = sel.members.iter().any(|(_, b)| b.reset.is_some());
     let mut state: Vec<(u32, u32)> = Vec::new();
-    let mut settle = Vec::new();
-    let mut edge = Vec::new();
-    for (&k, &s) in &next {
-        edge.push(Op::Copy {
-            dst: Ref::Loc(s),
-            src: Ref::Loc(cur[&k]),
-            len: klen(k),
-        });
-    }
+    // Each function as pieces, a member's body each (`codegen::compile` cuts between them).
+    let mut settle: Vec<Vec<Op>> = Vec::new();
+    let mut edge: Vec<Vec<Op>> = Vec::new();
+    let mut init_fn: Vec<Vec<Op>> = Vec::new();
+    edge.push(
+        (next.iter())
+            .map(|(&k, &s)| Op::Copy {
+                dst: Ref::Loc(s),
+                src: Ref::Loc(cur[&k]),
+                len: klen(k),
+            })
+            .collect(),
+    );
     let mut committed = false;
     let mut init: Vec<(u32, u64)> = Vec::new();
     let mut checks: Vec<(lower::Check, usize)> = Vec::new();
@@ -259,26 +267,35 @@ fn build(
             state.extend(b.vars.iter().map(|&(w, c)| (base + w, c)));
         }
         if !clocked && !committed {
-            commit(&mut edge, &next, &cur, klen);
+            edge.push(commit(&next, &cur, klen));
             committed = true;
         }
         let rs = Resolve {
             base,
             sites,
             clocked,
+            edge: edge_word,
             cur: &cur,
             next: &next,
         };
-        for op in &b.ops {
-            let r = rs.op(op);
-            if !clocked {
-                settle.push(r.clone());
-            }
-            edge.push(r);
+        init_fn.push(b.init_ops.iter().map(|op| rs.op(op)).collect());
+        let mut ops: Vec<Op> = b.ops.iter().map(|op| rs.op(op)).collect();
+        // With an asynchronous reset the edge function runs at every wake: the clocked bodies
+        // without one run only at an edge.
+        if has_reset && clocked && b.reset.is_none() {
+            ops = vec![Op::If {
+                cond: Ref::Loc(edge_word),
+                then: ops,
+                else_: Vec::new(),
+            }];
         }
+        if !clocked {
+            settle.push(ops.clone());
+        }
+        edge.push(ops);
     }
     if !committed {
-        commit(&mut edge, &next, &cur, klen);
+        edge.push(commit(&next, &cur, klen));
     }
     let err = n;
     n += 2;
@@ -291,12 +308,19 @@ fn build(
         .position(|s| s.parent.is_none())
         .ok_or("the design has no top-level instance")?;
     let label = e.hier.dotted(yavs_elab::ScopeId(top as u32));
-    let code = Arc::new(codegen::compile(&settle, &edge, &keep, err, &label)?);
+    let code = Arc::new(codegen::compile(
+        [&settle, &edge, &init_fn],
+        &keep,
+        err,
+        &label,
+    )?);
     let whole = |k: u32| {
         let s = yavs_kernel::SignalId(k);
         s.slice(0, nets.signal_len(s))
     };
+    // A null array has no elements to read or drive.
     let all: Vec<_> = (cur.iter())
+        .filter(|&(&k, _)| !logic(k) || nets.signal_len(yavs_kernel::SignalId(k)) > 0)
         .map(|(&k, &s)| rt::Read {
             r: whole(k),
             slot: s,
@@ -307,6 +331,7 @@ fn build(
         .collect();
     // Inputs leaf by leaf: a kernel signal may also hold leaves the region drives.
     let inputs: Vec<_> = (sel.inputs.iter())
+        .filter(|&&l| nets.leaf(l).ty.len > 0)
         .map(|&l| {
             let len = nets.leaf(l).ty.len;
             let at = nets.loc[l.index()];
@@ -325,17 +350,38 @@ fn build(
     });
     let leaf_ref = |l: LeafId| nets.kref(l, Range::new(0, nets.leaf(l).ty.len));
     let mut waits: Vec<_> = clock.iter().map(|c| c.0).collect();
-    waits.extend(sel.wakes.iter().map(|l| leaf_ref(*l)));
-    let trigger = sel.clock.filter(|_| sel.wakes.is_empty()).map(|c| {
-        let (signal, elem) = nets.kelem(c.leaf, c.elem);
-        EdgeTrigger {
-            signal,
-            elem,
-            rising: c.rising,
-            legacy: c.legacy,
-            reset: None,
+    waits.extend(
+        (sel.wakes.iter())
+            .filter(|&&l| nets.leaf(l).ty.len > 0)
+            .map(|l| leaf_ref(*l)),
+    );
+    // The asynchronous resets: their events wake the region too.
+    let resets: std::collections::BTreeSet<(LeafId, u32, u8)> =
+        (sel.members.iter()).filter_map(|(_, b)| b.reset).collect();
+    for &(l, el, _) in &resets {
+        waits.push(nets.kref(l, Range::new(el, 1)));
+    }
+    let one_reset = match resets.iter().collect::<Vec<_>>()[..] {
+        [] => Some(None),
+        [&(l, el, code)] => {
+            let (s, e) = nets.kelem(l, el);
+            Some(Some((s, e, code)))
         }
-    });
+        _ => None,
+    };
+    let trigger = (sel.clock)
+        .filter(|_| sel.wakes.is_empty())
+        .zip(one_reset)
+        .map(|(c, reset)| {
+            let (signal, elem) = nets.kelem(c.leaf, c.elem);
+            EdgeTrigger {
+                signal,
+                elem,
+                rising: c.rising,
+                legacy: c.legacy,
+                reset,
+            }
+        });
     // The leaf of each driver declaration, for the exports.
     let decls: Vec<LeafId> = nets.drivers.iter().map(|d| d.leaf).collect();
     // Exported kernel signals none of whose leaves anything outside waits on: candidates for an
@@ -362,7 +408,7 @@ fn build(
     let make: yavs_elab::RegionMake = Arc::new(move |ds: &[RegionDriver]| {
         // One export per kernel driver with an exported leaf: its range of the signal's words.
         let mut outs: BTreeMap<u32, rt::Out> = BTreeMap::new();
-        for d in ds.iter().filter(|d| outputs.contains(&decls[d.decl])) {
+        for d in (ds.iter()).filter(|d| outputs.contains(&decls[d.decl]) && d.range.len > 0) {
             let Some(&slot) = cur.get(&d.signal.0) else {
                 return Err(SimError::new(yavs_kernel::ErrorKind::Internal(
                     "cycle mode: an exported signal without words".into(),
@@ -393,6 +439,8 @@ fn build(
             err: err as usize,
             metas: metas.clone(),
             uninit,
+            edge_word: edge_word as usize,
+            has_reset,
             buf: Vec::new(),
         }) as Box<dyn yavs_kernel::Process>)
     });
@@ -407,28 +455,29 @@ fn build(
     })
 }
 
+/// The next-state words into the current ones.
 fn commit(
-    edge: &mut Vec<Op>,
     next: &BTreeMap<u32, u32>,
     cur: &BTreeMap<u32, u32>,
     klen: impl Fn(u32) -> u32,
-) {
-    for (&k, &s) in next {
-        edge.push(Op::Copy {
+) -> Vec<Op> {
+    (next.iter())
+        .map(|(&k, &s)| Op::Copy {
             dst: Ref::Loc(cur[&k]),
             src: Ref::Loc(s),
             len: klen(k),
-        });
-    }
+        })
+        .collect()
 }
 
 /// The operations of one member with every reference an image slot: a member's slots from
 /// `base`, a signal its current words, except the next-state words where a clocked member writes
-/// it; check sites from `sites`.
+/// it; the edge word; check sites from `sites`.
 struct Resolve<'a> {
     base: u32,
     sites: u32,
     clocked: bool,
+    edge: u32,
     cur: &'a BTreeMap<u32, u32>,
     next: &'a BTreeMap<u32, u32>,
 }
@@ -438,6 +487,7 @@ impl Resolve<'_> {
         match r {
             Ref::Sig(k) => Ref::Loc(self.cur[&k]),
             Ref::Loc(s) => Ref::Loc(self.base + s),
+            Ref::Edge => Ref::Loc(self.edge),
         }
     }
 
@@ -449,165 +499,6 @@ impl Resolve<'_> {
     }
 
     fn op(&self, op: &Op) -> Op {
-        let (s, d) = (|r| self.src(r), |r| self.dst(r));
-        let site = |x: u32| self.sites + x;
-        match op {
-            Op::Copy { dst, src, len } => Op::Copy {
-                dst: d(*dst),
-                src: s(*src),
-                len: *len,
-            },
-            Op::Lit { dst, val } => Op::Lit {
-                dst: d(*dst),
-                val: val.clone(),
-            },
-            // A blend, insert or element write reads the words it writes: the next-state ones
-            // where it writes those.
-            Op::Blend { dst, src, mask } => Op::Blend {
-                dst: d(*dst),
-                src: s(*src),
-                mask: mask.clone(),
-            },
-            Op::Gate { g, dst, a, b, len } => Op::Gate {
-                g: *g,
-                dst: d(*dst),
-                a: s(*a),
-                b: s(*b),
-                len: *len,
-            },
-            Op::Not { dst, a, len } => Op::Not {
-                dst: d(*dst),
-                a: s(*a),
-                len: *len,
-            },
-            Op::Extract {
-                dst,
-                src,
-                lo,
-                len,
-                full,
-            } => Op::Extract {
-                dst: d(*dst),
-                src: s(*src),
-                lo: *lo,
-                len: *len,
-                full: *full,
-            },
-            Op::Insert { dst, src, lo, len } => Op::Insert {
-                dst: d(*dst),
-                src: s(*src),
-                lo: *lo,
-                len: *len,
-            },
-            Op::Cat {
-                dst,
-                hi,
-                lo,
-                lo_len,
-                len,
-            } => Op::Cat {
-                dst: d(*dst),
-                hi: s(*hi),
-                lo: s(*lo),
-                lo_len: *lo_len,
-                len: *len,
-            },
-            Op::Add {
-                dst,
-                a,
-                b,
-                len,
-                sub,
-            } => Op::Add {
-                dst: d(*dst),
-                a: s(*a),
-                b: s(*b),
-                len: *len,
-                sub: *sub,
-            },
-            Op::VecEq { dst, a, b, len, ne } => Op::VecEq {
-                dst: d(*dst),
-                a: s(*a),
-                b: s(*b),
-                len: *len,
-                ne: *ne,
-            },
-            Op::IntLit { dst, v } => Op::IntLit {
-                dst: d(*dst),
-                v: *v,
-            },
-            Op::IntCmp { op, dst, a, b } => Op::IntCmp {
-                op: *op,
-                dst: d(*dst),
-                a: s(*a),
-                b: s(*b),
-            },
-            Op::Int {
-                op,
-                dst,
-                a,
-                b,
-                lo,
-                hi,
-                site: x,
-            } => Op::Int {
-                op: *op,
-                dst: d(*dst),
-                a: s(*a),
-                b: s(*b),
-                lo: *lo,
-                hi: *hi,
-                site: site(*x),
-            },
-            Op::Range { a, lo, hi, site: x } => Op::Range {
-                a: s(*a),
-                lo: *lo,
-                hi: *hi,
-                site: site(*x),
-            },
-            Op::IndexRead {
-                dst,
-                src,
-                lo,
-                n,
-                idx,
-                left,
-                down,
-                site: x,
-            } => Op::IndexRead {
-                dst: d(*dst),
-                src: s(*src),
-                lo: *lo,
-                n: *n,
-                idx: s(*idx),
-                left: *left,
-                down: *down,
-                site: site(*x),
-            },
-            Op::IndexWrite {
-                dst,
-                src,
-                lo,
-                n,
-                idx,
-                left,
-                down,
-                site: x,
-            } => Op::IndexWrite {
-                dst: d(*dst),
-                src: s(*src),
-                lo: *lo,
-                n: *n,
-                idx: s(*idx),
-                left: *left,
-                down: *down,
-                site: site(*x),
-            },
-            Op::If { cond, then, else_ } => Op::If {
-                cond: s(*cond),
-                then: then.iter().map(|o| self.op(o)).collect(),
-                else_: else_.iter().map(|o| self.op(o)).collect(),
-            },
-        }
+        op.map(&|r| self.src(r), &|r| self.dst(r), &|x| self.sites + x)
     }
 }

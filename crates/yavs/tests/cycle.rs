@@ -103,14 +103,14 @@ fn a_region_with_processes_left_out_gives_the_same_result() {
             "{t:?} {normal:?}"
         );
         assert_eq!(cycle, normal, "{t:?}\n{err}");
-        // `mix`, `early`, `late` and `reg` join; `pick` and `q <= r` stay outside, with reasons.
+        // `mix`, `early`, `late`, `reg` and `q <= r` join; `pick` stays outside, with its reason.
         assert!(
-            err.contains("cycle mode: 4 of 7 processes run cycle-based"),
+            err.contains("cycle mode: 5 of 7 processes run cycle-based"),
             "{err}"
         );
         assert!(
-            err.contains("cycle_partial.dut.pick (partial.vhd:45)")
-                && err.contains("an `if` statement in the body is not supported"),
+            err.contains("cycle_partial.dut.pick (partial.vhd:59)")
+                && err.contains("a call of `swap`, which is not supported"),
             "{err}"
         );
         assert!(
@@ -233,16 +233,14 @@ fn cycle_strict_refuses_rtl_that_cannot_join() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(2), "{err}");
     assert!(o.stdout.is_empty(), "no simulation runs");
-    // Both RTL processes below the top level are listed; the testbench is exempt.
+    // The RTL process below the top level that cannot join is listed; the testbench is exempt.
     assert!(
         err.contains("error[E4101]: process cycle_partial.dut.pick cannot run cycle-based"),
         "{err}"
     );
-    assert!(err.contains("partial.vhd:45:3"), "{err}");
-    assert!(
-        err.contains("error[E4101]: process cycle_partial.dut.q <= ... (partial.vhd:65)"),
-        "{err}"
-    );
+    assert!(err.contains("partial.vhd:59:3"), "{err}");
+    // The concurrent `q <= r` joins.
+    assert!(!err.contains("cycle_partial.dut.q <= ..."), "{err}");
     assert!(!err.contains("cycle_partial.main"), "{err}");
 }
 
@@ -571,5 +569,172 @@ fn failed_checks_in_region_code_stop_the_run_as_in_the_normal_mode() {
                 );
             }
         }
+    }
+}
+
+/// `numeric.vhd` at width `w`: the token `W` replaced, the operations of one word (shifts by a
+/// run-time count, division) and the integer conversions where the width allows them.
+fn numeric_design(w: u32) -> String {
+    let mut t = String::new();
+    let src = include_str!("cycle/numeric.vhd");
+    let b = src.as_bytes();
+    for (i, c) in src.char_indices() {
+        let word = |k: Option<&u8>| k.is_some_and(|x| x.is_ascii_alphanumeric() || *x == b'_');
+        if c == 'W' && !word(i.checked_sub(1).and_then(|k| b.get(k))) && !word(b.get(i + 1)) {
+            t.push_str(&w.to_string());
+        } else {
+            t.push(c);
+        }
+    }
+    let one_word = w <= 64;
+    let dyn_ = "    slk <= shift_left(unsigned(a), k);
+    srk <= shift_right(unsigned(a), k);
+    srak <= unsigned(shift_right(signed(a), k));
+    rlk <= rotate_left(unsigned(a), k);
+    rrk <= rotate_right(unsigned(a), k);";
+    let mut div = String::from(
+        "  divs : process (all)
+  begin
+    if unsigned(b) /= 0 then
+      q_div <= unsigned(a) / unsigned(b);
+      q_mod <= unsigned(a) mod unsigned(b);
+      q_rem <= unsigned(a) rem unsigned(b);
+      s_div <= unsigned(signed(a) / signed(b));
+      s_mod <= unsigned(signed(a) mod signed(b));
+      s_rem <= unsigned(signed(a) rem signed(b));
+    else
+      q_div <= (others => '0');
+      q_mod <= (others => '0');
+      q_rem <= (others => '0');
+      s_div <= (others => '0');
+      s_mod <= (others => '0');
+      s_rem <= (others => '0');
+    end if;
+  end process;",
+    );
+    let mut print = String::from(
+        "& \" slk=\" & to_hstring(slk) & \" srk=\" & to_hstring(srk) & \" srak=\" & to_hstring(srak)
+        & \" rlk=\" & to_hstring(rlk) & \" rrk=\" & to_hstring(rrk) & \" qd=\" & to_hstring(q_div)
+        & \" qm=\" & to_hstring(q_mod) & \" qr=\" & to_hstring(q_rem) & \" sd=\" & to_hstring(s_div)
+        & \" sm=\" & to_hstring(s_mod) & \" sr=\" & to_hstring(s_rem)",
+    );
+    if w <= 31 {
+        div.push_str(&format!(
+            "
+  toi : process (all)
+  begin
+    ti <= to_integer(unsigned(a)) - to_integer(signed(b));
+  end process;
+  tou : process (all)
+  begin
+    tu <= to_unsigned(abs ti, {w}) xor unsigned(to_signed(ti, {w}));
+  end process;"
+        ));
+        print.push_str("\n        & \" ti=\" & integer'image(ti) & \" tu=\" & to_hstring(tu)");
+    }
+    if !one_word {
+        (div, print) = (String::new(), String::new());
+    }
+    t.replace("--DYN", if one_word { dyn_ } else { "" })
+        .replace("--DIV", &div)
+        .replace("--PRINT", &print)
+}
+
+#[test]
+fn numeric_operations_equal_the_normal_mode_at_widths_around_a_word() {
+    let dir = tempdir("cycle-numeric");
+    for w in [1, 63, 64, 65, 128, 200] {
+        analyze(&dir, &format!("numeric{w}.vhd"), &numeric_design(w));
+        // `arith`, `cmps`, `shifts`, `reds`, `fsm` and the selected assignment, then `divs`
+        // (one word) and `toi`, `tou` (an integer of the width).
+        let members = match w {
+            ..=31 => "9 of 10",
+            32..=64 => "7 of 8",
+            _ => "6 of 7",
+        };
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_ops2");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_ops2");
+            assert_eq!(normal.len(), 16, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains(&format!("cycle mode: {members} processes run cycle-based")),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
+#[test]
+fn clocked_and_combinational_shapes_give_the_same_result() {
+    let dir = tempdir("cycle-shapes");
+    analyze(&dir, "shapes.vhd", include_str!("cycle/shapes.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_shapes");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_shapes");
+        // Hand-checked against the normal mode: the resets at cycles 3 and 17 clear `acc`.
+        assert_eq!(normal.len(), 40, "{t:?} {normal:?}");
+        assert!(normal[2].contains("acc=00 cnt=0"), "{normal:?}");
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 9 of 10 processes run cycle-based"),
+            "{err}"
+        );
+    }
+}
+
+/// A member that drives a null array (a pipeline of no stages under these generics): the region
+/// has nothing to read or drive of it (it once failed at initialisation with an invalid reference).
+const NULL_PIPE: &str = "\
+library ieee;
+use ieee.std_logic_1164.all;
+entity cycle_null is
+  generic (STAGES : natural := 0);
+end entity;
+architecture a of cycle_null is
+  type pipe_t is array (1 to STAGES) of std_ulogic_vector(3 downto 0);
+  signal p : pipe_t;
+  signal clk : std_ulogic := '0';
+  signal q : std_ulogic_vector(3 downto 0) := \"0101\";
+begin
+  reg : process (clk)
+  begin
+    if rising_edge(clk) then
+      for k in 1 to STAGES loop
+        p(k) <= q;
+      end loop;
+      q <= q(2 downto 0) & not q(3);
+    end if;
+  end process;
+  main : process
+  begin
+    for i in 1 to 5 loop
+      clk <= '1';
+      wait for 5 ns;
+      clk <= '0';
+      wait for 5 ns;
+    end loop;
+    report \"q=\" & to_string(q);
+    wait;
+  end process;
+end architecture;
+";
+
+#[test]
+fn a_member_driving_a_null_array_gives_the_same_result() {
+    let dir = tempdir("cycle-null");
+    analyze(&dir, "null.vhd", NULL_PIPE);
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_null");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_null");
+        assert!(
+            normal.len() == 1 && normal[0].ends_with("q=0100"),
+            "{normal:?}"
+        );
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 1 of 2 processes run cycle-based"),
+            "{err}"
+        );
     }
 }

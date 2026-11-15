@@ -231,6 +231,14 @@ impl Elaborated {
         let counters_off = self.ir.as_ref().is_none_or(|ir| ir.program.cov.is_empty());
         let mut region_ds: Vec<crate::RegionDriver> = Vec::new();
         for (pi, p) in self.procs.iter().enumerate() {
+            // A member of the cycle region keeps its place in the process order (process ids
+            // index `procs`) but runs nothing: the region process owns its drivers, made below.
+            if self.is_member(pi) {
+                let idle = |_: &mut yavs_kernel::Ctx<'_>| Ok(());
+                let name = self.hier.dotted_in(p.scope, Case::Lrm);
+                b.process(&name, ProcFlags::default(), &[], idle);
+                continue;
+            }
             // Drivers of one process on adjacent elements of one kernel signal that one target
             // names together (a whole record of a pack, #686) are one kernel driver; `ds` has
             // one entry per declaration. Fields assigned one by one keep a driver each: a
@@ -260,23 +268,7 @@ impl Elaborated {
                     b.driver_init(id, v);
                 }
                 ds.extend(std::iter::repeat_n(id, j - i));
-                if self.is_member(pi) {
-                    region_ds.extend((i..j).map(|k| crate::RegionDriver {
-                        decl: p.drivers[k],
-                        driver: id,
-                        signal: s,
-                        range: r,
-                    }));
-                }
                 i = j;
-            }
-            // A member of the cycle region keeps its place in the process order (process ids
-            // index `procs`) but runs nothing: the region process owns its drivers.
-            if self.is_member(pi) {
-                let idle = |_: &mut yavs_kernel::Ctx<'_>| Ok(());
-                let name = self.hier.dotted_in(p.scope, Case::Lrm);
-                b.process(&name, ProcFlags::default(), &[], idle);
-                continue;
             }
             let mut own = ds.clone();
             own.dedup();
@@ -512,8 +504,43 @@ impl Elaborated {
             let idle = |_: &mut yavs_kernel::Ctx<'_>| Ok(());
             b.process(&p.name, ProcFlags::default(), &ds, idle);
         }
-        // The cycle region, after every other process (`yavs-cycle`).
+        // The cycle region, after every other process (`yavs-cycle`). The drivers of its members
+        // on adjacent elements of one kernel signal are one kernel driver: the region exports
+        // each as one value. A driver with an initial value of its own keeps its own.
         if let Some(r) = &self.region {
+            let mut parts: Vec<(yavs_kernel::SignalId, Range, usize)> = (r.members.iter())
+                .flat_map(|&pi| self.procs[pi].drivers.iter())
+                .map(|&d| {
+                    let (s, rr) = nets.kpart(nets.drivers[d].leaf, nets.drivers[d].range);
+                    (s, rr, d)
+                })
+                .collect();
+            parts.sort_unstable_by_key(|&(s, rr, _)| (s.0, rr.offset));
+            let mut i = 0;
+            while i < parts.len() {
+                let (s, mut rr, d0) = parts[i];
+                let mut j = i + 1;
+                while let Some(&(t, q, d)) = parts.get(j)
+                    && nets.drivers[d0].init.is_none()
+                    && nets.drivers[d].init.is_none()
+                    && t == s
+                    && q.offset == rr.offset + rr.len
+                {
+                    rr.len += q.len;
+                    j += 1;
+                }
+                let id = b.driver(s.slice(rr.offset, rr.len));
+                if let Some(v) = &nets.drivers[d0].init {
+                    b.driver_init(id, v);
+                }
+                region_ds.extend(parts[i..j].iter().map(|&(_, _, d)| crate::RegionDriver {
+                    decl: d,
+                    driver: id,
+                    signal: s,
+                    range: rr,
+                }));
+                i = j;
+            }
             let mut own: Vec<DriverId> = region_ds.iter().map(|d| d.driver).collect();
             own.sort_unstable_by_key(|d| d.0);
             own.dedup();

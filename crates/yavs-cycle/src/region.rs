@@ -12,14 +12,14 @@ use crate::lower::{self, Body, Clock, Kind};
 
 /// What happens to one process.
 pub(crate) enum Verdict {
-    Join(Body),
+    Join(Box<Body>),
     Out(String),
 }
 
 /// The one membership decision for a single process (milestone 3's checker replaces its body).
 pub(crate) fn classify(db: &Db, e: &Elaborated, pi: usize) -> Verdict {
     match lower::lower(db, e, pi) {
-        Ok(b) => Verdict::Join(b),
+        Ok(b) => Verdict::Join(Box::new(b)),
         Err(why) => Verdict::Out(why),
     }
 }
@@ -170,7 +170,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             let mut taken: Vec<Option<Body>> = Vec::new();
             for (pi, v) in verdicts.into_iter().enumerate() {
                 match v {
-                    Verdict::Join(b) => taken.push(Some(b)),
+                    Verdict::Join(b) => taken.push(Some(*b)),
                     Verdict::Out(w) => {
                         outs.push((pi, w));
                         taken.push(None);

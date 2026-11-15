@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:slice_target_bound_null:_p0	array: 1
+diag	note	0	0	:slice_target_bound_null:_p0	array of records: 1
+diag	note	1500000	0	:slice_target_bound_null:_p0	array of records, plain value: 1

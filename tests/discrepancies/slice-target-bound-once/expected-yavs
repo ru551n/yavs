@@ -1,0 +1,5 @@
+== 2008
+note: RES var slice, plain value: 1
+note: RES var slice, aggregate: 1
+note: RES sig slice, aggregate: 1
+note: RES sig slice, two elements: 1

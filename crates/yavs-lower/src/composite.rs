@@ -367,6 +367,12 @@ impl Fx<'_, '_> {
     /// descriptor of the same type); `None` when `st` leaves parts open and there is no
     /// actual.
     pub fn desc_of(&mut self, st: SubtypeId, actual: Option<Reg>, span: Span) -> R<Option<Reg>> {
+        if let Some((t, d)) = self.target_dope
+            && t == st
+            && actual.is_none()
+        {
+            return Ok(Some(d));
+        }
         let db = self.db;
         let t = db.base(st);
         let tid = self.ty(t, span)?;

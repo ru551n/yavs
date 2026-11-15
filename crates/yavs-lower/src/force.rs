@@ -100,7 +100,7 @@ impl Fx<'_, '_> {
         if let Some(p) = self.force_leaves(target, span)? {
             // A part with records: each leaf gets its elements of the value (LRM 10.5.2.1
             // applies the force to every scalar subelement).
-            let x = self.expr(e)?;
+            let x = self.with_target_dope(target.expr, Some(p.desc), |fx| fx.expr(e))?;
             let (data, vd) = self.arr(x, span)?;
             let what = self.target_name(target.expr);
             self.check_value_desc(p.t, p.tid, vd, p.desc, &what, span)?;
@@ -122,7 +122,7 @@ impl Fx<'_, '_> {
         let buf = match dope {
             // An array: its elements, checked against the target's bounds first.
             Some(dope) => {
-                let x = self.expr(e)?;
+                let x = self.with_target_dope(target.expr, Some(dope), |fx| fx.expr(e))?;
                 let (data, vd) = self.arr(x, span)?;
                 let t = db.base(st);
                 let tid = self.ty(t, span)?;

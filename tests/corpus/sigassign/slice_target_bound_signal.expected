@@ -1,0 +1,26 @@
+exit	0
+diag	note	0	0	:slice_target_bound_signal:_p0	concurrent bound
+diag	note	0	0	:slice_target_bound_signal:b:_p0	guarded bound
+diag	note	0	0	:slice_target_bound_signal:_p1	positional: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	others: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	named: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	range choice: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	pieces: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	three elements: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	transport: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	conditional: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	selected: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	logic string: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	logic others: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	record field: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	element of an array of arrays: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	array of arrays: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	array of records, plain value: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	array of records: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	array of records, two elements: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	alias: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	signal parameter: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	force: 1
+diag	note	0	0	:slice_target_bound_signal:_p1	force, array of records: 1
+diag	note	5000000	0	:slice_target_bound_signal:_p1	values 5656662668356 '1''1'
+diag	note	5000000	0	:slice_target_bound_signal:_p1	release: 1

@@ -1052,14 +1052,18 @@ impl Fx<'_, '_> {
                 && !self.is_general(self.db.base(self.db.exprs[*prefix].subtype), span)?
             {
                 let s = self.slice_checked(*prefix, range, span)?;
-                let outer = self.target_dope.replace((x.subtype, s.nd));
-                let v = self.value_expr(e);
-                self.target_dope = outer;
-                let v = v?;
+                let v = self.with_target_dope(target, Some(s.nd), |fx| fx.value_expr(e))?;
                 (self.slice_place(s, span)?, v)
             } else if first {
                 let p: Place = self.place(target)?;
-                (p, self.value_expr(e)?)
+                let dope = match p {
+                    Place::Array { dope, .. } => Some(dope),
+                    _ => None,
+                };
+                (
+                    p,
+                    self.with_target_dope(target, dope, |fx| fx.value_expr(e))?,
+                )
             } else {
                 let v = self.value_expr(e)?;
                 (self.place(target)?, v)
@@ -2010,18 +2014,36 @@ impl Fx<'_, '_> {
         elems: &[yavs_sem::hir::WaveElem],
         span: Span,
     ) -> R<()> {
-        let db = self.db;
         if elems.iter().any(|e| e.value.is_none()) {
+            // The target is evaluated once for all elements (#1157).
+            let p = self.comp_select(d, steps, span)?;
             return self.drive_nulls(
                 elems,
                 delay,
                 span,
-                |fx, one, dl| fx.drive_record(d, steps, base, covered, target, dl, one, span),
-                |fx, after, mode| fx.disconnect_part(d, steps, base, covered, after, mode, span),
+                |fx, one, dl| fx.drive_record_part(&p, None, base, covered, target, dl, one, span),
+                |fx, after, mode| fx.disconnect_leaves(&p, base, covered, after, mode, span),
             );
         }
         let (whole, p) =
             self.target_part(d, steps, base, covered, elems.len(), target.expr, span)?;
+        self.drive_record_part(&p, whole, base, covered, target, delay, elems, span)
+    }
+
+    /// [`Fx::drive_record`] of the part `p`, through one `SigScatter` when `whole` is given.
+    #[allow(clippy::too_many_arguments)]
+    fn drive_record_part(
+        &mut self,
+        p: &crate::expr::SigPart,
+        whole: Option<(yavs_ir::ConstId, u32)>,
+        base: Result<u32, Reg>,
+        covered: &[crate::RecLeaf],
+        target: &Target,
+        delay: &Delay,
+        elems: &[yavs_sem::hir::WaveElem],
+        span: Span,
+    ) -> R<()> {
+        let db = self.db;
         let what = self.target_name(target.expr);
         let dims = ty::array_of(db, p.t).map(|x| x.1);
         let mut vals = Vec::new();
@@ -2033,7 +2055,7 @@ impl Fx<'_, '_> {
                 Some(a) => self.scalar_expr(a)?,
                 None => self.int(0),
             };
-            let x = self.expr(v)?;
+            let x = self.with_target_dope(target.expr, Some(p.desc), |fx| fx.expr(v))?;
             let (data, vd) = self.arr(x, span)?;
             // The lengths of the value are those of the target, also in the fields of a record
             // (for a record the check names the object a value is, else the target).
@@ -2058,7 +2080,7 @@ impl Fx<'_, '_> {
                 (DriveMode::Inertial, r)
             }
         };
-        self.drive_part(&p, whole, base, covered, &vals, mode, reject, span)
+        self.drive_part(p, whole, base, covered, &vals, mode, reject, span)
     }
 
     /// The part `steps` of composite signal `d` as a target of `n` waveform elements, and the
@@ -2201,6 +2223,19 @@ impl Fx<'_, '_> {
         span: Span,
     ) -> R<()> {
         let p = self.comp_select(d, steps, span)?;
+        self.disconnect_leaves(&p, base, covered, after, mode, span)
+    }
+
+    /// Every leaf of the part `p` disconnected through its driver.
+    fn disconnect_leaves(
+        &mut self,
+        p: &crate::expr::SigPart,
+        base: Result<u32, Reg>,
+        covered: &[crate::RecLeaf],
+        after: Reg,
+        mode: DriveMode,
+        span: Span,
+    ) -> R<()> {
         for (leaf, sref, _) in &p.leaves {
             let drv = match base {
                 Ok(b) => {
@@ -2779,8 +2814,9 @@ impl Fx<'_, '_> {
                 span,
                 |fx, one, d| {
                     let (mode, reject) = fx.drive_mode(d)?;
-                    let (wave, n) =
-                        fx.wave_of(one, st, tid, tdope, size, stride, logic, &what, span)?;
+                    let (wave, n) = fx.with_target_dope(target.expr, tdope, |fx| {
+                        fx.wave_of(one, st, tid, tdope, size, stride, logic, &what, span)
+                    })?;
                     fx.emit_drive(drv, sref, wave, n, mode, reject);
                     Ok(())
                 },
@@ -2790,10 +2826,31 @@ impl Fx<'_, '_> {
                 },
             );
         }
-        let (wave, n) = self.wave_of(elems, st, tid, tdope, size, stride, logic, &what, span)?;
+        let (wave, n) = self.with_target_dope(target.expr, tdope, |fx| {
+            fx.wave_of(elems, st, tid, tdope, size, stride, logic, &what, span)
+        })?;
         let (mode, reject) = self.drive_mode(delay)?;
         self.emit_drive(drv, sref, wave, n, mode, reject);
         Ok(())
+    }
+
+    /// `f` with the descriptor `dope` of the slice target `target` standing for the target's
+    /// subtype, so an aggregate value takes its bounds from it and does not evaluate the range
+    /// again (#1157); any other target runs `f` as it is.
+    pub(crate) fn with_target_dope<T>(
+        &mut self,
+        target: ExprId,
+        dope: Option<Reg>,
+        f: impl FnOnce(&mut Self) -> R<T>,
+    ) -> R<T> {
+        let x = &self.db.exprs[target];
+        let (ExprKind::Slice { .. }, Some(d)) = (&x.kind, dope) else {
+            return f(self);
+        };
+        let outer = self.target_dope.replace((x.subtype, d));
+        let r = f(self);
+        self.target_dope = outer;
+        r
     }
 
     /// A waveform of value elements for one signal target as `n` records of `stride` bytes: the

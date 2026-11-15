@@ -52,6 +52,8 @@ const PASS: &[&str] = &[
     "composite/assign_target_first_slice",
     "composite/slice_target_bound_once",
     "composite/slice_target_bound_change",
+    "sigassign/slice_target_bound_signal",
+    "sigassign/slice_target_bound_null",
     "composite/record_length_var",
     "composite/record_length_var_short",
     "composite/record_length_second_field",

@@ -17056,3 +17056,17 @@ the next run".
   (2) The words of a descriptor at the start of an own block kept across calls like its length (`Key::Part`): no
   instruction changed in the optimised code of four of those tests; realbench 0.9998, every test inside the A/A
   spread. It would also widen the decision above.
+
+## Slice target bounds evaluated once in signal assignments (yavs-lower `Fx::with_target_dope`, #1157, agent, 2026-11-15)
+
+- **Decision:** the value of a slice target, in a signal assignment (every form that reaches `drive`, `drive_record`
+  or `force_one`: sequential, concurrent, conditional, selected, guarded, a signal parameter, waveforms of several
+  elements, force) and in a variable assignment to a slice of an array of composites, is lowered with the target's
+  evaluated descriptor standing for the target's subtype (`Fx::target_dope`, now also read by `desc_of`), as #1156
+  did for slices of plain arrays. An aggregate or string value that takes its bounds from the target no longer
+  evaluates the slice range again, so an impure call there runs once per assignment. A record-part target with null
+  waveform elements is selected once for the whole waveform (it was selected again for every element and for every
+  null), its value elements driven leaf by leaf instead of through one `SigScatter`.
+- **Why:** LRM 10.5.2.1 and 10.6.2.1: the target name is evaluated once. sim2 runs the call once; sim1 once per use
+  of the bounds (catalogue `slice-target-bound-once`). The target-before-value order of #1156 and its user decision
+  (2026-11-15: scalar elements and whole objects through an access value keep the value first) are unchanged.

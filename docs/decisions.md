@@ -16846,21 +16846,25 @@ the next run".
   in every warm run. Once the profile names it hot, a run compiles it early (linked at about 50 to 130 ms) and the run
   as a whole is judged against the run before (`profile::better`, 3 percent less work). The two states differ by
   about 2 percent (runs 9 to 24, median 15.59 G instructions early-linked against 15.94 G count-linked, 354 and 402
-  runs), under the bar and within the noise of one pair of runs: it was kept only where the run before had paid its
-  fresh compile (0.74 to 0.87) and lost where the run before had linked it by the count (0.987, 0.990, 0.994). Lost,
-  it was priced as a compile (`cached` false), so the count rule held it until its seen time repaid about 200 ms of
-  compile: linked at 620 to 670 ms, +1.3 to 1.4 G a run (about 8 percent) in every later run, in 3 of 24 worlds of
-  base within 24 runs. The guard against this was kept without a measured gain.
+  runs), under the bar and within the noise of one pair of runs. The run before decides the verdict: of 33 traced
+  worlds that compiled it early, all 27 whose run before had compiled it fresh kept it (0.74 to 0.88), and all 5 whose
+  run before had linked it by the count lost it (0.987 to 0.996; one more was the last run). Lost, it was priced as a
+  compile (`cached` false), so the count rule held it until its seen time repaid about 200 ms of compile: linked at
+  620 to 670 ms, +1.3 to 1.6 G a run (about 8 percent) in every later run; base lost it in 3 of 24 worlds (16 worlds
+  of 24 runs, 8 of 16). The guard against this was kept without a measured gain.
 - **Decision** (agent). A function the profile lost keeps the price of a link when the cache holds it: lost means only
   "not compiled early". It goes back to the state it had before it was compiled early (the count rule's link).
 - **Measured** (agent, `uvvm_axistream_vvc`, 16 fresh worlds x 24 runs, base, a byte copy, the change, traced): worlds
   that lost `axistream_expect`: base 2 (linked at 646 and 670 ms after, +1.27 and +1.42 G a run against the other
-  worlds), copy 0, change 2 (linked at 150 to 350 ms after, +0.6 and 0.0 G). Sums over the 24 runs level (1.000,
-  copy 1.001): the loss comes late and rarely. The broad set (realbench, bench, test runner cells) is in the policy3
+  worlds), copy 0, change 2 (linked at 74 to 439 ms after, as in the worlds that never compiled it early; one of them
+  ran +0.6 G a run against the other worlds from a different set of other compiled and held functions, cause not
+  found, the other +0.0 G). Sums over the 24 runs level (1.000, copy 1.001): the loss comes late and rarely. What stays:
+  a lost world runs in the count rule's state, about 2 percent above the early-linked one. The broad set (realbench, bench, test runner cells) is in the policy3
   report.
 - **Measurement** (agent, 2026-11-15). The memo of pure calls (`yavs-interp` `pmemo.rs`) hashes argument bytes into
   direct-mapped tables, so the text of a path the VHDL reads moves its hits: `vunit_logging` retired 158.9 to 169.0 M
   instructions a warm run by the 6 letters of its `output path` alone (16 paths; memo off: 192.10 to 192.22 M). The
   timing tools passed each world's own path in the test runner's `runner_cfg`, which gave each binary of a comparison
-  a fixed bias of up to a few percent on VUnit tests that an A/A did not cancel; `tools/realbench` and `tools/bench`
+  a fixed bias of up to a few percent on VUnit tests that an A/A did not cancel (re-checked with one text for all
+  binaries: `hdlm_unsigned_divider` 1.019 and `hdlm_ring_buffer` 1.017 of earlier series read 1.000); `tools/realbench` and `tools/bench`
   now pass a relative `output path`. Not a user-visible defect: a few percent, fixed for a given path.

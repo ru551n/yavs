@@ -2737,3 +2737,156 @@ fn asserts_and_reports_of_the_top_level_unit_are_evaluated() {
         "{report}"
     );
 }
+
+/// A cycle run with the compilation cache of the work library on and `YAVS_CYCLE_STATS`: its
+/// report line, the functions compiled and how many of them came from the cache.
+fn cached(dir: &Path, env: &[(&str, &str)], flags: &[&str]) -> (String, usize, usize) {
+    let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .current_dir(dir)
+        .env("YAVS_STD_CACHE", "off")
+        .env("YAVS_CYCLE_STATS", "1")
+        .envs(env.iter().copied())
+        .args([
+            "--color",
+            "never",
+            "run",
+            "--work=work:lib",
+            "--tier=interp",
+        ])
+        .args(flags)
+        .arg("cycle_cache")
+        .output()
+        .expect("run yavs");
+    let (out, err) = (
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr),
+    );
+    assert!(o.status.success(), "{env:?} {flags:?}: {out}{err}");
+    let report: Vec<&str> = out.lines().filter(|l| l.contains("cnt=")).collect();
+    assert_eq!(report.len(), 1, "{out}");
+    // "cycle stats: N functions in T ms, H from the cache"
+    let total = err
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("cycle stats: ")?
+                .split_once(" functions in ")
+        })
+        .unwrap_or_else(|| panic!("no total line: {err}"));
+    let hits = total.1.split(", ").nth(1).and_then(|h| h.split(' ').next());
+    (
+        report[0].to_string(),
+        total.0.parse().expect("functions"),
+        hits.and_then(|h| h.parse().ok()).expect("hits"),
+    )
+}
+
+/// The machine code of the region in the work library's compilation cache: a second run takes
+/// every function from it and prints the same; another generic, another source line, other
+/// checks and another build of yavs each compile again what changed; damaged entries are
+/// misses; `--no-cache` neither reads nor writes it; two runs racing on an empty cache both
+/// succeed.
+#[test]
+fn region_code_from_the_cache_gives_the_same_result() {
+    let dir = tempdir("cycle-cache");
+    analyze(&dir, "cache.vhd", include_str!("cycle/cache.vhd"));
+    let normal = |flags: &[&str]| {
+        let (out, _, rc) = run_env(&dir, &[], flags, "cycle_cache");
+        assert_eq!(rc, 0, "{out}");
+        out.lines()
+            .find(|l| l.contains("cnt="))
+            .expect("report")
+            .to_string()
+    };
+    let want = normal(&["--tier=interp"]);
+    assert!(want.ends_with("cnt=44 acc=738"), "{want}");
+    let obj = dir.join("lib").join("yavs-cache").join("obj");
+    let entries = || -> Vec<std::path::PathBuf> {
+        (std::fs::read_dir(&obj).into_iter().flatten().flatten())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("cycle-"))
+            })
+            .collect()
+    };
+
+    let no_cache = cached(&dir, &[], &["--cycle", "--no-cache"]);
+    assert_eq!((no_cache.0.as_str(), no_cache.2), (want.as_str(), 0));
+    assert!(entries().is_empty(), "--no-cache wrote {:?}", entries());
+
+    let (cold, n, hits) = cached(&dir, &[], &["--cycle"]);
+    assert_eq!((cold.as_str(), hits), (want.as_str(), 0));
+    assert!(n > 0 && !entries().is_empty());
+    let (warm, n2, hits) = cached(&dir, &[], &["--cycle"]);
+    assert_eq!(
+        (warm.as_str(), n2, hits),
+        (want.as_str(), n, n),
+        "a warm run"
+    );
+
+    // Each change that makes other code misses where it does, and gives the normal mode's result.
+    let w12 = normal(&["--tier=interp", "-gW=12"]);
+    let checks = [("YAVS_CYCLE_CHECKS", "off")];
+    let salt = [("YAVS_CACHE_SALT", "another build")];
+    for (what, env, flags, want) in [
+        ("generic", &[][..], &["--cycle", "-gW=12"][..], &w12),
+        ("checks", &checks[..], &["--cycle"][..], &want),
+        ("build", &salt[..], &["--cycle"][..], &want),
+    ] {
+        let (got, n, hits) = cached(&dir, env, flags);
+        assert_eq!(&got, want, "{what}");
+        assert!(hits < n, "{what}: {hits} of {n} functions from the cache");
+        if what == "build" {
+            assert_eq!(hits, 0, "another build took code from the cache");
+        }
+        let (got, n2, hits) = cached(&dir, env, flags);
+        assert_eq!((&got, n2, hits), (want, n, n), "{what}, warm");
+    }
+    analyze(
+        &dir,
+        "cache.vhd",
+        &include_str!("cycle/cache.vhd").replace("STEP : natural := 3", "STEP : natural := 5"),
+    );
+    let step5 = normal(&["--tier=interp"]);
+    assert_ne!(step5, want);
+    let (got, n, hits) = cached(&dir, &[], &["--cycle"]);
+    assert_eq!(got, step5, "an edited source line");
+    assert!(
+        hits < n,
+        "an edited source line: {hits} of {n} from the cache"
+    );
+
+    // Damaged entries: cut short, then garbage. Each is a miss and compiled again.
+    for damage in [0, 1] {
+        for p in entries() {
+            let bytes = std::fs::read(&p).expect("entry");
+            let bad = if damage == 0 {
+                bytes[..bytes.len() / 2].to_vec()
+            } else {
+                vec![0x5a; bytes.len()]
+            };
+            std::fs::write(&p, bad).expect("damage");
+        }
+        let (got, n, hits) = cached(&dir, &[], &["--cycle"]);
+        assert_eq!((&got, hits), (&step5, 0), "damage {damage}");
+        let (got, n2, hits) = cached(&dir, &[], &["--cycle"]);
+        assert_eq!((&got, n2, hits), (&step5, n, n), "damage {damage}, warm");
+    }
+
+    // Two runs at once on an empty cache.
+    for p in entries() {
+        std::fs::remove_file(p).expect("remove entry");
+    }
+    let racers: Vec<_> = (0..2)
+        .map(|_| {
+            let d = dir.to_path_buf();
+            std::thread::spawn(move || cached(&d, &[], &["--cycle", "-gW=9"]))
+        })
+        .collect();
+    let w9 = normal(&["--tier=interp", "-gW=9"]);
+    for r in racers {
+        assert_eq!(r.join().expect("racer").0, w9);
+    }
+    let (got, n, hits) = cached(&dir, &[], &["--cycle", "-gW=9"]);
+    assert_eq!((&got, hits), (&w9, n));
+}

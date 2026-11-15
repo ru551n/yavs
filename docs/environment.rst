@@ -694,7 +694,7 @@ Compiled tiers: Cranelift
      - ``4000``
      - ``run``
    * - ``YAVS_CYCLE_DISASM``
-     - Prints the machine code of the functions of a cycle region (``--cycle``) on standard error.
+     - Prints the machine code of the functions of a cycle region (``--cycle``) on standard error. They are compiled, not taken from the compilation cache.
      - any value
      - unset
      - ``run``
@@ -719,12 +719,12 @@ Compiled tiers: Cranelift
      - unset
      - ``run``
    * - ``YAVS_CYCLE_STATS``
-     - Developers: prints on standard error, for a cycle region (``--cycle``), each compiled function's operations, Cranelift instructions, machine code bytes and compile time, and how many of its processes would compile to the same code (shapes).
+     - Developers: prints on standard error, for a cycle region (``--cycle``), each compiled function's operations, Cranelift instructions, machine code bytes, compile time and whether its machine code came from the compilation cache, and how many of its processes would compile to the same code (shapes).
      - any value
      - unset
      - ``run``
    * - ``YAVS_CYCLE_STATS``
-     - Developers: prints on standard error, for a cycle region (``--cycle``), each compiled function's operations, Cranelift instructions, machine code bytes and compile time, and how many of its processes would compile to the same code (shapes).
+     - Developers: prints on standard error, for a cycle region (``--cycle``), each compiled function's operations, Cranelift instructions, machine code bytes, compile time and whether its machine code came from the compilation cache, and how many of its processes would compile to the same code (shapes).
      - any value
      - unset
      - ``run``

@@ -13,14 +13,18 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::{Mutex, PoisonError};
 
+use cranelift_codegen::incremental_cache::CacheKvStore;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::{I32, I64};
 use cranelift_codegen::ir::{AbiParam, Block as CBlock, InstBuilder, MemFlagsData, Value};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module};
+use cranelift_module::{FuncId, Linkage, Module, ModuleReloc};
+use yavs_cache::{Key, KeyBuilder, Store};
 
 use crate::lower::{Arith, Cmp, Gate, Op, Ref, ShiftK};
 
@@ -153,6 +157,77 @@ pub(crate) enum Fun {
     Edge,
     /// Once, before the first settle: initial values of the variables.
     Init,
+}
+
+/// The kind of the entries of compiled region functions in the objects store.
+const KIND: &str = "cycle";
+
+// ponytail: one store per process, as the compiled tier's (a run simulates one design).
+static STORE: Mutex<Option<Store>> = Mutex::new(None);
+
+/// Keep the machine code of the region's functions in the compilation cache of library directory
+/// `lib` from now on (`None`: compile every function).
+pub fn set_cache(lib: Option<&Path>) {
+    *STORE.lock().unwrap_or_else(PoisonError::into_inner) = lib.map(Store::objects_of_library);
+}
+
+/// The store as Cranelift's cache of compiled functions. Cranelift's key covers the function body
+/// (every operation and image offset, so the checks and the cut too) and the target with its
+/// flags and host features; [`KeyBuilder`] adds the yavs build. A missing or damaged entry is a
+/// miss, and Cranelift rejects an entry of another version of itself.
+struct Kv<'a>(&'a Store);
+
+impl Kv<'_> {
+    fn key(k: &[u8]) -> Key {
+        let mut b = KeyBuilder::new(KIND);
+        b.text(cranelift_codegen::VERSION).part(k);
+        b.finish()
+    }
+}
+
+impl CacheKvStore for Kv<'_> {
+    fn get(&self, key: &[u8]) -> Option<Cow<'_, [u8]>> {
+        self.0
+            .get(KIND, &Self::key(key))
+            .map(|e| Cow::Owned(e.to_vec()))
+    }
+
+    fn insert(&mut self, key: &[u8], val: Vec<u8>) {
+        self.0.put(KIND, &Self::key(key), &val);
+    }
+}
+
+/// Compile `ctx` into `id`: from `store` when it has the function (whether it did), else compiled
+/// and stored there.
+fn define(
+    module: &mut JITModule,
+    id: FuncId,
+    ctx: &mut cranelift_codegen::Context,
+    store: Option<&Store>,
+) -> Result<bool, String> {
+    let Some(s) = store else {
+        module
+            .define_function(id, ctx)
+            .map_err(|e| format!("{e:?}"))?;
+        return Ok(false);
+    };
+    let hit = ctx
+        .compile_with_cache(module.isa(), &mut Kv(s), &mut Default::default())
+        .map_err(|e| format!("{:?}", e.inner))?
+        .1;
+    let code = ctx.compiled_code().ok_or("no compiled code")?;
+    let relocs: Vec<ModuleReloc> = (code.buffer.relocs().iter())
+        .map(|r| ModuleReloc::from_mach_reloc(r, &ctx.func, id))
+        .collect();
+    module
+        .define_function_bytes(
+            id,
+            u64::from(code.buffer.min_alignment),
+            code.code_buffer(),
+            &relocs,
+        )
+        .map_err(|e| format!("{e:?}"))?;
+    Ok(hit)
 }
 
 /// Ones in the low `len` bits.
@@ -489,6 +564,11 @@ pub(crate) fn compile<'a>(
     // Developers: `YAVS_CYCLE_STATS=1` prints each function's operations, Cranelift instructions,
     // machine code bytes and compile time.
     let stats = std::env::var_os("YAVS_CYCLE_STATS").is_some();
+    // Developers: `YAVS_CYCLE_DISASM=1` prints the machine code of each function (compiled, never
+    // taken from the cache).
+    let disasm = std::env::var_os("YAVS_CYCLE_DISASM").is_some();
+    let store = STORE.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let mut hits = 0;
     let t0 = std::time::Instant::now();
     let mut ids = Vec::new();
     for (sym, ops, checked, shape) in &funs {
@@ -561,22 +641,25 @@ pub(crate) fn compile<'a>(
             g.b.ins().return_(&[zero]);
             g.b.finalize(module.target_config());
         }
-        // Developers: `YAVS_CYCLE_DISASM=1` prints the machine code of each function.
-        let disasm = std::env::var_os("YAVS_CYCLE_DISASM").is_some();
         ctx.set_disasm(disasm);
         let n_ir = ctx.func.dfg.num_insts();
-        module
-            .define_function(id, &mut ctx)
-            .map_err(|e| format!("{e:?}"))?;
+        let hit = define(
+            &mut module,
+            id,
+            &mut ctx,
+            store.as_ref().filter(|_| !disasm),
+        )?;
+        hits += usize::from(hit);
         if disasm && let Some(text) = ctx.compiled_code().and_then(|c| c.vcode.as_ref()) {
             eprintln!("{sym}:\n{text}");
         }
         if stats {
             let bytes = ctx.compiled_code().map_or(0, |c| c.code_info().total_size);
             eprintln!(
-                "cycle stats: {sym}: {} operations, {n_ir} instructions, {bytes} bytes, {} us",
+                "cycle stats: {sym}: {} operations, {n_ir} instructions, {bytes} bytes, {} us{}",
                 ops.iter().map(|(p, _)| weight(p)).sum::<usize>(),
-                t.elapsed().as_micros()
+                t.elapsed().as_micros(),
+                if hit { ", from the cache" } else { "" }
             );
         }
         ids.push((id, sym));
@@ -584,7 +667,7 @@ pub(crate) fn compile<'a>(
     module.finalize_definitions().map_err(|e| e.to_string())?;
     if stats {
         eprintln!(
-            "cycle stats: {} functions in {} ms",
+            "cycle stats: {} functions in {} ms, {hits} from the cache",
             ids.len(),
             t0.elapsed().as_millis()
         );

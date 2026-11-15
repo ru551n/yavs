@@ -1973,6 +1973,12 @@ fn run_design(
             (_, true) => yavs_cycle::Mode::Report,
             _ => yavs_cycle::Mode::Run,
         };
+        // The region's machine code is kept in the work library's compilation cache, as the
+        // compiled tier's is; not with `--no-cache`.
+        let work = a.common.work.split_once(':').map_or("", |(_, d)| d);
+        yavs_cycle::set_cache(
+            (!a.common.no_cache && !work.is_empty()).then(|| std::path::Path::new(work)),
+        );
         match yavs_cycle::plan(&db, &e, mode) {
             Ok(plan) => {
                 if mode == yavs_cycle::Mode::Report {

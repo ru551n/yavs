@@ -130,9 +130,11 @@ def parse_header(path):
 
 
 # ---------------------------------------------------------------- running
-def run(template, vhd, hdr, work, threads, shuffle, sandbox=True):
-    shutil.rmtree(work, ignore_errors=True)
-    work.mkdir(parents=True)
+def run(template, vhd, hdr, work, threads, shuffle, sandbox=True, fresh=True):
+    """fresh=False keeps what `work` holds (the library and its compilation cache)."""
+    if fresh:
+        shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True, exist_ok=True)
     std = hdr["std"]
     script = template.format(
         file=shlex.quote(str(vhd)), top=hdr["top"], std=std,

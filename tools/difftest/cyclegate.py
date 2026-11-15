@@ -222,7 +222,22 @@ def one(item, jobs_args):
         outs = []
         tr = tc.replace("--cycle ", "--cycle-report ", 1)  # the members: analysis only
         for kind, t in (("normal", tn), ("cycle", tc), ("report", tr)):
-            rc, out, err = D.run(t, vhd, hdr, base / kind, 1, "", not jobs_args.no_sandbox)
+            if kind == "cycle" and jobs_args.warm:
+                # A cold run first, then the run compared in a fresh directory with its library: the
+                # region's code from the compilation cache (files the test writes start afresh).
+                cold = D.normalise(*D.run(t, vhd, hdr, base / "cold", 1, "", not jobs_args.no_sandbox), yavs=True)
+                shutil.rmtree(base / kind, ignore_errors=True)
+                if (base / "cold" / "lib").is_dir():  # (none when the analysis failed)
+                    shutil.copytree(base / "cold" / "lib", base / kind / "lib")
+                res["cached"] = any((base / kind / "lib" / "yavs-cache" / "obj").glob("cycle-*.img"))
+            rc, out, err = D.run(t, vhd, hdr, base / kind, 1, "", not jobs_args.no_sandbox,
+                                 fresh=not (kind == "cycle" and jobs_args.warm))
+            if kind == "cycle" and jobs_args.warm:
+                warm = D.normalise(rc, out, err, yavs=True)
+                if warm != cold:
+                    res.update(bucket="differs", why="the warm run (region code from the cache) differs from the cold run\n" + first_diff(cold, warm))
+                    res["dir"] = str(base)
+                    return res
             outs.append((rc, out, err))
         (nrc, nout, nerr), (crc, cout, cerr), (_, _, rerr) = outs
         if nrc in (97, 98, 124) and hdr["exit"] != nrc:
@@ -281,6 +296,9 @@ def main():
     ap.add_argument("--no-sandbox", action="store_true")
     ap.add_argument("--json", type=Path, help="write one JSON result per test to this file")
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--warm", action="store_true",
+                    help="run each cycle run first in a library of its own, then the compared run on a copy of that "
+                         "library, with the region's code from the compilation cache, and fail when the two differ")
     ap.add_argument("-v", "--verbose", action="store_true", help="one line per test with its membership")
     a = ap.parse_args()
     if a.selftest:
@@ -320,7 +338,8 @@ def main():
     print(f"cycle gate: {len(res)} tests: {c['identical']} identical, {c['documented']} documented losses only, "
           f"{c['known']} known differences, {c['differs']} differ otherwise, {c['refused']} refused, {c['skipped']} skipped; "
           f"{with_m} of {len(ran)} compared tests have at least one process in the region "
-          f"({sum(r['members'] for r in ran)} of {sum(r['procs'] for r in ran)} processes)")
+          f"({sum(r['members'] for r in ran)} of {sum(r['procs'] for r in ran)} processes)"
+          + (f"; warm: {sum(bool(r.get('cached')) for r in res)} tests ran with region code in the cache" if a.warm else ""))
     sys.exit(1 if c["differs"] else 0)
 
 

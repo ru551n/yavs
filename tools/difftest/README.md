@@ -113,9 +113,13 @@ otherwise (a wrong result in cycle mode: exit status 1, and the line to paste in
 refused (`E41xx`); skipped (the normal mode does not run it). A lost failure of a member ends the normal run
 early: such a test is reported as not compared after that point. Every test shows how many processes joined
 the region, and the summary counts the tests with at least one member. `--only corpus|cycle|bench`, `--filter`,
-`--jobs`, `-v`, `--json FILE`, `--selftest`:
+`--jobs`, `-v`, `--json FILE`, `--selftest`. `--warm` runs every cycle run first in a library of its own, then the compared run on a copy of
+that library, with the region's machine code from the compilation cache, compares the two (a difference fails the test)
+and counts the tests that ran with region code in the cache; with
+`YAVS_CYCLE_FLAGS=enable_incremental_compilation_cache_checks=true` Cranelift also compiles every function it
+takes from the cache again and stops when the code differs:
 
-    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclegate.py
+    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclegate.py [--warm]
 
 The gate has no large design. `cyclebig.py` is its optional companion: it runs realbench worlds (made by
 `tools/realbench/run.py --prepare` under `YAVS_REALBENCH_CACHE`, named `<test>-<label>`, `--label` default `yavs`)

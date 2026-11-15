@@ -19,6 +19,7 @@ use yavs_elab::{Elaborated, LeafId, Region, RegionDriver};
 use yavs_kernel::{EDGE_LEVEL, EdgeTrigger, Range, SimError};
 use yavs_sem::Db;
 
+pub use codegen::set_cache;
 use lower::{Kind, Op, Ref};
 
 /// Codes of cycle mode. Under `--cycle-strict` every reason a process below the top-level unit

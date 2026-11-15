@@ -8,11 +8,12 @@ publish.workspace = true
 
 [dependencies]
 # The versions of yavs-clift: one Cranelift in the build.
-cranelift-codegen = "=0.137.0"
+cranelift-codegen = { version = "=0.137.0", features = ["incremental-cache"] }
 cranelift-frontend = "=0.137.0"
 cranelift-jit = "=0.137.0"
 cranelift-module = "=0.137.0"
 cranelift-native = "=0.137.0"
+yavs-cache = { path = "../yavs-cache" }
 yavs-diag.workspace = true
 yavs-elab = { path = "../yavs-elab" }
 yavs-ir = { path = "../yavs-ir" }

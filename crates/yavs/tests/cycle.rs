@@ -1302,6 +1302,58 @@ fn slices_with_bounds_from_variables_equal_the_normal_mode_at_widths_around_a_wo
     }
 }
 
+/// D14 (outside processes see a region output one delta after the trigger, whatever the logic in
+/// between): a reader one delta after the edge (`wait for 0 ns`) sees the register's value through
+/// a concurrent copy one edge earlier than in the normal mode, which takes a delta per process.
+/// Pinned so a change of the contract shows; vhdl-ai-test's `test_reset_mid_pass` leaves its wait
+/// for idle one clock earlier for this reason.
+const DELTA_READER: &str = "\
+library ieee;
+use ieee.std_logic_1164.all;
+entity cycle_d14 is end entity;
+architecture a of cycle_d14 is
+  signal clk, reset, q, idle : std_ulogic := '0';
+begin
+  clk <= not clk after 5 ns when now < 100 ns;
+  reg : process (clk)
+  begin
+    if rising_edge(clk) then
+      q <= reset;
+    end if;
+  end process;
+  idle <= q;
+  main : process
+  begin
+    for c in 1 to 4 loop
+      reset <= '1' when c = 2 else '0';
+      wait until rising_edge(clk);
+      wait for 0 ns;
+      report \"c=\" & integer'image(c) & \" idle=\" & std_ulogic'image(idle);
+    end loop;
+    wait;
+  end process;
+end architecture;
+";
+
+#[test]
+fn a_reader_one_delta_after_the_edge_sees_region_logic_settled() {
+    let dir = tempdir("cycle-d14");
+    analyze(&dir, "d14.vhd", DELTA_READER);
+    let at = |lines: &[String]| {
+        (lines.iter())
+            .position(|l| l.ends_with("idle='1'"))
+            .map(|k| k + 1)
+    };
+    let (normal, _) = run(&dir, &["--tier=interp"], "cycle_d14");
+    let (cycle, err) = run(&dir, &["--tier=interp", "--cycle"], "cycle_d14");
+    assert_eq!(at(&normal), Some(3), "{normal:?}");
+    assert_eq!(at(&cycle), Some(2), "{cycle:?}\n{err}");
+    assert!(
+        err.contains("cycle mode: 2 of 4 processes run cycle-based"),
+        "{err}"
+    );
+}
+
 /// Constants a plain elaboration evaluates only when something needs it (an architecture
 /// constant computed by a function, a deferred package constant), read only by region code.
 #[test]

@@ -2459,13 +2459,32 @@ impl Lx<'_> {
             _ => Err("a signal leaf placed twice".to_string()),
         };
         match v {
-            // ponytail: a signal of integers stays out for now; joining needs its place here, the
-            // image's words from the right (`rt.rs` turns them round already).
-            Val::Part(p) if p.int.is_some() => Err(format!(
-                "an array signal of integers or enumerations is not supported in cycle mode yet \
-                 (signal {})",
-                self.e.leaf_name(leaf_of(p.r)?)
-            )),
+            // An array of integers or enumerations: its kernel signal of its own, a word per
+            // element in the image, from the right as every array of the lowering (the kernel
+            // keeps the elements of a byte signal from the left: `rt.rs` turns them round).
+            Val::Part(mut p) if p.int.is_some() => {
+                let l = leaf_of(p.r)?;
+                let leaf = nets.leaf(l);
+                let part = so.part((l.0 - so.leaves.0.0) as usize);
+                let (off, len) = part.map_or((0, leaf.ty.len), |r| (r.offset, r.len));
+                let at = nets.loc[l.index()];
+                if 64 * len != p.len
+                    || !matches!(leaf.ty.elem, yavs_kernel::Elem::Bytes(1 | 4 | 8))
+                    || at.base != 0
+                    || nets.signal_len(at.signal) != leaf.ty.len
+                    || leaf.implicit.is_some()
+                {
+                    return Err(format!(
+                        "the signal {}, whose kernel form differs",
+                        self.e.leaf_name(l)
+                    ));
+                }
+                p.r = Ref::Sig(at.signal.0);
+                p.lo = 64 * (leaf.ty.len - off - len);
+                p.full = 64 * leaf.ty.len;
+                p.leaf = Some(l);
+                Ok(Val::Part(p))
+            }
             Val::Part(mut p) => {
                 let l = leaf_of(p.r)?;
                 let leaf = nets.leaf(l);

@@ -1436,6 +1436,33 @@ fn literals_of_arrays_of_records_equal_the_normal_mode_at_widths_around_a_word()
     }
 }
 
+/// Signals of arrays of integers and enumerations: the kernel keeps their elements from the
+/// left, the image from the right. Driven outside and read by members (by element, at a run-time
+/// index), an array of arrays through next-state blocks, a memory at run-time indices, a port
+/// collapsed onto a slice, 8-byte integers and enumerations in and out; 1 to 129 elements.
+#[test]
+fn signals_of_integer_arrays_equal_the_normal_mode() {
+    let dir = tempdir("cycle-intsig");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("intsig{w}.vhd"),
+            &with_width(include_str!("cycle/intsig.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_intsig");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_intsig");
+            assert_eq!(normal.len(), 20, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            // Every process but the testbench's `main`.
+            assert!(
+                err.contains("cycle mode: 6 of 7 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// Constants a plain elaboration evaluates only when something needs it (an architecture
 /// constant computed by a function, a deferred package constant), read only by region code.
 #[test]
@@ -1455,8 +1482,7 @@ fn constants_only_region_code_reads_have_their_values() {
     }
 }
 
-/// Arrays of integers and enumerations in variables and constants; the processes that drive
-/// signals of them stay out with the reason.
+/// Arrays of integers and enumerations in variables, constants and signals.
 #[test]
 fn arrays_of_integers_give_the_same_result() {
     let dir = tempdir("cycle-intarr");
@@ -1466,13 +1492,9 @@ fn arrays_of_integers_give_the_same_result() {
         let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_intarr");
         assert_eq!(normal.len(), 16, "{t:?} {normal:?}");
         assert_eq!(cycle, normal, "{t:?}\n{err}");
-        // `reg` and `cmb` join; `lanes` and `st` drive arrays of integers and enumerations.
+        // Every process but the testbench's `main`.
         assert!(
-            err.contains("cycle mode: 2 of 8 processes run cycle-based"),
-            "{err}"
-        );
-        assert!(
-            err.contains("an array signal of integers or enumerations is not supported in cycle mode yet (signal cycle_intarr.sh)"),
+            err.contains("cycle mode: 7 of 8 processes run cycle-based"),
             "{err}"
         );
     }

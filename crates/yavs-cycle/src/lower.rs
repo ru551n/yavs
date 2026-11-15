@@ -4,7 +4,7 @@
 //! literal's are counted per site, a variable's missing initial value per element. Anything else
 //! is a reason to leave the process in the event kernel, never a guess.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 
 use yavs_elab::{Bounds, Elaborated, LeafId, ProcInst, Shape};
 use yavs_sem::hir::{
@@ -645,45 +645,6 @@ struct IntV {
 
 type R<T> = Result<T, String>;
 
-/// The elements a path through a body certainly assigns, or may assign: per kernel signal, a
-/// bit per element.
-#[derive(Clone, Default)]
-struct Assigned(BTreeMap<u32, Vec<u64>>);
-
-impl Assigned {
-    fn add(&mut self, k: u32, lo: u32, len: u32) {
-        let w = self.0.entry(k).or_default();
-        let need = (lo + len).div_ceil(64) as usize;
-        if w.len() < need {
-            w.resize(need, 0);
-        }
-        set_bits(w, lo, len);
-    }
-
-    /// Only what both assign.
-    fn meet(&mut self, o: &Assigned) {
-        self.0.retain(|k, w| match o.0.get(k) {
-            Some(x) => {
-                for (i, a) in w.iter_mut().enumerate() {
-                    *a &= x.get(i).copied().unwrap_or(0);
-                }
-                true
-            }
-            None => false,
-        });
-    }
-
-    /// A kernel signal with an element in `self` that `o` does not have.
-    fn beyond(&self, o: &Assigned) -> Option<u32> {
-        self.0.iter().find_map(|(k, w)| {
-            let x = o.0.get(k);
-            (w.iter().enumerate())
-                .any(|(i, a)| a & !x.and_then(|x| x.get(i).copied()).unwrap_or(0) != 0)
-                .then_some(*k)
-        })
-    }
-}
-
 /// What a branch of an `if`, `case` or a conditional or selected assignment does.
 #[derive(Clone, Copy)]
 enum Br<'b> {
@@ -726,18 +687,13 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         metas: 0,
         uninit: 0,
         checks: Vec::new(),
-        must: Assigned::default(),
-        may: Assigned::default(),
         unrolled: 0,
         lits: Vec::new(),
     };
     match &db.stmts[p.stmt].kind {
         StmtKind::Process {
-            sensitivity,
-            body,
-            scope,
-            ..
-        } => lx.process(sensitivity, body, *scope),
+            sensitivity, body, ..
+        } => lx.process(sensitivity, body),
         StmtKind::ConcSignalAssign {
             postponed: false,
             guarded: false,
@@ -783,9 +739,6 @@ struct Lx<'a> {
     metas: u32,
     uninit: u64,
     checks: Vec<Check>,
-    /// The signal elements every path so far assigns, and those some path may assign.
-    must: Assigned,
-    may: Assigned,
     unrolled: u32,
     /// The codes of the literals with a metavalue (`Part::lit`).
     lits: Vec<Vec<u8>>,
@@ -812,12 +765,7 @@ impl Lx<'_> {
         }
     }
 
-    fn process(
-        mut self,
-        sensitivity: &Sensitivity,
-        body: &[StmtId],
-        scope: yavs_sem::ScopeId,
-    ) -> R<Body> {
+    fn process(mut self, sensitivity: &Sensitivity, body: &[StmtId]) -> R<Body> {
         let db = self.db;
         if let Some(t) = self.p.trigger {
             let clock = Clock {
@@ -881,57 +829,11 @@ impl Lx<'_> {
         if matches!(sensitivity, Sensitivity::None) {
             return Err("a process with wait statements runs in the event kernel".into());
         }
-        // What an activation does must be a function of the signals it reads: no state kept in
-        // variables from one activation to the next.
-        // Asserts and reports are not evaluated in the region, so they do not count here.
-        let kept: Vec<StmtId> = (body.iter().copied())
-            .filter(|&s| {
-                !matches!(
-                    db.stmts[s].kind,
-                    StmtKind::Assert { .. } | StmtKind::Report { .. }
-                )
-            })
-            .collect();
-        if db.pure_comb_reads(scope, &kept).is_none() {
-            return Err(
-                "a combinational process that keeps state in a variable or does more than assign \
-                 signals and variables"
-                    .into(),
-            );
-        }
+        // The subset checker proved the rest (`check.rs`): every element a path may assign is
+        // assigned on every path, every variable is assigned before it is read, and the
+        // sensitivity list names everything the body reads.
         self.stmts(body)?;
-        // Cycle mode computes from every read; the normal mode only wakes on the list.
-        if let Sensitivity::List(list) = sensitivity {
-            let mut listed = BTreeSet::new();
-            for l in list.iter() {
-                let yavs_sem::hir::ObjRoot::Decl(d) = l.root else {
-                    return Err("a sensitivity list naming an external name".into());
-                };
-                // A part names fewer leaves than its object: not taken yet (the check must not
-                // count leaves the list does not name).
-                if !l.path.is_empty() {
-                    return Err(
-                        "a sensitivity list naming part of a signal is not supported in cycle \
-                         mode yet"
-                            .into(),
-                    );
-                }
-                let Some(o) = self.e.signal(self.p.scope, d) else {
-                    return Err("a sensitivity list naming something that is not a signal".into());
-                };
-                let (a, z) = self.e.nets.obj(o).leaves;
-                listed.extend((a.0..z.0).map(LeafId));
-            }
-            if let Some(l) = self.reads.iter().find(|l| !listed.contains(l)) {
-                return Err(format!(
-                    "its sensitivity list does not name {}, which it reads",
-                    self.e.leaf_name(*l)
-                ));
-            }
-        }
-        self.latch_free()?;
-        // A combinational variable is assigned before any read (`pure_comb_reads`): its start
-        // value is never seen.
+        // A combinational variable is assigned before any read: its start value is never seen.
         self.uninit = 0;
         self.init_ops.clear();
         Ok(self.body(Kind::Comb, None, None))
@@ -1008,24 +910,7 @@ impl Lx<'_> {
             return Ok(self.body(Kind::Clocked, Some(clock), None));
         }
         self.signal_rhs(target, rhs)?;
-        self.latch_free()?;
         Ok(self.body(Kind::Comb, None, None))
-    }
-
-    /// The conservative must-assign test of a combinational member (milestone 3's latch
-    /// analysis replaces it): every signal element some path may assign is assigned on every
-    /// path, so the process keeps no value between activations.
-    fn latch_free(&self) -> R<()> {
-        match self.may.beyond(&self.must) {
-            None => Ok(()),
-            Some(k) => {
-                let leaf = self.e.nets.packs[k as usize].0;
-                Err(format!(
-                    "it may keep the value of {} (not assigned on every path: a latch)",
-                    self.e.leaf_name(leaf)
-                ))
-            }
-        }
     }
 
     fn loc(&mut self, words: u32) -> Ref {
@@ -1250,14 +1135,11 @@ impl Lx<'_> {
             };
         }
         let cond = self.cond(*c)?;
-        let saved = self.must.clone();
         let outer = std::mem::take(&mut self.ops);
         self.branch(*b)?;
         let then = std::mem::take(&mut self.ops);
-        let then_must = std::mem::replace(&mut self.must, saved);
         self.if_chain(rest)?;
         let else_ = std::mem::replace(&mut self.ops, outer);
-        self.must.meet(&then_must);
         self.ops.push(Op::If { cond, then, else_ });
         Ok(())
     }
@@ -1271,14 +1153,11 @@ impl Lx<'_> {
         let Some(cond) = c else {
             return self.branch(*b);
         };
-        let saved = self.must.clone();
         let outer = std::mem::take(&mut self.ops);
         self.branch(*b)?;
         let then = std::mem::take(&mut self.ops);
-        let then_must = std::mem::replace(&mut self.must, saved);
         self.ref_chain(rest)?;
         let else_ = std::mem::replace(&mut self.ops, outer);
-        self.must.meet(&then_must);
         self.ops.push(Op::If {
             cond: *cond,
             then,
@@ -1565,17 +1444,6 @@ impl Lx<'_> {
         }
     }
 
-    /// A signal target's elements for the must-assign test: certainly assigned, or only maybe
-    /// (an element chosen at run time).
-    fn mark(&mut self, r: Ref, lo: u32, len: u32, sure: bool) {
-        if let Ref::Sig(k) = r {
-            self.may.add(k, lo, len);
-            if sure {
-                self.must.add(k, lo, len);
-            }
-        }
-    }
-
     /// `dst := src` (or `<=`): leaf by leaf for records.
     fn assign(&mut self, dst: &Val, src: Val) -> R<()> {
         match (dst, src) {
@@ -1604,7 +1472,6 @@ impl Lx<'_> {
                     if let Some(l) = d.leaf {
                         self.writes.insert(l);
                     }
-                    self.mark(d.r, d.lo, d.len, true);
                     let g = match groups.iter().position(|g| (g.0, g.1) == (d.r, s.r)) {
                         Some(g) => g,
                         None => {
@@ -1650,7 +1517,6 @@ impl Lx<'_> {
                                 .into(),
                         );
                     }
-                    self.mark(d.r, d.lo, stride * b.len() as u32, false);
                     let s = self.whole(s);
                     let site = self.index_site(d, b);
                     self.ops.push(Op::IndexWrite {
@@ -1667,7 +1533,6 @@ impl Lx<'_> {
                     });
                     return Ok(());
                 }
-                self.mark(d.r, d.lo, d.len, true);
                 let s = self.materialise(s);
                 let whole = d.lo == 0 && d.len == d.full;
                 let s_whole = s.lo == 0 && s.len == s.full;
@@ -1707,7 +1572,6 @@ impl Lx<'_> {
                 if let Some(l) = d.leaf {
                     self.writes.insert(l);
                 }
-                self.mark(d.r, 0, 1, true);
                 // The subtype of the target: checked unless the value cannot leave it.
                 if (s.lo < d.lo || s.hi > d.hi)
                     && let Some((sub, obj)) = d.place

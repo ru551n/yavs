@@ -692,6 +692,10 @@ enum Br<'b> {
     Var(&'b Target, ExprId),
 }
 
+/// Why a comparison or arithmetic with a literal holding a metavalue keeps its process out.
+const META_CMP: &str = "a comparison with a metavalue literal (`'U'`, `'X'`, `'-'`, ...), which two-state \
+                        values never equal";
+
 /// Most statement instances an unrolled loop makes per process.
 const UNROLL_MAX: u32 = 1 << 16;
 
@@ -1378,13 +1382,7 @@ impl Lx<'_> {
                 2 | 6 => (0, true),
                 3 | 7 => (1, true),
                 8 if matching => (0, false),
-                _ => {
-                    return Err(
-                        "a comparison with a metavalue literal (`'U'`, `'X'`, `'-'`, ...), which \
-                         two-state values never equal"
-                            .into(),
-                    );
-                }
+                _ => return Err(META_CMP.into()),
             };
             val[el / 64] |= bit << (el % 64);
             care[el / 64] |= u64::from(keep) << (el % 64);
@@ -2915,6 +2913,11 @@ impl Lx<'_> {
             return Err("a `numeric_std` operator with an unexpected number of arguments".into());
         };
         let (a, b) = (self.arg(a)?, self.arg(b)?);
+        for v in [&a, &b] {
+            if let Val::Part(Part { lit: Some(_), .. }) = v {
+                return Err(META_CMP.into());
+            }
+        }
         Ok(match form {
             Form::Vv => {
                 let (a, b) = (self.part(a)?, self.part(b)?);
@@ -3258,7 +3261,31 @@ impl Lx<'_> {
                     .and_then(yavs_ir::ieee::symbol_key)
                     .and_then(yavs_ir::ieee::parse)
                 else {
-                    return not_yet();
+                    // The logical operators of `numeric_bit` (and `numeric_std`) on its vectors,
+                    // which have no native key: the gates of their elements.
+                    let numeric = ["ieee.numeric_bit.", "ieee.numeric_std."]
+                        .iter()
+                        .any(|p| sp.mangled.as_str().starts_with(p));
+                    let g = match decl.name.key().as_str() {
+                        "\"and\"" => Some(Gate::And),
+                        "\"or\"" => Some(Gate::Or),
+                        "\"xor\"" => Some(Gate::Xor),
+                        "\"nand\"" => Some(Gate::Nand),
+                        "\"nor\"" => Some(Gate::Nor),
+                        "\"xnor\"" => Some(Gate::Xnor),
+                        _ => None,
+                    };
+                    return match (numeric, g, args.len()) {
+                        (true, Some(g), 2) => {
+                            let (a, b) = two(self)?;
+                            self.gate(g, a, b)
+                        }
+                        (true, None, 1) if decl.name.key().as_str() == "\"not\"" => {
+                            let v = one(self)?;
+                            self.not(v)
+                        }
+                        _ => not_yet(),
+                    };
                 };
                 match op {
                     I::Gate(g) | I::VecGate(g) | I::NumGate(g) => {
@@ -3320,6 +3347,9 @@ impl Lx<'_> {
                         let (a, b, m) = if form == Form::Vv {
                             let (a, b) = two(self)?;
                             let (a, b) = (self.part(a)?, self.part(b)?);
+                            if a.lit.is_some() || b.lit.is_some() {
+                                return Err(META_CMP.into());
+                            }
                             let m = a.len + b.len;
                             (a, b, m)
                         } else {
@@ -3740,6 +3770,11 @@ impl Lx<'_> {
             return Err("a division with an unexpected number of arguments".into());
         };
         let (a, b) = (self.arg(a)?, self.arg(b)?);
+        for v in [&a, &b] {
+            if let Val::Part(Part { lit: Some(_), .. }) = v {
+                return Err(META_CMP.into());
+            }
+        }
         let (a, b, res) = match form {
             Form::Vv => {
                 let (a, b) = (self.part(a)?, self.part(b)?);
@@ -3825,6 +3860,10 @@ impl Lx<'_> {
             return Err("a comparison with an unexpected number of arguments".into());
         };
         let (a, b) = (self.arg(a)?, self.arg(b)?);
+        let vec = if form == Form::Vi { &a } else { &b };
+        if let Val::Part(Part { lit: Some(_), .. }) = vec {
+            return Err(META_CMP.into());
+        }
         let (v, i, swap) = match form {
             Form::Vi => (self.part(a)?, self.int(b)?, false),
             _ => (self.part(b)?, self.int(a)?, true),

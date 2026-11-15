@@ -1,7 +1,23 @@
 -- Clocked and combinational shapes of cycle mode against the normal mode: a `wait until` process
 -- with an enable, an asynchronous reset, variables with initial values, an array of vectors read
 -- and written at run-time indices, concurrent simple, conditional and selected assignments, a
--- `case` on a vector, an unrolled loop, slices chosen at run time, constants and generics.
+-- `case` on a vector, an unrolled loop, slices chosen at run time, constants and generics,
+-- aggregates of signals, gates of a vector with a scalar, integer `abs`, `minimum`, `maximum`,
+-- `numeric_std` with the integer first, a short-circuit `and` guarding an index, `to_x01`,
+-- `is_x`, and `numeric_bit` in an entity of its own.
+library ieee;
+use ieee.numeric_bit.all;
+entity cycle_shapes_bit is
+  port (
+    a : in bit_vector(7 downto 0);
+    y : out bit_vector(7 downto 0)
+  );
+end entity;
+architecture rtl of cycle_shapes_bit is
+begin
+  y <= bit_vector((unsigned(a) + 5) xor shift_left(unsigned(a), 1) xor resize(unsigned(a(3 downto 0)) * 3, 8));
+end architecture;
+
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -25,7 +41,39 @@ architecture a of cycle_shapes is
   signal q : std_ulogic := '0';
   signal wide : std_ulogic_vector(8 * N - 1 downto 0) := (others => '0');
   signal byte_out : std_ulogic_vector(7 downto 0);
+  signal agg_a, agg_b, vsg, xo : std_ulogic_vector(7 downto 0);
+  signal iabs, imin, imax : integer range -300 to 300;
+  signal iv : unsigned(7 downto 0);
+  signal sc : std_ulogic;
+  signal isx : boolean;
+  type pair_t is record
+    lo, hi : unsigned(3 downto 0);
+  end record;
+  signal pr : pair_t;
+  signal bin, bout : bit_vector(7 downto 0);
 begin
+  nb : entity work.cycle_shapes_bit port map (a => bin, y => bout);
+  bin <= to_bitvector(std_ulogic_vector(din));
+  misc : process (all)
+    variable t : integer range -300 to 300;
+  begin
+    agg_a <= (0 => din(1), 3 => din(0), others => en);
+    agg_b <= (din(7), din(6), '1', '0', en, din(2), din(1), din(0));
+    vsg <= std_ulogic_vector(din) and en;
+    t := to_integer(din) - 128;
+    iabs <= abs t;
+    imin <= minimum(t, cnt - 100);
+    imax <= maximum(t, cnt - 100);
+    iv <= 3 + din;
+    if sel < N - 1 and regs(sel + 1)(0) = '1' then
+      sc <= '1';
+    else
+      sc <= '0';
+    end if;
+    xo <= to_x01(std_ulogic_vector(din));
+    isx <= is_x(std_ulogic_vector(din));
+    pr <= (lo => din(3 downto 0), hi => din(7 downto 4));
+  end process;
   w : process
   begin
     wait until rising_edge(clk) and en = '1';
@@ -96,7 +144,11 @@ begin
         & " mux=" & to_hstring(mux) & " pick=" & to_hstring(pick) & " flag=" & boolean'image(flag)
         & " code=" & to_string(code) & " sum=" & to_hstring(sum) & " dec=" & to_hstring(dec)
         & " q=" & std_ulogic'image(q) & " r0=" & to_hstring(regs(0)) & " r3=" & to_hstring(regs(N - 1))
-        & " wide=" & to_hstring(wide) & " bo=" & to_hstring(byte_out);
+        & " wide=" & to_hstring(wide) & " bo=" & to_hstring(byte_out) & " aa=" & to_hstring(agg_a)
+        & " ab=" & to_hstring(agg_b) & " vsg=" & to_hstring(vsg) & " ia=" & integer'image(iabs)
+        & " imn=" & integer'image(imin) & " imx=" & integer'image(imax) & " iv=" & to_hstring(iv)
+        & " sc=" & std_ulogic'image(sc) & " xo=" & to_hstring(xo) & " isx=" & boolean'image(isx)
+        & " pr=" & to_hstring(pr.hi) & to_hstring(pr.lo) & " bout=" & to_hstring(bout);
     end loop;
     wait;
   end process;

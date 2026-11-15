@@ -297,12 +297,18 @@ pub(crate) fn compile(
                 exits: *checked,
                 ptr,
                 cache: BTreeMap::new(),
+                cap: CACHE_MAX,
                 keep,
                 zeros: std::collections::HashMap::new(),
             };
             // Each piece starts from memory: the words it keeps in registers are few, and a
             // branch saves and forgets only those.
             for p in ops {
+                g.cap = if weight(p) > BIG {
+                    CACHE_BIG
+                } else {
+                    CACHE_MAX
+                };
                 for op in p.iter() {
                     g.op(op);
                 }
@@ -367,8 +373,12 @@ pub(crate) fn compile(
     })
 }
 
-/// Most words a member keeps in registers at once (`Gen::keep_in`).
+/// Most words a piece keeps in registers at once (`Gen::keep_in`), and for a piece of more than
+/// `BIG` operations: in a large piece the register allocator's work grows with the values live at
+/// once, while a small piece with many words (a record copied whole) runs faster with them all.
 const CACHE_MAX: usize = 256;
+const CACHE_BIG: usize = 16;
+const BIG: usize = 500;
 
 struct Gen<'a> {
     b: FunctionBuilder<'a>,
@@ -383,6 +393,8 @@ struct Gen<'a> {
     /// The words in registers, by byte offset: their value and whether memory is behind it. Every
     /// value dominates the code that follows (a branch drops what it made at its join).
     cache: BTreeMap<i32, (Value, bool)>,
+    /// Most words in `cache` at once, for the piece being generated.
+    cap: usize,
     keep: &'a [bool],
     /// Bits known to be zero of some values (constants, extracted bits, words built by inserts).
     zeros: std::collections::HashMap<Value, u64>,
@@ -414,10 +426,10 @@ impl Gen<'_> {
         self.keep_in(word(r) + k as i32 * 8, v, true);
     }
 
-    /// Word `off` in a register. Past `CACHE_MAX` words every changed one goes to memory and the
-    /// cache starts again: a register allocator's work grows faster than the values live at once.
+    /// Word `off` in a register. Past `cap` words every changed one goes to memory and the cache
+    /// starts again: a register allocator's work grows faster than the values live at once.
     fn keep_in(&mut self, off: i32, v: Value, dirty: bool) {
-        if self.cache.len() >= CACHE_MAX && !self.cache.contains_key(&off) {
+        if self.cache.len() >= self.cap && !self.cache.contains_key(&off) {
             let changed: Vec<(i32, Value)> = (self.cache.iter())
                 .filter(|(_, (_, d))| *d)
                 .map(|(&o, &(v, _))| (o, v))

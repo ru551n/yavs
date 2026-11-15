@@ -32,6 +32,7 @@ or later (`pip install vunit-yavs` installs it, a pre-release) and yavs 0.20.1 o
 | `yavs.sim_flags` | `yavs run`, such as `--assert-summary`, `--activity`, `--hang-report`, `--wave-include`: they pass through to the run |
 | `yavs.max_threads` (integer, at least 1, or `"auto"`) | `yavs run --threads=N`, the most threads of one simulation; `"auto"` is `--threads=auto`, more threads only while they make the run faster |
 | `yavs.tier_compile` (`"wait"` or `"background"`) | `yavs run --tier-compile=MODE`: `wait` (yavs's default) makes a simulation wait while a function compiles, `background` compiles alongside it on a thread at the lowest system priority |
+| `yavs.cycle` (`"off"`, `"on"` or `"strict"`) | `yavs run --cycle` for `"on"`, `--cycle-strict` for `"strict"` (cycle mode, below); default `"off"`. Not passed to `elab` |
 | `enable_coverage` (VUnit's option) | `yavs run --cov-file=<test output>/yavs/coverage.ycov --cov-test=<test name>` with the kinds below (coverage, below) |
 | `yavs.cov_kind` (list of strings) | `yavs run --cov-kind=LIST`: `statement`, `branch`, `toggle`, `condition`, `assert`, `expression`, `combination`, `fsm`. No kind is on by default |
 | `yavs.init_files.after_load` | Console command files sourced after each `vunit_load` |
@@ -67,6 +68,23 @@ or older, into libraries that read each other (they could wait for each other's 
 
 Without `yavs.max_threads` or `--yavs-max-threads` no thread count is passed, and yavs runs with
 its default, unless the token server runs (`--threads=auto`, below). An explicit `--threads` in `yavs.sim_flags` comes after the cap and wins.
+
+## Cycle mode
+
+```python
+vu.set_sim_option("yavs.cycle", "on")                                       # every test
+vu.library("lib").test_bench("tb_counter").set_sim_option("yavs.cycle", "strict")  # one testbench; also per test or configuration
+```
+
+`"on"` runs the clocked and combinational processes that fit cycle mode on a static schedule and leaves the rest to the
+event kernel; the test output shows `cycle mode: N of M processes run cycle-based` (VUnit prints a passing test's output with `-v`). `"strict"` makes a process below
+the top-level unit that does not fit an error. A wrong value is refused at setup, naming the three values.
+
+- Cycle-based processes drop their `report` and `assert` statements, and library warnings.
+- They are two-state: metavalues read as `'0'`. Outside processes keep full semantics.
+- There are no waves, and none of coverage, `--yavs-debug`, `--yavs-interactive` or `--yavs-surfer` in the same test (the test fails before yavs starts, error E4102 of yavs).
+
+All the rules are in the `--cycle` entry of the yavs command line reference. To see what would join, set `yavs.sim_flags` to `["--cycle-report"]` for one test with `yavs.cycle` `"off"`: yavs prints the report and does not simulate, so that test fails.
 
 ## Coverage
 

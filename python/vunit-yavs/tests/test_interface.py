@@ -280,6 +280,15 @@ class TestPackage(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "yavs.tier_compile.*wait.*background"):
             self.factory.check_sim_option("yavs.tier_compile", "on")
 
+    def test_cycle_option_is_validated(self):
+        self._vunit().get_simulator_name()
+        for value in ("off", "on", "strict"):
+            self.factory.check_sim_option("yavs.cycle", value)
+        wrong = (("onn", "Did you mean 'on'"), (True, "Did you mean 'on'"), (False, "Did you mean 'off'"), ("", ""))
+        for value, hint in wrong:
+            with self.assertRaisesRegex(ValueError, f"yavs.cycle.*\"off\".*\"on\".*\"strict\".*{hint}"):
+                self.factory.check_sim_option("yavs.cycle", value)
+
 
 class TestYavsInterface(unittest.TestCase):
     """
@@ -780,6 +789,39 @@ class TestYavsInterface(unittest.TestCase):
         )
         _, cmd, _ = self._simulate(make_config())
         self.assertFalse(any(arg.startswith("--tier-compile") for arg in cmd))
+
+    def test_cycle_mode_flags(self):
+        for value, flag in (("on", "--cycle"), ("strict", "--cycle-strict")):
+            config = make_config(sim_options={"yavs.cycle": value, "yavs.sim_flags": ["--stop-time=1ms"]})
+            _, cmd, _ = self._simulate(config)
+            self.assertEqual([arg for arg in cmd if arg.startswith("--cycle")], [flag])
+            # Before the raw flags, like the thread cap
+            self.assertLess(cmd.index(flag), cmd.index("--stop-time=1ms"))
+            _, cmd, _ = self._simulate(config, elaborate_only=True)
+            self.assertFalse(any(arg.startswith("--cycle") for arg in cmd))
+        for options in ({}, {"yavs.cycle": "off"}):
+            _, cmd, _ = self._simulate(make_config(sim_options=options))
+            self.assertFalse(any(arg.startswith("--cycle") for arg in cmd))
+
+    def test_cycle_mode_refuses_what_the_simulator_refuses(self):
+        cases = (
+            ({"debug_port": 4711}, {}, "--yavs-debug"),
+            ({"interactive": True}, {}, "--yavs-interactive"),
+            ({"surfer": ""}, {}, "--yavs-surfer"),
+            ({}, {"enable_coverage": True}, "enable_coverage"),
+            ({"coverage": CoverageArgs(enabled=True, letters="s")}, {}, "--yavs-cov"),
+        )
+        for kwargs, options, named in cases:
+            with self.subTest(named):
+                stdout = mock.patch("sys.stdout", new=io.StringIO())
+                with mock.patch("vunit_yavs.Process", autospec=True) as process, stdout as out:
+                    self.simif = YavsInterface(prefix="prefix", output_path=self.output_path, **kwargs)
+                    self.simif.setup_library_mapping(self._project("2008"))
+                    config = make_config(sim_options={"yavs.cycle": "on", **options})
+                    self.assertFalse(self.simif.simulate(self.output_path, "lib.tb", config, False))
+                process.assert_not_called()
+                for text in ("yavs.cycle='on'", named, "E4102", 'set yavs.cycle to "off"'):
+                    self.assertIn(text, out.getvalue())
 
     def test_no_max_threads_passes_no_thread_count(self):
         _, cmd, _ = self._simulate(make_config())

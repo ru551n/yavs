@@ -12,6 +12,7 @@ End to end on a real yavs (VUNIT_YAVS_PATH, else yavs on PATH): the project's ru
 import json
 import os
 import queue
+import re
 import shutil
 import socket
 import subprocess
@@ -153,6 +154,64 @@ VU.add_vhdl_builtins()
 LIB = VU.add_library("lib")
 LIB.add_source_files(Path(__file__).parent / "tb_forever.vhd")
 LIB.set_sim_option("yavs.sim_flags", [f"--wave={os.environ['WAVE_FILE']}"])
+VU.main()
+"""
+
+
+COUNTER = """library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+entity counter is port (clk, rst : in std_logic; q : out unsigned(7 downto 0)); end entity;
+architecture rtl of counter is
+  signal cnt : unsigned(7 downto 0) := (others => '0');
+begin
+  process (clk)
+  begin
+    if clk'event and clk = '1' then
+      if rst = '1' then cnt <= (others => '0'); else cnt <= cnt + 1; end if;
+    end if;
+  end process;
+  q <= cnt;
+end architecture;
+"""
+
+COUNTER_TESTBENCH = """library vunit_lib;
+context vunit_lib.vunit_context;
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+entity tb_counter is generic (runner_cfg : string); end entity;
+architecture tb of tb_counter is
+  signal clk, rst : std_logic := '0';
+  signal q : unsigned(7 downto 0);
+begin
+  clk <= not clk after 5 ns;
+  dut : entity work.counter port map (clk => clk, rst => rst, q => q);
+  main : process
+  begin
+    test_runner_setup(runner, runner_cfg);
+    while test_suite loop
+      if run("counts") or run("counts_again") then
+        for i in 1 to 20 loop wait until rising_edge(clk); end loop;
+        wait for 1 ns;
+        check_equal(to_integer(q), 20);
+      end if;
+    end loop;
+    test_runner_cleanup(runner);
+  end process;
+end architecture;
+"""
+
+# Cycle mode for one test, by the sim option (the test bench's other test runs in the event kernel)
+CYCLE_RUN = """
+from pathlib import Path
+from vunit import VUnit
+VU = VUnit.from_argv()
+VU.add_package("vunit-yavs", allow_setup=True)
+VU.add_vhdl_builtins()
+LIB = VU.add_library("lib")
+LIB.add_source_files(Path(__file__).parent / "*.vhd")
+LIB.test_bench("tb_counter").test("counts").set_sim_option("yavs.cycle", "on")
 VU.main()
 """
 
@@ -1136,6 +1195,33 @@ class TestRealYavs(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0, proc.stdout)
             self.assertEqual(report(self.xml), {"lib.tb_vendor.all": "passed"}, proc.stdout)
+
+    def test_cycle_mode_for_one_test(self):
+        yavs = str(Path(YAVS_DIR) / "yavs")
+        help_text = subprocess.run([yavs, "run", "--help"], capture_output=True, text=True, check=False).stdout
+        if "--cycle-strict" not in help_text:
+            self.skipTest("this yavs has no cycle mode")
+        project = self.tempdir / "project"
+        project.mkdir()
+        (project / "counter.vhd").write_text(COUNTER, encoding="utf-8")
+        (project / "tb_counter.vhd").write_text(COUNTER_TESTBENCH, encoding="utf-8")
+        (project / "run.py").write_text(CYCLE_RUN, encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(project / "run.py"), "-v", "--no-color"]
+            + ["-o", str(self.tempdir / "out"), "-x", str(self.xml)],
+            env=self._env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=TIMEOUT,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(report(self.xml), {"lib.tb_counter.counts": "passed", "lib.tb_counter.counts_again": "passed"})
+        # The summary line is in the output of the test that has the option only
+        lines = re.findall(r"cycle mode: \d+ of \d+ processes run cycle-based", proc.stdout)
+        self.assertEqual(len(lines), 1, proc.stdout)
+        self.assertRegex(proc.stdout, r"(?s)cycle mode: \d+ of \d+.*pass .*counts \(")
 
     def test_the_letters_are_those_of_yavs(self):
         yavs = str(Path(os.environ["VUNIT_YAVS_PATH"]) / "yavs") if "VUNIT_YAVS_PATH" in os.environ else "yavs"

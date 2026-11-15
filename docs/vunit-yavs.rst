@@ -42,6 +42,15 @@ as ``--name=value``.
        own at the lowest system priority, alongside the run: a test that compiles a lot may end sooner when there are
        idle cores) (:doc:`running-faster`). Not passed to ``elab``. A ``--tier-compile`` in ``yavs.sim_flags``
        wins.
+   * - ``yavs.cycle``
+     - ``yavs run --cycle`` or ``--cycle-strict``: ``"off"`` (the default), ``"on"`` (the processes that fit run cycle-based,
+       the rest stays in the event kernel; the test output gets the line ``cycle mode: N of M processes run
+       cycle-based``, shown with ``-v`` for a passing test) or ``"strict"`` (the same, but a clocked or combinational process below the top-level unit that does
+       not fit is an error that lists them all). Set it per library, testbench, test or configuration. Cycle-based
+       processes drop their ``report`` and ``assert`` statements and library warnings, read metavalues as ``'0'`` and
+       have no waves; the rest is in the :doc:`cli-reference` (``--cycle``). A test that also has coverage,
+       ``--yavs-debug``, ``--yavs-interactive`` or ``--yavs-surfer`` fails before yavs starts, naming both. Not passed
+       to ``elab``. To see what would join, set ``yavs.sim_flags`` to ``["--cycle-report"]`` for one test with ``yavs.cycle`` ``"off"``: yavs prints the report and does not simulate, so that test fails.
    * - ``yavs.cov_embed_sources``
      - ``yavs run --cov-embed-sources``: store the source text in the database, so the HTML report needs no
        checkout. The source text then travels with the database (:doc:`coverage`).

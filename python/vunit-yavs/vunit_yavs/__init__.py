@@ -16,6 +16,7 @@ and selected with VUNIT_SIMULATOR=yavs.
 
 import argparse
 import atexit
+import difflib
 import logging
 import re
 import subprocess
@@ -70,6 +71,28 @@ class TierCompileOption(Option):
     def validate(self, value):
         if value not in ("wait", "background"):
             raise ValueError(f"Option {self.name!r} must be \"wait\" or \"background\". Got {value!r}")
+
+
+CYCLE_FLAGS = {"off": None, "on": "--cycle", "strict": "--cycle-strict"}
+
+
+class CycleOption(Option):
+    """
+    Must be "off", "on" (yavs run --cycle) or "strict" (yavs run --cycle-strict)
+    """
+
+    def validate(self, value):
+        if value in CYCLE_FLAGS:
+            return
+        if isinstance(value, bool):
+            hint = f' Did you mean {"on" if value else "off"!r}?'
+        else:
+            close = difflib.get_close_matches(str(value), CYCLE_FLAGS, 1)
+            hint = f" Did you mean {close[0]!r}?" if close else ""
+        raise ValueError(
+            f"Option {self.name!r} must be \"off\" (the default), \"on\" (yavs run --cycle) or \"strict\" "
+            f"(yavs run --cycle-strict). Got {value!r}.{hint}"
+        )
 
 
 def _debug_port(text):
@@ -256,6 +279,7 @@ class YavsInterface(SimulatorInterface):
         ListOfStringOption("yavs.sim_flags"),
         ThreadsOption("yavs.max_threads"),
         TierCompileOption("yavs.tier_compile"),
+        CycleOption("yavs.cycle"),
         ListOfStringOption("yavs.cov_kind"),
         BooleanOption("yavs.cov_embed_sources"),
         # Files of console commands, sourced at the points VUnit sources its init files
@@ -752,6 +776,27 @@ class YavsInterface(SimulatorInterface):
         interactive = self._interactive and not elaborate_only
         debug = (self._debug_port is not None or interactive) and not elaborate_only
         surfer = self._surfer is not None and not elaborate_only
+        cycle = config.sim_options.get("yavs.cycle", "off")
+        if cycle != "off" and not elaborate_only:
+            # yavs refuses these with E4102; saying so here names the option to drop
+            coverage = self._coverage.enabled or config.sim_options.get("enable_coverage", False)
+            blocked = [
+                name
+                for name, on in (
+                    ("--yavs-debug", self._debug_port is not None),
+                    ("--yavs-interactive", interactive),
+                    ("--yavs-surfer (waves)", surfer),
+                    ("coverage (--yavs-cov, enable_coverage)", coverage),
+                )
+                if on
+            ]
+            if blocked:
+                print(
+                    f"error: the sim option yavs.cycle={cycle!r} cannot be combined with {', '.join(blocked)}: "
+                    "cycle mode does not keep signals, waves or coverage inside its region (yavs error E4102). "
+                    'Fix: drop those, or set yavs.cycle to "off" for this test.'
+                )
+                return False
         if debug or surfer:
             if not self._take_debug_session(test_suite_name):
                 return False
@@ -777,6 +822,10 @@ class YavsInterface(SimulatorInterface):
         tier_compile = config.sim_options.get("yavs.tier_compile")
         if tier_compile is not None and not elaborate_only:
             cmd += [f"--tier-compile={tier_compile}"]
+
+        # Cycle mode, before the raw flags too (a --cycle in yavs.sim_flags is the simulator's to judge)
+        if cycle != "off" and not elaborate_only:
+            cmd += [CYCLE_FLAGS[cycle]]
 
         if not elaborate_only and (self._coverage.enabled or config.sim_options.get("enable_coverage", False)):
             if debug:

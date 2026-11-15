@@ -691,6 +691,9 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   the compile thread takes it (`auto`, so their order and number depend on timing). The test
   runner passes neither; use `yavs.sim_flags`. It passes `--tier-compile` from the sim option
   `yavs.tier_compile` (before `yavs.sim_flags`, which win).
+- Cycle mode: the sim option `yavs.cycle` (`off`, `on`, `strict`) becomes `--cycle` or `--cycle-strict` on `yavs run`
+  (never `elab`), before `yavs.sim_flags`. With a debug session, coverage or `--wave` the runner fails the test before
+  starting yavs, naming both (yavs itself answers E4102).
 - Threads: yavs defaults to `--threads=1`. The test runner already runs `-p N`
   simulations in parallel and passes a thread count only when the user sets one: the sim
   option `yavs.max_threads` (or the runner argument `--yavs-max-threads N` for every test; both

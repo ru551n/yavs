@@ -146,8 +146,10 @@ fn word(r: Ref) -> i32 {
     }
 }
 
-/// Operations per compiled function, about: Cranelift's register allocation grows faster than
-/// the function, so a long trigger function is cut between members into several.
+/// Operations per compiled function, about: a trigger function is cut between members into
+/// several, and a member longer than this into parts (`cut`). Cranelift's work on one function
+/// grows faster than the function: a member of 39 000 operations as one function took twice the
+/// cycles of the same member in parts, for the same instructions.
 const CHUNK: usize = 4000;
 
 /// The operations of `ops`, nested ones included.
@@ -163,9 +165,135 @@ pub(crate) fn weight_of(o: &Op) -> usize {
     }
 }
 
+/// Operations per function: [`CHUNK`], or `YAVS_CYCLE_CHUNK` (developers: a small value cuts every
+/// member into parts, to test the cut).
+fn chunk() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("YAVS_CYCLE_CHUNK")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(CHUNK)
+    })
+}
+
+/// A piece as parts of about `CHUNK` operations each, each but the last with `true` (its member
+/// goes on in the next part); see [`cut`].
+fn parts(ops: &[Op]) -> Vec<(Vec<Op>, bool)> {
+    let ps = cut(ops, chunk());
+    let n = ps.len();
+    (ps.into_iter().enumerate())
+        .map(|(i, p)| (p, i + 1 < n))
+        .collect()
+}
+
+/// `ops` as consecutive parts of about `max` operations: run one after the other, through
+/// memory, they do what `ops` does. An `If` larger than `max` is cut inside its branches, every
+/// part of it behind the same condition, when no branch writes the condition's word; a larger
+/// operation that cannot be cut is a part of its own.
+fn cut(ops: &[Op], max: usize) -> Vec<Vec<Op>> {
+    let mut out: Vec<Vec<Op>> = Vec::new();
+    let mut cur: Vec<Op> = Vec::new();
+    let mut w = 0;
+    for op in ops {
+        let ow = weight_of(op);
+        if w > 0 && w + ow > max {
+            out.push(std::mem::take(&mut cur));
+            w = 0;
+        }
+        match op {
+            Op::If { cond, then, else_ }
+                if ow > max
+                    && !writes(then, word(*cond) / 8)
+                    && !writes(else_, word(*cond) / 8) =>
+            {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                    w = 0;
+                }
+                let (t, e) = (cut(then, max), cut(else_, max));
+                for k in 0..t.len().max(e.len()) {
+                    out.push(vec![Op::If {
+                        cond: *cond,
+                        then: t.get(k).cloned().unwrap_or_default(),
+                        else_: e.get(k).cloned().unwrap_or_default(),
+                    }]);
+                }
+            }
+            _ => {
+                cur.push(op.clone());
+                w += ow;
+            }
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Whether an operation of `ops` may write word `c`.
+fn writes(ops: &[Op], c: i32) -> bool {
+    ops.iter().any(|op| match op {
+        Op::If { then, else_, .. } => writes(then, c) || writes(else_, c),
+        _ => {
+            let hit = std::cell::Cell::new(false);
+            let n = span(op) as i32;
+            op.map(
+                &|r| r,
+                &|r| {
+                    let d = word(r) / 8;
+                    if d <= c && c < d + n {
+                        hit.set(true);
+                    }
+                    r
+                },
+                &|x| x,
+            );
+            hit.get()
+        }
+    })
+}
+
+/// The words from its destination an operation (not an `If`) may write.
+fn span(op: &Op) -> u32 {
+    match op {
+        Op::Copy { len, .. }
+        | Op::Gate { len, .. }
+        | Op::Not { len, .. }
+        | Op::Extract { len, .. }
+        | Op::Cat { len, .. }
+        | Op::Add { len, .. }
+        | Op::Mul { len, .. }
+        | Op::VDiv { len, .. }
+        | Op::Shift { len, .. }
+        | Op::FromInt { len, .. }
+        | Op::Splat { len, .. }
+        | Op::Select { len, .. } => words(*len),
+        Op::Lit { val, .. } => val.len() as u32,
+        Op::Blend { mask, .. } => mask.len() as u32,
+        Op::Insert { lo, len, .. } => words(lo + len),
+        Op::Ext { to, .. } => words(*to),
+        Op::IndexRead { w, .. } => words(*w),
+        // The word after the array too: an element may reach into it.
+        Op::IndexWrite { lo, n, stride, .. } => (lo + n * stride).div_ceil(64) + 1,
+        Op::VecEq { .. }
+        | Op::VCmp { .. }
+        | Op::IntLit { .. }
+        | Op::IntCmp { .. }
+        | Op::Int { .. }
+        | Op::Reduce { .. }
+        | Op::ToInt { .. } => 1,
+        Op::Range { .. } | Op::If { .. } => 0,
+    }
+}
+
 /// Compile the trigger functions: the settle as steps, the edge's own pieces (the settle follows
 /// them) and the initialisation's, each piece needing nothing from another but memory (the
-/// bodies of members); `bodies` are the loop groups' members, each a function of its own, compiled
+/// bodies of members; a member longer than `CHUNK` operations is cut into parts, `cut`, which hand
+/// on everything through memory); `bodies` are the loop groups' members, each in functions of its
+/// own, compiled
 /// with checks or without (an early run of a member may see values not settled yet: no check
 /// exits it, a division by zero divides by one), `groups` the words each loop group drives and
 /// its save words. Every `Ref` is an image slot (`Ref::Loc`); `err` is the first of the two
@@ -215,10 +343,36 @@ pub(crate) fn compile(
     let ptr = module.target_config().pointer_type();
     let checks = checks_on();
     let perf = std::env::var_os("YAVS_CLIFT_PERFMAP").is_some();
-    // The functions to compile (label, pieces, whether checks exit), the loop bodies first; and
-    // what each trigger function runs, a function by its index.
-    let mut funs: Vec<(String, Vec<&[Op]>, bool)> = (bodies.iter().enumerate())
-        .map(|(b, (ops, checked))| (format!("loop_{b}"), vec![&ops[..]], *checked))
+    // The functions to compile (label, parts, whether checks exit), the loop bodies first; and
+    // what each trigger function runs, a function by its index. A part says whether its member
+    // goes on in the next one (`cut`).
+    type Fn = (String, Vec<(Vec<Op>, bool)>, bool);
+    let mut funs: Vec<Fn> = Vec::new();
+    // Parts packed into functions of about `CHUNK` operations; returns the functions made.
+    let pack = |funs: &mut Vec<Fn>, what: &str, ps: Vec<(Vec<Op>, bool)>, checked: bool| {
+        let first = funs.len();
+        let mut cur: Vec<(Vec<Op>, bool)> = Vec::new();
+        let mut w = 0;
+        for (p, more) in ps {
+            let pw = weight(&p);
+            if w > 0 && w + pw > chunk() {
+                funs.push((
+                    format!("{what}_{}", funs.len()),
+                    std::mem::take(&mut cur),
+                    checked,
+                ));
+                w = 0;
+            }
+            w += pw;
+            cur.push((p, more));
+        }
+        if !cur.is_empty() {
+            funs.push((format!("{what}_{}", funs.len()), cur, checked));
+        }
+        first..funs.len()
+    };
+    let bodies: Vec<std::ops::Range<usize>> = (bodies.iter().enumerate())
+        .map(|(b, (ops, checked))| pack(&mut funs, &format!("loop_{b}"), parts(ops), *checked))
         .collect();
     let mut runs: [Vec<Result<usize, Run>>; 3] = Default::default();
     let edge: Vec<Step> = edge.iter().map(|p| Step::Ops(p.clone())).collect();
@@ -227,43 +381,30 @@ pub(crate) fn compile(
         .into_iter()
         .enumerate()
     {
-        let mut cur: Vec<&[Op]> = Vec::new();
-        let mut w = 0;
+        let mut cur: Vec<(Vec<Op>, bool)> = Vec::new();
+        let flush = |funs: &mut Vec<Fn>, cur: &mut Vec<(Vec<Op>, bool)>, runs: &mut Vec<_>| {
+            if !cur.is_empty() {
+                runs.extend(pack(funs, what, std::mem::take(cur), true).map(Ok));
+            }
+        };
         for st in steps {
             let r = match st {
                 Step::Ops(p) => {
-                    if w > 0 && w + weight(p) > CHUNK {
-                        runs[f].push(Ok(funs.len()));
-                        funs.push((
-                            format!("{what}_{}", funs.len()),
-                            std::mem::take(&mut cur),
-                            true,
-                        ));
-                        w = 0;
-                    }
-                    w += weight(p);
-                    cur.push(p);
+                    cur.extend(parts(p));
                     continue;
                 }
-                Step::Call(b) => Ok(*b),
+                Step::Call(b) => {
+                    flush(&mut funs, &mut cur, &mut runs[f]);
+                    runs[f].extend(bodies[*b].clone().map(Ok));
+                    continue;
+                }
                 Step::Save(g) => Err(Run::Save(*g)),
                 Step::Same(g) => Err(Run::Same(*g)),
             };
-            if !cur.is_empty() {
-                runs[f].push(Ok(funs.len()));
-                funs.push((
-                    format!("{what}_{}", funs.len()),
-                    std::mem::take(&mut cur),
-                    true,
-                ));
-                w = 0;
-            }
+            flush(&mut funs, &mut cur, &mut runs[f]);
             runs[f].push(r);
         }
-        if !cur.is_empty() {
-            runs[f].push(Ok(funs.len()));
-            funs.push((format!("{what}_{}", funs.len()), cur, true));
-        }
+        flush(&mut funs, &mut cur, &mut runs[f]);
     }
     // Developers: `YAVS_CYCLE_STATS=1` prints each function's operations, Cranelift instructions,
     // machine code bytes and compile time.
@@ -303,7 +444,7 @@ pub(crate) fn compile(
             };
             // Each piece starts from memory: the words it keeps in registers are few, and a
             // branch saves and forgets only those.
-            for p in ops {
+            for (p, more) in ops {
                 g.cap = if weight(p) > BIG {
                     CACHE_BIG
                 } else {
@@ -312,7 +453,12 @@ pub(crate) fn compile(
                 for op in p.iter() {
                     g.op(op);
                 }
-                g.write_back();
+                // A member that goes on in the next part leaves its scratch words there too.
+                if *more {
+                    g.spill_all();
+                } else {
+                    g.write_back();
+                }
                 g.cache.clear();
                 g.zeros.clear();
             }
@@ -334,7 +480,7 @@ pub(crate) fn compile(
             let bytes = ctx.compiled_code().map_or(0, |c| c.code_info().total_size);
             eprintln!(
                 "cycle stats: {sym}: {} operations, {n_ir} instructions, {bytes} bytes, {} us",
-                ops.iter().map(|p| weight(p)).sum::<usize>(),
+                ops.iter().map(|(p, _)| weight(p)).sum::<usize>(),
                 t.elapsed().as_micros()
             );
         }
@@ -452,6 +598,17 @@ impl Gen<'_> {
     fn write_back(&mut self) {
         let dirty: Vec<(i32, Value)> = (self.cache.iter())
             .filter(|(off, (_, d))| *d && self.keep[**off as usize / 8])
+            .map(|(&off, &(v, _))| (off, v))
+            .collect();
+        for (off, v) in dirty {
+            self.store(off, v);
+        }
+    }
+
+    /// Every changed word into memory, scratch ones too.
+    fn spill_all(&mut self) {
+        let dirty: Vec<(i32, Value)> = (self.cache.iter())
+            .filter(|(_, (_, d))| *d)
             .map(|(&off, &(v, _))| (off, v))
             .collect();
         for (off, v) in dirty {

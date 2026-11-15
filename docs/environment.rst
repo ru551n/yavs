@@ -688,6 +688,11 @@ Compiled tiers: Cranelift
      - ``off``, ``all``
      - checks on
      - ``run``
+   * - ``YAVS_CYCLE_CHUNK``
+     - Developers: the operations of each compiled function of a cycle region (``--cycle``), about (default 4000); a member longer than that is cut into parts. A small value cuts every member, to test the cut.
+     - a whole number of at least 1
+     - ``4000``
+     - ``run``
    * - ``YAVS_CYCLE_DISASM``
      - Prints the machine code of the functions of a cycle region (``--cycle``) on standard error.
      - any value

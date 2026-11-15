@@ -2300,3 +2300,76 @@ fn a_check_on_values_not_settled_yet_does_not_stop_the_run() {
         assert_eq!(row(&err, "cycle_early.r").0, "cycle-based:", "{err}");
     }
 }
+
+/// A run of `top` with `env` set, as (standard output, standard error, exit status).
+fn run_env(dir: &Path, env: &[(&str, &str)], flags: &[&str], top: &str) -> (String, String, i32) {
+    let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .current_dir(dir)
+        .env("YAVS_STD_CACHE", "off")
+        .envs(env.iter().copied())
+        .args(["--color", "never", "run", "--work=work:lib", "--no-cache"])
+        .args(flags)
+        .arg(top)
+        .output()
+        .expect("run yavs");
+    (
+        String::from_utf8_lossy(&o.stdout).into_owned(),
+        String::from_utf8_lossy(&o.stderr).into_owned(),
+        o.status.code().unwrap_or(-1),
+    )
+}
+
+/// Members cut into several compiled functions: a combinational variable live across every part,
+/// an `if` cut inside its branches, branches in the unrolled loops, and a range check in the last
+/// part of a clocked member that fails as in the normal mode. At the size the code generator
+/// cuts by itself and with `YAVS_CYCLE_CHUNK=7`, which cuts every member into parts of a few
+/// operations.
+#[test]
+fn members_cut_into_several_functions_give_the_same_result() {
+    let dir = tempdir("cycle-cut");
+    analyze(&dir, "cut.vhd", include_str!("cycle/cut.vhd"));
+    let lines = |out: &str| -> Vec<String> {
+        (out.lines())
+            .filter(|l| l.contains("c="))
+            .map(String::from)
+            .collect()
+    };
+    let (normal, err, rc) = run_env(&dir, &[], &["--tier=interp"], "cycle_cut");
+    assert_eq!(rc, 0, "{err}");
+    let normal = lines(&normal);
+    assert_eq!(normal.len(), 12, "{normal:?}");
+    // The normal mode's error of the failing check: message and where.
+    let (_, nerr, nrc) = run_env(&dir, &[], &["--tier=interp", "-gLIMIT=5000"], "cycle_cut");
+    assert_eq!(nrc, 1, "{nerr}");
+    let failure: Vec<&str> = (nerr.lines())
+        .filter(|l| l.starts_with("error[E3009]") || l.contains("= note: at "))
+        .map(str::trim)
+        .collect();
+    assert_eq!(failure.len(), 2, "{nerr}");
+    for chunk in [None, Some("7")] {
+        let mut env = vec![("YAVS_CYCLE_STATS", "1")];
+        env.extend(chunk.map(|c| ("YAVS_CYCLE_CHUNK", c)));
+        let (out, err, rc) = run_env(&dir, &env, &["--tier=interp", "--cycle"], "cycle_cut");
+        assert_eq!(rc, 0, "{chunk:?}: {err}");
+        assert_eq!(lines(&out), normal, "{chunk:?}");
+        assert!(
+            err.contains("cycle mode: 3 of 4 processes run cycle-based"),
+            "{err}"
+        );
+        // Both large members in several functions.
+        let funs = (err.lines())
+            .filter(|l| l.starts_with("cycle stats: cycle_"))
+            .count();
+        assert!(funs >= 6, "{chunk:?}: {funs} functions: {err}");
+        let (_, err, rc) = run_env(
+            &dir,
+            &env,
+            &["--tier=interp", "--cycle", "-gLIMIT=5000"],
+            "cycle_cut",
+        );
+        assert_eq!(rc, 1, "{chunk:?}: {err}");
+        for l in &failure {
+            assert!(err.contains(l), "{chunk:?}: {l}: {err}");
+        }
+    }
+}

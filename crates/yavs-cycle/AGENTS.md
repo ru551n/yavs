@@ -131,7 +131,7 @@ YAVS_BIN=<release yavs> python3 -I tools/difftest/cyclegate.py   # the correctne
   `--cycle-strict`. Plain `--cycle` (and `--cycle-strict` when it passes) prints one summary line;
   the report is the only place the rows are. Report layout (`plan` in `lib.rs`): summary, the
   processes left out grouped by code (behavioural and E4101 are a group each), most common first, the
-  asserts and reports not evaluated with their holders, the subset and loop-group lines, the boundary, the
+  asserts and reports not evaluated with their holders and the fixed note that members give no ieee library warnings, the subset and loop-group lines, the boundary, the
   cycle-based processes. An unwritable FILE is E4103 before any work. The developer switch
   `YAVS_CYCLE_VERDICTS` is gone: the tests and `tools/difftest/cyclegate.py` read `--cycle-report`
   (the test helpers `run` and `run_text` append it to the standard error of a cycle run).

@@ -302,6 +302,12 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
             let _ = writeln!(report, "    {n:>4}  {name}");
         }
     }
+    if !sel.members.is_empty() {
+        report.push_str(
+            "  cycle-based processes give no warnings of the ieee libraries (numeric_std \
+             metavalue and compare warnings)\n",
+        );
+    }
     let _ = writeln!(
         report,
         "  subset: {} of {total} processes fit, {} loop group{} among them",

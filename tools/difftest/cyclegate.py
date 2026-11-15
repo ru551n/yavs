@@ -31,7 +31,11 @@ CYCLE = D.YAVS.replace(CYC, "--cycle " + CYC)
 W = re.compile(r"(?<![\w])W(?![\w])")
 CYCLE_TESTS = {
     "calls.vhd": [("cycle_calls", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
+    "clocks.vhd": [("cycle_clocks", "", None)],
     "consts.vhd": [("cycle_consts", "", None)],
+    "history.vhd": [("cycle_history", "", None)],
+    "inputs.vhd": [("cycle_inputs", "", None)],
+    "inreset.vhd": [("cycle_inreset", "", None)],
     "intarr.vhd": [("cycle_intarr", "", None)],
     "ints.vhd": [("cycle_ints", "", None)],
     "numeric.vhd": [("cycle_ops2", "", lambda s, w=w: W.sub(str(w), s)) for w in (8, 63, 65)],

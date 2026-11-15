@@ -413,6 +413,10 @@ fn the_report_groups_what_stays_out_by_reason_most_common_first() {
         report.contains("    behavioural, in the event kernel (6 processes):"),
         "{report}"
     );
+    assert!(
+        report.contains("cycle-based processes give no warnings of the ieee libraries"),
+        "{report}"
+    );
     // The processes of a group are listed under its heading.
     let i = report.find("    E4118 ").expect("a group of E4118");
     assert!(

@@ -4,8 +4,6 @@ held/held_active.vhd	b8dccf82	'active and 'last_active of member-driven signals 
 held/held_param_active.vhd	dbb926f0	'last_active of member-driven signals through a parameter and an external name: same as held_active
 held/held_transaction.vhd	e073e92b	'transaction of member-driven signals: redrives with the same value are not published, and the initial export is a transaction at time 0
 hierarchy/in_port_collapse_part.vhd	7321c653	'U initial values of member-driven signals read as 0 (D3 to D5), and the reports of members not evaluated (A6)
-rtl/rare_ways.vhd	a433405c	a literal 'X driven by a member reads as 0 (D4)
-rtl/vector_ops.vhd	f2c78d4e	all nine logic values go through members and read as 0 (D3 to D5)
 rtl/wide_bus_attributes.vhd	5721f3f4	'last_active and 'last_event of member-driven signals read outside (A6, no history)
 rtl/wide_bus_lean.vhd	7e2d7339	'last_active and 'last_event of member-driven signals read outside (A6, no history)
 sigassign/conversion_copies.vhd	2565f2d7	'U values read as 0 and intermediate delta cycles that a monitor no longer sees

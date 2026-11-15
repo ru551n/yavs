@@ -1,0 +1,1 @@
+`--tier=auto` no longer mistakes the second part of a compiled function (its code for the interpreter, made after its native code) for something already in the compilation cache, so a run plans its compile time with the price it really pays.

@@ -84,6 +84,10 @@ The work the run-to-run profile stores (`run_work`) adds what the looks charged 
 
 A later run counts the time the earlier runs saw a function held (`unrepaid`, the profile's `held` lines) for its last `EARLY_RUNS` held runs only (`HELD_WINDOW`): summed over every run it compiled `uvvm_axistream_vvc`'s `p_main` late in every world for nothing after. decisions.md "`--tier=auto`: held time counts the last runs".
 
+### `--tier=auto`: the frame part of a native-frame function has its own cache line (2026-11-15)
+
+The frame-mode code a function with native-frame code gets later is listed in the cache list apart from its native-frame code (the size with `FRAME_KEY` set), and `Worker::cached` reads that line once the native-frame code exists: before, the listing of the first part priced the second as a link, 7 to 100 times below what it cost to compile (`local_to_hxstring` 11 ms against 1.6 ms). decisions.md "`--tier=auto`: the frame-mode code of a native-frame function is listed apart in the cache list".
+
 ### `--tier=auto`: a lost function keeps its link price (2026-11-15)
 
 A function the run-to-run profile lost (compiled early, the run not 3 percent better) is priced as a link of the cache again, not as a compile (`Worker::cached`): priced as a compile, `uvvm_axistream_vvc`'s `axistream_expect`, which the count rule had linked at about 200 ms, was linked at about 650 ms in every later run (+8 percent a run, in 3 of 24 fresh worlds). The timing tools pass a relative `output path` to VUnit tests: the memo of pure calls hashes the bytes of a world's path, which biased each binary of a comparison by up to a few percent. decisions.md "`--tier=auto`: a lost function keeps its link price".

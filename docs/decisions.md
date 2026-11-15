@@ -17070,3 +17070,31 @@ the next run".
 - **Why:** LRM 10.5.2.1 and 10.6.2.1: the target name is evaluated once. sim2 runs the call once; sim1 once per use
   of the bounds (catalogue `slice-target-bound-once`). The target-before-value order of #1156 and its user decision
   (2026-11-15: scalar elements and whole objects through an access value keep the value first) are unchanged.
+
+## `--tier=auto`: the frame-mode code of a native-frame function is listed apart in the cache list (yavs-rt `auto.rs` `Worker::cached`, `list_keys`, `FRAME_KEY`, perf/payback, 2026-11-15, agent, landed under the standing rule)
+
+- **Finding** (agent, payback; user decision 2026-11-15: fix the payback estimates). The cache list names a compiled
+  function by name and size, whatever part was compiled. A function that runs on native frames and has a loop gets its
+  native-frame code first and its frame-mode code later, as a module of its own. Once the first part was listed,
+  `cached` said yes for the function, so the second part was priced as a link: `local_to_hxstring` (396 IR) frame part
+  11 ms of compile against a modelled 1.6 ms (4 us an IR instruction), `log` (527 IR) 17 ms against 0.16 ms
+  (`FIRST_LINK`), `rand` (332 IR) 11 ms against 0.1 ms; over traces of 5 short tests x 6 worlds x 10 runs, 232 such
+  compiles took 1.04 s of compile CPU against 60 ms modelled. The budget, the pacing of `--tier-compile=wait`
+  (`body_price`) and the payback (`need`, `unrepaid`) read that price.
+- **Decision** (agent). The frame-mode code of a function compiled apart from its native-frame code is listed under
+  the size with `FRAME_KEY` (bit 31) set (`list_keys`: a `Part::Frame` compile of a function that had native-frame
+  code; a `Part::Both` compile that made native-frame code lists both lines), and `cached` reads that line once the
+  function has native-frame code in this run (`nat`), the plain line before. A warm run that linked both parts prices
+  both as links as before; one whose earlier run made only the native-frame code prices the frame part as a compile.
+- **Measured** (agent, bench builds, all-thread user instructions, fresh worlds each prepared by its binary, base, a
+  byte copy of base (A/A) and the change interleaved run by run on claimed cores). realbench, all 40 tests, 3 worlds x
+  10 runs, geomeans (A/A): run 1 0.9991 (0.9983), run 2 1.0011 (0.9979), steady 1.0008 (1.0010), sum 1.0005 (1.0000),
+  outputs and exit codes equal; the cells off by more than the A/A + 1 percent did not hold when run again:
+  `neorv32_dual_full` 16 worlds x 10 (steady 0.995, A/A 1.005), `grlib_leon3mp` run 1 10 worlds (0.994, A/A 0.988:
+  run 1 spreads 172 to 191 G), `uvvm_func_cov` run 1 24 worlds (1.008, A/A 1.016), `neorv32_single_min`,
+  `vai_window_gen_interlock` 6 worlds (within the A/A). `osvvm_axis_random` 48 worlds x 10: slow first runs 25 of 48
+  in both, sum 1.000 (A/A 1.001). Five short library tests x 16 worlds (screen build): no cell slower than the A/A
+  + 1 percent. GRLIB and Microwatt whole runs, interpreted and auto: output, errors and exit status as the base.
+- **Not done**: a compile whose tree hit the cache anywhere is still charged as a link of its root (`hit`), though its
+  callees may have compiled (the larger share of compiles over three times their model: 261 compiles, 2.9 s against
+  0.3 s modelled); it is accounting after the compile, not the price a decision reads.

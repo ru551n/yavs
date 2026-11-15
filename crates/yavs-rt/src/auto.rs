@@ -1386,6 +1386,28 @@ const GUARD_CALLS: u64 = 16;
 /// Where the count of a function under trial starts: it never runs out.
 const GUARD_ARM: u32 = 1 << 31;
 
+/// The bit of the size in the cache list (`Worker::list_key`) that names the frame-mode code of a
+/// function compiled apart from its native-frame code (`Worker::cached`, `list_keys`).
+const FRAME_KEY: u32 = 1 << 31;
+
+/// The lines of the cache list a compile of `part` adds for the function listed as `key`, which had
+/// native-frame code before it (`had_native`) and has now (`made_native`): the frame-mode code of a
+/// function with native-frame code is an object of its own, listed apart (`FRAME_KEY`), so that the
+/// listing of one part does not price the other as a link (it compiles 7 to 100 times dearer).
+fn list_keys(
+    key: (String, u32),
+    part: Part,
+    had_native: bool,
+    made_native: bool,
+) -> Vec<(String, u32)> {
+    let framed = (key.0.clone(), key.1 | FRAME_KEY);
+    match part {
+        Part::Frame if had_native => vec![framed],
+        Part::Both if made_native => vec![key, framed],
+        _ => vec![key],
+    }
+}
+
 /// Whether `--tier=auto` asks by the count rule (`YAVS_AUTO_POLICY=sampled`: as before it, with no
 /// native variant of the two instructions, for comparing the two; read once).
 pub fn count_rule_on() -> bool {
@@ -1500,6 +1522,8 @@ struct Worker {
     kinds: Vec<std::cell::OnceCell<Kind>>,
     /// `cached`, worked out once per function.
     in_cache: Vec<std::cell::OnceCell<bool>>,
+    /// `cached` of the frame-mode code of a function whose native-frame code exists (`FRAME_KEY`).
+    in_cache_frame: Vec<std::cell::OnceCell<bool>>,
     /// `native_set` of each function alone, once asked (`nset`).
     nsets: Vec<std::cell::OnceCell<std::collections::HashSet<FuncId>>>,
     /// The sampled time `pick` waits for: the cheapest candidate it last refused fits the budget
@@ -1844,6 +1868,7 @@ impl Worker {
             compute: vec![Default::default(); nfuncs],
             kinds: vec![Default::default(); nfuncs],
             in_cache: vec![Default::default(); nfuncs],
+            in_cache_frame: vec![Default::default(); nfuncs],
             nsets: vec![Default::default(); nfuncs],
             pick_at: 0,
             note,
@@ -2601,21 +2626,30 @@ impl Worker {
         self.price_of(id, self.cached(id))
     }
 
-    /// Whether the compilation cache holds the object of `id`: an earlier run compiled a function
-    /// of its name and size (`listed`). A function of the cache costs `FIRST_HIT`, whatever its kind,
+    /// Whether the compilation cache holds the object of `id` the policy would compile next: an
+    /// earlier run compiled a function of its name and size (`listed`); once `id` has native-frame
+    /// code, its frame-mode code, which is listed apart (`FRAME_KEY`). A function of the cache costs `FIRST_HIT`, whatever its kind,
     /// also one the profile lost: lost only means not compiled early (priced as a compile, a lost
     /// subprogram the count rule had linked was held for good, docs/decisions.md). Never with
     /// `YAVS_AUTO_PRICE=model` (the model's price and `Heat::threshold` for every function, cold or
     /// warm: counts that do not depend on the cache, #728). Worked out once.
     fn cached(&self, id: FuncId) -> bool {
         static MODEL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *self.in_cache[id.0 as usize].get_or_init(|| {
+        let k = id.0 as usize;
+        let frame = self.nat[k].0 != 0;
+        let cell = if frame {
+            &self.in_cache_frame[k]
+        } else {
+            &self.in_cache[k]
+        };
+        *cell.get_or_init(|| {
             !*MODEL.get_or_init(|| std::env::var("YAVS_AUTO_PRICE").is_ok_and(|v| v == "model"))
                 && self.generator.cache_enabled()
-                && self
-                    .prog
-                    .func(id)
-                    .is_some_and(|f| self.listed.contains(&self.list_key(id, f)))
+                && self.prog.func(id).is_some_and(|f| {
+                    let (name, len) = self.list_key(id, f);
+                    self.listed
+                        .contains(&(name, if frame { len | FRAME_KEY } else { len }))
+                })
         })
     }
 
@@ -3937,6 +3971,7 @@ impl Worker {
             self.list_key(id, f),
             self.frame_need(id),
         );
+        let had_native = self.nat[id.0 as usize].0 != 0;
         // A refused function does not open the generator.
         let gen_ = &mut self.generator;
         let opened = if refused.is_none() {
@@ -4052,11 +4087,13 @@ impl Worker {
                     ));
                 }
                 // (A copy linked as the twin of another is listed under its own name too.)
-                let key = list_key;
                 self.noted[id.0 as usize] = true;
-                if gen_.cache_enabled() && self.listed.insert(key.clone()) {
-                    gen_.cache_note(&key.0, key.1);
-                    self.in_cache[id.0 as usize] = Default::default();
+                for key in list_keys(list_key, part, had_native, entry.native != 0) {
+                    if gen_.cache_enabled() && self.listed.insert(key.clone()) {
+                        gen_.cache_note(&key.0, key.1);
+                        self.in_cache[id.0 as usize] = Default::default();
+                        self.in_cache_frame[id.0 as usize] = Default::default();
+                    }
                 }
                 if part != Part::Native && self.early_loop(id, f) {
                     self.native.count_stat(CountStat::LoopEarly);
@@ -5667,6 +5704,78 @@ mod tests {
             "a subprogram the profile lost keeps its link price"
         );
         assert!(w.cached(p), "a process lost by its trial keeps its price");
+    }
+
+    /// The frame-mode code of a function with native-frame code is listed apart (`FRAME_KEY`): the
+    /// listing of its native-frame code does not price it as a link (`local_to_hxstring`: 11 ms of
+    /// compile priced at 1.6 ms), the listing of both prices both, and a function without
+    /// native-frame code is listed as before.
+    #[test]
+    fn the_frame_part_of_a_native_function_is_priced_by_its_own_listing() {
+        use super::{FRAME_KEY, Part, list_keys};
+        struct Cached;
+        impl crate::Generator for Cached {
+            fn compile(
+                &mut self,
+                _: &yavs_ir::Program,
+                _: yavs_ir::FuncId,
+                _: &yavs_ir::Func,
+                _: super::Part,
+            ) -> Result<crate::native::Compiled, String> {
+                Err("stub".into())
+            }
+            fn cache_enabled(&self) -> bool {
+                true
+            }
+        }
+        let key = ("f".to_string(), 396);
+        let framed = ("f".to_string(), 396 | FRAME_KEY);
+        assert_eq!(
+            list_keys(key.clone(), Part::Native, false, true),
+            std::slice::from_ref(&key)
+        );
+        assert_eq!(
+            list_keys(key.clone(), Part::Frame, true, true),
+            std::slice::from_ref(&framed)
+        );
+        assert_eq!(
+            list_keys(key.clone(), Part::Frame, false, false),
+            std::slice::from_ref(&key),
+            "frame-mode only"
+        );
+        assert_eq!(
+            list_keys(key.clone(), Part::Both, false, true),
+            [key.clone(), framed]
+        );
+        assert_eq!(list_keys(key.clone(), Part::Both, false, false), [key]);
+        let (prog, _, g) = caller_looper();
+        let warm = |frame: bool| {
+            let mut w = counted(prog.clone(), 0);
+            w.generator = Box::new(Cached);
+            let key = w.list_key(g, w.prog.func(g).unwrap());
+            for (name, len, part) in [(&key.0, key.1, Part::Native), (&key.0, key.1, Part::Frame)] {
+                for k in list_keys((name.clone(), len), part, part == Part::Frame, true) {
+                    if part == Part::Native || frame {
+                        w.listed.insert(k);
+                    }
+                }
+            }
+            w
+        };
+        let mut w = warm(false);
+        assert!(w.cached(g), "the native-frame code is listed");
+        let link = w.price(g);
+        w.nat[g.0 as usize].0 = 64;
+        assert!(!w.cached(g), "its frame-mode code is not");
+        assert!(
+            w.price(g) > link,
+            "priced as a compile: {} {link}",
+            w.price(g)
+        );
+        let mut w = warm(true);
+        w.nat[g.0 as usize].0 = 64;
+        assert!(w.cached(g), "both listed");
+        assert_eq!(w.price(g), link);
     }
 
     /// The profile lists what a run needed, in the order it was optimised: what ran or compiled.

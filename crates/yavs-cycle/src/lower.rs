@@ -22,14 +22,14 @@ use crate::codegen::{mask, words};
 /// keeps in it, each at its kernel offset), a slot of the process (a leaf of a variable, a
 /// temporary), numbered per body, or the region's edge word (1 when the clock edge happened in
 /// this wake; read by processes with an asynchronous reset).
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub(crate) enum Ref {
     Sig(u32),
     Loc(u32),
     Edge,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Gate {
     And,
     Or,
@@ -39,7 +39,7 @@ pub(crate) enum Gate {
     Xnor,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Cmp {
     Eq,
     Ne,
@@ -49,7 +49,7 @@ pub(crate) enum Cmp {
     Ge,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Arith {
     Add,
     Sub,
@@ -59,7 +59,7 @@ pub(crate) enum Arith {
     Rem,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum ShiftK {
     Sll,
     Srl,
@@ -135,7 +135,7 @@ impl Check {
 
 /// One operation on words. Every operand is read before the result is written, so a result may
 /// be an operand. `len` is in elements; a 1-bit value is a boolean or a scalar logic value.
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Op {
     Copy {
         dst: Ref,
@@ -490,7 +490,7 @@ impl Op {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Kind {
     Clocked,
     Comb,

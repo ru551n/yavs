@@ -16796,8 +16796,9 @@ Amends "`--tier=auto`: the run-to-run profile judges by work" for runs with `--t
   At `--threads=1` (all 40 realbench tests, 3 fresh worlds x 10 runs, base, a byte copy of it, the change): geomean of
   the sums 1.002 against the copy's 1.000, steady runs 1.003 against 0.999, run 1 1.001 against 1.000; outputs equal.
   The highest, `vunit_logging` 1.030 (copy 1.017), read 1.006 (copy 0.996) on 10 worlds, and the two binaries retire the
-  same instructions in one world (166.70 and 166.69 M a warm run): its count follows the world's path, which the
-  measurement's labels change (163 to 175 M across paths of the same binary).
+  same instructions in one world (166.70 and 166.69 M a warm run). Across the measurement's worlds its count differs
+  by world (the base and its byte copy, each in its own world, 166.7 and 174.5 M a warm run); that it follows the
+  world's path rather than what the separate preparation left there is inferred, not separated.
 - **What stays timing dependent.** The kernel thread's own join spin (up to `JOIN_SPIN` a pooled batch) is still in its
   count, and whether a batch pools at all follows the timed costs of its processes; a worker's work at a look where
   its slot is empty is not charged.
@@ -16813,7 +16814,7 @@ earlier runs saw a function `unrepaid` held.
   reaches its price at last. `uvvm_axistream_vvc`'s `p_main` (12 432 IR instructions) compiled fresh at run 11 to 19
   in all 16 worlds of two series of 24 runs: +4.5 to 7.8 G instructions in that run (mean 5.2), about 640 ms of
   compile, and the runs after it were not faster (mean of the following runs minus the four before: +0.24 G, median
-  +0.05). Its callees, now called from compiled code, compiled in the runs after (`send_command_to_vvc` and others,
+  +0.07). Its callees, now called from compiled code, compiled in the runs after (`send_command_to_vvc` and others,
   2 to 30 ms each). `osvvm_axi4_random`'s late compiles of its BFM handlers (17 to 27 ms each) did not show a gain
   either.
 - **Decision** (agent). A later run counts a held function's time for the last `HELD_WINDOW` runs it was held in:
@@ -16832,4 +16833,4 @@ earlier runs saw a function `unrepaid` held.
   0.998 against the copy's 1.000, steady runs 1.000 against 1.003, run 1 1.002 against 1.003; outputs equal. The
   highest, `hdlm_unsigned_divider` 1.019 (copy 0.992), retires the same instructions with both binaries in one world
   (172.9 M a run from run 3), as do `vai_weight_buffer` (314.0 M) and `uvvm_func_cov` (within its own spread): their
-  counts follow the world's path.
+  counts differ by world, not by binary.

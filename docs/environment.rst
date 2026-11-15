@@ -360,7 +360,7 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - ``2.5``
      - ``run``
    * - ``YAVS_AUTO_WAIT_HELD_RUNS``
-     - With ``--tier-compile=wait``: after how many runs in a row in which the rule of ``YAVS_AUTO_WAIT_GAIN`` held a function back it compiles anyway (the runs a program left in its profile). Unset, it never does: a held function compiles once the time the runs saw it in pays for its compile.
+     - With ``--tier-compile=wait``: after how many runs in a row in which the rule of ``YAVS_AUTO_WAIT_GAIN`` held a function back it compiles anyway (the runs a program left in its profile). Unset, it never does: a held function compiles once the time the last four runs that held it saw it in pays for its compile.
      - a number
      - unset
      - ``run``
@@ -385,7 +385,7 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - ``160000``
      - ``run``
    * - ``YAVS_AUTO_WARM_GATE``
-     - Work of the last run of a program (of the thread that runs the simulation, not of the helper threads of ``--threads``), in microseconds of work (counted in instructions where the system gives the counter, at the rate of a settled warm run, so the default is what such a run does in 400 ms; CPU microseconds where it is refused, then ``400000``), from which a warm run links what the cache lists and makes copies before ``YAVS_AUTO_GATE``. A program stays that long while its runs do half of it. A shorter last run still links what the cache holds of the processes it found hot, and makes copies. A large number keeps the gate for the rest.
+     - Work of the last run of a program (of every thread that runs the simulation: with ``--threads``, the helper threads count while they run processes, not while they wait between batches), in microseconds of work (counted in instructions where the system gives the counter, at the rate of a settled warm run, so the default is what such a run does in 400 ms; CPU microseconds where it is refused, then ``400000``), from which a warm run links what the cache lists and makes copies before ``YAVS_AUTO_GATE``. A program stays that long while its runs do half of it. A shorter last run still links what the cache holds of the processes it found hot, and makes copies. A large number keeps the gate for the rest.
      - a number
      - ``313000``
      - ``run``

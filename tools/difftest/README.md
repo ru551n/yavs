@@ -98,6 +98,21 @@ to stderr in the reference simulator and stdout in the second reference simulato
 - `wallclock`: ISO timestamps (`2026-10-23T08:16:29`) in the output are replaced by a placeholder, for tests that print the time of day and would differ when two runs straddle a second. Always on in `external.py` (#567); off elsewhere. Nothing else is masked.
 - `time`, `stderr`: extra, off by default.
 
+## Cycle mode gate
+
+`cyclegate.py` runs the corpus, the designs of `crates/yavs/tests/cycle` and the bench designs of
+`tools/bench/designs` twice with the same binary (`YAVS_BIN`, flags of `YAVS_RUN_FLAGS` for both), normal and
+`--cycle`, and compares exit status and console output in the canonical form (the region report is taken out
+of stderr). Buckets: identical; documented (only the delta of report stamps, reports and asserts of member
+processes that cycle mode does not evaluate, or delta cycles a monitor no longer sees, shown by the lines
+themselves); loss (differs, but the run read metavalues as 0 or the source reads history attributes, which the
+mode drops: listed to review by hand); differs otherwise (a wrong result in cycle mode: the exit status is 1);
+refused (`E41xx`); skipped (the normal mode does not run it). Every test shows how many processes joined the
+region, and the summary counts the tests with at least one member. `--only corpus|cycle|bench`, `--filter`,
+`--jobs`, `-v`, `--json FILE`, `--selftest`:
+
+    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclegate.py
+
 ## Plugging yavs in
 
 `--candidate` takes a reference label (`sim1`, `sim2`: key `difftest` of its section in the untracked `tools/sims.local.conf`, with keys `difftest_relaxed` and `difftest_ignore`), `yavs` or any bash command template. The built-in `yavs`

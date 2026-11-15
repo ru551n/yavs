@@ -174,7 +174,10 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         return Err("a postponed process cannot run cycle-based".into());
     }
     let StmtKind::Process {
-        sensitivity, body, ..
+        sensitivity,
+        body,
+        scope,
+        ..
     } = &db.stmts[p.stmt].kind
     else {
         return Err("concurrent statements are not supported in cycle mode yet".into());
@@ -228,9 +231,6 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
             locs: lx.locs,
         });
     }
-    let StmtKind::Process { scope, .. } = &db.stmts[p.stmt].kind else {
-        unreachable!("matched above")
-    };
     if matches!(sensitivity, yavs_sem::hir::Sensitivity::None) {
         return Err("a process with wait statements runs in the event kernel".into());
     }
@@ -643,6 +643,7 @@ impl Lx<'_> {
     fn tree(&self, shape: &Shape, leaf: &mut dyn FnMut(u32) -> Ref) -> R<Val> {
         match shape {
             Shape::Scalar { elem, .. } if *elem == yavs_kernel::Elem::Logic => {
+                self.whole_type(shape)?;
                 Ok(Val::Part(Part {
                     r: leaf(1),
                     lo: 0,
@@ -668,6 +669,7 @@ impl Lx<'_> {
                 else {
                     return Err("an array that is not a one-dimensional logic vector".into());
                 };
+                self.whole_type(elem)?;
                 let n = b.len();
                 if n == 0 || n > 64 {
                     return Err(format!(
@@ -692,6 +694,26 @@ impl Lx<'_> {
         }
     }
 
+    /// A logic scalar subtype that is its whole type: no assignment to it can fail a range
+    /// check, which the region does not make (`X01`, `UX01` and the like are left out).
+    fn whole_type(&self, s: &Shape) -> R<()> {
+        let Shape::Scalar { ty, range, .. } = s else {
+            return Ok(());
+        };
+        let n = match &self.db.types[*ty].kind {
+            TypeKind::Enum { lits } => lits.len() as u64,
+            _ => 0,
+        };
+        match range {
+            Some(b) if b.len() != n => Err(
+                "a logic subtype with a range (`X01`, `UX01`, ...) is not supported in cycle mode \
+                 yet"
+                .into(),
+            ),
+            _ => Ok(()),
+        }
+    }
+
     fn static_int(&self, x: ExprId) -> R<i64> {
         let db = self.db;
         match db.exprs[x].value.map(|c| &db.consts[c]) {
@@ -711,14 +733,32 @@ impl Lx<'_> {
             | ExprKind::Field { .. }
             | ExprKind::Index { .. }
             | ExprKind::Slice { .. } => self.name(x, false),
-            ExprKind::Qualified { operand, .. } => self.expr(*operand),
-            ExprKind::Conv { operand, .. } => {
-                // Between closely related logic arrays: the same elements.
-                let v = self.expr(*operand)?;
-                match (&v, self.logic_array(ex.subtype)) {
-                    (Val::Part(p), true) if p.bounds.is_some() || p.len > 0 => Ok(v),
-                    _ => Err("a type conversion that is not between logic vectors".into()),
+            // A qualified expression of a scalar logic type or an unconstrained array type checks
+            // nothing a logic value of the operand's own type could fail.
+            ExprKind::Qualified { to, operand }
+                if matches!(
+                    db.subtypes[*to].constraint,
+                    yavs_sem::types::Constraint::None
+                        | yavs_sem::types::Constraint::Array { dims: None, .. }
+                ) =>
+            {
+                self.expr(*operand)
+            }
+            ExprKind::Conv { to, operand } => {
+                // To an unconstrained logic array type: the same elements (LRM 9.3.6).
+                let open = matches!(
+                    db.subtypes[*to].constraint,
+                    yavs_sem::types::Constraint::None
+                        | yavs_sem::types::Constraint::Array { dims: None, .. }
+                );
+                let from = db.exprs[*operand].subtype;
+                if !(open && self.logic_array(*to) && self.logic_array(from)) {
+                    return Err(
+                        "a type conversion that is not to an unconstrained logic vector type"
+                            .into(),
+                    );
                 }
+                self.expr(*operand)
             }
             ExprKind::Call {
                 callee,

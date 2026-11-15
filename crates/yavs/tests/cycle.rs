@@ -99,17 +99,17 @@ fn a_region_with_processes_left_out_gives_the_same_result() {
         let (normal, _) = run(&dir, &t, "cycle_partial");
         let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_partial");
         assert!(
-            normal.len() == 1 && normal[0].ends_with("acc=52789 q=81"),
+            normal.len() == 1 && normal[0].ends_with("acc=907104 q=AC"),
             "{t:?} {normal:?}"
         );
         assert_eq!(cycle, normal, "{t:?}\n{err}");
-        // `mix` and `reg` join; `pick` and `q <= r` stay outside, with their reasons.
+        // `mix`, `early`, `late` and `reg` join; `pick` and `q <= r` stay outside, with reasons.
         assert!(
-            err.contains("cycle mode: 2 of 5 processes run cycle-based"),
+            err.contains("cycle mode: 4 of 7 processes run cycle-based"),
             "{err}"
         );
         assert!(
-            err.contains("cycle_partial.dut.pick (partial.vhd:29)")
+            err.contains("cycle_partial.dut.pick (partial.vhd:44)")
                 && err.contains("an `if` statement in the body is not supported"),
             "{err}"
         );
@@ -142,9 +142,9 @@ fn cycle_strict_refuses_rtl_that_cannot_join() {
         err.contains("error[E4101]: process cycle_partial.dut.pick cannot run cycle-based"),
         "{err}"
     );
-    assert!(err.contains("partial.vhd:29:3"), "{err}");
+    assert!(err.contains("partial.vhd:44:3"), "{err}");
     assert!(
-        err.contains("error[E4101]: process cycle_partial.dut.q <= ... (partial.vhd:46)"),
+        err.contains("error[E4101]: process cycle_partial.dut.q <= ... (partial.vhd:62)"),
         "{err}"
     );
     assert!(!err.contains("cycle_partial.main"), "{err}");

@@ -109,8 +109,8 @@ fn a_region_with_processes_left_out_gives_the_same_result() {
             "{err}"
         );
         assert!(
-            err.contains("cycle_partial.dut.pick (partial.vhd:59)")
-                && err.contains("a call of `swap`, which is not supported"),
+            err.contains("cycle_partial.dut.pick (partial.vhd:66)")
+                && err.contains("a `while` loop or a loop without a scheme is not supported"),
             "{err}"
         );
         assert!(
@@ -241,7 +241,7 @@ fn cycle_strict_refuses_rtl_that_cannot_join() {
         err.contains("error[E4101]: process cycle_partial.dut.pick cannot run cycle-based yet"),
         "{err}"
     );
-    assert!(err.contains("partial.vhd:59:3"), "{err}");
+    assert!(err.contains("partial.vhd:66:3"), "{err}");
     // The concurrent `q <= r` joins.
     assert!(!err.contains("cycle_partial.dut.q <= ..."), "{err}");
     assert!(!err.contains("cycle_partial.main"), "{err}");
@@ -575,11 +575,190 @@ fn failed_checks_in_region_code_stop_the_run_as_in_the_normal_mode() {
     }
 }
 
-/// `numeric.vhd` at width `w`: the token `W` replaced, the operations of one word (shifts by a
-/// run-time count, division) and the integer conversions where the width allows them.
-fn numeric_design(w: u32) -> String {
+const CALL_CHECKS: &str = "\
+entity cycle_fret is
+end entity;
+architecture a of cycle_fret is
+  signal clk : bit := '0';
+  signal x : integer := 5;
+  function dec(v : integer) return natural is
+  begin
+    return v - 1;
+  end function;
+begin
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      x <= dec(x);
+    end if;
+  end process;
+  main : process
+  begin
+    for i in 1 to 40 loop
+      clk <= '1';
+      wait for 5 ns;
+      clk <= '0';
+      wait for 5 ns;
+    end loop;
+    wait;
+  end process;
+end architecture;
+
+entity cycle_fpar is
+end entity;
+architecture a of cycle_fpar is
+  signal clk : bit := '0';
+  signal x, y : integer := 0;
+  function inc(v : natural) return integer is
+  begin
+    return v + 1;
+  end function;
+begin
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      x <= x - 1;
+      y <= inc(x + 3);
+    end if;
+  end process;
+  main : process
+  begin
+    for i in 1 to 40 loop
+      clk <= '1';
+      wait for 5 ns;
+      clk <= '0';
+      wait for 5 ns;
+    end loop;
+    wait;
+  end process;
+end architecture;
+
+entity cycle_fidx is
+end entity;
+architecture a of cycle_fidx is
+  signal clk : bit := '0';
+  signal x : integer := 0;
+  signal v : bit_vector(7 downto 0) := x\"5A\";
+  signal o : bit;
+  function bit_at(d : bit_vector; i : integer) return bit is
+  begin
+    return d(i);
+  end function;
+begin
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      x <= x + 1;
+      o <= bit_at(v, x);
+    end if;
+  end process;
+  main : process
+  begin
+    for i in 1 to 40 loop
+      clk <= '1';
+      wait for 5 ns;
+      clk <= '0';
+      wait for 5 ns;
+    end loop;
+    wait;
+  end process;
+end architecture;
+
+";
+
+/// The checks inside an inlined call (a result outside its subtype, an actual outside its
+/// formal's, an index outside a formal's range) stop the run with the normal mode's message.
+#[test]
+fn failed_checks_in_inlined_calls_stop_the_run_as_in_the_normal_mode() {
+    let dir = tempdir("cycle-call-checks");
+    analyze(&dir, "checks.vhd", CALL_CHECKS);
+    for (top, msg, note) in [
+        (
+            "cycle_fret",
+            "error[E3009]: value -1 outside of NATURAL range 0 to 2147483647 for the result of dec",
+            "at 50 ns, delta 1, in process cycle_fret.reg",
+        ),
+        (
+            "cycle_fpar",
+            "error[E3009]: value -1 outside of NATURAL range 0 to 2147483647 for parameter V",
+            "at 40 ns, delta 1, in process cycle_fpar.reg",
+        ),
+        (
+            "cycle_fidx",
+            "error[E3009]: index 8 outside of range 7 downto 0 for d",
+            "at 80 ns, delta 1, in process cycle_fidx.reg",
+        ),
+    ] {
+        for mode in [None, Some("--cycle")] {
+            let mut args = vec!["run", "--work=work:lib", "--no-cache", "--tier=interp"];
+            args.extend(mode);
+            args.push(top);
+            let o = yavs(&dir, &args);
+            let err = String::from_utf8_lossy(&o.stderr);
+            assert_eq!(o.status.code(), Some(1), "{top} {mode:?}: {err}");
+            assert!(
+                err.contains(msg) && err.contains(note),
+                "{top} {mode:?}: {err}"
+            );
+            if mode.is_some() {
+                assert!(
+                    err.contains("cycle mode: 1 of 2 processes run cycle-based"),
+                    "{err}"
+                );
+            }
+        }
+    }
+}
+
+/// A `'Z'` made inside a called function keeps its caller out, with the reason.
+#[test]
+fn a_high_impedance_value_made_in_a_called_function_keeps_the_caller_out() {
+    let dir = tempdir("cycle-call-z");
+    analyze(&dir, "z.vhd", Z_CALL);
+    let (normal, _) = run(&dir, &["--tier=interp"], "cycle_fz");
+    let (cycle, err) = run(&dir, &["--tier=interp", "--cycle"], "cycle_fz");
+    assert_eq!(normal, ["** Note: 5000000fs+0: o='Z'"], "{normal:?}");
+    assert_eq!(cycle, normal);
+    assert!(
+        err.contains("cycle mode: 0 of 2 processes run cycle-based"),
+        "{err}"
+    );
+    assert!(
+        err.contains("cycle_fz.o <= ... (z.vhd:")
+            && err.contains("a `'Z'` literal: two-state values have no high impedance"),
+        "{err}"
+    );
+}
+
+const Z_CALL: &str = "\
+library ieee;
+use ieee.std_logic_1164.all;
+entity cycle_fz is
+end entity;
+architecture a of cycle_fz is
+  signal a, o : std_ulogic := '0';
+  function pick(x : std_ulogic) return std_ulogic is
+  begin
+    if x = '1' then
+      return 'Z';
+    end if;
+    return '0';
+  end function;
+begin
+  o <= pick(a);
+  main : process
+  begin
+    a <= '1';
+    wait for 5 ns;
+    report \"o=\" & std_ulogic'image(o);
+    wait;
+  end process;
+end architecture;
+";
+
+/// `src` with the token `W` replaced by `w`.
+fn with_width(src: &str, w: u32) -> String {
     let mut t = String::new();
-    let src = include_str!("cycle/numeric.vhd");
     let b = src.as_bytes();
     for (i, c) in src.char_indices() {
         let word = |k: Option<&u8>| k.is_some_and(|x| x.is_ascii_alphanumeric() || *x == b'_');
@@ -589,6 +768,13 @@ fn numeric_design(w: u32) -> String {
             t.push(c);
         }
     }
+    t
+}
+
+/// `numeric.vhd` at width `w`: the token `W` replaced, the operations of one word (shifts by a
+/// run-time count, division) and the integer conversions where the width allows them.
+fn numeric_design(w: u32) -> String {
+    let t = with_width(include_str!("cycle/numeric.vhd"), w);
     let one_word = w <= 64;
     let dyn_ = "    slk <= shift_left(unsigned(a), k);
     srk <= shift_right(unsigned(a), k);
@@ -662,6 +848,29 @@ fn numeric_operations_equal_the_normal_mode_at_widths_around_a_word() {
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
                 err.contains(&format!("cycle mode: {members} processes run cycle-based")),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
+#[test]
+fn subprogram_calls_equal_the_normal_mode_at_widths_around_a_word() {
+    let dir = tempdir("cycle-calls");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("calls{w}.vhd"),
+            &with_width(include_str!("cycle/calls.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_calls");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_calls");
+            assert_eq!(normal.len(), 16, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            // Every process but the testbench's `main`.
+            assert!(
+                err.contains("cycle mode: 5 of 6 processes run cycle-based"),
                 "{w}: {err}"
             );
         }

@@ -653,6 +653,79 @@ enum Br<'b> {
     Var(&'b Target, ExprId),
 }
 
+/// A call being inlined: its formals and locals, and its result.
+struct Frame {
+    callee: DeclId,
+    binds: HashMap<DeclId, Bind>,
+    /// The result subtype of a function.
+    ret_st: Option<SubtypeId>,
+    /// The result: the place every `return` writes, or (`direct`) the value of the one `return`
+    /// that ends the body.
+    ret: Option<Val>,
+    direct: bool,
+    /// Set by a `return` that the rest of the body must not run after.
+    flag: Option<Ref>,
+}
+
+/// What a formal, a local constant or a local variable of an inlined call is.
+#[derive(Clone)]
+enum Bind {
+    /// A scalar known during elaboration.
+    Const(ConstValue),
+    Val(Val),
+}
+
+/// Where a `return` (of the call at that depth), `exit` or `next` (of that loop) goes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Tgt {
+    Ret(usize),
+    Exit(StmtId),
+    Next(StmtId),
+}
+
+/// A jump the path may have taken: `always` when every path did. Its flag (1 when taken) is
+/// what the statements after it test; a jump with no flag is always taken where it is.
+#[derive(Clone, Copy, Debug)]
+struct Jump {
+    tgt: Tgt,
+    flag: Option<Ref>,
+    always: bool,
+}
+
+/// The jumps after one of two branches ran.
+fn merge_branches(a: Vec<Jump>, b: Vec<Jump>) -> Vec<Jump> {
+    let mut out: Vec<Jump> = Vec::new();
+    for j in a.iter().chain(&b) {
+        if !out.iter().any(|o| o.tgt == j.tgt) {
+            out.push(*j);
+        }
+    }
+    for o in &mut out {
+        let always = |x: &[Jump]| x.iter().any(|j| j.tgt == o.tgt && j.always);
+        o.always = always(&a) && always(&b);
+    }
+    out
+}
+
+/// The jumps after `saved` may have been taken and, only when none was, code that took `rest`:
+/// a jump is certain when the code certainly took it and every earlier one was the same.
+fn merge_guarded(saved: Vec<Jump>, rest: Vec<Jump>) -> Vec<Jump> {
+    let mut out = saved.clone();
+    for j in &rest {
+        if !out.iter().any(|o| o.tgt == j.tgt) {
+            out.push(*j);
+        }
+    }
+    for o in &mut out {
+        o.always =
+            rest.iter().any(|j| j.tgt == o.tgt && j.always) && saved.iter().all(|s| s.tgt == o.tgt);
+    }
+    out
+}
+
+/// Most calls inlined into one another.
+const DEPTH_MAX: usize = 32;
+
 /// Why a comparison or arithmetic with a literal holding a metavalue keeps its process out.
 const META_CMP: &str = "a comparison with a metavalue literal (`'U'`, `'X'`, `'-'`, ...), which two-state \
                         values never equal";
@@ -675,6 +748,9 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         p,
         vars: HashMap::new(),
         consts: HashMap::new(),
+        frames: Vec::new(),
+        pend: Vec::new(),
+        loop_flags: HashMap::new(),
         ops: Vec::new(),
         init_ops: Vec::new(),
         reads: BTreeSet::new(),
@@ -712,8 +788,13 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
             lx.dropped += 1;
             Ok(lx.body(Kind::Comb, None, None))
         }
-        StmtKind::ConcProcCall { .. } => {
-            Err("a concurrent procedure call is not supported in cycle mode yet".into())
+        StmtKind::ConcProcCall {
+            postponed: false,
+            call,
+            ..
+        } => {
+            lx.proc_call(call)?;
+            Ok(lx.body(Kind::Comb, None, None))
         }
         _ => Err("a concurrent statement of this kind is not supported in cycle mode yet".into()),
     }
@@ -726,7 +807,14 @@ struct Lx<'a> {
     /// The leaves of each process variable met so far.
     vars: HashMap<DeclId, Val>,
     /// The parameters of the loops being unrolled, with their value in this iteration.
-    consts: HashMap<DeclId, i64>,
+    consts: HashMap<DeclId, ConstValue>,
+    /// The calls being inlined, the innermost last.
+    frames: Vec<Frame>,
+    /// The jumps (`return`, `exit`, `next`) the current path may have taken since the start of
+    /// the statement list being lowered: while one may have, the rest runs behind its flag.
+    pend: Vec<Jump>,
+    /// The `exit` and `next` flags of the loops being unrolled.
+    loop_flags: HashMap<StmtId, (Option<Ref>, Option<Ref>)>,
     ops: Vec<Op>,
     init_ops: Vec<Op>,
     reads: BTreeSet<LeafId>,
@@ -807,11 +895,8 @@ impl Lx<'_> {
                 ([(r, a), (cond, b)], Some(reset)) => {
                     // `if <reset> then A elsif <edge> then B`: the edge word decides B.
                     let c = self.cond(*r)?;
-                    let outer = std::mem::take(&mut self.ops);
-                    self.stmts(a)?;
-                    let then = std::mem::take(&mut self.ops);
-                    self.edge_body(*cond, b)?;
-                    let at_edge = std::mem::replace(&mut self.ops, outer);
+                    let then = self.capture(|lx| lx.stmts(a))?;
+                    let at_edge = self.capture(|lx| lx.edge_body(*cond, b))?;
                     self.ops.push(Op::If {
                         cond: c,
                         then,
@@ -965,10 +1050,61 @@ impl Lx<'_> {
         self.checks.len() as u32 - 1
     }
 
+    /// The operations `f` makes, apart; the current list is restored whatever `f` returns.
+    fn capture(&mut self, f: impl FnOnce(&mut Self) -> R<()>) -> R<Vec<Op>> {
+        let outer = std::mem::take(&mut self.ops);
+        let r = f(self);
+        let inner = std::mem::replace(&mut self.ops, outer);
+        r.map(|()| inner)
+    }
+
+    /// A statement list. After a statement that may have jumped (`return`, `exit`, `next`), each
+    /// later one runs behind the flags of the jumps (a flag, once set, stays set for the rest of
+    /// the list); after one that jumped for sure, the rest is never reached.
     fn stmts(&mut self, body: &[StmtId]) -> R<()> {
         for &s in body {
-            self.stmt(s)?;
+            if self.pend.iter().any(|j| j.always) {
+                break;
+            }
+            if self.pend.is_empty() {
+                self.stmt(s)?;
+            } else {
+                self.guard(|lx| lx.stmt(s))?;
+            }
         }
+        Ok(())
+    }
+
+    /// `f` behind the flags of the jumps that may have been taken: it runs when none was.
+    fn guard(&mut self, f: impl FnOnce(&mut Self) -> R<()>) -> R<()> {
+        let mut flags: Vec<Ref> = Vec::new();
+        for j in &self.pend {
+            let f = j.flag.ok_or("a jump cycle mode cannot follow")?;
+            if !flags.contains(&f) {
+                flags.push(f);
+            }
+        }
+        let mut cond = flags[0];
+        for &f in &flags[1..] {
+            let o = self.tmp(1);
+            self.ops.push(Op::Gate {
+                g: Gate::Or,
+                dst: o.r,
+                a: cond,
+                b: f,
+                len: 1,
+            });
+            cond = o.r;
+        }
+        let saved = std::mem::take(&mut self.pend);
+        let r = self.capture(f);
+        let inner = std::mem::take(&mut self.pend);
+        self.pend = merge_guarded(saved, inner);
+        self.ops.push(Op::If {
+            cond,
+            then: Vec::new(),
+            else_: r?,
+        });
         Ok(())
     }
 
@@ -1022,27 +1158,24 @@ impl Lx<'_> {
                 scheme: LoopScheme::For { param, range },
                 body,
                 ..
-            } => self.for_loop(*param, range, body),
+            } => self.for_loop(s, *param, range, body),
             StmtKind::Loop { .. } => Err(
                 "a `while` loop or a loop without a scheme is not supported in cycle mode yet"
                     .into(),
             ),
-            StmtKind::Next { .. } | StmtKind::Exit { .. } => {
-                Err("`next` and `exit` are not supported in cycle mode yet".into())
-            }
+            StmtKind::Next { loop_, when } => self.jump(Tgt::Next(*loop_), *when),
+            StmtKind::Exit { loop_, when } => self.jump(Tgt::Exit(*loop_), *when),
             StmtKind::Wait { .. } => Err("a wait statement runs in the event kernel".into()),
             // Simulation-only: compiled to nothing, counted for the report (the mode is for speed).
             StmtKind::Assert { .. } | StmtKind::Report { .. } => {
                 self.dropped += 1;
                 Ok(())
             }
-            StmtKind::ProcCall(_) => {
-                Err("a procedure call is not supported in cycle mode yet".into())
-            }
+            StmtKind::ProcCall(call) => self.proc_call(call),
             StmtKind::Force { .. } | StmtKind::Release { .. } => {
                 Err("`force` and `release` cannot run cycle-based".into())
             }
-            StmtKind::Return(_) => Err("a `return` statement in a process".into()),
+            StmtKind::Return(v) => self.ret(*v),
             _ => Err("a statement that is not supported in cycle mode yet".into()),
         }
     }
@@ -1135,11 +1268,11 @@ impl Lx<'_> {
             };
         }
         let cond = self.cond(*c)?;
-        let outer = std::mem::take(&mut self.ops);
-        self.branch(*b)?;
-        let then = std::mem::take(&mut self.ops);
-        self.if_chain(rest)?;
-        let else_ = std::mem::replace(&mut self.ops, outer);
+        let then = self.capture(|lx| lx.branch(*b))?;
+        let pt = std::mem::take(&mut self.pend);
+        let else_ = self.capture(|lx| lx.if_chain(rest))?;
+        let pe = std::mem::take(&mut self.pend);
+        self.pend = merge_branches(pt, pe);
         self.ops.push(Op::If { cond, then, else_ });
         Ok(())
     }
@@ -1153,11 +1286,11 @@ impl Lx<'_> {
         let Some(cond) = c else {
             return self.branch(*b);
         };
-        let outer = std::mem::take(&mut self.ops);
-        self.branch(*b)?;
-        let then = std::mem::take(&mut self.ops);
-        self.ref_chain(rest)?;
-        let else_ = std::mem::replace(&mut self.ops, outer);
+        let then = self.capture(|lx| lx.branch(*b))?;
+        let pt = std::mem::take(&mut self.pend);
+        let else_ = self.capture(|lx| lx.ref_chain(rest))?;
+        let pe = std::mem::take(&mut self.pend);
+        self.pend = merge_branches(pt, pe);
         self.ops.push(Op::If {
             cond: *cond,
             then,
@@ -1315,20 +1448,22 @@ impl Lx<'_> {
     }
 
     /// `for i in range loop`, unrolled: the range known during elaboration, every iteration
-    /// with `i` a constant.
-    fn for_loop(&mut self, param: DeclId, range: &RangeC, body: &[StmtId]) -> R<()> {
+    /// with `i` a constant. After an iteration that may have left the loop (`exit`, or a jump
+    /// out of it), every later one runs behind the flags.
+    fn for_loop(&mut self, s: StmtId, param: DeclId, range: &RangeC, body: &[StmtId]) -> R<()> {
+        let db = self.db;
         let mut inner = Vec::new();
-        deep(self.db, body, &mut inner);
-        if inner.iter().any(|&x| {
-            matches!(
-                self.db.stmts[x].kind,
-                StmtKind::Next { .. } | StmtKind::Exit { .. } | StmtKind::Wait { .. }
-            )
-        }) {
-            return Err(
-                "a loop with `next`, `exit` or `wait` is not supported in cycle mode yet".into(),
-            );
+        deep(db, body, &mut inner);
+        if (inner.iter()).any(|&x| matches!(db.stmts[x].kind, StmtKind::Wait { .. })) {
+            return Err("a loop with a `wait` runs in the event kernel".into());
         }
+        let targets = |exit: bool| {
+            inner.iter().any(|&x| match db.stmts[x].kind {
+                StmtKind::Exit { loop_, .. } => exit && loop_ == s,
+                StmtKind::Next { loop_, .. } => !exit && loop_ == s,
+                _ => false,
+            })
+        };
         let (b, _) = self.static_range(range)?;
         let n = b.len();
         let size = (inner.len() as u64 + 1).saturating_mul(n);
@@ -1338,15 +1473,117 @@ impl Lx<'_> {
             ));
         }
         self.unrolled += size as u32;
-        for k in 0..n as i64 {
-            let i = match b.dir {
-                Direction::To => b.left + k,
-                Direction::Downto => b.left - k,
-            };
-            self.consts.insert(param, i);
-            self.stmts(body)?;
+        let exit = targets(true).then(|| self.loc(1));
+        let next = targets(false).then(|| self.loc(1));
+        if let Some(f) = exit {
+            self.ops.push(Op::Lit {
+                dst: f,
+                val: Box::new([0]),
+            });
         }
-        self.consts.remove(&param);
+        let yavs_sem::decl::DeclKind::Object(po) = &db.decls[param].kind else {
+            return Err("a loop parameter that is not an object".into());
+        };
+        let enum_param = matches!(db.types[db.base(po.subtype)].kind, TypeKind::Enum { .. });
+        let old = self.consts.get(&param).cloned();
+        let old_flags = self.loop_flags.insert(s, (exit, next));
+        let r: R<()> = (|| {
+            for k in 0..n as i64 {
+                if self.pend.iter().any(|j| j.always) {
+                    break;
+                }
+                let i = match b.dir {
+                    Direction::To => b.left + k,
+                    Direction::Downto => b.left - k,
+                };
+                let v = if enum_param {
+                    ConstValue::Enum(i as u32)
+                } else {
+                    ConstValue::Int(i)
+                };
+                self.consts.insert(param, v);
+                if let Some(f) = next {
+                    self.ops.push(Op::Lit {
+                        dst: f,
+                        val: Box::new([0]),
+                    });
+                }
+                let iteration = |lx: &mut Self| {
+                    lx.stmts(body)?;
+                    lx.pend.retain(|j| j.tgt != Tgt::Next(s));
+                    Ok(())
+                };
+                if self.pend.is_empty() {
+                    iteration(self)?;
+                } else {
+                    self.guard(iteration)?;
+                }
+            }
+            Ok(())
+        })();
+        match old {
+            Some(v) => self.consts.insert(param, v),
+            None => self.consts.remove(&param),
+        };
+        match old_flags {
+            Some(f) => self.loop_flags.insert(s, f),
+            None => self.loop_flags.remove(&s),
+        };
+        r?;
+        // Leaving the loop ends its `exit`.
+        self.pend.retain(|j| j.tgt != Tgt::Exit(s));
+        Ok(())
+    }
+
+    /// `next` or `exit` of a loop being unrolled, if `when` holds.
+    fn jump(&mut self, tgt: Tgt, when: Option<ExprId>) -> R<()> {
+        let (Tgt::Exit(l) | Tgt::Next(l)) = tgt else {
+            return Err("a jump cycle mode cannot follow".into());
+        };
+        let Some(&(exit, next)) = self.loop_flags.get(&l) else {
+            return Err("`exit` or `next` of a loop that is not unrolled".into());
+        };
+        let flag = if matches!(tgt, Tgt::Exit(_)) {
+            exit
+        } else {
+            next
+        };
+        let set = |lx: &mut Self| {
+            if let Some(f) = flag {
+                lx.ops.push(Op::Lit {
+                    dst: f,
+                    val: Box::new([1]),
+                });
+            }
+            lx.pend.push(Jump {
+                tgt,
+                flag,
+                always: true,
+            });
+        };
+        let Some(c) = when else {
+            set(self);
+            return Ok(());
+        };
+        match self.fold_bool(c) {
+            Some(true) => set(self),
+            Some(false) => {}
+            None => {
+                let cond = self.cond(c)?;
+                let then = self.capture(|lx| {
+                    set(lx);
+                    Ok(())
+                })?;
+                for j in &mut self.pend {
+                    j.always = false;
+                }
+                self.ops.push(Op::If {
+                    cond,
+                    then,
+                    else_: Vec::new(),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -1897,6 +2134,13 @@ impl Lx<'_> {
             return Err(format!("the name `{}`, which is not an object", decl.name));
         };
         use yavs_sem::decl::ObjClass;
+        // A formal or local of a call being inlined.
+        match self.bound(d) {
+            Some(Bind::Const(_)) if target => return Err("an assignment to a constant".into()),
+            Some(Bind::Const(c)) => return self.literal(db.base(o.subtype), &c),
+            Some(Bind::Val(v)) => return Ok(v),
+            None => {}
+        }
         match o.class {
             ObjClass::Signal => {
                 let Some(obj) = e.signal(self.p.scope, d) else {
@@ -1907,10 +2151,12 @@ impl Lx<'_> {
                 };
                 let so = e.nets.obj(obj);
                 let mut next = so.leaves.0.0;
-                let v = self.tree(&so.shape, d, &mut |_| {
-                    next += 1;
-                    Ref::Loc(next - 1)
-                })?;
+                let v = self
+                    .tree(&so.shape, d, &mut |_| {
+                        next += 1;
+                        Ref::Loc(next - 1)
+                    })
+                    .map_err(|w| format!("{w} (signal `{}`)", decl.name))?;
                 if next != so.leaves.1.0 {
                     return Err(format!(
                         "the signal `{}`, whose leaves are not one per field",
@@ -1937,28 +2183,32 @@ impl Lx<'_> {
                         decl.name
                     ));
                 };
-                let v = self.tree(shape, d, &mut |_| Ref::Loc(u32::MAX))?;
+                let v = self
+                    .tree(shape, d, &mut |_| Ref::Loc(u32::MAX))
+                    .map_err(|w| format!("{w} (variable `{}`)", decl.name))?;
                 let v = self.place_vars(v, o.default.is_some());
                 self.vars.insert(d, v.clone());
                 // The initial value, once at initialisation (a combinational process assigns
                 // before it reads, so it never sees it).
                 if let Some(init) = o.default {
-                    let outer = std::mem::take(&mut self.ops);
-                    let r = self.expr_h(init, Some(&v)).and_then(|s| self.assign(&v, s));
-                    let made = std::mem::replace(&mut self.ops, outer);
-                    r?;
+                    let made = self.capture(|lx| {
+                        let s = lx.expr_h(init, Some(&v))?;
+                        lx.assign(&v, s)
+                    })?;
                     self.init_ops.extend(made);
                 }
                 Ok(v)
             }
             ObjClass::Constant if target => Err("an assignment to a constant".into()),
             ObjClass::Constant => {
-                if let Some(&i) = self.consts.get(&d) {
-                    let mut v = self.int_lit(i);
-                    if let Some(b) = int_bounds(db, o.subtype) {
-                        (v.lo, v.hi) = b;
+                if let Some(c) = self.consts.get(&d).cloned() {
+                    let mut v = self.literal(db.base(o.subtype), &c)?;
+                    if let Val::Int(i) = &mut v
+                        && let Some(b) = int_bounds(db, o.subtype)
+                    {
+                        (i.lo, i.hi) = b;
                     }
-                    return Ok(Val::Int(v));
+                    return Ok(v);
                 }
                 match self.fold(x) {
                     Some(c) => self.literal(db.base(o.subtype), &c),
@@ -2222,8 +2472,14 @@ impl Lx<'_> {
         }
         match &db.exprs[x].kind {
             ExprKind::Obj(d) => {
-                if let Some(&i) = self.consts.get(d) {
-                    return Some(ConstValue::Int(i));
+                if let Some(b) = self.bound(*d) {
+                    return match b {
+                        Bind::Const(c) => Some(c),
+                        Bind::Val(_) => None,
+                    };
+                }
+                if let Some(c) = self.consts.get(d) {
+                    return Some(c.clone());
                 }
                 match &db.decls[*d].kind {
                     yavs_sem::decl::DeclKind::Object(o)
@@ -2244,6 +2500,28 @@ impl Lx<'_> {
                 }
             }
             ExprKind::ImplicitConv { operand } => self.fold(*operand),
+            // `d'length` and its friends of an array formal or local of an inlined call.
+            ExprKind::Attr {
+                attr,
+                prefix: AttrPrefix::Expr(p),
+                args,
+            } if args.is_empty()
+                && let ExprKind::Obj(d) = db.exprs[*p].kind
+                && let Some(Bind::Val(Val::Part(v))) = self.bound(d)
+                && v.dims.n > 0
+                && v.at.is_none() =>
+            {
+                let b = v.dims.b[0];
+                let (lo, hi) = b.low_high();
+                Some(ConstValue::Int(match attr {
+                    PredefAttr::Length => b.len() as i64,
+                    PredefAttr::Left => b.left,
+                    PredefAttr::Right => b.right,
+                    PredefAttr::Low => lo,
+                    PredefAttr::High => hi,
+                    _ => return None,
+                }))
+            }
             _ => db.fold_with(x, &mut |c| self.fold(c)).ok().flatten(),
         }
     }
@@ -2363,11 +2641,9 @@ impl Lx<'_> {
                 if !(qualified || self.logic_array(to) && self.logic_array(from)) {
                     return Err("a type conversion that is not between logic vector types".into());
                 }
-                if !open
-                    && let Ok(b) = self.subtype_bounds(to)
-                    && b.len() != u64::from(p.len)
-                {
-                    return Err("a conversion to a subtype of another length".into());
+                // A constrained target gives the value its index ranges (LRM 9.3.6).
+                if !open {
+                    return Ok(Val::Part(self.rebound(p, to)?));
                 }
                 Ok(Val::Part(p))
             }
@@ -2922,6 +3198,11 @@ impl Lx<'_> {
     fn call(&mut self, x: ExprId, callee: DeclId, args: &[yavs_sem::hir::Arg]) -> R<Val> {
         let db = self.db;
         let decl = &db.decls[callee];
+        if let yavs_sem::decl::DeclKind::Alias(yavs_sem::decl::Alias::NonObject { target }) =
+            &decl.kind
+        {
+            return self.call(x, *target, args);
+        }
         let Some(sp) = decl.kind.subprogram() else {
             return Err("a call of something that is not a subprogram".into());
         };
@@ -3125,6 +3406,28 @@ impl Lx<'_> {
                     .and_then(yavs_ir::ieee::symbol_key)
                     .and_then(yavs_ir::ieee::parse)
                 else {
+                    let library = ["ieee.", "std."]
+                        .iter()
+                        .any(|p| sp.mangled.as_str().starts_with(p));
+                    if !library {
+                        // A subprogram of the design: its body, inlined.
+                        return self
+                            .inline(callee, args)?
+                            .ok_or_else(|| "a function without a result".into());
+                    }
+                    let name = decl.name.key().as_str().to_ascii_lowercase();
+                    if sp.mangled.as_str().starts_with("ieee.") && args.len() <= 2 {
+                        match name.as_str() {
+                            // A two-state value is never a metavalue.
+                            "is_x" => return Ok(Val::Part(self.bool_lit(false))),
+                            // Identities in two-state values (their index ranges are their own).
+                            "to_stdulogic" | "to_bit" | "to_bitvector" | "to_stdlogicvector"
+                            | "to_stdulogicvector" | "to_x01" | "to_x01z" | "to_ux01" | "to_01" => {
+                                return one(self).map(no_dims);
+                            }
+                            _ => {}
+                        }
+                    }
                     // The logical operators of `numeric_bit` (and `numeric_std`) on its vectors,
                     // which have no native key: the gates of their elements.
                     let numeric = ["ieee.numeric_bit.", "ieee.numeric_std."]
@@ -3190,7 +3493,9 @@ impl Lx<'_> {
                         Ok(Val::Part(t))
                     }
                     // Identities in two-state values.
-                    I::ToSulv | I::Conv(..) | I::To01 | I::ToBitVector | I::Truthy => one(self),
+                    I::ToSulv | I::Conv(..) | I::To01 | I::ToBitVector | I::Truthy => {
+                        one(self).map(no_dims)
+                    }
                     // A two-state value is never a metavalue.
                     I::IsX(_) => Ok(Val::Part(self.bool_lit(false))),
                     I::Add { sub, signed, form } => {
@@ -3362,7 +3667,7 @@ impl Lx<'_> {
                         let a = self.arg(a)?;
                         let a = self.part(a)?;
                         if !signed || to >= a.len {
-                            return Ok(Val::Part(self.ext(a, to, signed)));
+                            return Ok(no_dims(Val::Part(self.ext(a, to, signed))));
                         }
                         // A signed value cut: its sign element and the rightmost `to - 1`.
                         let ra = self.whole(a);
@@ -3471,6 +3776,17 @@ impl Lx<'_> {
     }
 }
 
+/// `v` without index ranges: a function result whose range is not its argument's.
+fn no_dims(v: Val) -> Val {
+    match v {
+        Val::Part(p) => Val::Part(Part {
+            dims: Dims::NONE,
+            ..p
+        }),
+        v => v,
+    }
+}
+
 /// The words `r` as a fresh value of `len` elements.
 fn part_of(r: Ref, len: u32) -> Part {
     Part {
@@ -3542,13 +3858,13 @@ impl Lx<'_> {
         let a = self.arg(a)?;
         let a = self.part(a)?;
         let ra = self.whole(a);
-        let outer = std::mem::take(&mut self.ops);
-        let rb = self
-            .arg(b)
-            .and_then(|b| self.part(b))
-            .map(|b| self.whole(b));
-        let right = std::mem::replace(&mut self.ops, outer);
-        let rb = rb?;
+        let mut rb = Ref::Edge;
+        let right = self.capture(|lx| {
+            let b = lx.arg(b)?;
+            let b = lx.part(b)?;
+            rb = lx.whole(b);
+            Ok(())
+        })?;
         let t = self.tmp(1);
         if !right.iter().any(Op::can_fail) {
             self.ops.extend(right);
@@ -3766,6 +4082,600 @@ impl Lx<'_> {
     }
 }
 
+/// Subprogram calls: the callee's body inlined into the caller, its formals bound to the
+/// actuals' values and places (`out` and `inout` ones by reference, as the normal mode passes
+/// them), its locals fresh per call.
+impl Lx<'_> {
+    /// What formal or local `d` of a call being inlined is, the innermost call first.
+    fn bound(&self, d: DeclId) -> Option<Bind> {
+        self.frames
+            .iter()
+            .rev()
+            .find_map(|f| f.binds.get(&d).cloned())
+    }
+
+    fn proc_call(&mut self, call: &yavs_sem::hir::Call) -> R<()> {
+        let db = self.db;
+        if call.method_of.is_some() {
+            return Err("a method of a protected object cannot run cycle-based".into());
+        }
+        let mut callee = call.callee;
+        if let yavs_sem::decl::DeclKind::Alias(yavs_sem::decl::Alias::NonObject { target }) =
+            &db.decls[callee].kind
+        {
+            callee = *target;
+        }
+        let library = (db.decls[callee].kind.subprogram()).is_none_or(|sp| {
+            ["ieee.", "std."]
+                .iter()
+                .any(|p| sp.mangled.as_str().starts_with(p))
+        });
+        if library {
+            return Err(format!(
+                "a call of `{}`, which is not supported in cycle mode yet",
+                db.decls[callee].name
+            ));
+        }
+        self.inline(callee, &call.args).map(|_| ())
+    }
+
+    /// The body of `callee` for the call with `args`, inlined: a function's result.
+    fn inline(&mut self, callee: DeclId, args: &[yavs_sem::hir::Arg]) -> R<Option<Val>> {
+        use yavs_sem::decl::SubprogramKind;
+        let db = self.db;
+        let decl = &db.decls[callee];
+        let not_yet = || {
+            format!(
+                "a call of `{}`, which is not supported in cycle mode yet",
+                decl.name
+            )
+        };
+        let Some(sp) = decl.kind.subprogram() else {
+            return Err(not_yet());
+        };
+        let yavs_sem::decl::Body::Hir { scope, stmts } = &sp.body else {
+            return Err(not_yet());
+        };
+        if sp.generics.is_some() {
+            return Err(not_yet());
+        }
+        if self.frames.len() >= DEPTH_MAX {
+            return Err(format!(
+                "calls of `{}` nested more than {DEPTH_MAX} deep (a recursion elaboration does \
+                 not bound)",
+                decl.name
+            ));
+        }
+        let mut all = Vec::new();
+        deep(db, stmts, &mut all);
+        // Every inlined statement counts against the budget of unrolled ones.
+        let size = all.len() as u32 + 1;
+        if self.unrolled.saturating_add(size) > UNROLL_MAX {
+            return Err(format!(
+                "calls of `{}` that inline more than cycle mode takes ({UNROLL_MAX} statements)",
+                decl.name
+            ));
+        }
+        self.unrolled += size;
+        let procedure = sp.kind == SubprogramKind::Procedure;
+        let pure = sp.kind == SubprogramKind::Function { pure: true };
+        let mut binds = self.formals(callee, sp, args, !pure)?;
+        // A body apart from its declaration declares the formals again: the same, by position.
+        let again: Vec<DeclId> = (db.scopes[*scope].order.iter().copied())
+            .filter(|&d| {
+                matches!(&db.decls[d].kind, yavs_sem::decl::DeclKind::Object(o)
+                    if o.role == yavs_sem::decl::ObjRole::Param)
+            })
+            .collect();
+        if !again.is_empty() {
+            if again.len() != sp.params.len() {
+                return Err(not_yet());
+            }
+            for (d, p) in again.iter().zip(sp.params.iter()) {
+                let b = p
+                    .decl
+                    .and_then(|x| binds.get(&x).cloned())
+                    .ok_or_else(not_yet)?;
+                binds.insert(*d, b);
+            }
+        }
+        let returns: Vec<StmtId> = (all.iter().copied())
+            .filter(|&x| matches!(db.stmts[x].kind, StmtKind::Return(_)))
+            .collect();
+        // One `return` that ends the body: its value is the result, no copy.
+        let direct = !procedure && returns.len() == 1 && stmts.last() == returns.first();
+        // A `return` inside another statement: what follows it runs behind a flag.
+        let flag = returns
+            .iter()
+            .any(|r| !stmts.contains(r))
+            .then(|| self.loc(1));
+        if let Some(f) = flag {
+            self.ops.push(Op::Lit {
+                dst: f,
+                val: Box::new([0]),
+            });
+        }
+        let depth = self.frames.len();
+        self.frames.push(Frame {
+            callee,
+            binds,
+            ret_st: sp.ret,
+            ret: None,
+            direct,
+            flag,
+        });
+        let saved = std::mem::take(&mut self.pend);
+        let r = match self.locals(*scope) {
+            Ok(()) => self.stmts(stmts),
+            e => e,
+        };
+        let frame = self.frames.pop().expect("pushed above");
+        let jumps = std::mem::replace(&mut self.pend, saved);
+        r?;
+        if jumps.iter().any(|j| j.tgt != Tgt::Ret(depth)) {
+            return Err("a jump cycle mode cannot follow".into());
+        }
+        if !procedure && !jumps.iter().any(|j| j.always) {
+            return Err(format!(
+                "`{}` may reach its end without `return`, which cycle mode does not model",
+                decl.name
+            ));
+        }
+        Ok(frame.ret)
+    }
+
+    /// The formals of a call (`copy`: scalar `in` values are copied, since the callee may change
+    /// their actual).
+    fn formals(
+        &mut self,
+        callee: DeclId,
+        sp: &yavs_sem::decl::Subprogram,
+        args: &[yavs_sem::hir::Arg],
+        copy: bool,
+    ) -> R<HashMap<DeclId, Bind>> {
+        use yavs_sem::decl::ObjClass;
+        use yavs_sem::hir::Mode;
+        let db = self.db;
+        let name = &db.decls[callee].name;
+        let mut binds = HashMap::new();
+        for (i, p) in sp.params.iter().enumerate() {
+            let d = p.decl.ok_or("a parameter without a declaration")?;
+            let what = format!("parameter {}", p.name.text.as_str().to_ascii_uppercase());
+            let x = match args
+                .iter()
+                .find(|a| usize::from(a.formal) == i)
+                .map(|a| &a.actual)
+            {
+                Some(Actual::Expr(x)) => *x,
+                None | Some(Actual::Default) => p
+                    .default
+                    .ok_or_else(|| format!("a call of `{name}` without a value for its {what}"))?,
+                Some(_) => {
+                    return Err(
+                        "a call with an open, converted or individual actual is not supported in \
+                         cycle mode yet"
+                            .into(),
+                    );
+                }
+            };
+            let b = if p.class == ObjClass::Signal {
+                let v = self.name(x, p.mode != Mode::In)?;
+                if !self.signal_rooted(&v) {
+                    return Err("a signal parameter whose actual is not a signal".into());
+                }
+                Bind::Val(self.formal_val(v, p.subtype, Some(d), &what)?)
+            } else if p.mode == Mode::In {
+                match self.fold(x) {
+                    Some(c @ (ConstValue::Int(_) | ConstValue::Enum(_))) => {
+                        if let Some(v) = c.as_int()
+                            && let Ok(b) = self.subtype_bounds(p.subtype)
+                            && b.pos(v).is_none()
+                        {
+                            return Err(format!("a value outside the subtype of {what}"));
+                        }
+                        Bind::Const(c)
+                    }
+                    _ => {
+                        let v = self.expr(x)?;
+                        let v = if copy { self.copy_scalar(v) } else { v };
+                        Bind::Val(unfresh(self.formal_val(v, p.subtype, Some(d), &what)?))
+                    }
+                }
+            } else {
+                // `out` and `inout` variables by reference, as the normal mode passes them: the
+                // formal's subtype checks what the callee writes.
+                let place = self.name(x, true)?;
+                if self.signal_rooted(&place) {
+                    return Err("a variable parameter whose actual is a signal".into());
+                }
+                // ponytail: an integer formal claims its own range for what it reads, which an
+                // `out` actual of a wider subtype may not hold (an erroneous call); a separate
+                // check range in `IntV` would make reads exact.
+                Bind::Val(unfresh(match place {
+                    Val::Int(a) => {
+                        let b = self.subtype_bounds(p.subtype)?;
+                        let (lo, hi) = b.low_high();
+                        Val::Int(IntV {
+                            lo,
+                            hi,
+                            down: b.dir == Direction::Downto,
+                            place: Some((p.subtype, d)),
+                            ..a
+                        })
+                    }
+                    v => self.formal_val(v, p.subtype, Some(d), &what)?,
+                }))
+            };
+            binds.insert(d, b);
+        }
+        Ok(binds)
+    }
+
+    /// A scalar value copied into a temporary of its own (an `in` parameter of a procedure).
+    fn copy_scalar(&mut self, v: Val) -> Val {
+        match v {
+            Val::Int(i) if !i.fresh => {
+                let t = IntV {
+                    r: self.loc(1),
+                    place: None,
+                    leaf: None,
+                    ..i
+                };
+                self.ops.push(Op::Copy {
+                    dst: t.r,
+                    src: i.r,
+                    len: 64,
+                });
+                Val::Int(t)
+            }
+            Val::Part(p) if !p.fresh && p.len == 1 && p.dims.n == 0 => {
+                let s = self.whole(p);
+                let t = self.tmp(1);
+                self.ops.push(Op::Copy {
+                    dst: t.r,
+                    src: s,
+                    len: 1,
+                });
+                Val::Part(t)
+            }
+            v => v,
+        }
+    }
+
+    /// `v` as a value of subtype `st` (a formal, a result): an integer checked against its range
+    /// (message `what`), an array given the subtype's index ranges when it has them.
+    fn formal_val(&mut self, v: Val, st: SubtypeId, obj: Option<DeclId>, what: &str) -> R<Val> {
+        match v {
+            Val::Int(i) => {
+                let b = self.subtype_bounds(st)?;
+                let (lo, hi) = b.low_high();
+                if i.lo < lo || i.hi > hi {
+                    let site = self.site(Check::Range {
+                        ty: subtype_name(self.db, st),
+                        lo,
+                        hi,
+                        down: b.dir == Direction::Downto,
+                        what: what.into(),
+                    });
+                    self.ops.push(Op::Range {
+                        a: i.r,
+                        lo,
+                        hi,
+                        site,
+                    });
+                }
+                Ok(Val::Int(IntV {
+                    lo: i.lo.max(lo),
+                    hi: i.hi.min(hi),
+                    place: None,
+                    ..i
+                }))
+            }
+            Val::Part(p) => {
+                let mut p = self.rebound(p, st)?;
+                if obj.is_some() {
+                    p.obj = obj;
+                }
+                Ok(Val::Part(p))
+            }
+            v @ Val::Rec(_) => Ok(v),
+        }
+    }
+
+    /// `p` as a value of subtype `st`: a constrained array subtype gives it its index ranges
+    /// (its length checked during elaboration), an open one leaves the value's.
+    fn rebound(&mut self, mut p: Part, st: SubtypeId) -> R<Part> {
+        let db = self.db;
+        let t = db.base(st);
+        let c = &db.subtypes[st].constraint;
+        if !matches!(db.types[t].kind, TypeKind::Array { .. }) || self.open_array(t, c) {
+            return Ok(p);
+        }
+        let ds = self.arr_dims(t, c)?;
+        if u64::from(p.len) != ds.b[0].len() * u64::from(ds.elem_len()) {
+            return Err("a value of another length than its subtype".into());
+        }
+        p.dims = ds;
+        Ok(p)
+    }
+
+    /// Neither constraint `c` nor array type `t` itself gives the index range.
+    fn open_array(&self, t: TypeId, c: &Constraint) -> bool {
+        let dims = |c: &Constraint| matches!(c, Constraint::Array { dims: Some(_), .. });
+        !dims(c) && !dims(&self.db.subtypes[self.db.types[t].base_subtype].constraint)
+    }
+
+    /// The index ranges of array type `t` under constraint `c` (or the type's own).
+    fn arr_dims(&mut self, t: TypeId, c: &Constraint) -> R<Dims> {
+        let db = self.db;
+        let TypeKind::Array { indexes, elem } = &db.types[t].kind else {
+            return Err("an array value of a type that is not an array".into());
+        };
+        if indexes.len() != 1 {
+            return Err("a multi-dimensional array is not supported in cycle mode yet".into());
+        }
+        let own = |c: &'_ Constraint| match c {
+            Constraint::Array { dims: Some(d), .. } => Some(d.clone()),
+            _ => None,
+        };
+        let dims = own(c)
+            .or_else(|| own(&db.subtypes[db.types[t].base_subtype].constraint))
+            .ok_or("an array whose index range is not known here")?;
+        let [r] = &dims[..] else {
+            return Err("a multi-dimensional array is not supported in cycle mode yet".into());
+        };
+        let (outer, _) = self.static_range(r)?;
+        let ec = match c {
+            Constraint::Array { elem: ec, .. } if !matches!(**ec, Constraint::None) => ec,
+            _ => &db.subtypes[*elem].constraint,
+        };
+        let et = db.base(*elem);
+        let inner = match &db.types[et].kind {
+            TypeKind::Enum { .. } if yavs_elab::elem_of(db, et) == yavs_kernel::Elem::Logic => {
+                Dims::NONE
+            }
+            TypeKind::Array { .. } => self.arr_dims(et, ec)?,
+            _ => {
+                return Err(
+                    "an array whose elements are not logic values or arrays of them is not \
+                     supported in cycle mode yet"
+                        .into(),
+                );
+            }
+        };
+        Dims::wrap(outer, inner).ok_or_else(|| "an array nested more than four deep".into())
+    }
+
+    /// A fresh place of subtype `st` for object `d` (a local of an inlined call).
+    fn layout(&mut self, st: SubtypeId, d: DeclId) -> R<Val> {
+        let db = self.db;
+        let t = db.base(st);
+        match &db.types[t].kind {
+            TypeKind::Enum { lits } if yavs_elab::elem_of(db, t) == yavs_kernel::Elem::Logic => {
+                if self.subtype_bounds(st)?.len() != lits.len() as u64 {
+                    return Err(
+                        "a logic subtype with a range (`X01`, `UX01`, ...) is not supported in \
+                         cycle mode yet"
+                            .into(),
+                    );
+                }
+                let mut p = self.tmp(1);
+                (p.fresh, p.obj) = (false, Some(d));
+                Ok(Val::Part(p))
+            }
+            TypeKind::Integer | TypeKind::Enum { .. } => {
+                let b = self.subtype_bounds(st)?;
+                let (lo, hi) = b.low_high();
+                Ok(Val::Int(IntV {
+                    r: self.loc(1),
+                    lo,
+                    hi,
+                    down: b.dir == Direction::Downto,
+                    place: Some((st, d)),
+                    fresh: false,
+                    leaf: None,
+                }))
+            }
+            TypeKind::Array { .. } => {
+                let ds = self.arr_dims(t, &db.subtypes[st].constraint)?;
+                let n = ds.b[0].len() * u64::from(ds.elem_len());
+                if n == 0 || n > 1 << 20 {
+                    return Err(format!(
+                        "a vector of {n} elements (cycle mode takes 1 to 2**20 for now)"
+                    ));
+                }
+                let mut p = self.tmp(n as u32);
+                (p.dims, p.fresh, p.obj) = (ds, false, Some(d));
+                Ok(Val::Part(p))
+            }
+            TypeKind::Record { elems } => {
+                if matches!(&db.subtypes[st].constraint, Constraint::Record { elems } if !elems.is_empty())
+                {
+                    return Err(
+                        "a record subtype with element constraints is not supported in cycle \
+                         mode yet"
+                            .into(),
+                    );
+                }
+                (elems.iter())
+                    .map(|el| self.layout(el.subtype, d))
+                    .collect::<R<Vec<_>>>()
+                    .map(Val::Rec)
+            }
+            _ => {
+                Err("a value of a real or physical type is not supported in cycle mode yet".into())
+            }
+        }
+    }
+
+    /// Every leaf of `v` at its start value: logic 0 (`'U'`, counted), an integer its `'left`.
+    fn start(&mut self, v: &Val) {
+        match v {
+            Val::Part(p) => {
+                self.uninit += u64::from(p.len);
+                self.ops.push(Op::Lit {
+                    dst: p.r,
+                    val: vec![0; words(p.full) as usize].into(),
+                });
+            }
+            Val::Int(i) => self.ops.push(Op::IntLit {
+                dst: i.r,
+                v: if i.down { i.hi } else { i.lo },
+            }),
+            Val::Rec(fs) => fs.iter().for_each(|f| self.start(f)),
+        }
+    }
+
+    /// The declarations of an inlined body: variables and constants fresh for this call.
+    fn locals(&mut self, scope: yavs_sem::ScopeId) -> R<()> {
+        use yavs_sem::decl::{DeclKind, ObjClass};
+        let db = self.db;
+        for &d in &db.scopes[scope].order {
+            if self.frames.last().is_some_and(|f| f.binds.contains_key(&d)) {
+                continue;
+            }
+            let decl = &db.decls[d];
+            let b = match &decl.kind {
+                DeclKind::Object(o) if o.class == ObjClass::Variable => {
+                    let v = self.layout(o.subtype, d)?;
+                    match o.default {
+                        Some(init) => {
+                            let s = self.expr_h(init, Some(&v))?;
+                            self.assign(&v, s)?;
+                        }
+                        None => self.start(&v),
+                    }
+                    Bind::Val(v)
+                }
+                DeclKind::Object(o) if o.class == ObjClass::Constant => {
+                    let init = o
+                        .default
+                        .ok_or_else(|| format!("the constant `{}` without a value", decl.name))?;
+                    match self.fold(init) {
+                        Some(c @ (ConstValue::Int(_) | ConstValue::Enum(_))) => Bind::Const(c),
+                        _ => {
+                            let open =
+                                matches!(db.types[db.base(o.subtype)].kind, TypeKind::Array { .. })
+                                    && self.open_array(
+                                        db.base(o.subtype),
+                                        &db.subtypes[o.subtype].constraint,
+                                    );
+                            let s = self.expr(init)?;
+                            let v = if open {
+                                self.fresh_like(&s)
+                            } else {
+                                self.layout(o.subtype, d)?
+                            };
+                            self.assign(&v, s)?;
+                            Bind::Val(v)
+                        }
+                    }
+                }
+                DeclKind::Type(_)
+                | DeclKind::Subtype(_)
+                | DeclKind::Subprogram(_)
+                | DeclKind::EnumLit { .. }
+                | DeclKind::Attribute { .. } => continue,
+                _ => {
+                    return Err(format!(
+                        "the declaration of `{}` in a subprogram, which cycle mode does not take \
+                         yet",
+                        decl.name
+                    ));
+                }
+            };
+            self.frames
+                .last_mut()
+                .expect("in a call")
+                .binds
+                .insert(d, b);
+        }
+        Ok(())
+    }
+
+    /// A fresh place of the shape of `v`.
+    fn fresh_like(&mut self, v: &Val) -> Val {
+        match v {
+            Val::Part(p) => {
+                let mut t = self.tmp(p.len);
+                (t.dims, t.fresh) = (p.dims, false);
+                Val::Part(t)
+            }
+            Val::Int(i) => Val::Int(IntV {
+                r: self.loc(1),
+                place: None,
+                fresh: false,
+                leaf: None,
+                ..*i
+            }),
+            Val::Rec(fs) => Val::Rec(fs.iter().map(|f| self.fresh_like(f)).collect()),
+        }
+    }
+
+    /// `return [v];` of the innermost call.
+    fn ret(&mut self, v: Option<ExprId>) -> R<()> {
+        let Some(fi) = self.frames.len().checked_sub(1) else {
+            return Err("a `return` statement in a process".into());
+        };
+        match (v, self.frames[fi].ret_st) {
+            (Some(e), Some(st)) => {
+                let hint = self.frames[fi].ret.clone();
+                let val = self.expr_h(e, hint.as_ref())?;
+                let name = self.db.decls[self.frames[fi].callee].name.to_string();
+                let val = self.formal_val(val, st, None, &format!("the result of {name}"))?;
+                match (self.frames[fi].direct, self.frames[fi].ret.clone()) {
+                    (true, _) => self.frames[fi].ret = Some(val),
+                    (false, None) => {
+                        let slot = self.fresh_like(&val);
+                        self.assign(&slot, val)?;
+                        self.frames[fi].ret = Some(slot);
+                    }
+                    (false, Some(slot)) => {
+                        // Results of other index ranges: the result has none known.
+                        if let (Val::Part(a), Val::Part(b)) = (&slot, &val)
+                            && dims_differ(&a.dims, &b.dims)
+                        {
+                            self.frames[fi].ret = Some(no_dims(slot.clone()));
+                        }
+                        self.assign(&slot, val)?;
+                    }
+                }
+            }
+            (None, None) => {}
+            _ => return Err("a `return` that does not match its subprogram".into()),
+        }
+        let flag = self.frames[fi].flag;
+        if let Some(f) = flag {
+            self.ops.push(Op::Lit {
+                dst: f,
+                val: Box::new([1]),
+            });
+        }
+        self.pend.push(Jump {
+            tgt: Tgt::Ret(fi),
+            flag,
+            always: true,
+        });
+        Ok(())
+    }
+}
+
+/// Two lists of index ranges that are not the same.
+fn dims_differ(a: &Dims, b: &Dims) -> bool {
+    a.n != b.n
+        || (a.b[..a.n as usize].iter().zip(&b.b[..b.n as usize]))
+            .any(|(x, y)| (x.left, x.dir, x.right) != (y.left, y.dir, y.right))
+}
+
+/// `v` as a value that is named more than once: no operation may be retargeted to make it.
+fn unfresh(v: Val) -> Val {
+    match v {
+        Val::Part(p) => Val::Part(Part { fresh: false, ..p }),
+        Val::Int(i) => Val::Int(IntV { fresh: false, ..i }),
+        Val::Rec(fs) => Val::Rec(fs.into_iter().map(unfresh).collect()),
+    }
+}
+
 /// Every statement under `body`, nested ones included.
 fn deep(db: &Db, body: &[StmtId], out: &mut Vec<StmtId>) {
     for &s in body {
@@ -3842,6 +4752,9 @@ fn obj_desc(db: &Db, d: DeclId) -> String {
     let name = db.decls[d].name.to_string().to_ascii_uppercase();
     match &db.decls[d].kind {
         DeclKind::Object(o) if o.class == ObjClass::Signal => format!("signal {name}"),
+        DeclKind::Object(o) if o.role == yavs_sem::decl::ObjRole::Param => {
+            format!("parameter {name}")
+        }
         DeclKind::Object(_) => format!("variable {name}"),
         _ => name,
     }

@@ -1,7 +1,7 @@
 -- Cycle mode with a region that does not take every process of the design under test: `mix`,
 -- `late`, `early`, `reg` and the concurrent `q <= r` join (`late` reads `early`, so it runs
--- after it); `pick` (a call of a function, not supported yet) stays in the event kernel. Values cross the
--- boundary both ways: `a` from the region to `pick`, `b` back from `pick` into the region, `din`
+-- after it); `pick` (a call of a function with a `while` loop, not supported yet) stays in the
+-- event kernel. Values cross the boundary both ways: `a` from the region to `pick`, `b` back from `pick` into the region, `din`
 -- from the testbench into a combinational member (it wakes the region), `r` out through `q`; the
 -- scalars `en` in and `t` out. `n` is read by the clocked process that writes it. The assert of
 -- `reg` is not evaluated in cycle mode and does not keep it out.
@@ -13,8 +13,15 @@ end package;
 
 package body cycle_partial_pkg is
   function swap(a : std_ulogic_vector(7 downto 0)) return std_ulogic_vector is
+    variable r : std_ulogic_vector(7 downto 0);
+    variable i : natural := 0;
   begin
-    return a(3 downto 0) & a(7 downto 4);
+    while i < 4 loop
+      r(i) := a(i + 4);
+      r(i + 4) := a(i);
+      i := i + 1;
+    end loop;
+    return r;
   end function;
 end package body;
 

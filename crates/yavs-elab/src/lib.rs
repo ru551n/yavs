@@ -568,6 +568,19 @@ impl Elaborated {
             .map(|(_, &o)| o)
     }
 
+    /// The bounds of the range of a type or subtype declaration whose left bound is `left`,
+    /// seen from `scope`, if elaboration evaluated them.
+    pub fn range(&self, scope: ScopeId, left: yavs_sem::ExprId) -> Option<Bounds> {
+        let mut cur = Some(scope);
+        while let Some(s) = cur {
+            if let Some(&b) = self.ranges.get(&(s, left)) {
+                return Some(b);
+            }
+            cur = self.hier.scope(s).parent;
+        }
+        None
+    }
+
     /// The value of generic or constant `d` seen from `scope`, if elaboration computed it.
     pub fn value(&self, scope: ScopeId, d: yavs_sem::DeclId) -> Option<&Val> {
         let mut cur = Some(scope);

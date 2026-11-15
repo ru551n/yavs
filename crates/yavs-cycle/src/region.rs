@@ -77,17 +77,14 @@ pub(crate) fn subset(db: &Db, e: &Elaborated) -> Subset {
             .or_default()
             .push((d.proc.index(), d.range.offset, d.range.end()));
     }
+    let other = overlapping(e);
     let span = |pi: usize| db.stmts[e.procs[pi].stmt].span;
     let shared: Vec<(usize, Reason)> = (fits.keys().copied())
         .filter_map(|pi| {
             for &d in &e.procs[pi].drivers {
-                let d = &e.nets.drivers[d];
-                let (l, a, z) = (d.leaf, d.range.offset, d.range.end());
+                let l = e.nets.drivers[d].leaf;
                 let leaf = e.nets.leaf(l);
-                let other = (drivers[&l].iter())
-                    .find(|&&(q, b, y)| q != pi && b < z && a < y)
-                    .map(|o| o.0);
-                let text = if let Some(q) = other {
+                let text = if let Some(&q) = other.get(&d) {
                     format!(
                         "{} is also driven by {}",
                         e.leaf_name(l),
@@ -181,6 +178,78 @@ pub(crate) fn subset(db: &Db, e: &Elaborated) -> Subset {
         for (pi, r) in made {
             fits.remove(&pi);
             out.push((pi, Why::Subset(r)));
+        }
+    }
+}
+
+/// For every driver (by its index in `e.nets.drivers`) with an element another process also
+/// drives: one such process. Per leaf in O(n log n): the drivers sorted by first element; one
+/// starting at or before driver `i` overlaps it when it ends after `i` starts (the two farthest
+/// ends of distinct processes so far give one of another process), one starting after it when it
+/// starts before `i` ends (the next driver of another process in the order).
+fn overlapping(e: &Elaborated) -> std::collections::HashMap<usize, usize> {
+    let mut by_leaf: BTreeMap<LeafId, Vec<(u32, u32, usize, usize)>> = BTreeMap::new();
+    for (i, d) in e.nets.drivers.iter().enumerate() {
+        if d.range.len > 0 {
+            (by_leaf.entry(d.leaf).or_default()).push((
+                d.range.offset,
+                d.range.end(),
+                d.proc.index(),
+                i,
+            ));
+        }
+    }
+    let mut other = std::collections::HashMap::new();
+    for ds in by_leaf.values_mut() {
+        overlaps(ds, &mut other);
+    }
+    other
+}
+
+/// The drivers `ds` (first, end, process, id) of one leaf: into `other`, for the id of each with
+/// an element another process drives, one such process.
+fn overlaps(
+    ds: &mut [(u32, u32, usize, usize)],
+    other: &mut std::collections::HashMap<usize, usize>,
+) {
+    if ds.len() < 2 {
+        return;
+    }
+    ds.sort_unstable();
+    let n = ds.len();
+    // The first later index whose process differs.
+    let mut next = vec![n; n];
+    for k in (0..n - 1).rev() {
+        next[k] = if ds[k + 1].2 != ds[k].2 {
+            k + 1
+        } else {
+            next[k + 1]
+        };
+    }
+    // The farthest end so far, and the farthest of another process: (end, process).
+    let mut best: [Option<(u32, usize)>; 2] = [None, None];
+    for (i, &(a, z, p, d)) in ds.iter().enumerate() {
+        let before = best.iter().flatten().find(|b| b.1 != p && b.0 > a);
+        let after = match ds.get(i + 1) {
+            Some(&(b, _, q, _)) if b < z && q != p => Some(q),
+            Some(&(b, ..)) if b < z => (ds.get(next[i + 1])).filter(|o| o.0 < z).map(|o| o.2),
+            _ => None,
+        };
+        if let Some(q) = before.map(|b| b.1).or(after) {
+            other.insert(d, q);
+        }
+        // Keep the two farthest ends of distinct processes.
+        match best {
+            [Some(b), _] if b.1 == p => best[0] = Some((b.0.max(z), p)),
+            [_, Some(c)] if c.1 == p => best[1] = Some((c.0.max(z), p)),
+            _ => {
+                if best[1].is_none_or(|c| c.0 < z) {
+                    best[1] = Some((z, p));
+                }
+            }
+        }
+        if best[1].map(|c| c.0) > best[0].map(|b| b.0) {
+            best.swap(0, 1);
         }
     }
 }
@@ -364,6 +433,13 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         for cp in &e.nets.conv_ports {
             consts.extend(cp.formal.iter().chain(&cp.actual).map(|x| x.0));
         }
+        // Per leaf, one driving process outside the region.
+        let mut outside: BTreeMap<LeafId, usize> = BTreeMap::new();
+        for d in &e.nets.drivers {
+            if !taken.contains_key(&d.proc.index()) {
+                outside.entry(d.leaf).or_insert(d.proc.index());
+            }
+        }
         let mut clock: Option<Clock> = None;
         for (&pi, (_, b)) in &taken {
             let p = &e.procs[pi];
@@ -385,11 +461,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             // read them. Members driving different elements of one leaf are fine.
             let split = (p.drivers.iter())
                 .map(|&d| e.nets.drivers[d].leaf)
-                .find_map(|l| {
-                    (drivers[&l].iter())
-                        .find(|o| o.0 != pi && !taken.contains_key(&o.0))
-                        .map(|o| (l, o.0))
-                });
+                .find_map(|l| outside.get(&l).map(|&q| (l, q)));
             if let Some((l, q)) = split {
                 gone.push((
                     pi,
@@ -434,8 +506,9 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             }
         }
         // Loop groups need several passes or a split, which the schedule does not do yet.
+        let leaving: BTreeSet<usize> = gone.iter().map(|g| g.0).collect();
         let fits: BTreeMap<usize, Fit> = (taken.iter())
-            .filter(|(pi, _)| !gone.iter().any(|g| g.0 == **pi))
+            .filter(|(pi, _)| !leaving.contains(pi))
             .map(|(pi, (f, _))| (*pi, f.clone()))
             .collect();
         let a = analyse(db, e, &fits);
@@ -814,4 +887,41 @@ pub(crate) fn where_(db: &Db, e: &Elaborated, pi: usize) -> String {
         .file_name()
         .map_or(f.path.clone(), |n| n.to_string_lossy().into_owned());
     format!("{name} ({file}:{})", f.line_col(span.start).0)
+}
+
+#[cfg(test)]
+mod tests {
+    /// `overlaps` against the pairwise test on many small random sets of drivers.
+    #[test]
+    fn overlaps_finds_what_the_pairwise_test_finds() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rnd = |m: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % m
+        };
+        for _ in 0..20_000 {
+            let n = 1 + rnd(7) as usize;
+            let ds: Vec<(u32, u32, usize, usize)> = (0..n)
+                .map(|i| {
+                    let a = rnd(12) as u32;
+                    (a, a + 1 + rnd(5) as u32, rnd(4) as usize, i)
+                })
+                .collect();
+            let mut got = std::collections::HashMap::new();
+            super::overlaps(&mut ds.clone(), &mut got);
+            for &(a, z, p, d) in &ds {
+                let any = ds.iter().any(|&(b, y, q, _)| q != p && b < z && a < y);
+                assert_eq!(got.contains_key(&d), any, "{ds:?} driver {d}");
+                if let Some(&q) = got.get(&d) {
+                    let (b, y, ..) = *ds
+                        .iter()
+                        .find(|o| o.2 == q && o.0 < z && a < o.1)
+                        .expect("overlaps");
+                    assert!(q != p && b < z && a < y);
+                }
+            }
+        }
+    }
 }

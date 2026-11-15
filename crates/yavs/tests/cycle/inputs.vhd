@@ -2,8 +2,9 @@
 -- only by the clocked member (no wake) change between edges, change and change back, change in
 -- the delta of the edge and at time 0; a wide input changes in its middle word only; an integer;
 -- a metavalue input changes once (its metavalues counted once); of a record input, kept in one
--- word, only the field at element 0 changes. `fb`, outside, reads a region output and drives an
--- input back.
+-- word, only the field at element 0 changes; records whose word holds an input field and a field
+-- a member drives, the input first (`p`) and second (`p2`). `fb`, outside, reads a region output
+-- and drives an input back.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -14,6 +15,7 @@ architecture a of cycle_inputs is
     a, b : std_ulogic;
   end record;
   signal r : pair_t := ('0', '1');
+  signal p, p2 : pair_t := ('0', '0');
   signal qr : std_ulogic_vector(1 downto 0) := "00";
   signal clk, e, z, f : std_ulogic := '0';
   signal s, qs : std_ulogic_vector(7 downto 0) := x"00";
@@ -36,6 +38,9 @@ begin
       qf <= f;
       qm <= m;
       qr <= r.a & r.b;
+      -- `p.a` and `p2.b` come from `main`.
+      p.b <= not p.b xor p.a;
+      p2.a <= not p2.a xor p2.b;
     end if;
   end process;
   y <= c xor qs(3 downto 0);
@@ -65,6 +70,8 @@ begin
       w(100 + i) <= '1';
       n <= 7 * i;
       r.a <= not r.a;
+      p.a <= not p.a;
+      p2.b <= not p2.b;
       if i = 3 then
         m <= "XX01";
       end if;
@@ -75,7 +82,8 @@ begin
       report "i=" & integer'image(i) & " qs=" & to_hstring(qs) & " qw=" & to_hstring(qw(127 downto 64))
         & " qn=" & integer'image(qn) & " qe=" & to_string(qe) & " qz=" & to_string(qz)
         & " qf=" & to_string(qf) & " qm=" & to_string(qm) & " y=" & to_string(y)
-        & " wm=" & to_hstring(wm) & " qr=" & to_string(qr);
+        & " wm=" & to_hstring(wm) & " qr=" & to_string(qr)
+        & " pb=" & to_string(p.b) & " p2a=" & to_string(p2.a);
     end loop;
     wait;
   end process;

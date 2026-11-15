@@ -2052,7 +2052,8 @@ fn drivers_of_signals_whose_history_is_read_outside_stay_out() {
 
 /// The region reads only the inputs that changed since its last wake (`tests/cycle/inputs.vhd`):
 /// inputs no wake is made for, changed between edges, changed back, changed in the delta of the
-/// edge and at time 0, a wide input changed in one word, an output read and driven back outside.
+/// edge and at time 0, a wide input changed in one word, a record word holding an input field and
+/// a member-driven one, an output read and driven back outside.
 #[test]
 fn inputs_read_only_when_they_changed_give_the_same_result() {
     let dir = tempdir("cycle-inputs");
@@ -2065,12 +2066,13 @@ fn inputs_read_only_when_they_changed_give_the_same_result() {
         // back only in odd iterations), at edge 4 00; `w(101 to 103)` set, `n` 21, `e` toggled in
         // the edge's delta (4 times), `z` set at time 0, `m` its metavalues, `f` from `y(1)` of
         // the time before the edge, `y` from `c` (4) and `qs`, `wm` with `w(104)`, `r.a` toggled 3
-        // times and `r.b` as it started.
+        // times and `r.b` as it started; `p.b` (and `p2.a`) toggled when the input field was 0:
+        // 1 1 0 0 1 1 0 0 over the edges. Reading `p.a` must not clear `p.b` in its word.
         assert!(normal[2].contains("i=3 qs=A5 "), "{normal:?}");
         assert!(
             normal[3].contains(
                 "i=4 qs=00 qw=000000E000000000 qn=21 qe=0 qz=1 qf=1 qm=XX01 y=0100 wm=0000001E \
-                 qr=11"
+                 qr=11 pb=0 p2a=0"
             ),
             "{normal:?}"
         );

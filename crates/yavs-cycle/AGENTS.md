@@ -107,7 +107,7 @@ YAVS_BIN=<release yavs> python3 -I tools/difftest/cyclegate.py   # the correctne
 
 - Run `tools/difftest/cyclegate.py` before every push of cycle code (30 seconds): it runs the difftest corpus,
   `tests/cycle` and the bench designs in normal and cycle mode with one binary and fails on any difference the
-  documented losses (A6, two-state values, history of region signals) do not explain. It also shows how many
+  documented losses (A6) or the reviewed list `tools/difftest/cyclegate.expected` do not explain; a new entry in that list is a decision to accept the loss, not a way to silence the gate. It also shows how many
   processes joined per test, so a pass is not vacuous: read the summary's count of tests with a member.
 
 - Codes owned: `E4100`-`E4199`, `W4100`-`W4199` (in use: `E4101`, `E4102`, `E4110` to `E4126`, `lib.rs` `codes`).

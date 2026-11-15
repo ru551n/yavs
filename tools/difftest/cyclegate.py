@@ -3,15 +3,15 @@
 crates/yavs/tests/cycle and the bench RTL designs twice with the same yavs binary,
 normal and `--cycle`, and compare console output and exit status. Stdlib only.
 
-Buckets: identical; documented (differs only by what cycle mode drops by design: the
-delta of a report stamp, reports and asserts of member processes, delta cycles a
-monitor no longer sees); loss (differs, but the run read metavalues as 0 or the source reads
-history attributes, which the mode drops: listed for review); differs (anything else: a wrong
-result in cycle mode, the bucket that fails the gate); refused (E41xx under --cycle);
-skipped (the normal mode does not run it). Each test also reports how many
-processes joined the region, so a pass is not vacuous. See README.md.
+Buckets: identical; documented (differs only by what cycle mode drops by design: the delta of
+a report stamp, reports and asserts of member processes, delta cycles a monitor no longer
+sees); known (differs, and cyclegate.expected lists the test with the checksum of its diff and
+the reviewed cause); differs (anything else: a wrong result in cycle mode, or a known
+difference that changed; the bucket that fails the gate); refused (E41xx under --cycle);
+skipped (the normal mode does not run it). Each test also reports how many processes joined
+the region, so a pass is not vacuous. See README.md.
 """
-import argparse, atexit, shutil, concurrent.futures as cf, difflib, json, re, sys
+import argparse, atexit, shutil, zlib, concurrent.futures as cf, difflib, json, re, sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -37,10 +37,6 @@ CYCLE_TESTS = {
     "reset.vhd": [("cycle_reset", "", None), ("cycle_reset", "-gCOMB=true", None)],
     "shapes.vhd": [("cycle_shapes", "", None)],
 }
-
-
-# attributes of signals whose history cycle mode does not keep for the region (AGENTS.md of yavs-cycle)
-HISTORY = re.compile(r"'(active|transaction|quiet|stable|delayed|last_active|last_event|driving|driving_value)\b", re.I)
 
 
 def header(top, **kw):
@@ -141,13 +137,10 @@ def settled(lines, lost):
     return rest, {k: v[1] for k, v in last.items()}
 
 
-def classify(nl, cl, lost, hints=()):
+def classify(nl, cl, lost):
     """nl, cl: canonical lines of normal and cycle mode; lost(path) says whether a report of a
-    process at that path may be missing; hints name the design losses this run can show
-    (metavalues read as 0, history attributes in the source). Returns (bucket, why): identical,
-    documented (the differences are what the mode drops by design, shown by the lines
-    themselves), loss (differs, and a hint says a documented loss could explain it: review) or
-    differs (nothing explains it)."""
+    process at that path may be missing. Returns (bucket, why): identical, documented (the
+    differences are what the mode drops by design, shown by the lines themselves) or differs."""
     if nl == cl:
         return "identical", ""
     ns, cs = stamp(nl), stamp(cl)
@@ -157,22 +150,42 @@ def classify(nl, cl, lost, hints=()):
     sev = lambda l: l.split("\t")[1]
     # A member's lost report is a deletion of diag lines only. A lost failure stops the normal run:
     # what follows it is not comparable. A lost error or failure may change the exit status (line 0).
-    stop = next((i for i, l in enumerate(ns) if l.startswith("diag\t") and sev(l) in ("failure", "fatal")
-                 and lost(l.split("\t")[4])), len(ns))
-    bad = any(l.startswith("diag\t") and sev(l) in ("error", "failure", "fatal") and lost(l.split("\t")[4]) for l in ns)
+    lostd = lambda i: ns[i].startswith("diag\t") and lost(ns[i].split("\t")[4])  # a member's report
+    gone = [i for tag, i1, i2, _, _ in ops if tag in ("delete", "replace") for i in range(i1, i2) if lostd(i)]
+    stop = min((i for i in gone if sev(ns[i]) in ("failure", "fatal")), default=len(ns))
+    bad = any(sev(ns[i]) in ("error", "failure", "fatal") for i in gone)
+    ok = lambda i: i > stop or (i == 0 and bad) or lostd(i)  # lines cycle mode may lack
     for tag, i1, i2, j1, j2 in ops:
-        if i1 > stop or (i1 == 0 and bad):  # after a lost stop; the exit line after a lost error
+        if tag == "insert" and i1 >= stop:  # after a lost stop the run goes on
             continue
-        if tag == "delete" and all(g.startswith("diag\t") and lost(g.split("\t")[4]) for g in ns[i1:i2]):
+        if tag in ("delete", "replace") and all(ok(i) for i in range(i1, i2)) and (tag == "delete" or i2 > stop or j2 <= 1):
             continue
         break
     else:
-        return "documented", "reports and asserts of member processes" + (" (a lost failure stopped the normal run)" if stop < len(ns) else "")
+        return "documented", "reports and asserts of member processes" + (" (a lost failure stopped the normal run: the rest is not compared)" if stop < len(ns) else "")
     if settled(nl, lost) == settled(cl, lambda p: False):
         return "documented", "intermediate delta cycles are not visible (the settled values are equal)"
-    if hints:
-        return "loss", "differs, " + " and ".join(hints) + " may explain it"
-    return "differs", first_diff(ns, cs)
+    return "differs", "the output differs\n" + first_diff(ns, cs)
+
+
+def load_expected():
+    """name -> (crc of the diff, cause) of cyclegate.expected: differences someone reviewed."""
+    out = {}
+    for l in (HERE / "cyclegate.expected").read_text().splitlines():
+        if l.strip() and not l.startswith("#"):
+            name, crc, cause = l.split("\t", 2)
+            out[name] = (crc, cause)
+    return out
+
+
+def known(r, expected):
+    """A difference that is listed with the same diff is known; a listed one that changed is not."""
+    if r["bucket"] == "differs" and r["name"] in expected:
+        crc, cause = expected[r["name"]]
+        if crc == r.get("crc"):
+            r.update(bucket="known", why=cause)
+        else:
+            r["why"] = f"the listed difference changed (checksum {crc} before, {r.get('crc')} now): review it\n" + r["why"]
 
 
 def first_diff(a, b):
@@ -194,18 +207,19 @@ def one(item, jobs_args):
         if nrc in (97, 98, 124) and hdr["exit"] != nrc:
             res.update(bucket="skipped", why={97: "analysis fails", 98: "elaboration fails", 124: "timeout"}[nrc] + " in the normal mode")
         else:
-            metas = "cycle mode: " in cerr and re.search(r"^cycle mode: \d+ metavalue elements read as 0", cerr, re.M)
             cerr, members, dropped, rep = split_report(cerr)
             res["members"], res["procs"] = count_members(rep)
-            if crc in (97, 98) and "E41" in cerr and "E9999" not in cerr:
-                res.update(bucket="refused", why=next(w for w in re.findall(r"E41\d\d", cerr)))
+            if crc != 0 and nrc == 0 and re.search(r"E41\d\d", cerr) and "E9999" not in cerr:
+                res.update(bucket="refused", why=re.search(r"E41\d\d", cerr).group(0))
             else:
                 nl = D.normalise(nrc, nout, nerr, yavs=True)
                 cl = D.normalise(crc, cout, cerr, yavs=True)
                 lost = lambda path: dropped > 0 and (path in members or (path == "-" and "-" in members))
-                hints = (["metavalues read as 0"] if metas else []) + (["history attributes in the source"] if HISTORY.search(vhd.read_text()) else [])
-                res["bucket"], res["why"] = classify(nl, cl, lost, hints)
-        if res["bucket"] != "differs":
+                res["bucket"], res["why"] = classify(nl, cl, lost)
+        if res["bucket"] == "differs":
+            res["crc"] = "%08x" % zlib.crc32("\n".join(difflib.unified_diff(nl, cl, lineterm="", n=1)).encode())
+            res["dir"] = str(base)
+        else:
             D.drop(base)
         return res
     except Exception as e:  # report, never hide
@@ -220,12 +234,14 @@ def selftest():
     assert classify(n, n[:2] + n[3:], lost)[0] == "documented"  # a member's report is gone
     assert classify(n, n[:1] + n[2:], lost)[0] == "differs"  # a testbench report is gone
     assert classify(n, n[:3] + ["out\tother"], lost)[0] == "differs"
-    assert classify(n, n[:3] + ["out\tother"], lost, ["metavalues read as 0"])[0] == "loss"
     d = ["exit\t0", "diag\tnote\t5\t1\t:tb:p\ta", "diag\tnote\t5\t2\t:tb:p\tb", "out\tdone"]
     assert classify(d, d[:1] + d[2:], lost)[0] == "documented"  # the first of two deltas is not seen
     f = ["exit\t1", "diag\tfailure\t9\t1\t:tb:m\tbad"]
     assert classify(f, ["exit\t0", "out\tmore"], lost)[0] == "documented"  # its stop is lost
     assert classify(f, ["exit\t0"], lambda p: False)[0] == "differs"
+    e = ["exit\t1", "diag\terror\t5\t1\t:tb:m\tbad", "out\tdone"]
+    assert classify(e, ["exit\t0", "out\tdone"], lost)[0] == "documented"  # a lost error changes the exit status
+    assert classify(e, ["exit\t0", "out\tdone"], lambda p: False)[0] == "differs"
     rep = "cycle mode: 2 of 5 processes run cycle-based, on the rising edge of clk\n  cycle-based:\n    tb.dut.p  clocked, 2 asserts and reports not evaluated in cycle mode\n    tb.q (a.vhd:3)  combinational, 1 assert or report not evaluated in cycle mode\n  subset: 2\nreal\n"
     e, mem, dr, r = split_report(rep)
     assert (e, mem, dr, count_members(r)) == ("real", {":tb:dut:p", ":tb:q", "-"}, 3, (2, 5)), (e, mem, dr)
@@ -250,26 +266,34 @@ def main():
     todo = [i for i in items(a.only) if re.search(a.filter, i[0])]
     D.guard(D.CACHE)
     atexit.register(shutil.rmtree, D.CACHE / "gen", ignore_errors=True)  # runs before D.cleanup
+    expected = load_expected()
     res = []
     with cf.ThreadPoolExecutor(max(1, min(a.jobs, D.MAX_JOBS))) as ex:
         try:
             for r in ex.map(lambda i: one(i, a), todo):
                 res.append(r)
-                if a.verbose or r["bucket"] in ("differs", "loss"):
+                known(r, expected)
+                if a.verbose or r["bucket"] in ("differs", "known") or "not compared" in r["why"]:
                     print(f"{r['bucket'].upper():10} {r['name']}  [{r['members']}/{r['procs']} in the region]"
                           + (f" {r['why'].splitlines()[0]}" if r["why"] else ""), flush=True)
+                if r["bucket"] == "known":
+                    D.drop(Path(r["dir"]))
                 if r["bucket"] == "differs":
+                    print(f"    to list it after a review: {r['name']}\t{r.get('crc', '?')}\t<cause>")
                     print("\n".join("    " + l for l in r["why"].splitlines()[1:]), flush=True)
         except BaseException:
             ex.shutdown(wait=True, cancel_futures=True)
             raise
     if a.json:
         a.json.write_text("\n".join(json.dumps(r) for r in res) + "\n")
-    c = {b: sum(r["bucket"] == b for r in res) for b in ("identical", "documented", "loss", "differs", "refused", "skipped")}
-    ran = [r for r in res if r["bucket"] in ("identical", "documented", "loss", "differs")]
+    for r in res:
+        if r["name"] in expected and r["bucket"] in ("identical", "documented"):
+            print(f"note: {r['name']} no longer differs: remove it from cyclegate.expected")
+    c = {b: sum(r["bucket"] == b for r in res) for b in ("identical", "documented", "known", "differs", "refused", "skipped")}
+    ran = [r for r in res if r["bucket"] in ("identical", "documented", "known", "differs")]
     with_m = sum(r["members"] > 0 for r in ran)
     print(f"cycle gate: {len(res)} tests: {c['identical']} identical, {c['documented']} documented losses only, "
-          f"{c['loss']} differ where a documented loss could explain it (review), {c['differs']} differ otherwise, {c['refused']} refused, {c['skipped']} skipped; "
+          f"{c['known']} known differences, {c['differs']} differ otherwise, {c['refused']} refused, {c['skipped']} skipped; "
           f"{with_m} of {len(ran)} compared tests have at least one process in the region "
           f"({sum(r['members'] for r in ran)} of {sum(r['procs'] for r in ran)} processes)")
     sys.exit(1 if c["differs"] else 0)

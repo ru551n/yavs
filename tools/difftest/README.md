@@ -105,10 +105,13 @@ to stderr in the reference simulator and stdout in the second reference simulato
 `--cycle`, and compares exit status and console output in the canonical form (the region report is taken out
 of stderr). Buckets: identical; documented (only the delta of report stamps, reports and asserts of member
 processes that cycle mode does not evaluate, or delta cycles a monitor no longer sees, shown by the lines
-themselves); loss (differs, but the run read metavalues as 0 or the source reads history attributes, which the
-mode drops: listed to review by hand); differs otherwise (a wrong result in cycle mode: the exit status is 1);
-refused (`E41xx`); skipped (the normal mode does not run it). Every test shows how many processes joined the
-region, and the summary counts the tests with at least one member. `--only corpus|cycle|bench`, `--filter`,
+themselves; a vanished report counts as a member's when its process path is one of a member with dropped asserts,
+or `-` for an unlabelled process while such a member exists); known (differs, and `cyclegate.expected` lists the
+test with the checksum of its diff and the reviewed cause: a changed diff is not known any more); differs
+otherwise (a wrong result in cycle mode: exit status 1, and the line to paste into the list after a review);
+refused (`E41xx`); skipped (the normal mode does not run it). A lost failure of a member ends the normal run
+early: such a test is reported as not compared after that point. Every test shows how many processes joined
+the region, and the summary counts the tests with at least one member. `--only corpus|cycle|bench`, `--filter`,
 `--jobs`, `-v`, `--json FILE`, `--selftest`:
 
     YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclegate.py

@@ -11635,3 +11635,15 @@ Measured on Cranelift bench builds (instructions, user space): a loop of such by
 workaround (728 M with neither), the same loop in a procedure 1.0 percent fewer than before. realbench `--tier=clift`
 against base, 38 tests: geomean 0.9998, every test within 0.15 percent above base (same-binary A/A: up to 0.3 percent;
 removing the workaround alone: `vai_window_gen_interlock` +0.63 percent, now 0.9999).
+
+## Bounds of a length (2026-11-15)
+
+`BoundsLen` of `0 to x'length - 1` or `x'length - 1 downto 0`, for a length `x`, is `x` in the optimiser's walk, and a
+`MakeDope` of such bounds takes `x` as its length also when `x` is a `BoundsLen` or the bounds run downward
+(`docs/decisions.md` "Bounds of a length"). A procedure that copies a parameter into `u(0 to x'length - 1)` or a local
+`variable t : std_ulogic_vector(x'length - 1 downto 0)` checks no length (a length `Check` of a register against
+itself goes). Tests: `yavs-ir` `tests/opt.rs`
+`bounds_from_zero_to_a_length_minus_one_have_that_length`, `a_descriptor_from_zero_to_a_length_minus_one_has_that_length`
+(the `downto` case); perf design `len_reg_bounds` (`ops` 7702, 8102 without the change). realbench `--tier=clift`
+against base: geomean 0.9994 over 38 tests, none above 0.26 percent (A/A up to 0.33 percent); `--tier=auto` within
+its A/A spread.

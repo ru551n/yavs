@@ -4761,28 +4761,41 @@ impl<'a> Opt<'a> {
         Some(d.checked_add(1)?.max(0))
     }
 
-    /// Dimension `d` of the `MakeDope` with `parts` is `c to x + (c - 1)` for a constant `c` and a
-    /// once-defined register `x` that a `DopeLen` made (a length, so not negative): its length is `x`.
-    /// (`variable sv : std_ulogic_vector (0 to sl - 1)` with `constant sl := value'length`.)
+    /// Dimension `d` of the `MakeDope` with `parts` has the length [`Opt::len_reg`] finds.
     fn len_register(&self, parts: crate::Regs, d: u32) -> Option<Reg> {
         let part = |j: u32| {
             self.operands
                 .get((parts.start + 3 * d + j) as usize)
                 .copied()
         };
-        let (Opn::K(c), Opn::K(0)) = (self.opn(part(0)?), self.opn(part(2)?)) else {
+        let Opn::K(w) = self.opn(part(2)?) else {
             return None;
         };
-        let r = self.resolve(part(1)?);
+        self.len_reg(part(0)?, part(1)?, w)
+    }
+
+    /// Bounds `c to x + (c - 1)` (or `x + (c - 1) downto c`) for a constant `c` and a once-defined
+    /// register `x` that a `DopeLen` or `BoundsLen` made (a length, so not negative): the length
+    /// is `x`. (`variable sv : std_ulogic_vector (0 to sl - 1)` with `constant sl := value'length`.)
+    fn len_reg(&self, l: Reg, r: Reg, dir: i64) -> Option<Reg> {
+        let (k, e) = match dir {
+            0 => (l, r),
+            1 => (r, l),
+            _ => return None,
+        };
+        let Opn::K(c) = self.opn(k) else {
+            return None;
+        };
+        let e = self.resolve(e);
         let (x, o) = self
-            .single(r)
-            .then(|| self.aff.get(&r).copied().unwrap_or((r, 0)))?;
+            .single(e)
+            .then(|| self.aff.get(&e).copied().unwrap_or((e, 0)))?;
         let x = self.resolve(x);
         (self.single(x)
             && o.checked_add(1) == Some(c)
             && matches!(
                 self.code.get(*self.def_pc.get(x.0 as usize)? as usize),
-                Some(Inst::DopeLen { dst, .. }) if *dst == x
+                Some(Inst::DopeLen { dst, .. } | Inst::BoundsLen { dst, .. }) if *dst == x
             ))
         .then_some(x)
     }
@@ -5278,6 +5291,8 @@ impl<'a> Opt<'a> {
                 let ok = match (kind, nv, nl, nh) {
                     (Range | Index, Opn::K(v), Opn::K(l), Opn::K(h)) => l <= v && v <= h,
                     (Length, Opn::K(v), Opn::K(l), _) => v == l,
+                    // One register read twice: a length checked against itself (`len_reg`).
+                    (Length, Opn::R(v), Opn::R(l), _) => v == l,
                     (Null, Opn::K(v), _, _) => v != 0,
                     _ => false,
                 };
@@ -5424,6 +5439,13 @@ impl<'a> Opt<'a> {
                         .or_else(|| self.lin_len(left, right, w))
                 {
                     return self.make_const(pc, dst, n);
+                }
+                // `0 to x - 1` for a length `x`: `x`.
+                if let Opn::K(w) = self.opn(dir)
+                    && let Some(x) = self.len_reg(left, right, w)
+                    && self.alias_ok(pc, dst, x)
+                {
+                    return;
                 }
                 if let (Some(a), Some(b), Some(w)) =
                     (self.kopn(left), self.kopn(right), self.kopn(dir))

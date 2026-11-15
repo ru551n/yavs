@@ -199,6 +199,9 @@ case!(frame_slices, "x=", &[], [("ops", Max(11400))]);
 // Byte lanes written from a call's result: the slice's length is known from its bounds after the
 // call, so the store has no length check and copies a constant count (#1156 had kept both).
 case!(slice_call_len, "acc=20", &[], [("ops", Max(3850))]);
+// `0 to x'length - 1` and `x'length - 1 downto 0` of a parameter read in registers: the length is
+// `x'length`, so the copies into them check no length.
+case!(len_reg_bounds, "acc=398", &[], [("ops", Max(7930))]);
 // A function of 120 vectors with run-time bounds: the pass that reads descriptors in registers
 // looks at each instruction a few times, not once per vector (a scan per vector made the
 // optimiser cost grow with the square of the function).

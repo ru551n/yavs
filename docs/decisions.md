@@ -17032,3 +17032,27 @@ the next run".
   (it flips an OSVVM function back on and makes `osvvm_axis_random` slower); a miss that reuses the evicted slot's
   buffer (level: the cost of a miss is not its allocation).
 - **Measured**: `docs/STATUS.md` "The memo of pure calls: dear functions with few callers judged again later".
+
+## Bounds of a length: `BoundsLen` of `c to x + c - 1` is `x` (yavs-ir `opt.rs` `len_reg`, 2026-11-15)
+
+- **Decision** (agent): the bounds `c to x + c - 1` or `x + c - 1 downto c`, for a constant `c` and a once-defined
+  register `x` that a `DopeLen` or a `BoundsLen` made (a length, so not negative), have the length `x`: the `MakeDope`
+  arm (`len_register`) keeps it as the descriptor's length as before, now for `downto` and for a `BoundsLen` length
+  too, and a `BoundsLen` of such bounds becomes `x` itself (`len_reg`). The shape is `0 to x'length - 1` or
+  `x'length - 1 downto 0` of a parameter whose bounds `dopes.rs` reads in registers: its `x'length` is a
+  `BoundsLen`, so the old rule (a `DopeLen` result only, `to` only) did not see it, and the length checks of copies
+  into such a slice or local array compared two registers. A length `Check` of a register against itself passes and
+  goes (the check `dopes.rs` makes of `SubtypeCheck` is then `x` against `x`).
+- **Measured** (Cranelift bench builds, user-space instructions, one counted run per cell): realbench `--tier=clift`
+  against base, 38 tests, geomean 0.9994, none above 0.26 percent (same-binary A/A up to 0.25 percent, same code built
+  twice up to 0.33 percent). `--tier=auto` is within its own A/A spread (same code built twice: up to 15 percent on the
+  short verification-library tests; `uvvm_func_cov` 1224 to 1261 M base, 1241 to 1270 M with the change, 1265 M the
+  base built again). The `BoundsLen` count of the
+  optimised code of eight realbench tests falls 2 to 12 percent; perf design `len_reg_bounds` 8102 to 7702 ops.
+- **Rejected after measuring** (patch kept outside the repository): (1) `BoundsPos` and `BoundsSlice` folded to a
+  constant position where the bounds and the index are one value plus constants (the same linear facts): none was
+  folded in the optimised code of those eight tests (the slices left there have an array bound the facts do not
+  relate, such as `s(s'left to s'left + 3)`); realbench `--tier=clift` 0.9999 against the same build without it.
+  (2) The words of a descriptor at the start of an own block kept across calls like its length (`Key::Part`): no
+  instruction changed in the optimised code of four of those tests; realbench 0.9998, every test inside the A/A
+  spread. It would also widen the decision above.

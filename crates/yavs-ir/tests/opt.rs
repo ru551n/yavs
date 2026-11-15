@@ -1421,8 +1421,9 @@ fn a_descriptor_from_zero_to_a_length_minus_one_has_that_length() {
         return;
     }
     // `variable sv : vector (0 to sl - 1)` with `sl := value'length`: checking `sv` against the
-    // parameter's descriptor decides nothing; `1 to sl - 1` is another length.
-    let checks = |left: i64| {
+    // parameter's descriptor decides nothing, nor of `sl - 1 downto 0`; `1 to sl - 1` is another
+    // length.
+    let checks = |left: i64, down: bool| {
         let code = build(FuncKind::Procedure, |fb| {
             // (The parameter's pointer and the descriptor are slots of their own.)
             let int = fb.program().ty(Ty::Int { lo: 0, hi: 99 });
@@ -1448,8 +1449,12 @@ fn a_descriptor_from_zero_to_a_length_minus_one_has_that_length() {
             let r = bin(fb, IntOp::Sub, x, one);
             // (The descriptor of a local array lives in its slot.)
             let at = fb.addr(AddrSpace::Frame, 24);
-            let (l, d) = (fb.int(left), fb.int(0));
-            let parts = fb.regs(&[l, r, d]);
+            let (l, d) = (fb.int(left), fb.int(i64::from(down)));
+            let parts = if down {
+                fb.regs(&[r, l, d])
+            } else {
+                fb.regs(&[l, r, d])
+            };
             fb.emit(Inst::MakeDope { at, parts });
             let what = fb.program().check_msg("length", Dir::To);
             fb.emit(Inst::SubtypeCheck {
@@ -1462,8 +1467,87 @@ fn a_descriptor_from_zero_to_a_length_minus_one_has_that_length() {
         });
         length_checks(&code)
     };
-    assert_eq!(checks(0), 0);
-    assert_eq!(checks(1), 1);
+    assert_eq!(checks(0, false), 0);
+    assert_eq!(checks(0, true), 0);
+    assert_eq!(checks(1, false), 1);
+}
+
+/// The value `f` returns from the bounds `left`, `right`, `dir` that `make` builds of the length
+/// `x` of the bounds in the first three slots and a slot `y`; the optimised code.
+fn of_a_length(make: impl FnOnce(&mut FuncBuilder<'_>, Reg, Reg) -> Reg) -> Vec<Inst> {
+    build(FuncKind::Function, |fb| {
+        for k in 0..4 {
+            let n = format!("b{k}");
+            fb.param(&n, Width::B8, ParamClass::Value, Mode::In, None);
+        }
+        fb.stmt(StmtKind::Return, sp());
+        let (l, r, d) = (load(fb, 0), load(fb, 8), load(fb, 16));
+        let x = fb.reg(RegTy::I64);
+        fb.emit(Inst::BoundsLen {
+            dst: x,
+            left: l,
+            right: r,
+            dir: d,
+        });
+        let y = load(fb, 24);
+        let v = make(fb, x, y);
+        fb.emit(Inst::Ret { v: Some(v) });
+    })
+}
+
+#[test]
+fn bounds_from_zero_to_a_length_minus_one_have_that_length() {
+    if !on() {
+        return;
+    }
+    // `c to x + c - 1` and `x + c - 1 downto c` of a length `x` (`x'length` of a parameter whose
+    // bounds are in registers): the length is `x`; `0 to x` and `0 to y - 1` of a value `y` are not.
+    let lens = |c: i64, k: i64, down: bool, of_len: bool| {
+        let code = of_a_length(|fb, x, y| {
+            let base = if of_len { x } else { y };
+            let k = fb.int(k);
+            let e = bin(fb, IntOp::Add, base, k);
+            let (c, d) = (fb.int(c), fb.int(i64::from(down)));
+            let (left, right) = if down { (e, c) } else { (c, e) };
+            let n = fb.reg(RegTy::I64);
+            fb.emit(Inst::BoundsLen {
+                dst: n,
+                left,
+                right,
+                dir: d,
+            });
+            // (The check of a copy of `x` into such a slice.)
+            let what = fb.program().check_msg("length", Dir::To);
+            fb.emit(Inst::Check {
+                kind: CheckKind::Length,
+                v: x,
+                lo: n,
+                hi: x,
+                what,
+            });
+            bin(fb, IntOp::Sub, n, x)
+        });
+        let n = count(&code, |i| matches!(i, Inst::BoundsLen { .. }));
+        let checks = count(&code, |i| {
+            matches!(
+                i,
+                Inst::Check {
+                    kind: CheckKind::Length,
+                    ..
+                }
+            )
+        });
+        assert_eq!(checks, n - 1, "{code:?}");
+        if n == 1 {
+            assert_eq!(returned_const(&code), Some(0), "{code:?}");
+        }
+        n
+    };
+    assert_eq!(lens(0, -1, false, true), 1);
+    assert_eq!(lens(3, 2, false, true), 1);
+    assert_eq!(lens(0, -1, true, true), 1);
+    assert_eq!(lens(0, 0, false, true), 2);
+    assert_eq!(lens(0, -1, false, false), 2);
 }
 
 #[test]

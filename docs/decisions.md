@@ -16890,3 +16890,16 @@ the next run".
   (`in_place_operands`) is left as it was. The interpreter is unchanged.
 - **Not done**: the reservation of the temporary (a bump of the temporary area per call) stays, because a way out must
   find the bytes where the registers say; frame-mode subprograms have no liveness and keep the copy.
+
+## In-place `ieee` results: the temporary is not zeroed (yavs-clift `Gen::ieee_put`, 2026-11-15)
+
+- **Finding**: on the plain in-place way (a vector result not copied into an element from its words), `ieee_put`
+  reserved the 72-byte result object (plus 32 bytes a further plane block) with `temp_alloc`, which zeroes it, and then
+  stored all of it: the fat pair, the descriptor (left, right, direction) and every plane word.
+- **Decision**: the object is reserved with `temp_alloc_z(.., false)` on every way, as the copied-from-words way already
+  did: only the pad word before it is zeroed. The words stored right after cover every byte (`debug_assert` on the
+  count), before any way out, so the interpreter and every reader find the same bytes as before.
+- **Not done**: dropping the block start after every call that may take the in-place way, not only the
+  copied-from-words ones (built and measured: no fewer instructions on a loop of in-place vector operations, so not
+  worth the entries it removes); a dedicated put for the copied-from-words `LCopy` of a constant count (not built).
+- **Measured**: in `docs/STATUS.md` "In-place `ieee` vector results written without zeroing first".

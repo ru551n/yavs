@@ -10205,8 +10205,9 @@ impl Gen<'_> {
                 };
                 let bytes = i64::from(PUT_SMALL_BYTES) + 32 * last;
                 let sz = self.c64(bytes);
-                // Not zeroed where the words are stored only on a way out (`fill_result`).
-                let (at, p) = self.temp_alloc_z(sz, fb, fuse.is_none());
+                // Not zeroed: the words below cover every byte, stored here or, for a result
+                // copied from its words, on a way out (`fill_result`).
+                let (at, p) = self.temp_alloc_z(sz, fb, false);
                 let data = self
                     .b
                     .ins()
@@ -10219,6 +10220,7 @@ impl Gen<'_> {
                     let w1 = self.b.ins().band(p1, m);
                     words.extend([w0, w1, c0, c0]);
                 }
+                debug_assert_eq!(8 * words.len() as i64, bytes, "the words cover the object");
                 if fuse.is_some() {
                     // The planes 2 and 3 are zeroed with the rest at the way out.
                     let first = [words[5], words[6], c0, c0];

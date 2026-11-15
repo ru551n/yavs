@@ -29,6 +29,10 @@
 
 The work the run-to-run profile stores (`run_work`) adds what the looks charged to a pool's workers to the kernel thread's instructions, so how a pooled batch is split among the threads under load no longer moves the warm gate or the verdicts; a worker's spin between batches is not counted. At `--threads=1` the value is the kernel thread's as before. decisions.md "`--tier=auto`: the work of a run counts all its simulation threads".
 
+### `--tier=auto`: held time counts the last runs (2026-11-15)
+
+A later run counts the time the earlier runs saw a function held (`unrepaid`, the profile's `held` lines) for its last `EARLY_RUNS` held runs only (`HELD_WINDOW`): summed over every run it compiled `uvvm_axistream_vvc`'s `p_main` late in every world for nothing after. decisions.md "`--tier=auto`: held time counts the last runs".
+
 ### numeric_std matching and ordering above 1024 elements word by word (2026-11-14)
 
 `?=`, `?/=` (vector or integer operand), the predefined `?=`/`?/=` of `std_ulogic_vector`, `std_match`, and the `X` of `?<` ... for a metavalue walk the plane blocks in place at any length (`ieee_wide.rs` `planes_any`); the six relations of vectors of `0 1 L H` above the 1024 elements of the word buffers compare word by word from the top (`compare_long`, also the `'0'`/`'1'` of `?<` ...). Above 1024 elements they took the general path, about 85 instructions per element (`?=` of 2048 elements 177 k instructions per call). Guard: `ops_matrix.rs` rows `nstd_meq` ... `nstd_mge` on `unsigned` (`ieee_general` 1 to 2 per iteration at W=2048 without the paths); `ieee_native.rs` `native_long_matching_matches_bodies` (lengths 1000 to 2049, every element kind, integer forms, against the bodies).

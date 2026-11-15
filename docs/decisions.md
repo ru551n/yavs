@@ -16801,3 +16801,35 @@ Amends "`--tier=auto`: the run-to-run profile judges by work" for runs with `--t
 - **What stays timing dependent.** The kernel thread's own join spin (up to `JOIN_SPIN` a pooled batch) is still in its
   count, and whether a batch pools at all follows the timed costs of its processes; a worker's work at a look where
   its slot is empty is not charged.
+
+## `--tier=auto`: held time counts the last runs (yavs-rt `auto.rs` `HELD_WINDOW`, `held_window`, `Worker::use_profile`, perf/policy2, 2026-11-15, user decision 2026-11-14: "try it")
+
+Amends the `held` lines of "`--tier=auto` run-to-run profile" (format 4): what a later run counts of the time the
+earlier runs saw a function `unrepaid` held.
+
+- **Finding** (agent, bimodal and policy2). `unrepaid` compiles a held function once its share of this run, times the
+  rest of the run and `EARLY_RUNS`, plus the time the earlier runs saw it held (`held` line: summed over every run in a
+  row it was held in) repays its compile at `WAIT_GAIN`. The sum has no bound, so any function held run after run
+  reaches its price at last. `uvvm_axistream_vvc`'s `p_main` (12 432 IR instructions) compiled fresh at run 11 to 19
+  in all 16 worlds of two series of 24 runs: +4.5 to 7.8 G instructions in that run (mean 5.2), about 640 ms of
+  compile, and the runs after it were not faster (mean of the following runs minus the four before: +0.24 G, median
+  +0.05). Its callees, now called from compiled code, compiled in the runs after (`send_command_to_vvc` and others,
+  2 to 30 ms each). `osvvm_axi4_random`'s late compiles of its BFM handlers (17 to 27 ms each) did not show a gain
+  either.
+- **Decision** (agent). A later run counts a held function's time for the last `HELD_WINDOW` runs it was held in:
+  `profile::EARLY_RUNS` (4), the runs the rule already shares a compile among. A function held in more runs counts their
+  mean that many times (`held_window`); the profile keeps the whole sum and the count of runs. Nothing else changes:
+  a function held in four runs or fewer counts all of it as before, and the tree payback (`repays`) reads the same
+  windowed time.
+- **Tried.** A window of 8 runs: `p_main` still compiled in 1 of 8 worlds (run 21) and the sums were level with no
+  window. A gain check after a large late compile (take it back, or remember no gain): not built, since the measured
+  runs after `p_main`'s compile were not faster, so there is nothing for it to win back; the cost is the compile itself.
+- **Measured** (agent, 8 fresh worlds x 24 runs, one binary, the window by a switch; labels no window, no window again
+  (A/A), 4 and 8; sums of the 24 runs against no window): `uvvm_axistream_vvc` 0.997 (A/A 1.017; its spread comes from
+  worlds that lost `axistream_expect`, 2 to 4 of 8 per label), `osvvm_axi4_random` 0.985 (A/A 0.999; runs 17 to 24
+  0.974 against 0.981), `neorv32_dual_full` 0.996 (1.003), `neorv32_single_min` 0.998 (1.000). Window 8: 1.011, 0.994,
+  0.999, 1.000. All 40 realbench tests (3 fresh worlds x 12 runs; base, a byte copy, the change): geomean of the sums
+  0.998 against the copy's 1.000, steady runs 1.000 against 1.003, run 1 1.002 against 1.003; outputs equal. The
+  highest, `hdlm_unsigned_divider` 1.019 (copy 0.992), retires the same instructions with both binaries in one world
+  (172.9 M a run from run 3), as do `vai_weight_buffer` (314.0 M) and `uvvm_func_cov` (within its own spread): their
+  counts follow the world's path.

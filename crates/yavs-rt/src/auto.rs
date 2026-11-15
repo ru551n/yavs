@@ -1334,6 +1334,23 @@ const WAIT_GAIN: f64 = 0.3;
 /// once the time the runs saw it in repays it, so no later run pays the earlier runs' bodies at once
 /// (after one run, `neorv32_dual_full` run 5 was 1.13 and `neorv32_single_cache` run 4 1.07).
 const WAIT_HELD_RUNS: u32 = u32::MAX;
+/// The held runs a later run counts the seen time of (`Worker::carried`, `held_window`): a function held
+/// in more runs counts their mean this many times. Summed over every run, the time of a function
+/// whose share of each run never repays its compile reached the price at last and compiled it
+/// late, for nothing after (`uvvm_axistream_vvc`'s `p_main`, 12 432 IR instructions, about 640 ms
+/// of compile at run 11 to 19; user 2026-11-14 "try it", decisions.md "`--tier=auto`: held time
+/// counts the last runs").
+const HELD_WINDOW: u64 = profile::EARLY_RUNS;
+
+/// The seen time `us` of a function held in `runs` runs as a later run counts it (`HELD_WINDOW`).
+fn held_window(us: u64, runs: u32) -> u64 {
+    let runs = u64::from(runs);
+    if runs <= HELD_WINDOW {
+        us
+    } else {
+        us / runs * HELD_WINDOW
+    }
+}
 /// `Worker::unrepaid` judges a held function with the callees that wait only for it
 /// (`Worker::unlocked`): `uvvm_axistream_vvc`'s command executor seen 0.2 percent of its price by
 /// itself frees about a second of callees a run.
@@ -3492,7 +3509,7 @@ impl Worker {
         self.carried = p
             .held
             .iter()
-            .map(|&(id, us, runs)| (FuncId(id), (us, runs)))
+            .map(|&(id, us, runs)| (FuncId(id), (held_window(us, runs), runs)))
             .collect();
         for &f in &p.left {
             if let Some(w) = self.left_want.get_mut(f as usize) {
@@ -5824,6 +5841,41 @@ mod tests {
         w.in_cache = vec![Default::default(); w.in_cache.len()];
         w.in_cache[k].set(true).unwrap();
         assert!(!w.waits(caller), "a link");
+    }
+
+    /// The time the earlier runs held a function in counts for the last `HELD_WINDOW` of them: a
+    /// function whose share of every run is too small to repay its compile is not compiled at last
+    /// because its time summed over many runs reached the price; one held in a few runs counts all
+    /// of it, as before.
+    #[test]
+    fn held_time_counts_the_last_runs() {
+        let (prog, caller, _) = caller_callee();
+        let body = counted(prog.clone(), 0).body_price(caller) as f64;
+        assert!(body > 0.0);
+        // The earlier runs together saw it for its price at the gain (this run's looks: 10 us of
+        // simulation CPU per 1000 looked at, nothing left of the run).
+        let price = (body / 0.5).ceil() as u64 * 1000 / 10;
+        let after = |runs: u32| {
+            let mut w = counted(prog.clone(), 0);
+            (w.stops, w.wait_gain, w.wait_payback) = (true, 0.5, 0.0);
+            let p = super::Profile {
+                base: Some(10),
+                held: vec![(caller.0, price, runs)],
+                ..Default::default()
+            };
+            w.use_profile(p);
+            (w.total, w.sim_us) = (1000, 10);
+            w.waits(caller)
+        };
+        assert!(!after(1), "one run saw it for its price");
+        assert!(!after(super::HELD_WINDOW as u32), "the window's runs");
+        assert!(
+            after(super::HELD_WINDOW as u32 + 1),
+            "more runs, each too little"
+        );
+        assert!(after(40));
+        assert_eq!(super::held_window(1200, 3), 1200);
+        assert_eq!(super::held_window(1200, 12), 1200 / 12 * super::HELD_WINDOW);
     }
 
     /// A later run judges a held caller with the callees that wait only for it (`unlocked`): their

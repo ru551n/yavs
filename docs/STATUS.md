@@ -6262,7 +6262,7 @@ user page `docs/language-choices.rst` is the user-facing subset.
 `yavs run`; `tools/difftest/report.sh` writes `tests/corpus/RESULTS.md`, which has the current pass counts per
 group (249 of 249 at 1 thread, 4 threads (identical to 1) and 4 threads shuffled on 2026-10-19; 606 of 606 in the file on 2026-11-14). `std.env.stop`/`finish` end the calling
 process at once; check messages print reals as `%.15g`; runtime errors are coded diagnostics
-(`E3001`-`E3010`, kernel `ErrorKind::code`) with the VHDL call stack, which difftest reads back
+(`E3001`-`E3011`, kernel `ErrorKind::code`) with the VHDL call stack, which difftest reads back
 as `fatal` events. Normalisations for the reference simulator's free choices (default assert message without a
 path, per-test `ignore=order`) are in `docs/decisions.md`.
 
@@ -11672,3 +11672,19 @@ itself goes). Tests: `yavs-ir` `tests/opt.rs`
 (the `downto` case); perf design `len_reg_bounds` (`ops` 7702, 8102 without the change). realbench `--tier=clift`
 against base: geomean 0.9994 over 38 tests, none above 0.26 percent (A/A up to 0.33 percent); `--tier=auto` within
 its A/A spread.
+
+## Partly disconnected sources of guarded composites (#1160, 2026-11-15)
+
+A source of a guarded signal whose composite subtype is resolved as a whole is judged as a unit (`resolve_group`,
+`Group::srcs`): over the elements its process drives by the LRM, all disconnected leaves it out of the resolution, a mix
+of disconnected and connected is the run-time error `E3011` naming the composite and the process (LRM 14.7.3.2). Before,
+the source counted as connected while any element was and the resolution read the last values of the disconnected
+ones. A slice with bounds that are not static drives every element (its longest static prefix is the whole signal). The
+elements a process has only because the composite is one source (#193), not named by a static target, are passed by
+`yavs-elab` (`build.rs`, from `ProcInst::lsps`) as `Builder::driver_spare` and not judged: the permissive reading the user
+chose for static slices (`docs/decisions.md` "Guarded record signals"). Tests: corpus
+`resolution/guarded_composite_partly_null` and `guarded_composite_static_mixed` (`E3011`),
+`guarded_composite_static_null` and `guarded_record_field_null` (values: one field of a record driven by a static name), all
+`ref=hand`, each failing before the change; `sigassign/slice_target_bound_null` now ends before its null transactions mature
+and keeps the impure call counts; CLI test `resolution_functions.rs` `partly_disconnected_composite_source_is_e3011` (the
+rendered message on the interpreter, and on `auto` and `clift` in a build with Cranelift).

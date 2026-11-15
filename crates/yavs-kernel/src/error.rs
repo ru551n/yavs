@@ -65,6 +65,12 @@ pub enum ErrorKind {
     BadRef(String),
     /// A resolution function failed.
     Resolution { signal: String, message: String },
+    /// A source of a guarded composite resolved signal has some of the elements its process
+    /// drives disconnected by a null transaction and others not (LRM 14.7.3.2).
+    PartlyDisconnected {
+        signal: String,
+        process: Option<String>,
+    },
     /// A port conversion function failed or returned a value of the wrong size.
     Conversion { formal: String, message: String },
     /// Raised by process code: bound check, overflow, null access, ...
@@ -123,6 +129,7 @@ impl ErrorKind {
             ErrorKind::Runtime(_) => "E3009",
             ErrorKind::Foreign { .. } => "E0107",
             ErrorKind::Usage(_) => "E3010",
+            ErrorKind::PartlyDisconnected { .. } => "E3011",
             ErrorKind::Internal(_) => "E9999",
         }
     }
@@ -151,6 +158,15 @@ impl fmt::Display for ErrorKind {
             ErrorKind::BadRef(what) => write!(f, "invalid reference: {what}"),
             ErrorKind::Resolution { signal, message } => {
                 write!(f, "resolution of {signal} failed: {message}")
+            }
+            ErrorKind::PartlyDisconnected { signal, process } => {
+                match process {
+                    Some(p) => write!(f, "the driver of process {p} for resolved signal {signal}")?,
+                    None => write!(f, "a source of resolved signal {signal}")?,
+                }
+                f.write_str(
+                    " is disconnected by a null transaction for some of its elements and not for others",
+                )
             }
             ErrorKind::Conversion { formal, message } => {
                 write!(f, "conversion for port {formal} failed: {message}")

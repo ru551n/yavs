@@ -1449,6 +1449,20 @@ fn convert(
 pub(crate) struct Group {
     pub(crate) parts: Vec<(u32, Range)>,
     pub(crate) f: crate::Resolver,
+    /// The composite's name, for messages.
+    pub(crate) name: String,
+    /// A guarded group: its sources in order (empty otherwise, filled by `Builder::build`).
+    pub(crate) srcs: Vec<GroupSrc>,
+}
+
+/// A source of a guarded composite group.
+pub(crate) struct GroupSrc {
+    /// The process of a driver (none for a port).
+    pub(crate) owner: Option<ProcId>,
+    /// The elements, over the concatenated parts, that its process does not drive by the
+    /// LRM (14.7.2) and has only because the composite is resolved as a whole
+    /// (`Builder::driver_spare`): left out when judging whether it is disconnected.
+    pub(crate) spare: Option<Vec<u64>>,
 }
 
 /// Signal `$s` had an event: onto `changed_sigs` once per cycle (the flag, not a sort and dedup).
@@ -3918,7 +3932,7 @@ impl SimControl {
 
     /// Driving values of all parts of composite group `g` from one call of its resolver.
     fn resolve_group(&mut self, g: usize) -> Result<(), ErrorKind> {
-        let Group { parts, f } = &self.groups[g];
+        let Group { parts, f, .. } = &self.groups[g];
         let (l0, r0) = parts[0];
         let lead = &self.signals[l0 as usize];
         // The sources of each part, in order (the same owners for every part, checked at build).
@@ -3935,24 +3949,49 @@ impl SimControl {
         if n == 0 {
             return Ok(());
         }
-        // A guarded composite (all parts have the same kind, checked at build) takes part
-        // with the sources that have some element connected (LRM 6.4.2.3, 14.7.3.2).
-        let guard = lead.guard;
-        let live_src = |k: usize| {
-            guard.is_none()
-                || parts.iter().any(|&(l, r)| {
+        // A guarded composite (all parts have the same kind, checked at build) resolves over
+        // its connected sources. LRM 14.7.3.2: a source with some of the elements its process
+        // drives disconnected and others not is an error; one with all of them disconnected
+        // takes no part, as a unit (the spare elements are not judged, decisions.md).
+        let conn: Vec<bool> = if lead.guard.is_none() {
+            vec![true; n]
+        } else {
+            let mut conn = Vec::with_capacity(n);
+            for k in 0..n {
+                let spare = self.groups[g].srcs.get(k).and_then(|s| s.spare.as_deref());
+                let (mut on, mut off, mut at) = (false, false, 0);
+                for &(l, r) in parts {
                     let s = &self.signals[l as usize];
                     let d = s.drivers.iter().filter(|d| d.range.overlaps(r)).nth(k);
-                    d.is_some_and(|d| {
-                        d.off.as_ref().is_none_or(|off| {
-                            r.elems()
-                                .any(|e| bits(off, e - d.range.offset as usize, 1) == 0)
-                        })
-                    })
-                })
+                    match d.map(|d| (d, d.off.as_deref())) {
+                        None => {}
+                        Some((_, None)) => on = true,
+                        Some((d, Some(o))) => {
+                            let base = (r.offset - d.range.offset) as usize;
+                            for i in (0..r.len as usize).step_by(64) {
+                                let w = (r.len as usize - i).min(64);
+                                let sp = spare.map_or(0, |m| bits(m, at + i, w));
+                                let judged = nmask(w) & !sp;
+                                let x = bits(o, base + i, w);
+                                off |= x & judged != 0;
+                                on |= !x & judged != 0;
+                            }
+                        }
+                    }
+                    at += r.len as usize;
+                }
+                if on && off {
+                    let owner = self.groups[g].srcs.get(k).and_then(|s| s.owner);
+                    return Err(ErrorKind::PartlyDisconnected {
+                        signal: self.groups[g].name.clone(),
+                        process: owner.and_then(|p| self.names.get(p.0 as usize).cloned()),
+                    });
+                }
+                conn.push(!off);
+            }
+            conn
         };
-        let conn: Vec<bool> = (0..n).map(live_src).collect();
-        if guard == Some(GuardKind::Register) && !conn.contains(&true) {
+        if lead.guard == Some(GuardKind::Register) && !conn.contains(&true) {
             return Ok(());
         }
         let mut srcs: Vec<Vec<u8>> = vec![Vec::new(); n];

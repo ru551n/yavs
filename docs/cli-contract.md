@@ -792,7 +792,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   colour on a pipe (the test runner passes it when it wants colour); without it yavs
   follows the TTY/`NO_COLOR` rules of plan `yavs-diag`.
 - Runtime errors (bound check, overflow, null access, delta limit, internal) are diagnostics
-  on stderr like every other error: code `E3001`-`E3010` per kernel `ErrorKind` (`E9999`
+  on stderr like every other error: code `E3001`-`E3011` per kernel `ErrorKind` (`E9999`
   internal), the failing statement, one `called from here` label per calling subprogram,
   and a note `at TIME, delta N, in process PATH`. A subprogram the optimiser inlined into its
   caller still has its label (and its element in a `get_call_path`).

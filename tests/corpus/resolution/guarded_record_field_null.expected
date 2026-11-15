@@ -1,0 +1,4 @@
+exit	0
+diag	note	500000	0	:guarded_record_field_null:check	r = 5 00, q = 0 01
+diag	note	1000000	0	:guarded_record_field_null:check	r = -1 11, q = 0 01
+diag	note	1500000	0	:guarded_record_field_null:check	r = -1 11, q = 0 01

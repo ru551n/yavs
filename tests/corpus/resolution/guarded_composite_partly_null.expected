@@ -1,0 +1,3 @@
+exit	1
+diag	note	500000	0	:guarded_composite_partly_null:p	connected
+diag	fatal	1000000	0	-	the driver of process guarded_composite_partly_null.p for resolved signal guarded_composite_partly_null.gr is disconnected by a null transaction for some of its elements and not for others

@@ -524,6 +524,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "E3010",
         "The model, the simulation configuration or a control request is invalid.",
     ),
+    (
+        "E3011",
+        "A source of a guarded signal whose composite subtype is resolved as a whole has some of the elements its process drives disconnected by a null transaction and others not (LRM 14.7.3.2): the resolution function would get a value that is partly undefined. Disconnect all of them at once (`target <= null;` on the whole name the process drives, or the same `after` time for each part), or none. A process that drives a slice whose bounds are not static drives every element of the signal; elements it does not name in a static target are not taken into account.",
+    ),
     // yavs-kernel run-time reports (W3101, W3102 are warnings of `yavs run`)
     (
         "W3101",

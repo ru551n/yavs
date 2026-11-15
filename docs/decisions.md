@@ -1048,6 +1048,7 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 - **Null transactions (K4):** disconnection is per element. A `bus` with no connected source
   resolves the empty set (`std_logic`: `Z`), a `register` keeps its value; `'driving_value` of a
   disconnected driver is a runtime error.
+  A source of a composite resolved as a whole disconnects as a unit ("Guarded record signals").
 - **User files (K6):** dropped in kernel round 3 (#82), see there.
 - **Protected types:** callers are `serial` through M3; the kernel needs no further support.
 - **`SimError` is boxed** (`Deref` to `ErrorInfo`) to keep hot-path `Result`s one word; a panic
@@ -1913,12 +1914,26 @@ which tools/difftest parses.
   resolution function is resolved as a whole, so the guard (`bus`/`register`) belongs to the
   composite and its leaves need no resolution of their own. `yavs-elab` marks the leaves guarded
   after it joins them into groups (the kernel check looked at each leaf before), and the kernel
-  resolves a guarded group over its connected sources only (a source is connected while some
-  element of it is). A null on a record signal or a false GUARD disconnects every leaf's
+  resolves a guarded group over its connected sources only. A null on a record signal or a false GUARD disconnects every leaf's
   driver (`yavs-lower` `drive_record`, `guarded_assign`). sim1 does not disconnect a guarded
   driver at initialisation (as for `resolution/bus_guarded`), so `resolution/guarded_record` is
   `ref=hand`; sim2 agrees with it, and cannot run a null on a record
   (`tests/discrepancies/null-record-signal`).
+  Amended by the user (2026-11-15, #1160): a source whose current value has some of the
+  elements its process drives determined by the null transaction and some not is a run-time
+  error, `E3011`, naming the signal and the process (LRM 14.7.3.2); one with all of them
+  disconnected takes no part in the resolution, as a unit. Before, a source counted as connected
+  while any element of it was, and the resolution read the last values of the disconnected ones.
+  Which elements the process drives is the LRM's (14.7.2): with a slice whose bounds are not
+  static the longest static prefix is the whole signal, so every element counts. With static
+  names (`g(1 to 2) <= ..., null`) the process drives only the elements named, while yavs gives
+  it a source over the whole composite (#193); the user chose the permissive reading there (the
+  LRM does not say how such a source disconnects): the other elements are left out of the
+  judgement (`Builder::driver_spare`), so the source is off as a unit when all named elements
+  are, and a mix among the named ones is `E3011`. Corpus `resolution/guarded_composite_partly_null`,
+  `guarded_composite_static_mixed` (errors), `guarded_composite_static_null`, `guarded_record_field_null` (values), all
+  `ref=hand`: sim1 runs on past the error, crashes on the static case and shows none of the
+  field drives of `guarded_record_field_null`, sim2 crashes or refuses the partial drivers.
 - **Individual association of parameters** (#71, LRM 6.5.7.1): a variable or constant formal
   associated part by part is a temporary of its subtype; every part is copied in before the
   call (also for `out`: a composite formal shows its actual's value) and back after it for

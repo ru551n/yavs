@@ -143,3 +143,67 @@ fn a_resolver_declared_in_a_generate_uses_each_iterations_parameter() {
         &["93", "2008"],
     );
 }
+
+/// A source of a guarded composite resolved as a whole with some of its driven elements
+/// disconnected and others not is `E3011`, naming the composite and the process, in every tier
+/// (LRM 14.7.3.2, #1160).
+#[test]
+fn partly_disconnected_composite_source_is_e3011() {
+    let dir = common::tempdir("partly-disconnected");
+    let src = r#"
+      entity top is end;
+      architecture a of top is
+        type rec is record a : integer; b : bit_vector(0 to 1); end record;
+        type ra is array (natural range <>) of rec;
+        type ras is array (natural range <>) of ra(0 to 3);
+        function resa(x : ras) return ra is
+        begin
+          if x'length = 0 then return (0 to 3 => (-1, "11")); end if;
+          return x(x'left);
+        end function;
+        subtype rra is resa ra(0 to 3);
+        signal gr : rra bus := (others => (0, "00"));
+        signal k : natural := 1;
+      begin
+        drv : process begin
+          gr(k to 2) <= (others => (3, "01")), null after 1 ns;
+          wait;
+        end process;
+      end;
+    "#;
+    std::fs::write(dir.join("t.vhd"), src).expect("write");
+    let yavs = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .current_dir(&dir)
+            .args(["--color", "never"])
+            .args(args)
+            .output()
+            .expect("run")
+    };
+    assert!(
+        yavs(&["analyze", "--std=2008", "--work=work:lib", "t.vhd"])
+            .status
+            .success()
+    );
+    let tiers: &[&str] = &[
+        "--tier=interp",
+        #[cfg(feature = "clift")]
+        "--tier=auto",
+        #[cfg(feature = "clift")]
+        "--tier=clift",
+    ];
+    for &tier in tiers {
+        let out = yavs(&["run", "--std=2008", "--work=work:lib", tier, "top"]);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{err}");
+        assert!(
+            err.contains(
+                "error[E3011]: the driver of process top.drv for resolved signal top.gr is \
+                 disconnected by a null transaction for some of its elements and not for others"
+            ),
+            "{err}"
+        );
+        assert!(err.contains("note: LRM 14.7.3.2: "), "{err}");
+        assert!(err.contains("note: at 1 ns, delta 0"), "{err}");
+    }
+}

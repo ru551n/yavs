@@ -5,7 +5,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{ErrorKind, SimError};
-use crate::kernel::{Config, Group, Implicit, ImplicitKind, PortEdge, ProcMeta, SimControl, Slot};
+use crate::kernel::{
+    Config, Group, GroupSrc, Implicit, ImplicitKind, PortEdge, ProcMeta, SimControl, Slot,
+};
 use crate::process::{DriverInfo, ProcId, ProcState, Process, check_ref};
 use crate::signal::{
     DriverId, DriverSlot, GuardKind, Range, Resolution, SigRef, Signal, SignalId, Waveform,
@@ -121,6 +123,8 @@ pub struct Builder {
     groups: Vec<Group>,
     /// Drivers that start from a value of their own (`Builder::driver_init`).
     driver_inits: Vec<(DriverId, Buf)>,
+    /// Elements of drivers not judged for disconnection (`Builder::driver_spare`).
+    driver_spares: Vec<(DriverId, SigRef)>,
     /// Sources no process owns, holding a value (`Builder::constant_source`).
     consts: Vec<(SignalId, Range, Buf)>,
     error: Option<SimError>,
@@ -231,7 +235,25 @@ impl Builder {
             s.groups.push(g);
             members.push((l.0, r));
         }
-        self.groups.push(Group { parts: members, f });
+        // The composite's name: what the names of its leaves share (`top.r` of `top.r.a`, `top.r.b`).
+        // ponytail: an element of an array of resolved records is named by the array.
+        let mut name = self.signals[members[0].0 as usize].name.clone();
+        if members.len() > 1 {
+            for &(l, _) in &members[1..] {
+                let o = &self.signals[l as usize].name;
+                let n = (name.bytes().zip(o.bytes()))
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                name.truncate(n);
+            }
+            name.truncate(name.rfind('.').unwrap_or(name.len()));
+        }
+        self.groups.push(Group {
+            parts: members,
+            f,
+            name,
+            srcs: Vec::new(),
+        });
     }
 
     /// Mark the resolution function of `s` as touching shared state: the kernel then calls it
@@ -398,6 +420,13 @@ impl Builder {
             Ok(b) => self.driver_inits.push((d, b)),
             Err(m) => self.usage(format!("driver {}: initial value: {m}", d.0)),
         }
+    }
+
+    /// Elements `r` of driver `d` of a guarded composite resolved as a whole that its process
+    /// does not drive by the LRM (14.7.2): it has them only because the composite is one
+    /// source (`resolved_composite`). Whether the source is disconnected is judged without them.
+    pub fn driver_spare(&mut self, d: DriverId, r: impl Into<SigRef>) {
+        self.driver_spares.push((d, r.into()));
     }
 
     /// A source of `target` that keeps `value` and that no process owns: the default of the
@@ -722,6 +751,7 @@ impl Builder {
             s.drivers.shrink_to_fit();
         }
         self.check_groups(&infos).map_err(usage)?;
+        self.group_sources(&infos).map_err(usage)?;
         if cfg.skip_unchanged {
             self.mark_skippable();
         }
@@ -851,6 +881,57 @@ impl Builder {
     /// The parts of each resolved composite share their sources: same owners in the same
     /// order (a process driver or a port), each covering the part, and the same port level;
     /// the groups of a signal cover it.
+    /// The sources of each guarded group (`Group::srcs`), with the spare elements of drivers.
+    fn group_sources(&mut self, infos: &[DriverInfo]) -> Result<(), String> {
+        let mut spares: Vec<(u32, u32, Range)> = Vec::new();
+        for &(d, r) in &self.driver_spares {
+            let i = (infos.get(d.0 as usize))
+                .ok_or_else(|| format!("driver {} does not exist", d.0))?;
+            let rr = r.range.unwrap_or(i.range);
+            if r.signal != i.signal || !i.range.contains(rr) {
+                return Err(format!(
+                    "spare elements of driver {} are not in its range",
+                    d.0
+                ));
+            }
+            spares.push((i.signal.0, i.slot, rr));
+        }
+        let owner = |s: u32, slot: usize| {
+            (infos.iter())
+                .find(|d| d.signal.0 == s && d.slot as usize == slot)
+                .map(|d| d.owner)
+        };
+        for g in &mut self.groups {
+            if self.signals[g.parts[0].0 as usize].guard.is_none() {
+                continue;
+            }
+            let words = (g.parts.iter().map(|p| p.1.len as usize).sum::<usize>()).div_ceil(64);
+            let (mut srcs, mut at) = (Vec::new(), 0);
+            for &(l, r) in &g.parts {
+                let sig = &self.signals[l as usize];
+                let slots = (sig.drivers.iter().enumerate()).filter(|(_, d)| d.range.overlaps(r));
+                for (k, (j, _)) in slots.enumerate() {
+                    if k == srcs.len() {
+                        srcs.push(GroupSrc {
+                            owner: owner(l, j),
+                            spare: None,
+                        });
+                    }
+                    for &(_, _, sr) in spares.iter().filter(|x| x.0 == l && x.1 as usize == j) {
+                        if let Some(x) = sr.intersect(r) {
+                            let m = srcs[k].spare.get_or_insert_with(|| vec![0; words]);
+                            let rel = at + (x.offset - r.offset) as usize;
+                            crate::value::fill_bits(m, rel, x.len as usize, true);
+                        }
+                    }
+                }
+                at += r.len as usize;
+            }
+            g.srcs = srcs;
+        }
+        Ok(())
+    }
+
     fn check_groups(&self, infos: &[DriverInfo]) -> Result<(), String> {
         let owner = |s: u32, slot: usize| {
             infos

@@ -243,6 +243,11 @@ fn language_rule(kind: &ErrorKind) -> Option<&'static str> {
                 "LRM 14.7.5.3: it is an error if a postponed process causes a delta cycle right after the current simulation cycle",
             );
         }
+        ErrorKind::PartlyDisconnected { .. } => {
+            return Some(
+                "LRM 14.7.3.2: it is an error if the driving value of a source of a resolved composite signal has some subelement values determined by the null transaction and some not",
+            );
+        }
         ErrorKind::Runtime(m) | ErrorKind::InvalidAssign(m) => m.as_str(),
         ErrorKind::Resolution { message, .. } => message.as_str(),
         _ => return None,

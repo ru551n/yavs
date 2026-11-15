@@ -59,7 +59,7 @@ Module-local decisions go here, in this section, in the same commit (root `AGENT
   `line_end`, `column_end`, `primary`, `label`), `children[]` (notes then help, each `{level,
   message, spans:[], children:[], rendered:null}`), `rendered` (human text, no colour). Change
   the contract and the renderer together.
-- Runtime errors carry `yavs_kernel::ErrorKind::code` (`E3001`-`E3010`) and are rendered by
+- Runtime errors carry `yavs_kernel::ErrorKind::code` (`E3001`-`E3011`) and are rendered by
   `yavs_elab::Elaborated::runtime_diagnostic`. A caught panic is `E9999`.
 - `yavs --explain CODE` lives in the CLI (`crates/yavs/src/explain.rs`): this crate stays a leaf and
   only owns the registry table. Its test fails for any code literal in `crates/*/src` without a text.

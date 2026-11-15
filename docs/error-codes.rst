@@ -592,6 +592,8 @@ Run time (E3 and W3)
      - A VHDL runtime error: bound check, length mismatch of an array, record field or element, overflow, null access, division by zero and the like.
    * - _`E3010`
      - The model, the simulation configuration or a control request is invalid.
+   * - _`E3011`
+     - A source of a guarded signal whose composite subtype is resolved as a whole has some of the elements its process drives disconnected by a null transaction and others not (LRM 14.7.3.2): the resolution function would get a value that is partly undefined.
    * - _`W3101`
      - A report of a simulation that did not finish, printed with ``--hang-report`` when the run ends at ``--stop-time`` without ``stop`` or ``finish`` or runs out of events with a process still waiting, and on SIGUSR1 (Unix) for a running simulation.
    * - _`W3102`

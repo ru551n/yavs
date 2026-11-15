@@ -2,9 +2,10 @@
 -- ref=hand: a slice target of a guarded signal whose bound is an impure call, with null
 -- waveform elements: the name is evaluated once for the whole waveform (LRM 10.5.2.1), so the
 -- call runs once per assignment (#1157). From the LRM alone: one reference simulator runs the
--- call once per use (6 to 9 times here), the other cannot run null elements. The values of the
--- disconnected parts are left out: which sources a partly disconnected composite resolved signal
--- still has is not what this test is about.
+-- call once per use (6 to 9 times here), the other cannot run null elements. The run ends
+-- before the null transactions mature: the bound is not static, so the process drives every
+-- element and a partly disconnected source is an error (LRM 14.7.3.2, #1160; that error is
+-- resolution/guarded_composite_partly_null).
 entity slice_target_bound_null is
 end entity;
 
@@ -48,10 +49,9 @@ begin
     report "array: " & integer'image(n);
     n := 0; gr(t(1) to 2) <= (others => (3, (4, 5))), null after 1 ns;
     report "array of records: " & integer'image(n);
-    wait for 1500 ps;
+    wait for 500 ps;
     n := 0; gr(t(1) to 2) <= gr(0 to 1), null after 1 ns, (others => (6, (7, 8))) after 2 ns;
     report "array of records, plain value: " & integer'image(n);
-    wait for 3 ns;
-    wait;
+    std.env.finish;
   end process;
 end architecture;

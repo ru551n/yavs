@@ -240,6 +240,25 @@ impl Elaborated {
                 if let Some(v) = init {
                     b.driver_init(id, v);
                 }
+                // A driver of a guarded composite resolved as a whole is judged for
+                // disconnection over the elements its targets name only (decisions.md
+                // "Guarded record signals"); the rest it has for the whole source (#193).
+                let leaf = nets.leaf(nets.drivers[p.drivers[i]].leaf);
+                if leaf.guard.is_some() && matches!(leaf.resolution, Some(LeafRes::Whole(_))) {
+                    let mut named: Vec<Range> = (p.lsps.iter().flatten())
+                        .filter(|e| p.drivers[i..j].contains(&e.0))
+                        .map(|&(_, l, lr)| nets.kpart(l, lr).1)
+                        .collect();
+                    named.sort_by_key(|x| x.offset);
+                    let mut at = r.offset;
+                    for x in named.iter().chain([&Range::new(r.end(), 0)]) {
+                        let to = x.offset.min(r.end());
+                        if to > at {
+                            b.driver_spare(id, s.slice(at, to - at));
+                        }
+                        at = at.max(x.end());
+                    }
+                }
                 ds.extend(std::iter::repeat_n(id, j - i));
                 i = j;
             }

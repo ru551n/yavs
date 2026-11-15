@@ -1,0 +1,6 @@
+exit	0
+diag	note	500000	0	:guarded_composite_static_null:check	g = 11 25 36 41, gr.a = 11 13 13 11, gr(2).b(1) = 25
+diag	note	1500000	0	:guarded_composite_static_null:check	g = 10 20 30 40, gr.a = 10 10 10 10, gr(2).b(1) = 20
+diag	note	2500000	0	:guarded_composite_static_null:check	g = 11 27 38 41, gr.a = 11 16 16 11, gr(2).b(1) = 28
+diag	note	3500000	0	:guarded_composite_static_null:check	g = 1 7 8 1, gr.a = 1 6 6 1, gr(2).b(1) = 8
+diag	note	4500000	0	:guarded_composite_static_null:check	g = -1 -1 -1 -1, gr.a = -1 -1 -1 -1, gr(2).b(1) = -1

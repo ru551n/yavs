@@ -338,17 +338,19 @@ impl State {
             }
             let i = hash as usize & (m.slots.len() - 1);
             m.calls += 1;
-            if m.slots[i]
+            let hit = m.slots[i]
                 .as_ref()
-                .is_some_and(|s| s.hash == hash && s.key() == &key[..])
-            {
-                m.hits += 1;
-                HITS.fetch_add(1, Ordering::Relaxed);
-                Look::Hit(i)
-            } else if m.calls == WARM && m.hits < WARM / RATE {
+                .is_some_and(|s| s.hash == hash && s.key() == &key[..]);
+            m.hits += u32::from(hit);
+            // Judged at the `WARM`-th call whatever it finds: a hit there used to skip the
+            // judgement, so a function with few hits stayed on for good.
+            if m.calls == WARM && m.hits < WARM / RATE {
                 m.off = true;
                 m.slots = Vec::new();
                 Look::GaveUp
+            } else if hit {
+                HITS.fetch_add(1, Ordering::Relaxed);
+                Look::Hit(i)
             } else {
                 self.miss_hash = hash;
                 Look::Miss
@@ -938,5 +940,34 @@ impl Machine {
     #[inline(never)]
     pub(crate) fn is_memo_frame(&self, top: usize) -> bool {
         self.pm.as_ref().is_some_and(|p| p.frames.contains(&top))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Look, RATE, State, Val, WARM, hash};
+
+    /// A function whose calls rarely repeat is given up at its `WARM`-th call even when that
+    /// call is one of its few hits.
+    #[test]
+    fn a_function_is_judged_at_its_warm_call_whatever_it_finds() {
+        let mut st = State::default();
+        let at = st.index(7);
+        let look = |st: &mut State, k: u64| {
+            st.key = k.to_le_bytes().to_vec();
+            let l = st.look(at);
+            if matches!(l, Look::Miss) {
+                let key = st.key.clone();
+                st.keep(7, hash(&key), &key, Val::Word(k));
+            }
+            l
+        };
+        for k in 0..u64::from(WARM - 1) {
+            assert!(matches!(look(&mut st, k), Look::Miss));
+        }
+        // (The last key is in its slot: a hit.)
+        const { assert!(WARM / RATE > 1) };
+        assert!(matches!(look(&mut st, u64::from(WARM - 2)), Look::GaveUp));
+        assert!(st.is_off(7));
     }
 }

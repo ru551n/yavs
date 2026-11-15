@@ -27,8 +27,9 @@ pub(crate) struct Read {
     pub bytes: u32,
 }
 
-/// The input chunks of one kernel signal, `RegionProc::chunks[at .. at + n]`, and the kernel
-/// image (`ImageKind::Count`, one item per chunk) that counts the updates that changed each.
+/// The input chunks of a group of kernel signals, `RegionProc::chunks[at .. at + n]`, and the
+/// kernel image (`ImageKind::Count`, one item per chunk) that counts the updates that changed
+/// each.
 #[derive(Clone)]
 pub(crate) struct InSig {
     pub spec: ImageSpec,
@@ -145,7 +146,7 @@ pub(crate) struct RegionProc {
     /// Every kernel signal of the region, whole: read once at initialisation.
     pub leaves: Vec<Read>,
     /// The inputs in chunks of at most 64 elements (a word of the image), read when their count
-    /// moved past `seen`; grouped by kernel signal in `ins`.
+    /// moved past `seen`; grouped in `ins`.
     pub chunks: Vec<Read>,
     pub seen: Vec<u64>,
     pub ins: Vec<InSig>,

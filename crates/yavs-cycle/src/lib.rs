@@ -750,28 +750,35 @@ fn build(
     }
     let (mut chunks, mut ins) = (Vec::new(), Vec::new());
     let import_check = std::env::var_os("YAVS_CYCLE_IMPORT_CHECK").is_some_and(|v| v == "1");
-    for (k, rs) in by_sig {
-        let items = (rs.iter().enumerate())
-            .map(|(i, &(_, r))| yavs_kernel::ImageItem {
+    // One image per group of input signals of about `IMAGE_CHUNKS` chunks: a wake asks each
+    // group's write count, and compares the chunk counts only of a group that was written.
+    let mut items: Vec<yavs_kernel::ImageItem> = Vec::new();
+    let mut groups = by_sig.into_iter().peekable();
+    while let Some((k, rs)) = groups.next() {
+        for &(_, r) in &rs {
+            items.push(yavs_kernel::ImageItem {
                 sig: yavs_kernel::SignalId(k),
                 k: r.offset,
                 len: r.len,
-                voff: 8 * i as u32,
+                voff: 8 * items.len() as u32,
                 vsize: 8,
                 kind: yavs_kernel::ImageKind::Count,
-            })
-            .collect::<Vec<_>>();
-        ins.push(rt::InSig {
-            spec: yavs_kernel::ImageSpec {
-                size: 8 * items.len() as u32,
-                items: items.into(),
-            },
-            at: chunks.len() as u32,
-            n: rs.len() as u32,
-            id: None,
-            seen: 0,
-        });
+            });
+        }
         chunks.extend(rs.into_iter().map(|c| c.0));
+        if items.len() >= IMAGE_CHUNKS || groups.peek().is_none() {
+            let n = items.len() as u32;
+            ins.push(rt::InSig {
+                spec: yavs_kernel::ImageSpec {
+                    size: 8 * n,
+                    items: std::mem::take(&mut items).into(),
+                },
+                at: chunks.len() as u32 - n,
+                n,
+                id: None,
+                seen: 0,
+            });
+        }
     }
     // Each class: its clock element, the edge test of `Ctx::edge_by`, its word.
     let clocks: Vec<(yavs_kernel::SigRef, u8, usize)> = (sel.clocks.iter().zip(&edge_words))
@@ -914,6 +921,9 @@ fn build(
         make,
     })
 }
+
+/// The input chunks one kernel image counts the changes of (`rt::InSig`).
+const IMAGE_CHUNKS: usize = 32;
 
 /// The next-state words into the current ones.
 /// A memory write of a clocked member kept back to the commit: the write, from the member's

@@ -1878,3 +1878,39 @@ fn vhpi_random_seed_is_the_shuffle_seed() {
         assert!(!err.contains("W090"), "{args:?}: {err}");
     }
 }
+
+/// Bounds and values that depend on a generic through nested arithmetic (`2 * N + 1`,
+/// `(N + 1) / 2`) fold like a single operation does (#1159).
+#[test]
+fn vhpi_folds_nested_generic_arithmetic() {
+    let vhdl = "entity top is generic (N : natural := 3); end;\n\
+        architecture a of top is\n\
+        constant c1 : bit_vector(N - 1 downto 0) := (others => '1');\n\
+        constant c2 : bit_vector(2 * N + 1 downto 0) := (others => '1');\n\
+        constant c5 : bit_vector((N + 1) / 2 - 1 downto 0) := (others => '1');\n\
+        signal s : bit;\n\
+        attribute one : integer;\n\
+        attribute two : integer;\n\
+        attribute three : integer;\n\
+        attribute one of s : signal is N + 1;\n\
+        attribute two of s : signal is 2 * N + 1;\n\
+        attribute three of s : signal is N * 2 - 1;\n\
+        begin end;\n";
+    let (lib, so) = setup_with("extras", vhdl);
+    let spec = format!("--vhpi={}:nested", so.display());
+    let (code, err, out) = yavs(&["run", &lib, &spec, "--stop-time=1ns", "top"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("warning["), "{err}");
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        [
+            "top:c1 size=3",
+            "top:c2 size=8",
+            "top:c5 size=2",
+            "one rc=0 value=4",
+            "two rc=0 value=7",
+            "three rc=0 value=5",
+        ],
+        "{out}"
+    );
+}

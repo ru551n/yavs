@@ -1872,16 +1872,13 @@ impl Builder<'_> {
     /// A static expression, or one that folds with the generics and constants of region `s`.
     fn fold(&self, x: yavs_sem::ExprId, s: Option<ScopeId>) -> Option<ConstValue> {
         let (db, e) = (self.db, self.e);
-        let mut operand = |x: yavs_sem::ExprId| -> Option<ConstValue> {
-            if let Some(v) = db.value(x) {
-                return Some(v.clone());
-            }
-            match &db.exprs[x].kind {
-                yavs_sem::hir::ExprKind::Obj(d) => s.and_then(|s| e.value(s, *d)).cloned(),
-                _ => None,
-            }
-        };
-        operand(x).or_else(|| db.fold_with(x, &mut operand).ok().flatten())
+        if let Some(v) = db.value(x) {
+            return Some(v.clone());
+        }
+        if let yavs_sem::hir::ExprKind::Obj(d) = &db.exprs[x].kind {
+            return s.and_then(|s| e.value(s, *d)).cloned();
+        }
+        db.fold_with(x, &mut |c| self.fold(c, s)).ok().flatten()
     }
 
     /// The type of an object of subtype `st` laid out as `layout` (elaborated bounds) in

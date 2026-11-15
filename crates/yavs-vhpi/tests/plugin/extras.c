@@ -207,3 +207,19 @@ PLUGIN_EXPORT void attrs_misuse(void) {
   vhpi_printf("generic-valued %s:\n", g ? (const char *)vhpi_get_str(vhpiCaseNameP, g) : "none");
   if (g) show_value(g);
 }
+
+/* nested: sizes and values that depend on a generic through nested arithmetic (#1159). */
+PLUGIN_EXPORT void nested(void) {
+  const char *cs[] = {"top:c1", "top:c2", "top:c5"};
+  for (int i = 0; i < 3; i++)
+    vhpi_printf("%s size=%d\n", cs[i], (int)vhpi_get(vhpiSizeP, vhpi_handle_by_name(cs[i], NULL)));
+  vhpiHandleT it = vhpi_iterator(vhpiAttrSpecs, vhpi_handle_by_name("top:s", NULL));
+  for (vhpiHandleT a; it && (a = vhpi_scan(it));) {
+    vhpiValueT v;
+    memset(&v, 0, sizeof v);
+    v.format = vhpiIntVal;
+    int rc = vhpi_get_value(a, &v);
+    vhpi_printf("%s rc=%d value=%d\n", (const char *)vhpi_get_str(vhpiCaseNameP, a), rc,
+                (int)v.value.intg);
+  }
+}

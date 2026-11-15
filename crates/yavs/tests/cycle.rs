@@ -1452,7 +1452,7 @@ fn ports_collapsed_into_parts_of_their_actuals_give_the_same_result() {
 fn asynchronous_resets_between_edges_give_the_same_result() {
     let dir = tempdir("cycle-reset");
     analyze(&dir, "reset.vhd", include_str!("cycle/reset.vhd"));
-    for (generic, members) in [("-gCOMB=false", "3 of 5"), ("-gCOMB=true", "4 of 6")] {
+    for (generic, members) in [("-gCOMB=false", "4 of 5"), ("-gCOMB=true", "5 of 6")] {
         for t in tiers() {
             let flags = [&t[..], &[generic]].concat();
             let (normal, _) = run(&dir, &flags, "cycle_reset");
@@ -1465,10 +1465,121 @@ fn asynchronous_resets_between_edges_give_the_same_result() {
                 err.contains(&format!("cycle mode: {members} processes run cycle-based")),
                 "{err}"
             );
-            assert!(
-                err.contains("its asynchronous reset is made inside the region"),
+            // `ar2`, whose reset `rin` is a register of the region, joins.
+            assert_eq!(row(&err, "cycle_reset.ar2").0, "cycle-based:", "{err}");
+        }
+    }
+}
+
+/// The rows of the processes named, each with the section it is in.
+fn sections<'a>(report: &'a str, labels: &[&str]) -> Vec<(String, &'a str)> {
+    labels
+        .iter()
+        .map(|l| (l.to_string(), row(report, l).0))
+        .collect()
+}
+
+#[test]
+fn several_clocks_and_crossings_give_the_same_result() {
+    let dir = tempdir("cycle-clocks");
+    analyze(&dir, "clocks.vhd", include_str!("cycle/clocks.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_clocks");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_clocks");
+        assert_eq!(normal.len(), 24, "{normal:?}");
+        // Hand-checked at 11.2 and 21.2 ns: at the coincident edge at 5 ns c2's registers
+        // sampled c1's before the edge (x2 = 0), at 10 ns after it (x2 = 3); x1 = 0, with c2's y0
+        // before the edge; cg's register on c1's edge at 15 ns, one delta later, saw c1's new
+        // register (gx = 6); cu's first edge counts for `'event` only (nl = 2, nr = 1).
+        assert!(
+            normal[0].ends_with(
+                "a1=03 a2=0A a3=02 af=04 x1=00 x2=03 x3=08 xf=00 x4=08 x5=02 w2=03 g1=00 \
+                 gx=00 gs=00 nl=00 nr=00"
+            ),
+            "{normal:?}"
+        );
+        assert!(
+            normal[1].ends_with("g1=01 gx=06 gs=07 nl=02 nr=01"),
+            "{normal:?}"
+        );
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains(
+                "cycle mode: 12 of 19 processes run cycle-based, on the rising edge of \
+                 cycle_clocks.c2 and the rising edge of cycle_clocks.c1 and the falling edge of \
+                 cycle_clocks.c1 and the rising edge of cycle_clocks.c3 and the rising edge of \
+                 cycle_clocks.cg and the rising edge of cycle_clocks.cu (`'event` form) and the \
+                 rising edge of cycle_clocks.cu"
+            ),
+            "{err}"
+        );
+        let names = [
+            "cycle_clocks.p0",
+            "cycle_clocks.p1",
+            "cycle_clocks.p2",
+            "cycle_clocks.pf",
+            "cycle_clocks.s <= ...",
+            "cycle_clocks.p3",
+            "cycle_clocks.pw",
+            "cycle_clocks.p4",
+            "cycle_clocks.pg",
+            "cycle_clocks.pgs",
+            "cycle_clocks.pl",
+            "cycle_clocks.pr",
+        ];
+        for (name, section) in sections(&err, &names) {
+            assert_eq!(section, "cycle-based:", "{name}\n{err}");
+        }
+        // The logic between c1 and the clocks whose edges may come in another delta stays in the
+        // kernel (with it in the region, `gs` differs).
+        for name in ["cycle_clocks.t <= ...", "cycle_clocks.u <= ..."] {
+            let (section, line) = row(&err, name);
+            assert_eq!(
+                section, "in the subset, not implemented in cycle mode yet:",
                 "{err}"
             );
+            assert!(line.contains("may come in a later delta"), "{line}");
         }
+    }
+}
+
+#[test]
+fn asynchronous_resets_made_inside_the_region_give_the_same_result() {
+    let dir = tempdir("cycle-inreset");
+    analyze(&dir, "inreset.vhd", include_str!("cycle/inreset.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_inreset");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_inreset");
+        assert_eq!(normal.len(), 30, "{normal:?}");
+        // Hand-checked: held from time 0, released, n3 following din during the late pulse.
+        assert!(normal[2].contains("r2='1' n1=10 n2=20 n3=36"), "{normal:?}");
+        assert!(normal[3].contains("r2='0' n1=10 n2=30 n3=36"), "{normal:?}");
+        assert!(
+            normal[21].contains("r2='1' n1=10 n2=20 n3=37"),
+            "{normal:?}"
+        );
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 8 of 11 processes run cycle-based"),
+            "{err}"
+        );
+        let names = [
+            "cycle_inreset.sync",
+            "cycle_inreset.q1",
+            "cycle_inreset.q2",
+            "cycle_inreset.q3",
+            "cycle_inreset.q4",
+            "cycle_inreset.c2reg",
+            "cycle_inreset.q5",
+            "cycle_inreset.rc <= ...",
+        ];
+        for (name, section) in sections(&err, &names) {
+            assert_eq!(section, "cycle-based:", "{name}\n{err}");
+        }
+        // What a reset branch reads wakes the region; the resets made inside do not.
+        assert!(
+            err.contains("1 wake the region (cycle_inreset.din)"),
+            "{err}"
+        );
     }
 }

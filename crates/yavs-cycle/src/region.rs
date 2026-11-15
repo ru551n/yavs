@@ -13,7 +13,7 @@ use yavs_sem::{Db, ExprId, StmtId};
 
 use crate::check::{self, Fit, Form, Reason};
 use crate::dep::{self, VAR};
-use crate::lower::{self, Body, Clock, Kind};
+use crate::lower::{self, Body, Clock, Kind, Op, Ref};
 
 /// Why a process stays in the event kernel.
 pub(crate) enum Why {
@@ -25,12 +25,15 @@ pub(crate) enum Why {
     NotYet(String),
 }
 
-/// The region: members (in schedule order: clocked first, then combinational in dependency
-/// order) and the boundary.
+/// The region: members (clocked first, then combinational in dependency order) and the boundary.
 pub(crate) struct Selection {
     pub members: Vec<(usize, Body)>,
+    /// The pieces of the settle, as indices into `members`: the combinational members and the
+    /// reset branches of clocked ones, in dependency order.
+    pub settle: Vec<usize>,
     pub out: Vec<(usize, Why)>,
-    pub clock: Option<Clock>,
+    /// The edge classes: each clock and edge the clocked members use, in the order met.
+    pub clocks: Vec<Clock>,
     /// Loop groups of the processes in the subset (before what is implemented is known).
     pub groups: Vec<dep::Group>,
     /// Processes in the subset, and asserts and reports they hold.
@@ -386,13 +389,6 @@ fn analyse(db: &Db, e: &Elaborated, fits: &BTreeMap<usize, Fit>) -> dep::Analysi
 
 pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
     let (fits, mut out, groups) = subset(db, e);
-    let mut drivers: BTreeMap<LeafId, Vec<(usize, u32, u32)>> = BTreeMap::new();
-    for d in &e.nets.drivers {
-        drivers
-            .entry(d.leaf)
-            .or_default()
-            .push((d.proc.index(), 0, 0));
-    }
     let nfits = fits.len();
     let dropped = fits.values().map(|f| f.dropped).sum();
     let forced = !db.facts().forces.is_empty();
@@ -440,7 +436,6 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
                 outside.entry(d.leaf).or_insert(d.proc.index());
             }
         }
-        let mut clock: Option<Clock> = None;
         for (&pi, (_, b)) in &taken {
             let p = &e.procs[pi];
             let src = (p.drivers.iter())
@@ -474,36 +469,18 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
                 ));
                 continue;
             }
-            // A reset made inside the region: the lowering applies a reset branch only at the
-            // region's wakes, before it settles, so it would act one wake late.
-            if let Some((r, ..)) = b.reset
-                && let Some(q) = (drivers.get(&r).into_iter().flatten())
-                    .map(|o| o.0)
-                    .find(|q| taken.contains_key(q))
-            {
+            // The reset branch runs again in the settle, apart from the edge test.
+            if b.reset.is_some() && reset_piece(&b.ops).is_none() {
                 gone.push((
                     pi,
-                    format!(
-                        "its asynchronous reset is made inside the region, by {}; cycle mode \
-                         applies a reset only when an event of it from outside wakes the region \
-                         (not implemented yet)",
-                        e.proc_label(&e.procs[q])
-                    ),
+                    "the lowering gives its asynchronous reset another shape than the settle \
+                     takes it in"
+                        .into(),
                 ));
-                continue;
             }
-            if let Some(c) = b.clock {
-                if clock.is_some_and(|k| k != c) {
-                    gone.push((
-                        pi,
-                        "it runs on another clock or edge than the region (several \
-                        clocks are not supported yet)"
-                            .into(),
-                    ));
-                } else {
-                    clock = Some(c);
-                }
-            }
+        }
+        if gone.is_empty() {
+            gone = cross_delta(db, e, &taken);
         }
         // Loop groups need several passes or a split, which the schedule does not do yet.
         let leaving: BTreeSet<usize> = gone.iter().map(|g| g.0).collect();
@@ -534,6 +511,14 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
                 .copied()
                 .filter(|pi| taken.contains_key(pi))
                 .collect();
+            // What the reset branch of each clocked member reads (from the checker), for the
+            // wakes: it runs in the settle while the reset holds.
+            let mut reset_reads: BTreeSet<LeafId> = BTreeSet::new();
+            for (f, b) in taken.values() {
+                if let Some((r, ..)) = b.reset {
+                    reset_reads.extend(out_reads(f).filter(|&l| l != r));
+                }
+            }
             let mut rest: BTreeMap<usize, Body> =
                 taken.into_iter().map(|(pi, (_, b))| (pi, b)).collect();
             let clocked: Vec<usize> = (rest.iter())
@@ -543,15 +528,31 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             for pi in clocked {
                 members.push((pi, rest.remove(&pi).expect("listed")));
             }
+            // The settle: combinational members and the reset branches of clocked ones, in the
+            // order of the element graph.
+            let mut resets: BTreeMap<usize, usize> = (members.iter().enumerate())
+                .filter(|(_, m)| m.1.reset.is_some())
+                .map(|(k, m)| (m.0, k))
+                .collect();
+            let mut settle = Vec::new();
             for pi in order {
                 if let Some(b) = rest.remove(&pi) {
                     members.push((pi, b));
+                    settle.push(members.len() - 1);
+                } else if let Some(k) = resets.remove(&pi) {
+                    settle.push(k);
                 }
             }
             // Members the dependence order does not list (no outputs): any place.
-            members.extend(rest);
+            for m in rest {
+                members.push(m);
+                settle.push(members.len() - 1);
+            }
+            // Reset branches the order does not list (they assign nothing): any place.
+            settle.extend(resets.into_values());
             out.sort_by_key(|o| o.0);
-            let mut sel = boundary(db, e, members, out, clock);
+            let mut sel = boundary(db, e, members, out, &reset_reads);
+            sel.settle = settle;
             sel.groups = groups;
             sel.fits = nfits;
             sel.dropped = dropped;
@@ -565,13 +566,264 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
     }
 }
 
+/// The signal of a clock, with its element when the signal has several.
+pub(crate) fn clock_name(e: &Elaborated, c: &Clock) -> String {
+    match e.nets.leaf(c.leaf).ty.len {
+        1 => e.leaf_name(c.leaf),
+        _ => format!("{} (element {})", e.leaf_name(c.leaf), c.elem),
+    }
+}
+
+/// The reset branch of a clocked member with an asynchronous reset, as the settle runs it: the
+/// lowering's `if <reset> then A else (if <edge> then B)` (after the operations computing the
+/// condition) without its edge part; `None` for another shape.
+pub(crate) fn reset_piece(ops: &[Op]) -> Option<Vec<Op>> {
+    let (Op::If { cond, then, else_ }, head) = ops.split_last()? else {
+        return None;
+    };
+    let [
+        Op::If {
+            cond: Ref::Edge, ..
+        },
+    ] = &else_[..]
+    else {
+        return None;
+    };
+    let mut v = head.to_vec();
+    v.push(Op::If {
+        cond: *cond,
+        then: then.clone(),
+        else_: Vec::new(),
+    });
+    Some(v)
+}
+
+/// The signal leaves the outputs of a fit depend on (of a clocked one: its reset branch).
+fn out_reads(f: &Fit) -> impl Iterator<Item = LeafId> + '_ {
+    let mut ks: BTreeSet<u64> = BTreeSet::new();
+    for o in &f.outs {
+        ks.extend(o.dep.ident.map(|i| i.0));
+        ks.extend(o.dep.set.iter().map(|(k, _, _)| k));
+    }
+    ks.into_iter()
+        .filter(|k| k & VAR == 0)
+        .map(|k| LeafId(k as u32))
+}
+
+/// The process every driver of `c`'s element belongs to when that process assigns without
+/// delay and has one wait (a clock model making a pair): the clocks it makes have their edges in
+/// one delta. Else the clock's element alone.
+fn delta_key(db: &Db, e: &Elaborated, c: &Clock) -> (bool, usize, u32) {
+    let mut ps = (e.nets.drivers.iter())
+        .filter(|d| d.leaf == c.leaf && d.range.offset <= c.elem && c.elem < d.range.end())
+        .map(|d| d.proc.index());
+    if let Some(p) = ps.next()
+        && ps.all(|q| q == p)
+        && one_step(db, e, p)
+    {
+        return (true, p, 0);
+    }
+    (false, c.leaf.index(), c.elem)
+}
+
+/// Every activation of process `pi` starts at the first delta of a time step and assigns
+/// without delay: one `wait for` (beside any `wait;`), no procedure call (it might wait), no
+/// `after`. ponytail: a `wait for` lasting 0 ns would resume it in a later delta; clock models do
+/// not, a run-time test of the delta would close it.
+fn one_step(db: &Db, e: &Elaborated, pi: usize) -> bool {
+    use yavs_sem::hir::{Delay, Rhs, Waveform};
+    let p = &e.procs[pi];
+    if p.actual.is_some() {
+        return false;
+    }
+    let StmtKind::Process {
+        sensitivity: Sensitivity::None,
+        body,
+        ..
+    } = &db.stmts[p.stmt].kind
+    else {
+        return false;
+    };
+    let mut all = Vec::new();
+    deep(db, body, &mut all);
+    let mut waits = 0;
+    for s in all {
+        match &db.stmts[s].kind {
+            StmtKind::Wait {
+                on,
+                until: None,
+                timeout,
+            } if on.is_empty() => waits += usize::from(timeout.is_some()),
+            StmtKind::Wait { .. } => return false,
+            StmtKind::ProcCall(_) => return false,
+            StmtKind::SignalAssign { delay, rhs, .. } => {
+                let ws: Vec<&Waveform> = match rhs {
+                    Rhs::Simple(w) => vec![w],
+                    Rhs::Conditional(a) => a.iter().map(|x| &x.0).collect(),
+                    Rhs::Selected { alts, .. } => alts.iter().map(|x| &x.0).collect(),
+                };
+                let timed = ws.iter().any(|w| match w {
+                    Waveform::Elements(els) => els.len() != 1 || els[0].after.is_some(),
+                    Waveform::Unaffected => false,
+                });
+                if !matches!(delay, Delay::Default) || timed {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    waits == 1
+}
+
+/// Members that would hand the region's settled value where the normal mode samples one that
+/// has not settled yet: combinational logic (a combinational member, or the reset branch of a
+/// clocked one) between a register of one clock and a register of another clock whose edges
+/// may come in a later delta of the same time step (a clock gated or copied in the kernel, two
+/// clock processes of their own). In the normal mode such a register samples the logic before
+/// its new value arrives; the region settles it at the first edge's wake. Clocks one process
+/// makes in one step (`delta_key`) or one signal's two edges never differ by a delta.
+/// Element runs are taken as whole leaves (a superset).
+fn cross_delta(
+    db: &Db,
+    e: &Elaborated,
+    taken: &BTreeMap<usize, (Fit, Body)>,
+) -> Vec<(usize, String)> {
+    let mut keys: Vec<(bool, usize, u32)> = Vec::new();
+    let mut names: Vec<Clock> = Vec::new();
+    let mut bit: BTreeMap<(LeafId, u32), u64> = BTreeMap::new();
+    for (_, b) in taken.values() {
+        if let Some(c) = b.clock
+            && !bit.contains_key(&(c.leaf, c.elem))
+        {
+            let k = delta_key(db, e, &c);
+            let g = keys.iter().position(|x| *x == k).unwrap_or_else(|| {
+                keys.push(k);
+                names.push(c);
+                keys.len() - 1
+            });
+            // ponytail: beyond 63 groups they share the top bit, which counts as differing from
+            // everything (sound, coarse); a set per leaf if a design ever has that many.
+            bit.insert((c.leaf, c.elem), 1 << g.min(63));
+        }
+    }
+    if keys.len() < 2 {
+        return Vec::new();
+    }
+    const TOP: u64 = 1 << 63;
+    let differ = |t: u64, f: u64| {
+        t != 0 && f != 0 && (t | f).count_ones() + u32::from((t | f) & TOP != 0) > 1
+    };
+    // Registers by clock group, and what registers of each group read.
+    let mut reg: BTreeMap<LeafId, u64> = BTreeMap::new();
+    let mut feeds: BTreeMap<LeafId, u64> = BTreeMap::new();
+    // The combinational pieces: process, reads, writes.
+    let mut pieces: Vec<(usize, Vec<LeafId>, Vec<LeafId>)> = Vec::new();
+    for (&pi, (f, b)) in taken {
+        match b.clock {
+            Some(c) => {
+                let g = bit[&(c.leaf, c.elem)];
+                for &w in &b.writes {
+                    *reg.entry(w).or_default() |= g;
+                }
+                for &r in &b.reads {
+                    *feeds.entry(r).or_default() |= g;
+                }
+                if b.reset.is_some() {
+                    let mut ws: Vec<LeafId> =
+                        f.outs.iter().map(|o| LeafId(o.leaf as u32)).collect();
+                    ws.dedup();
+                    pieces.push((pi, out_reads(f).collect(), ws));
+                }
+            }
+            None => pieces.push((
+                pi,
+                b.reads.iter().copied().collect(),
+                b.writes.iter().copied().collect(),
+            )),
+        }
+    }
+    // What reaches each leaf from registers through the pieces, and which registers each leaf
+    // reaches through them.
+    let mut taint: BTreeMap<LeafId, u64> = BTreeMap::new();
+    loop {
+        let mut changed = false;
+        for (_, rs, ws) in &pieces {
+            let t = (rs.iter())
+                .map(|r| reg.get(r).copied().unwrap_or(0) | taint.get(r).copied().unwrap_or(0))
+                .fold(0, |a, b| a | b);
+            for w in ws {
+                let x = taint.entry(*w).or_default();
+                if *x | t != *x {
+                    *x |= t;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    loop {
+        let mut changed = false;
+        for (_, rs, ws) in pieces.iter().rev() {
+            let f = (ws.iter())
+                .map(|w| feeds.get(w).copied().unwrap_or(0))
+                .fold(0, |a, b| a | b);
+            for r in rs {
+                let x = feeds.entry(*r).or_default();
+                if *x | f != *x {
+                    *x |= f;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let name = |m: u64| clock_name(e, &names[m.trailing_zeros() as usize]);
+    let mut gone = Vec::new();
+    for (pi, rs, ws) in &pieces {
+        let t = (rs.iter())
+            .map(|r| reg.get(r).copied().unwrap_or(0) | taint.get(r).copied().unwrap_or(0))
+            .fold(0, |a, b| a | b);
+        let f = (ws.iter())
+            .map(|w| feeds.get(w).copied().unwrap_or(0))
+            .fold(0, |a, b| a | b);
+        if differ(t, f) {
+            let lo = |m: u64| m.isolate_lowest_one();
+            let a = lo(t);
+            let (from, to) = match (f & !a, lo(t & !a)) {
+                (0, 0) => (a, a),
+                (0, b) => (b, a),
+                (g, _) => (a, lo(g)),
+            };
+            gone.push((*pi, format!(
+                "it computes, from registers on {}, a value a register on {} samples, whose edges \
+                 may come in a later delta of the same time step: the normal mode samples it \
+                 before it settles, the region settles it at once (not modelled yet)",
+                name(from),
+                name(to)
+            )));
+        }
+    }
+    gone
+}
+
 fn boundary(
     db: &Db,
     e: &Elaborated,
     members: Vec<(usize, Body)>,
     out: Vec<(usize, Why)>,
-    clock: Option<Clock>,
+    reset_reads: &BTreeSet<LeafId>,
 ) -> Selection {
+    let mut clocks: Vec<Clock> = Vec::new();
+    for c in members.iter().filter_map(|m| m.1.clock) {
+        if !clocks.contains(&c) {
+            clocks.push(c);
+        }
+    }
     let is_member: BTreeSet<usize> = members.iter().map(|m| m.0).collect();
     let mut driven = BTreeSet::new();
     for d in &e.nets.drivers {
@@ -593,6 +845,9 @@ fn boundary(
             }
         }
     }
+    // A reset branch runs in the settle: what it reads wakes the region like a combinational
+    // member's reads (the reset itself is a wake of its own).
+    comb_reads.extend(reset_reads.iter().copied());
     let inputs: BTreeSet<LeafId> = reads.difference(&driven).copied().collect();
     let wakes = comb_reads.difference(&driven).copied().collect();
     let next = clocked_writes
@@ -607,8 +862,9 @@ fn boundary(
     };
     Selection {
         members,
+        settle: Vec::new(),
         out,
-        clock,
+        clocks,
         groups: Vec::new(),
         fits: 0,
         dropped: 0,

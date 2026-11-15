@@ -162,13 +162,18 @@ pub fn plan(db: &Db, e: &Elaborated, strict: bool) -> Result<Plan, Vec<Diagnosti
         "cycle mode: {} of {total} processes run cycle-based",
         sel.members.len()
     );
-    if let Some(c) = sel.clock {
-        let _ = write!(
-            report,
-            ", on the {} edge of {}",
-            if c.rising { "rising" } else { "falling" },
-            e.leaf_name(c.leaf)
-        );
+    let edges: Vec<String> = (sel.clocks.iter())
+        .map(|c| {
+            format!(
+                "the {} edge of {}{}",
+                if c.rising { "rising" } else { "falling" },
+                region::clock_name(e, c),
+                if c.legacy { " (`'event` form)" } else { "" }
+            )
+        })
+        .collect();
+    if !edges.is_empty() {
+        let _ = write!(report, ", on {}", edges.join(" and "));
     }
     report.push('\n');
     // Sections of rows (where, what).
@@ -341,10 +346,11 @@ fn build(
     }
     // Signals hold state between calls; so do the variables of clocked processes.
     let signal_words = n;
-    // 1 when the clock edge happened in this wake (`Ref::Edge`).
-    let edge_word = n;
-    n += 1;
-    let has_reset = sel.members.iter().any(|(_, b)| b.reset.is_some());
+    // One word per edge class: 1 when its edge happened in this wake (`Ref::Edge` of its
+    // members).
+    let edge_words: Vec<u32> = (0..sel.clocks.len() as u32).map(|k| n + k).collect();
+    n += sel.clocks.len().max(1) as u32;
+    let several = sel.clocks.len() > 1;
     let mut state: Vec<(u32, u32)> = Vec::new();
     // Each function as pieces, a member's body each (`codegen::compile` cuts between them).
     let mut settle: Vec<Vec<Op>> = Vec::new();
@@ -359,10 +365,11 @@ fn build(
             })
             .collect(),
     );
-    let mut committed = false;
     let mut init: Vec<(u32, u64)> = Vec::new();
     let mut checks: Vec<(lower::Check, usize)> = Vec::new();
     let mut uninit = 0u64;
+    // Each member's slots and resolution.
+    let mut rs: Vec<Resolve> = Vec::new();
     for (pi, b) in &sel.members {
         let base = n;
         n += b.locs;
@@ -374,37 +381,55 @@ fn build(
         if clocked {
             state.extend(b.vars.iter().map(|&(w, c)| (base + w, c)));
         }
-        if !clocked && !committed {
-            edge.push(commit(&next, &cur, klen));
-            committed = true;
-        }
-        let rs = Resolve {
+        let class = b
+            .clock
+            .and_then(|c| sel.clocks.iter().position(|&k| k == c));
+        rs.push(Resolve {
             base,
             sites,
             clocked,
-            edge: edge_word,
+            edge: class.map_or(signal_words, |k| edge_words[k]),
             cur: &cur,
             next: &next,
+        });
+    }
+    // The settle: the combinational members and, while their reset holds, the reset branches
+    // of clocked ones (written to the current words: the commit is past).
+    for &k in &sel.settle {
+        let (_, b) = &sel.members[k];
+        let r = &rs[k];
+        let ops: Vec<Op> = if b.kind == Kind::Clocked {
+            let piece = region::reset_piece(&b.ops).ok_or("a reset branch of another shape")?;
+            let r = Resolve {
+                clocked: false,
+                ..*r
+            };
+            piece.iter().map(|op| r.op(op)).collect()
+        } else {
+            b.ops.iter().map(|op| r.op(op)).collect()
         };
-        init_fn.push(b.init_ops.iter().map(|op| rs.op(op)).collect());
-        let mut ops: Vec<Op> = b.ops.iter().map(|op| rs.op(op)).collect();
-        // With an asynchronous reset the edge function runs at every wake: the clocked bodies
-        // without one run only at an edge.
-        if has_reset && clocked && b.reset.is_none() {
+        settle.push(ops);
+    }
+    // The edge: the clocked bodies of the classes whose edge happened (with one class only at its
+    // edge, so behind no test), the commit, the settle.
+    for (k, (_, b)) in sel.members.iter().enumerate() {
+        let r = &rs[k];
+        init_fn.push(b.init_ops.iter().map(|op| r.op(op)).collect());
+        if b.kind != Kind::Clocked {
+            continue;
+        }
+        let mut ops: Vec<Op> = b.ops.iter().map(|op| r.op(op)).collect();
+        if several {
             ops = vec![Op::If {
-                cond: Ref::Loc(edge_word),
+                cond: Ref::Loc(r.edge),
                 then: ops,
                 else_: Vec::new(),
             }];
         }
-        if !clocked {
-            settle.push(ops.clone());
-        }
         edge.push(ops);
     }
-    if !committed {
-        edge.push(commit(&next, &cur, klen));
-    }
+    edge.push(commit(&next, &cur, klen));
+    edge.extend(settle.iter().cloned());
     let err = n;
     n += 2;
     let mut keep = vec![false; n as usize];
@@ -452,23 +477,36 @@ fn build(
             }
         })
         .collect();
-    let clock = sel.clock.map(|c| {
-        let kind = u8::from(c.rising) | if c.legacy { EDGE_LEVEL } else { 0 };
-        (nets.kref(c.leaf, Range::new(c.elem, 1)), kind)
-    });
+    // Each class: its clock element, the edge test of `Ctx::edge_by`, its word.
+    let clocks: Vec<(yavs_kernel::SigRef, u8, usize)> = (sel.clocks.iter().zip(&edge_words))
+        .map(|(c, &w)| {
+            let kind = u8::from(c.rising) | if c.legacy { EDGE_LEVEL } else { 0 };
+            (nets.kref(c.leaf, Range::new(c.elem, 1)), kind, w as usize)
+        })
+        .collect();
     let leaf_ref = |l: LeafId| nets.kref(l, Range::new(0, nets.leaf(l).ty.len));
-    let mut waits: Vec<_> = clock.iter().map(|c| c.0).collect();
+    let mut waits: Vec<yavs_kernel::SigRef> = Vec::new();
+    for c in &clocks {
+        if !waits.contains(&c.0) {
+            waits.push(c.0);
+        }
+    }
     waits.extend(
         (sel.wakes.iter())
             .filter(|&&l| nets.leaf(l).ty.len > 0)
             .map(|l| leaf_ref(*l)),
     );
-    // The asynchronous resets: their events wake the region too.
-    let resets: std::collections::BTreeSet<(LeafId, u32, u8)> =
-        (sel.members.iter()).filter_map(|(_, b)| b.reset).collect();
+    // The asynchronous resets from outside: their events wake the region too (one made inside
+    // changes only in the region's own settle).
+    let resets: std::collections::BTreeSet<(LeafId, u32, u8)> = (sel.members.iter())
+        .filter_map(|(_, b)| b.reset)
+        .filter(|r| !sel.driven.contains(&r.0))
+        .collect();
     for &(l, el, _) in &resets {
         waits.push(nets.kref(l, Range::new(el, 1)));
     }
+    // Only clocks wake it: a wake without an edge has nothing to do.
+    let clocks_only = sel.wakes.is_empty() && resets.is_empty();
     let one_reset = match resets.iter().collect::<Vec<_>>()[..] {
         [] => Some(None),
         [&(l, el, code)] => {
@@ -477,10 +515,8 @@ fn build(
         }
         _ => None,
     };
-    let trigger = (sel.clock)
-        .filter(|_| sel.wakes.is_empty())
-        .zip(one_reset)
-        .map(|(c, reset)| {
+    let trigger = match &sel.clocks[..] {
+        [c] if sel.wakes.is_empty() => one_reset.map(|reset| {
             let (signal, elem) = nets.kelem(c.leaf, c.elem);
             EdgeTrigger {
                 signal,
@@ -489,7 +525,9 @@ fn build(
                 legacy: c.legacy,
                 reset,
             }
-        });
+        }),
+        _ => None,
+    };
     // The leaf of each driver declaration, for the exports.
     let decls: Vec<LeafId> = nets.drivers.iter().map(|d| d.leaf).collect();
     // Exported kernel signals none of whose leaves anything outside waits on: candidates for an
@@ -540,15 +578,14 @@ fn build(
             leaves: all.clone(),
             inputs: inputs.clone(),
             outs: outs.into_values().collect(),
-            clock,
+            clocks: clocks.clone(),
+            clocks_only,
             waits: waits.clone(),
             started: false,
             checks: checks.clone(),
             err: err as usize,
             metas: metas.clone(),
             uninit,
-            edge_word: edge_word as usize,
-            has_reset,
             buf: Vec::new(),
         }) as Box<dyn yavs_kernel::Process>)
     });
@@ -581,6 +618,7 @@ fn commit(
 /// The operations of one member with every reference an image slot: a member's slots from
 /// `base`, a signal its current words, except the next-state words where a clocked member writes
 /// it; the edge word; check sites from `sites`.
+#[derive(Clone, Copy)]
 struct Resolve<'a> {
     base: u32,
     sites: u32,

@@ -1,8 +1,8 @@
 # Differences of cycle mode against the normal mode that were reviewed: test, checksum of the diff, cause.
 # See tools/difftest/README.md "Cycle mode gate". A changed diff fails the gate until reviewed again.
-held/held_active.vhd	c602bb21	'active and 'last_active of member-driven signals read outside: a redrive with the same value is not published (A6, no history bookkeeping)
-held/held_param_active.vhd	2115dcb1	'last_active of member-driven signals through a parameter and an external name: same as held_active
-held/held_transaction.vhd	f9ea7313	'transaction of member-driven signals: redrives with the same value are not published, and the initial export is a transaction at time 0
+held/held_active.vhd	b8dccf82	'active and 'last_active of member-driven signals read outside: a redrive with the same value is not published (A6, no history bookkeeping)
+held/held_param_active.vhd	dbb926f0	'last_active of member-driven signals through a parameter and an external name: same as held_active
+held/held_transaction.vhd	e073e92b	'transaction of member-driven signals: redrives with the same value are not published, and the initial export is a transaction at time 0
 hierarchy/in_port_collapse_part.vhd	7321c653	'U initial values of member-driven signals read as 0 (D3 to D5), and the reports of members not evaluated (A6)
 rtl/rare_ways.vhd	a433405c	a literal 'X driven by a member reads as 0 (D4)
 rtl/vector_ops.vhd	f2c78d4e	all nine logic values go through members and read as 0 (D3 to D5)

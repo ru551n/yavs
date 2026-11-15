@@ -44,8 +44,11 @@ pub(crate) struct RegionProc {
     /// Leaves read from the kernel at every wake.
     pub inputs: Vec<Read>,
     pub outs: Vec<Out>,
-    /// The clock element and the edge test of `Ctx::edge_by`.
-    pub clock: Option<(SigRef, u8)>,
+    /// Per edge class: the clock element, the edge test of `Ctx::edge_by` and the word that
+    /// tells the code whether the edge happened.
+    pub clocks: Vec<(SigRef, u8, usize)>,
+    /// Nothing but the clocks wakes the region: a wake without an edge does nothing.
+    pub clocks_only: bool,
     /// What the region waits on.
     pub waits: Vec<SigRef>,
     pub started: bool,
@@ -56,10 +59,6 @@ pub(crate) struct RegionProc {
     pub metas: Arc<crate::Metas>,
     /// Elements of member variables without an initial value, counted at initialisation.
     pub uninit: u64,
-    /// The word that tells the code whether the clock edge happened.
-    pub edge_word: usize,
-    /// A member has an asynchronous reset: the edge function runs at every wake.
-    pub has_reset: bool,
     pub buf: Vec<u8>,
 }
 
@@ -207,17 +206,6 @@ impl RegionProc {
             .run(&mut self.img, f)
             .map_err(|site| self.failed(ctx, site))
     }
-
-    /// The edge function where the edge happened or a reset may hold, else the settle function.
-    fn wake(&mut self, ctx: &Ctx<'_>, edge: bool) -> Result<(), SimError> {
-        self.img[self.edge_word] = u64::from(edge);
-        let f = if edge || self.has_reset {
-            Fun::Edge
-        } else {
-            Fun::Settle
-        };
-        self.run_code(ctx, f)
-    }
 }
 
 /// The (at most 64) elements of `w` from element `off`, `left` of them or 64.
@@ -252,13 +240,29 @@ impl Process for RegionProc {
             }
             self.metas.init.fetch_add(metas, Ordering::Relaxed);
             self.run_code(ctx, Fun::Init)?;
-            // A reset that holds at time 0 applies, as when the normal mode runs every process once.
-            self.wake(ctx, false)?;
+            // A reset that holds at time 0 applies (its branch is in the settle), as when the
+            // normal mode runs every process once.
+            self.run_code(ctx, Fun::Settle)?;
             self.export(ctx)?;
             for &w in &self.waits {
                 ctx.wait_on(w)?;
             }
             self.started = true;
+            return Ok(());
+        }
+        // The edge of every class: the clocked bodies of those that happened run.
+        let mut edge = false;
+        for &(r, kind, w) in &self.clocks {
+            let x = ctx.edge_by(r, kind)? == Some(true);
+            self.img[w] = u64::from(x);
+            edge |= x;
+        }
+        if !edge && self.clocks_only {
+            if !ctx.wait_same() {
+                for &w in &self.waits {
+                    ctx.wait_on(w)?;
+                }
+            }
             return Ok(());
         }
         let mut metas = 0;
@@ -268,11 +272,7 @@ impl Process for RegionProc {
         if metas != 0 {
             self.metas.inputs.fetch_add(metas, Ordering::Relaxed);
         }
-        let edge = match self.clock {
-            Some((r, kind)) => ctx.edge_by(r, kind)? == Some(true),
-            None => false,
-        };
-        self.wake(ctx, edge)?;
+        self.run_code(ctx, if edge { Fun::Edge } else { Fun::Settle })?;
         self.export(ctx)?;
         if !ctx.wait_same() {
             for &w in &self.waits {

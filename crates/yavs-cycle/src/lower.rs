@@ -2766,6 +2766,7 @@ impl Lx<'_> {
             // A pure function of the design on constants: run by the analysis's evaluator.
             ExprKind::Call {
                 callee,
+                args,
                 method_of: None,
                 ..
             } if (db.decls[*callee].kind.subprogram()).is_some_and(|sp| {
@@ -2784,7 +2785,29 @@ impl Lx<'_> {
                         }
                     }
                 }
-                crate::check::const_value(db, self.e, self.p, known, x)
+                let v = crate::check::const_value(db, self.e, self.p, known, x)?;
+                // The checks of the call stay: a value or an argument outside its subtype is
+                // left to the inlined call, which stops the run as the normal mode does.
+                let sp = db.decls[*callee].kind.subprogram()?;
+                let fits = |st: SubtypeId, v: &ConstValue| {
+                    let (Some((lo, hi)), Some(v)) = (int_bounds(db, st), v.as_int()) else {
+                        return false;
+                    };
+                    (lo..=hi).contains(&v)
+                };
+                if !fits(sp.ret?, &v) {
+                    return None;
+                }
+                for a in args.iter() {
+                    let p = sp.params.get(usize::from(a.formal))?;
+                    let Actual::Expr(ax) = a.actual else {
+                        return None;
+                    };
+                    if !fits(p.subtype, &self.fold(ax)?) {
+                        return None;
+                    }
+                }
+                Some(v)
             }
             _ => db.fold_with(x, &mut |c| self.fold(c)).ok().flatten(),
         }

@@ -576,6 +576,91 @@ fn failed_checks_in_region_code_stop_the_run_as_in_the_normal_mode() {
 }
 
 const CALL_CHECKS: &str = "\
+entity cycle_fretc is
+end entity;
+architecture a of cycle_fretc is
+  signal clk : bit := '0';
+  signal x : integer := 5;
+  function dec(v : integer) return natural is
+  begin
+    return v - 1;
+  end function;
+begin
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      x <= dec(0);
+    end if;
+  end process;
+  main : process
+  begin
+    for i in 1 to 4 loop
+      clk <= '1';
+      wait for 5 ns;
+      clk <= '0';
+      wait for 5 ns;
+    end loop;
+    wait;
+  end process;
+end architecture;
+
+entity cycle_fparc is
+end entity;
+architecture a of cycle_fparc is
+  signal clk : bit := '0';
+  signal y : integer := 0;
+  function inc(v : natural) return integer is
+  begin
+    return v + 1;
+  end function;
+begin
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      y <= inc(-1);
+    end if;
+  end process;
+  main : process
+  begin
+    for i in 1 to 4 loop
+      clk <= '1';
+      wait for 5 ns;
+      clk <= '0';
+      wait for 5 ns;
+    end loop;
+    wait;
+  end process;
+end architecture;
+
+entity cycle_eslice is
+end entity;
+architecture a of cycle_eslice is
+  type arr_t is array (0 to 3) of bit_vector(7 downto 0);
+  signal clk : bit := '0';
+  signal k : integer := 2;
+  signal o : bit_vector(7 downto 0);
+begin
+  reg : process (clk)
+    variable v : arr_t := (others => x\"00\");
+  begin
+    if clk'event and clk = '1' then
+      k <= k - 1;
+      v(k)(3 downto 0) := \"1010\";
+      o <= v(0);
+    end if;
+  end process;
+  main : process
+  begin
+    for i in 1 to 8 loop
+      clk <= '1';
+      wait for 5 ns;
+      clk <= '0';
+      wait for 5 ns;
+    end loop;
+    wait;
+  end process;
+end architecture;
+
 entity cycle_aelem is
 end entity;
 architecture a of cycle_aelem is
@@ -723,6 +808,18 @@ fn failed_checks_in_inlined_calls_stop_the_run_as_in_the_normal_mode() {
             "error[E3009]: value 10 outside of INTEGER range 0 to 9 for variable V",
             "at 360 ns, delta 1, in process cycle_aelem.reg",
         ),
+        // A call on constants is folded only when no check of it fails.
+        (
+            "cycle_fretc",
+            "error[E3009]: value -1 outside of NATURAL range 0 to 2147483647 for the result of dec",
+            "at 0 fs, delta 1, in process cycle_fretc.reg",
+        ),
+        // A part of an element at the index just before the array.
+        (
+            "cycle_eslice",
+            "error[E3009]: index -1 outside of range 0 to 3 for v",
+            "at 30 ns, delta 1, in process cycle_eslice.reg",
+        ),
     ] {
         for mode in [None, Some("--cycle")] {
             let mut args = vec!["run", "--work=work:lib", "--no-cache", "--tier=interp"];
@@ -741,6 +838,33 @@ fn failed_checks_in_inlined_calls_stop_the_run_as_in_the_normal_mode() {
                     "{err}"
                 );
             }
+        }
+    }
+}
+
+/// A call whose constant actual lies outside its formal's subtype stays in the event kernel,
+/// which fails the check as the normal mode does.
+#[test]
+fn a_constant_actual_outside_its_formal_keeps_the_call_out() {
+    let dir = tempdir("cycle-call-const");
+    analyze(&dir, "checks.vhd", CALL_CHECKS);
+    for mode in [None, Some("--cycle")] {
+        let mut args = vec!["run", "--work=work:lib", "--no-cache", "--tier=interp"];
+        args.extend(mode);
+        args.push("cycle_fparc");
+        let o = yavs(&dir, &args);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "{mode:?}: {err}");
+        assert!(
+            err.contains("value -1 outside of NATURAL range 0 to 2147483647 for parameter V")
+                && err.contains("at 0 fs, delta 1, in process cycle_fparc.reg"),
+            "{mode:?}: {err}"
+        );
+        if mode.is_some() {
+            assert!(
+                err.contains("cycle mode: 0 of 2 processes run cycle-based"),
+                "{err}"
+            );
         }
     }
 }

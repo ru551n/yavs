@@ -1112,6 +1112,8 @@ impl Elaborated {
             foreign_archs,
             ext_procs,
             model_vals,
+            pkg_vals,
+            region_vals,
             sigs,
             regions,
             var_ports,

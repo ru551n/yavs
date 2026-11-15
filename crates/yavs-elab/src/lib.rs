@@ -150,6 +150,10 @@ pub struct ElabConfig {
     /// Store runs of record leaves in one kernel signal (`NetGraph::place`, #686): on by
     /// default; off (one signal per leaf) with the hidden test aid `YAVS_PACKS=off`.
     pub packs: bool,
+    /// Also evaluate, apart (`Elaborated::constant`), every constant of the design's regions and
+    /// packages that a plain elaboration leaves until something needs it (cycle mode lowers code
+    /// that reads them); one that cannot be evaluated has no value. Off by default.
+    pub keep_values: bool,
 }
 
 impl Default for ElabConfig {
@@ -158,6 +162,7 @@ impl Default for ElabConfig {
             max_depth: 1000,
             collapse_ports: true,
             packs: true,
+            keep_values: false,
         }
     }
 }
@@ -461,6 +466,11 @@ pub struct Elaborated {
     pub region: Option<Region>,
     /// Values of generics, generate parameters and constants per scope (for lowering).
     pub model_vals: Vec<ScopeVals>,
+    /// The values of the package constants elaboration evaluated.
+    pub pkg_vals: std::collections::HashMap<yavs_sem::DeclId, Val>,
+    /// With [`ElabConfig::keep_values`]: the constants nothing evaluated during elaboration, by
+    /// instance scope (`None`: a package's), evaluated apart from the model.
+    pub region_vals: std::collections::HashMap<(Option<ScopeId>, yavs_sem::DeclId), Val>,
     /// Per leaf: nothing asks for the event history of single elements of this signal, so
     /// the kernel keeps only each block's last event (`lean.rs`). Clear it to keep the history
     /// of every signal; empty means the same.
@@ -591,6 +601,22 @@ impl Elaborated {
             cur = self.hier.scope(s).parent;
         }
         None
+    }
+
+    /// The value of constant `d` seen from `scope`: of the regions around it, else of a package,
+    /// including those only [`ElabConfig::keep_values`] evaluated.
+    pub fn constant(&self, scope: ScopeId, d: yavs_sem::DeclId) -> Option<&Val> {
+        if let Some(v) = self.value(scope, d) {
+            return Some(v);
+        }
+        let mut cur = Some(scope);
+        while let Some(s) = cur {
+            if let Some(v) = self.region_vals.get(&(Some(s), d)) {
+                return Some(v);
+            }
+            cur = self.hier.scope(s).parent;
+        }
+        (self.pkg_vals.get(&d)).or_else(|| self.region_vals.get(&(None, d)))
     }
 }
 

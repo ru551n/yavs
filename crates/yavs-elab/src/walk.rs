@@ -692,6 +692,11 @@ pub(crate) fn elaborate(
     e.m.nets.place(e.cfg.packs, forced.as_ref());
     let lean = crate::lean::leaves(e.db, &e.m.nets);
     let no_codes = crate::keep_codes::leaves(e.db, &e.m.nets);
+    let region_vals = if e.cfg.keep_values {
+        e.region_values()
+    } else {
+        Default::default()
+    };
     e.m.calls.flush();
     Ok(Elaborated {
         lean,
@@ -706,6 +711,8 @@ pub(crate) fn elaborate(
         region: None,
         convs: std::mem::take(&mut e.m.convs),
         model_vals: e.m.vals,
+        pkg_vals: std::mem::take(&mut e.m.pkg),
+        region_vals,
         sigs: e.m.sigs,
         regions: e.m.regions,
         var_ports: e.m.var_ports,
@@ -1517,6 +1524,70 @@ impl Elab<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Cycle mode: the values of the constants of every region and package of the design that
+    /// nothing evaluated (a plain elaboration evaluates one when something first needs it), apart
+    /// from the model: afterwards the model and the calls made are as before, so the lowering
+    /// and the run see what a plain elaboration leaves (a constant that fails its subtype check
+    /// still fails at run time). One that cannot be evaluated has no value.
+    fn region_values(&mut self) -> std::collections::HashMap<(Option<ScopeId>, DeclId), Val> {
+        let db: &Db = self.db;
+        let (vals, pkg) = (self.m.vals.clone(), self.m.pkg.clone());
+        let mark = self.m.session.mark();
+        let mut out = std::collections::HashMap::new();
+        // Only what evaluates without an impure call (whose effects on package state would
+        // happen twice): a deferred constant by its full declaration.
+        let constant = |d: DeclId, deferred: bool| match &db.decls[d].kind {
+            DeclKind::Object(o) if o.class == ObjClass::Constant && o.role == ObjRole::Plain => o
+                .default
+                .is_some_and(|x| !crate::eval::may_call_impure(db, x)),
+            DeclKind::Object(o) if deferred && o.role == ObjRole::Deferred => {
+                yavs_lower::deferred_completion(db, d).is_some_and(|f| {
+                    matches!(&db.decls[f].kind, DeclKind::Object(o)
+                        if o.default.is_some_and(|x| !crate::eval::may_call_impure(db, x)))
+                })
+            }
+            _ => false,
+        };
+        let mut regions: Vec<(ScopeId, Vec<yavs_sem::ScopeId>)> = self
+            .m
+            .regions
+            .iter()
+            .map(|(s, r)| (*s, r.clone()))
+            .collect();
+        regions.sort_by_key(|r| r.0);
+        for (s, rs) in regions {
+            for r in rs {
+                for &d in &db.scopes[r].order {
+                    if constant(d, false)
+                        && let Ok(v) = self.m.value_of(db, d, Some(s), db.decls[d].span)
+                    {
+                        out.insert((Some(s), d), v);
+                    }
+                }
+            }
+        }
+        for (_, unit) in db.units.iter() {
+            if unit.kind != UnitKind::Package {
+                continue;
+            }
+            for &d in &db.scopes[unit.scope].order {
+                if constant(d, true)
+                    && let Ok(v) = self.m.value_of(db, d, None, db.decls[d].span)
+                {
+                    out.insert((None, d), v);
+                }
+            }
+        }
+        self.m.vals = vals;
+        self.m.pkg = pkg;
+        // Calls of impure functions made on the way are undone; if that fails, the values are
+        // not kept (the package state may differ).
+        if self.m.session.undo(db, mark).is_err() {
+            out.clear();
+        }
+        out
     }
 
     /// A 2019 variable port (LRM 6.5.2) denotes its actual's protected object: the shared

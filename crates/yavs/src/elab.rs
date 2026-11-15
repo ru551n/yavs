@@ -662,11 +662,13 @@ pub enum SeverityArg {
 }
 
 /// The elaborated design, or the exit code of the failed stage.
+#[allow(clippy::too_many_arguments)]
 fn elaborate(
     c: &Common,
     lowering: yavs_elab::LowerOptions,
     compile_all: bool,
     collapse_ports: bool,
+    keep_values: bool,
     format: MessageFormat,
     color: bool,
     encoding: yavs_syntax::Encoding,
@@ -796,6 +798,7 @@ fn elaborate(
             collapse_ports: collapse_ports && !c.no_collapse_ports,
             // Hidden test aid: `YAVS_PACKS=off` gives every leaf a kernel signal of its own.
             packs: std::env::var("YAVS_PACKS").map_or(true, |v| v != "off"),
+            keep_values,
             ..yavs_elab::ElabConfig::default()
         };
         yavs_elab::elaborate(&mut db, t, &c.generics, &cfg)
@@ -1102,6 +1105,7 @@ pub fn elab(
         yavs_elab::LowerOptions::default(),
         false,
         true,
+        false,
         format,
         color,
         encoding,
@@ -1502,6 +1506,8 @@ fn prepare(
         lowering,
         a.tier() == TierArg::Clift,
         collapse,
+        // Cycle mode lowers code that reads constants a plain run evaluates only when needed.
+        a.cycle || a.cycle_strict,
         format,
         color,
         encoding,

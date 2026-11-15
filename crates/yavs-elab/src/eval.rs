@@ -2432,6 +2432,85 @@ pub(crate) fn calls_impure(db: &Db, e: ExprId) -> bool {
     .is_some()
 }
 
+/// Whether evaluating `e` may call an impure function: directly, or in a function it calls
+/// (its statements, its declarations and the ranges of their subtypes, its formals'),
+/// transitively. A call it cannot see into counts as one.
+pub(crate) fn may_call_impure(db: &Db, e: ExprId) -> bool {
+    fn expr(db: &Db, e: ExprId, seen: &mut std::collections::HashSet<DeclId>) -> bool {
+        let mut calls = Vec::new();
+        db.walk_expr(e, &mut |x| {
+            if let ExprKind::Call { callee, .. } = db.exprs[x].kind {
+                calls.push(callee);
+            }
+        });
+        calls.into_iter().any(|c| callee(db, c, seen))
+    }
+    fn ranges(db: &Db, st: SubtypeId, seen: &mut std::collections::HashSet<DeclId>) -> bool {
+        db.subtype_ranges(st).into_iter().any(|r| match r {
+            RangeC::Explicit { left, right, .. } => expr(db, *left, seen) || expr(db, *right, seen),
+            RangeC::Attr {
+                prefix: AttrPrefix::Expr(p),
+                ..
+            } => expr(db, *p, seen),
+            _ => false,
+        })
+    }
+    fn callee(db: &Db, c: DeclId, seen: &mut std::collections::HashSet<DeclId>) -> bool {
+        let c = match &db.decls[c].kind {
+            DeclKind::Alias(yavs_sem::decl::Alias::NonObject { target }) => *target,
+            _ => c,
+        };
+        if !seen.insert(c) {
+            return false;
+        }
+        let Some(sp) = db.decls[c].kind.subprogram() else {
+            return true;
+        };
+        if matches!(
+            sp.kind,
+            yavs_sem::decl::SubprogramKind::Function { pure: false }
+        ) {
+            return true;
+        }
+        let yavs_sem::decl::Body::Hir { scope, stmts } = &sp.body else {
+            return false;
+        };
+        for p in sp.params.iter() {
+            if ranges(db, p.subtype, seen) || p.default.is_some_and(|x| expr(db, x, seen)) {
+                return true;
+            }
+        }
+        for &d in &db.scopes[*scope].order {
+            let bad = match &db.decls[d].kind {
+                DeclKind::Object(o) => {
+                    ranges(db, o.subtype, seen) || o.default.is_some_and(|x| expr(db, x, seen))
+                }
+                DeclKind::Subtype(st) => ranges(db, *st, seen),
+                _ => false,
+            };
+            if bad {
+                return true;
+            }
+        }
+        let mut todo: Vec<yavs_sem::StmtId> = stmts.to_vec();
+        while let Some(s) = todo.pop() {
+            if let yavs_sem::hir::StmtKind::ProcCall(call) = &db.stmts[s].kind
+                && callee(db, call.callee, seen)
+            {
+                return true;
+            }
+            let mut xs = Vec::new();
+            db.stmt_exprs(s, &mut |x, _| xs.push(x));
+            if xs.into_iter().any(|x| expr(db, x, seen)) {
+                return true;
+            }
+            todo.extend(db.stmt_children(s));
+        }
+        false
+    }
+    expr(db, e, &mut std::collections::HashSet::new())
+}
+
 /// Whether expression `e` names a signal or port.
 pub(crate) fn reads_signal(db: &Db, e: ExprId) -> bool {
     let mut found = false;

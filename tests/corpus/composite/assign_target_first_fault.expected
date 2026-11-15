@@ -1,0 +1,5 @@
+exit	1
+diag	warning	0	0	:assign_target_first_fault:_p0	NUMERIC_STD.TO_UNSIGNED: vector truncated
+diag	warning	0	0	:assign_target_first_fault:_p0	NUMERIC_STD.TO_UNSIGNED: vector truncated
+diag	warning	0	0	:assign_target_first_fault:_p0	NUMERIC_STD.TO_UNSIGNED: vector truncated
+diag	fatal	0	0	-	index 5 outside of INTEGER range 0 to 4

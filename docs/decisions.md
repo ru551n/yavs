@@ -16903,3 +16903,24 @@ the next run".
   copied-from-words ones (built and measured: no fewer instructions on a loop of in-place vector operations, so not
   worth the entries it removes); a dedicated put for the copied-from-words `LCopy` of a constant count (not built).
 - **Measured**: in `docs/STATUS.md` "In-place `ieee` vector results written without zeroing first".
+
+## Target before value in variable assignments to indexed composites (yavs-lower `stmt.rs` `assign`, `expr.rs` `slice_checked`, #1156, agent, 2026-11-15)
+
+- **Decision:** a variable assignment whose target has an array or record type and is named with an index or slice
+  (`w(k)`, `r(a to b)`, `ra(i).f`, `p.all(i)`) evaluates the target name (impure calls in it, the index and slice
+  checks) before the value; every other target keeps the value first. Signal assignments already evaluate the target
+  first.
+- **Why:** LRM 10.6.2.1 gives no order (lrm-checks L187). Both reference simulators that run it evaluate such a target
+  first; on a scalar element and on a whole object through an access value they differ, one each way, so with no
+  majority the old order stays (catalogue `variable-assignment-target-order`). User decision 2026-11-15: keep the
+  split orders (scalar elements and whole objects through an access value value first); do not unify.
+- **Compiled and interpreted code:** a slice of a plain array lowers its checks before the value and its address
+  arithmetic after it (`slice_checked`, `slice_place`, which makes the slice's descriptor again after a value with a
+  call: the optimiser forgets the length of the first at the call, and a slice of `to_signed(x, 8)` kept a length
+  check and a copy of run-time length, 43 percent more instructions on a loop of them), so the fusions of that arithmetic with the copy and the copy of
+  a native's result into an element (`rt::in_place_results`) still apply, and while the value is lowered the target's
+  subtype is the target's descriptor (`Fx::target_dope`), so an aggregate taking its bounds from it does not evaluate
+  the range again (a second evaluation ran an impure bound twice, #1157, and its length check kept Cranelift's copy
+  from a constant count: 2.6 percent more instructions on a loop of byte-lane slices); whole objects keep their order, since moving
+  them gained some designs ops and lost others (`perf/zero_fill`). The work counters of `crates/yavs/tests/perf.rs`
+  are unchanged but for small drops.

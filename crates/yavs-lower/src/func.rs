@@ -278,6 +278,9 @@ pub(crate) struct Fx<'a, 'b> {
     /// The bounds `(left, right, dir)` a one-dimensional descriptor was made from in a block
     /// (`Inst::MakeDope`; only valid in that block), so a native `ieee` call takes them as values (#697).
     pub made_dopes: Vec<(BlockId, Reg, (Reg, Reg, Reg))>,
+    /// The descriptor of a slice target evaluated before its value: the value's uses of the
+    /// target's subtype take it instead of evaluating the range again (#1156, #1157).
+    pub target_dope: Option<(SubtypeId, Reg)>,
 }
 
 /// The whole-value reads of record signals in a process with a sensitivity list. Such a process
@@ -334,6 +337,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             local_files: Vec::new(),
             sigcopy: None,
             made_dopes: Vec::new(),
+            target_dope: None,
         }
     }
 

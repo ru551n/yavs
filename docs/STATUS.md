@@ -11559,6 +11559,10 @@ the rare way and the native frame leaves inside the stretch, so the interpreter 
 `clift_elem_operands` (`clift_inplace_sites`, `cb_rare_native`). The interpreter is unchanged, and the native's
 result still goes through a temporary.
 
+## Target before value in variable assignments to indexed composites (#1156, 2026-11-15)
+
+A variable assignment whose target is an array or record named with an index or slice (an element, a slice, a field below one) lowers the target name, its index and slice checks before the value (`stmt.rs` `assign`), in every tier, as both reference simulators do; other targets (a scalar element, a whole object) still take the value first (the references differ there, lrm-checks L187, catalogue `variable-assignment-target-order`). Tests: corpus `composite/assign_target_first` (impure calls in index and value traced, in a loop long enough to be compiled), `assign_target_first_fault` and `assign_target_first_slice` (the value's truncation warnings only for elements in range, then the index error). The value of such a slice target takes the target's evaluated descriptor where it names the target's subtype (`Fx::target_dope`), so an aggregate value no longer evaluates the slice bounds again: an impure call there runs once for a variable target (#1157, corpus `composite/slice_target_bound_once`, by hand); a signal target still runs it twice (#1157 open).
+
 ## Results of `ieee` natives copied into an element in compiled code (2026-11-15)
 
 Cranelift code copies the result of an in-place `numeric_std` or `std_logic_1164` native that is assigned to an
@@ -11567,6 +11571,6 @@ instead of writing the full result into a temporary and reading it back; the tem
 code leaves before the copy (`docs/decisions.md` "Results of `ieee` natives copied into an element from their words").
 Tests: corpus `composite/element_results` (rows of 5, 12, 16 and 64 elements, both directions, negative indices, an
 element that is an operand of its own result, metavalues, a truncation warning on the native's rare way, a signal target
-and a signal parameter; sim1 and sim2 agree) and `composite/element_results_fault` (an index error after the operation),
+and a signal parameter; sim1 and sim2 agree) and `composite/element_results_fault` (an index error in such a statement; since #1156 the index is checked before the operation),
 perf design `clift_elem_operands` (`clift_inplace_result_sites`). Frame-mode subprograms (no liveness) and the interpreter
 keep the copy.

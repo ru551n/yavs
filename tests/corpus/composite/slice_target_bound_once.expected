@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:slice_target_bound_once:_p0	plain value: 1
+diag	note	0	0	:slice_target_bound_once:_p0	positional aggregate: 1 56
+diag	note	0	0	:slice_target_bound_once:_p0	others: 1 77

@@ -1038,33 +1038,76 @@ impl Fx<'_, '_> {
     }
 
     fn assign(&mut self, target: ExprId, e: ExprId, what: &str, span: Span) -> R<()> {
-        let v = self.value_expr(e)?;
-        if let ExprKind::Aggregate { .. } = &self.db.exprs[target].kind {
-            let t = self.db.base(self.db.exprs[e].subtype);
-            // The value may be one of the target variables (`(r.b, r.a) := r`, #815): copy it
-            // whole before the first element is written.
-            let fresh = matches!(
-                self.db.exprs[e].kind,
-                ExprKind::Aggregate { .. } | ExprKind::Call { .. }
-            );
-            let v = match v {
-                crate::expr::V::A(data, desc) if !fresh => {
-                    let tid = self.ty(t, span)?;
-                    let size = self.size_of(tid, desc);
-                    let dst = self.alloc_val(size, tid, Some(desc));
-                    self.emit(Inst::Copy {
-                        dst,
-                        src: data,
-                        bytes: size,
-                    });
-                    crate::expr::V::A(dst, desc)
-                }
-                s => s,
+        let x = &self.db.exprs[target];
+        if !matches!(x.kind, ExprKind::Aggregate { .. }) {
+            // A composite target with an index or slice in its name is evaluated and checked
+            // before the value, any other after it (the reference simulators agree on the
+            // first only, #1156, lrm-checks L187).
+            let first = matches!(
+                self.db.types[self.db.base(x.subtype)].kind,
+                TypeKind::Array { .. } | TypeKind::Record { .. }
+            ) && self.indexed(target);
+            let (p, v) = if let ExprKind::Slice { prefix, range } = &x.kind
+                && first
+                && !self.is_general(self.db.base(self.db.exprs[*prefix].subtype), span)?
+            {
+                let s = self.slice_checked(*prefix, range, span)?;
+                let outer = self.target_dope.replace((x.subtype, s.nd));
+                let v = self.value_expr(e);
+                self.target_dope = outer;
+                let v = v?;
+                let again = self.has_call(e);
+                (self.slice_place(s, again, span)?, v)
+            } else if first {
+                let p: Place = self.place(target)?;
+                (p, self.value_expr(e)?)
+            } else {
+                let v = self.value_expr(e)?;
+                (self.place(target)?, v)
             };
-            return self.assign_aggregate(target, v, t, span);
+            return self.store_place(p, v, self.db.exprs[e].subtype, what, span);
         }
-        let p: Place = self.place(target)?;
-        self.store_place(p, v, self.db.exprs[e].subtype, what, span)
+        let v = self.value_expr(e)?;
+        let t = self.db.base(self.db.exprs[e].subtype);
+        // The value may be one of the target variables (`(r.b, r.a) := r`, #815): copy it
+        // whole before the first element is written.
+        let fresh = matches!(
+            self.db.exprs[e].kind,
+            ExprKind::Aggregate { .. } | ExprKind::Call { .. }
+        );
+        let v = match v {
+            crate::expr::V::A(data, desc) if !fresh => {
+                let tid = self.ty(t, span)?;
+                let size = self.size_of(tid, desc);
+                let dst = self.alloc_val(size, tid, Some(desc));
+                self.emit(Inst::Copy {
+                    dst,
+                    src: data,
+                    bytes: size,
+                });
+                crate::expr::V::A(dst, desc)
+            }
+            s => s,
+        };
+        self.assign_aggregate(target, v, t, span)
+    }
+
+    /// Whether expression `e` has a call (an operator, a native, a function) in it.
+    fn has_call(&self, e: ExprId) -> bool {
+        let mut found = false;
+        self.db.walk_expr(e, &mut |x| {
+            found |= matches!(self.db.exprs[x].kind, ExprKind::Call { .. });
+        });
+        found
+    }
+
+    /// Whether the name `e` has an index or a slice (through fields and dereferences).
+    fn indexed(&self, e: ExprId) -> bool {
+        match &self.db.exprs[e].kind {
+            ExprKind::Index { .. } | ExprKind::Slice { .. } => true,
+            ExprKind::Field { prefix, .. } | ExprKind::Deref { prefix } => self.indexed(*prefix),
+            _ => false,
+        }
     }
 
     /// `(a, b) := v` (LRM 10.6.2.1): each element of the aggregate target `agg` gets the

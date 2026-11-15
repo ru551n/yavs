@@ -1,0 +1,16 @@
+exit	0
+diag	note	0	0	:assign_target_first:_p0	event t
+diag	note	0	0	:assign_target_first:_p0	event v
+diag	note	0	0	:assign_target_first:_p0	event t
+diag	note	0	0	:assign_target_first:_p0	event r
+diag	note	0	0	:assign_target_first:_p0	event v
+diag	note	0	0	:assign_target_first:_p0	event t
+diag	note	0	0	:assign_target_first:_p0	event w
+diag	note	0	0	:assign_target_first:_p0	event t
+diag	note	0	0	:assign_target_first:_p0	event t
+diag	note	0	0	:assign_target_first:_p0	event v
+diag	note	0	0	:assign_target_first:_p0	event c
+diag	note	0	0	:assign_target_first:_p0	event t
+diag	note	0	0	:assign_target_first:_p0	event v
+diag	note	0	0	:assign_target_first:_p0	event w
+diag	note	0	0	:assign_target_first:_p0	trace=66273 sum=535778

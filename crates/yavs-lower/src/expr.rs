@@ -80,6 +80,21 @@ pub(crate) enum Place {
     },
 }
 
+/// A slice target whose bounds are checked (`Fx::slice_checked`).
+pub(crate) struct SliceChecked {
+    data: Reg,
+    dope: Reg,
+    off: Option<Reg>,
+    tid: TyId,
+    dims: u8,
+    p: Reg,
+    n: Reg,
+    pub nd: Reg,
+    /// Left, right and direction of the slice.
+    bounds: [Reg; 3],
+    t: TypeId,
+}
+
 /// One selection below a composite signal.
 #[derive(Clone, Copy)]
 pub(crate) enum Step<'d> {
@@ -2564,6 +2579,12 @@ impl<'a> Fx<'a, '_> {
         into: Option<Reg>,
     ) -> R<Option<Reg>> {
         let db = self.db;
+        if let Some((t, d)) = self.target_dope
+            && t == st
+            && into.is_none()
+        {
+            return Ok(Some(d));
+        }
         // `x'subtype` of an unconstrained object, a named return value's subtype: the
         // object's own descriptor.
         if let Constraint::FromObject {
@@ -5726,6 +5747,18 @@ impl<'a> Fx<'a, '_> {
         what: &str,
         span: Span,
     ) -> R<(Reg, Reg, Reg)> {
+        let (p, n, nd, _) = self.slice_bounds(dope, range, what, span)?;
+        Ok((p, n, nd))
+    }
+
+    /// [`Fx::slice_of`] and the slice's left, right and direction.
+    fn slice_bounds(
+        &mut self,
+        dope: Reg,
+        range: &RangeC,
+        what: &str,
+        span: Span,
+    ) -> R<(Reg, Reg, Reg, [Reg; 3])> {
         let r = self.range(range, span)?;
         let dir = self.dir_reg(r.dir);
         let nd = self.one_dope(r.left, r.right, dir);
@@ -5742,7 +5775,7 @@ impl<'a> Fx<'a, '_> {
             what: what_id,
             dir_what,
         });
-        Ok((p, n, nd))
+        Ok((p, n, nd, [r.left, r.right, dir]))
     }
 
     fn slice(&mut self, prefix: ExprId, range: &RangeC, span: Span) -> R<V> {
@@ -5894,54 +5927,93 @@ impl<'a> Fx<'a, '_> {
                 if self.is_general(db.base(db.exprs[*prefix].subtype), span)? {
                     return self.slice_place_comp(*prefix, range, span);
                 }
-                let what = self.prefix_name(*prefix);
-                let Place::Array {
-                    data,
-                    dope,
-                    off,
-                    tid,
-                    dims,
-                } = self.place(*prefix)?
-                else {
-                    return Err(self.cx.ice(span, "sliced non-array"));
-                };
-                let (p, n, nd) = self.slice_of(dope, range, &what, span)?;
-                if self.is_logic(tid) {
-                    let count = self.dope_len(dope);
-                    let a = self.bin(IntOp::Sub, count, p);
-                    let mut o = self.bin(IntOp::Sub, a, n);
-                    if let Some(b) = off {
-                        o = self.bin(IntOp::Add, o, b);
-                    }
-                    return Ok(Place::Array {
-                        data,
-                        dope: nd,
-                        off: Some(o),
-                        tid,
-                        dims,
-                    });
-                }
-                let t = db.base(db.exprs[*prefix].subtype);
-                let (_, _, w) = self.elem_facts(t, span)?;
-                let a = self.reg(RegTy::Ptr);
-                self.emit(Inst::Index {
-                    dst: a,
-                    base: data,
-                    pos: p,
-                    stride: w.bytes(),
-                });
-                Ok(Place::Array {
-                    data: a,
-                    dope: nd,
-                    off: None,
-                    tid,
-                    dims,
-                })
+                let s = self.slice_checked(*prefix, range, span)?;
+                self.slice_place(s, false, span)
             }
             ExprKind::Field { prefix, elem } => self.field_place(*prefix, *elem, span),
             ExprKind::Deref { prefix } => self.deref_place(*prefix, span),
             _ => Err(self.cx.unsupported(span, "aggregate targets")),
         }
+    }
+
+    /// A slice target of a plain array, its prefix's place and its bounds checked; its place
+    /// is `slice_place`, which only computes (#1156: a value lowered between them keeps the
+    /// address arithmetic next to the store).
+    pub fn slice_checked(&mut self, prefix: ExprId, range: &RangeC, span: Span) -> R<SliceChecked> {
+        let what = self.prefix_name(prefix);
+        let Place::Array {
+            data,
+            dope,
+            off,
+            tid,
+            dims,
+        } = self.place(prefix)?
+        else {
+            return Err(self.cx.ice(span, "sliced non-array"));
+        };
+        let (p, n, nd, bounds) = self.slice_bounds(dope, range, &what, span)?;
+        let t = self.db.base(self.db.exprs[prefix].subtype);
+        Ok(SliceChecked {
+            bounds,
+            data,
+            dope,
+            off,
+            tid,
+            dims,
+            p,
+            n,
+            nd,
+            t,
+        })
+    }
+
+    /// `again`: a value with a call was lowered since `slice_checked`.
+    pub fn slice_place(&mut self, s: SliceChecked, again: bool, span: Span) -> R<Place> {
+        let SliceChecked {
+            data,
+            dope,
+            off,
+            tid,
+            dims,
+            p,
+            n,
+            nd,
+            bounds: [l, r, d],
+            t,
+        } = s;
+        // The descriptor again after a value with a call: the optimiser forgets the length of the
+        // first at the call, and the store's length check and copy need it.
+        let nd = if again { self.one_dope(l, r, d) } else { nd };
+        if self.is_logic(tid) {
+            let count = self.dope_len(dope);
+            let a = self.bin(IntOp::Sub, count, p);
+            let mut o = self.bin(IntOp::Sub, a, n);
+            if let Some(b) = off {
+                o = self.bin(IntOp::Add, o, b);
+            }
+            return Ok(Place::Array {
+                data,
+                dope: nd,
+                off: Some(o),
+                tid,
+                dims,
+            });
+        }
+        let (_, _, w) = self.elem_facts(t, span)?;
+        let a = self.reg(RegTy::Ptr);
+        self.emit(Inst::Index {
+            dst: a,
+            base: data,
+            pos: p,
+            stride: w.bytes(),
+        });
+        Ok(Place::Array {
+            data: a,
+            dope: nd,
+            off: None,
+            tid,
+            dims,
+        })
     }
 
     /// Store `v` (of subtype `from`) into `p`, with the implicit subtype conversion checks.

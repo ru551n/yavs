@@ -1,7 +1,7 @@
 -- difftest: top=element_results_fault std=2008 exit=1 ignore=fatalmsg
--- A result of `to_unsigned` copied into an element of an array of vectors whose index fails after
--- the operation ran: the index error, in a function called often enough to be compiled. (The
--- operation is one without a warning: the reference simulators check the index first.)
+-- A result of `to_unsigned` copied into an element of an array of vectors whose index fails: the
+-- index error, in a function called often enough to be compiled. (The index is checked before the
+-- operation runs, as in the reference simulators, #1156.)
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;

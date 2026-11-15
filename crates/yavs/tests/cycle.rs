@@ -576,6 +576,35 @@ fn failed_checks_in_region_code_stop_the_run_as_in_the_normal_mode() {
 }
 
 const CALL_CHECKS: &str = "\
+entity cycle_aelem is
+end entity;
+architecture a of cycle_aelem is
+  type nat_arr is array (0 to 3) of natural range 0 to 9;
+  signal clk : bit := '0';
+  signal x : natural := 0;
+  signal o : natural := 0;
+begin
+  reg : process (clk)
+    variable v : nat_arr := (others => 0);
+  begin
+    if clk'event and clk = '1' then
+      x <= x + 1;
+      v(x mod 4) := v(x mod 4) + 1;
+      o <= v(1);
+    end if;
+  end process;
+  main : process
+  begin
+    for i in 1 to 40 loop
+      clk <= '1';
+      wait for 5 ns;
+      clk <= '0';
+      wait for 5 ns;
+    end loop;
+    wait;
+  end process;
+end architecture;
+
 entity cycle_fret is
 end entity;
 architecture a of cycle_fret is
@@ -667,7 +696,8 @@ end architecture;
 ";
 
 /// The checks inside an inlined call (a result outside its subtype, an actual outside its
-/// formal's, an index outside a formal's range) stop the run with the normal mode's message.
+/// formal's, an index outside a formal's range), and of an element of an array of integers, stop
+/// the run with the normal mode's message.
 #[test]
 fn failed_checks_in_inlined_calls_stop_the_run_as_in_the_normal_mode() {
     let dir = tempdir("cycle-call-checks");
@@ -687,6 +717,11 @@ fn failed_checks_in_inlined_calls_stop_the_run_as_in_the_normal_mode() {
             "cycle_fidx",
             "error[E3009]: index 8 outside of range 7 downto 0 for d",
             "at 80 ns, delta 1, in process cycle_fidx.reg",
+        ),
+        (
+            "cycle_aelem",
+            "error[E3009]: value 10 outside of INTEGER range 0 to 9 for variable V",
+            "at 360 ns, delta 1, in process cycle_aelem.reg",
         ),
     ] {
         for mode in [None, Some("--cycle")] {
@@ -914,6 +949,29 @@ fn constants_only_region_code_reads_have_their_values() {
         assert_eq!(cycle, normal, "{t:?}\n{err}");
         assert!(
             err.contains("cycle mode: 1 of 2 processes run cycle-based"),
+            "{err}"
+        );
+    }
+}
+
+/// Arrays of integers and enumerations in variables and constants; the processes that drive
+/// signals of them stay out with the reason.
+#[test]
+fn arrays_of_integers_give_the_same_result() {
+    let dir = tempdir("cycle-intarr");
+    analyze(&dir, "intarr.vhd", include_str!("cycle/intarr.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_intarr");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_intarr");
+        assert_eq!(normal.len(), 16, "{t:?} {normal:?}");
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        // `reg` and `cmb` join; `lanes` and `st` drive arrays of integers and enumerations.
+        assert!(
+            err.contains("cycle mode: 2 of 8 processes run cycle-based"),
+            "{err}"
+        );
+        assert!(
+            err.contains("an array signal of integers or enumerations is not supported in cycle mode yet (signal cycle_intarr.sh)"),
             "{err}"
         );
     }

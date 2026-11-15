@@ -627,7 +627,27 @@ struct Part {
     /// A literal with a metavalue element: its `std_ulogic` codes (`Lx::lits`), since no
     /// two-state comparison means what the comparison with it means in VHDL.
     lit: Option<u32>,
+    /// An array of integers or enumeration positions: one word per element (the innermost index
+    /// range is the word's, `WORD`), each element of this range.
+    int: Option<IntElem>,
 }
+
+/// The elements of an array of integers or enumerations: the values they hold, and the subtype
+/// and object an assignment to one is checked against.
+#[derive(Clone, Copy, Debug)]
+struct IntElem {
+    lo: i64,
+    hi: i64,
+    down: bool,
+    place: Option<(SubtypeId, DeclId)>,
+}
+
+/// The index range of the bits of one word: the innermost range of an array of integers.
+const WORD: Bounds = Bounds {
+    left: 63,
+    dir: Direction::Downto,
+    right: 0,
+};
 
 #[derive(Clone, Copy, Debug)]
 struct IntV {
@@ -1015,6 +1035,7 @@ impl Lx<'_> {
             at: None,
             obj: None,
             lit: None,
+            int: None,
         }
     }
 
@@ -1841,6 +1862,11 @@ impl Lx<'_> {
                 });
                 Ok(())
             }
+            // An element of an array of integers.
+            (Val::Part(d), Val::Int(s)) if d.dims.n == 1 && d.int.is_some() => {
+                let w = self.elem_word(s, d.int.expect("matched"));
+                self.assign(&Val::Part(Part { int: None, ..*d }), Val::Part(w))
+            }
             _ => Err("an assignment whose value has another shape than its target".into()),
         }
     }
@@ -1892,6 +1918,48 @@ impl Lx<'_> {
         self.site(Check::Index { b, what })
     }
 
+    /// An element of an array of integers as the integer it is; any other part as it is.
+    fn int_elem(&mut self, p: Part) -> Val {
+        match p.int {
+            Some(e) if p.dims.n == 1 => {
+                let r = self.whole(p);
+                Val::Int(IntV {
+                    r,
+                    lo: e.lo,
+                    hi: e.hi,
+                    down: e.down,
+                    place: None,
+                    fresh: false,
+                    leaf: None,
+                })
+            }
+            _ => Val::Part(p),
+        }
+    }
+
+    /// The word of integer `s` for an element of an array of integers, checked against the
+    /// element's subtype unless it cannot leave it.
+    fn elem_word(&mut self, s: IntV, e: IntElem) -> Part {
+        if (s.lo < e.lo || s.hi > e.hi)
+            && let Some((sub, obj)) = e.place
+        {
+            let site = self.site(Check::Range {
+                ty: subtype_name(self.db, sub),
+                lo: e.lo,
+                hi: e.hi,
+                down: e.down,
+                what: obj_desc(self.db, obj),
+            });
+            self.ops.push(Op::Range {
+                a: s.r,
+                lo: e.lo,
+                hi: e.hi,
+                site,
+            });
+        }
+        part_of(s.r, 64)
+    }
+
     /// A dynamic element read into a temporary; any other part as it is.
     fn materialise(&mut self, p: Part) -> Part {
         let Some((idx, b, stride)) = p.at else {
@@ -1899,7 +1967,7 @@ impl Lx<'_> {
         };
         let site = self.index_site(&p, b);
         let mut t = self.tmp(p.len);
-        t.dims = p.dims;
+        (t.dims, t.int) = (p.dims, p.int);
         self.ops.push(Op::IndexRead {
             dst: t.r,
             src: p.r,
@@ -2251,11 +2319,20 @@ impl Lx<'_> {
         match v {
             Val::Part(mut p) => {
                 p.r = self.loc(words(p.full));
-                if !has_init {
-                    self.uninit += u64::from(p.full);
-                }
                 if let Ref::Loc(w) = p.r {
                     self.var_words.push((w, words(p.full)));
+                    match p.int {
+                        // Integer elements start at their `'left`.
+                        Some(e) if !has_init => {
+                            let left = if e.down { e.hi } else { e.lo };
+                            if left != 0 {
+                                (0..p.full / 64).for_each(|k| self.init.push((w + k, left as u64)));
+                            }
+                        }
+                        Some(_) => {}
+                        None if !has_init => self.uninit += u64::from(p.full),
+                        None => {}
+                    }
                 }
                 Val::Part(p)
             }
@@ -2290,6 +2367,14 @@ impl Lx<'_> {
             _ => Err("a signal leaf placed twice".to_string()),
         };
         match v {
+            // ponytail: the image keeps one word per byte signal and the boundary reads and
+            // drives one integer, so a signal of integers stays out; its words and boundary
+            // conversion (`rt.rs`) are the next step.
+            Val::Part(p) if p.int.is_some() => Err(format!(
+                "an array signal of integers or enumerations is not supported in cycle mode yet \
+                 (signal {})",
+                self.e.leaf_name(leaf_of(p.r)?)
+            )),
             Val::Part(mut p) => {
                 let l = leaf_of(p.r)?;
                 let leaf = nets.leaf(l);
@@ -2350,7 +2435,12 @@ impl Lx<'_> {
                         None => p.len,
                     };
                     self.reads.insert(l);
-                    self.rparts.push((l, p.lo - base, n));
+                    // An array of integers: a word per element.
+                    let (lo, n) = match p.int {
+                        Some(_) => (p.lo / 64, n / 64),
+                        None => (p.lo, n),
+                    };
+                    self.rparts.push((l, lo - base, n));
                 }
             }
             Val::Int(IntV { leaf: Some(l), .. }) => {
@@ -2380,6 +2470,7 @@ impl Lx<'_> {
                     at: None,
                     obj: Some(d),
                     lit: None,
+                    int: None,
                 }))
             }
             Shape::Scalar {
@@ -2405,6 +2496,62 @@ impl Lx<'_> {
             }
             Shape::Scalar { .. } => {
                 Err("a value of a real or physical type is not supported in cycle mode yet".into())
+            }
+            Shape::Array { dims, elem, .. } if matches!(**elem, Shape::Scalar { elem: e, .. } if e != yavs_kernel::Elem::Logic) =>
+            {
+                let [b] = &dims[..] else {
+                    return Err(
+                        "a multi-dimensional array is not supported in cycle mode yet".into(),
+                    );
+                };
+                let Shape::Scalar {
+                    ty,
+                    sub,
+                    range: Some(r),
+                    ..
+                } = &**elem
+                else {
+                    return Err(
+                        "an array of real or physical values is not supported in cycle mode yet"
+                            .into(),
+                    );
+                };
+                if !matches!(
+                    db.types[*ty].kind,
+                    TypeKind::Integer | TypeKind::Enum { .. }
+                ) {
+                    return Err(
+                        "an array of real or physical values is not supported in cycle mode yet"
+                            .into(),
+                    );
+                }
+                let n = b.len();
+                if n == 0 || n > 1 << 14 {
+                    return Err(format!(
+                        "an array of {n} integers (cycle mode takes 1 to 2**14 for now)"
+                    ));
+                }
+                let (lo, hi) = r.low_high();
+                let n = 64 * n as u32;
+                Ok(Val::Part(Part {
+                    r: leaf(n),
+                    lo: 0,
+                    len: n,
+                    full: n,
+                    dims: Dims::wrap(*b, Dims::wrap(WORD, Dims::NONE).expect("one deep"))
+                        .expect("two deep"),
+                    fresh: false,
+                    leaf: None,
+                    at: None,
+                    obj: Some(d),
+                    lit: None,
+                    int: Some(IntElem {
+                        lo,
+                        hi,
+                        down: r.dir == Direction::Downto,
+                        place: Some((*sub, d)),
+                    }),
+                }))
             }
             Shape::Array { dims, elem, .. } if matches!(**elem, Shape::Record { .. }) => {
                 let [b] = &dims[..] else {
@@ -2434,6 +2581,7 @@ impl Lx<'_> {
                     at: None,
                     obj: Some(d),
                     lit: None,
+                    int: None,
                 }))
             }
             Shape::Record { fields, .. } => fields
@@ -2479,6 +2627,7 @@ impl Lx<'_> {
             at: None,
             obj: Some(d),
             lit: None,
+            int: None,
         }))
     }
 
@@ -2658,7 +2807,10 @@ impl Lx<'_> {
                 let v = self.name(x, false)?;
                 self.note_reads(&v);
                 match v {
-                    Val::Part(p) => Ok(Val::Part(self.materialise(p))),
+                    Val::Part(p) => {
+                        let p = self.materialise(p);
+                        Ok(self.int_elem(p))
+                    }
                     v => Ok(v),
                 }
             }
@@ -2788,6 +2940,10 @@ impl Lx<'_> {
                 .map(Val::Rec);
         }
         // The shape: the place's, or a fully constrained subtype's.
+        let int = match hint {
+            Some(Val::Part(p)) => p.int,
+            _ => None,
+        };
         let (n, dims) = match hint {
             Some(Val::Part(p)) if p.dims.n > 0 => (p.len, p.dims),
             _ => {
@@ -2821,6 +2977,7 @@ impl Lx<'_> {
             at: None,
             obj: None,
             lit: None,
+            int: None,
         });
         let count = b.len() as usize;
         let mut done = vec![false; count];
@@ -2864,8 +3021,10 @@ impl Lx<'_> {
                 }
                 done[q] = true;
             }
-            let v = self.expr_h(a.value, Some(&elem_hint))?;
-            let v = self.part(v)?;
+            let v = match (self.expr_h(a.value, Some(&elem_hint))?, int) {
+                (Val::Int(i), Some(e)) => self.elem_word(i, e),
+                (v, _) => self.part(v)?,
+            };
             if v.len != ew {
                 return Err("an aggregate element of another length".into());
             }
@@ -2875,7 +3034,7 @@ impl Lx<'_> {
             return Err("an aggregate that misses an element".into());
         }
         let mut t = self.tmp(n);
-        t.dims = dims;
+        (t.dims, t.int) = (dims, int);
         // One value for every element of an array of scalars: spread it.
         if let [(at, v)] = &put[..]
             && ew == 1
@@ -2986,6 +3145,48 @@ impl Lx<'_> {
                 if yavs_elab::elem_of(db, t) != yavs_kernel::Elem::Logic =>
             {
                 return Ok(Val::Int(self.int_lit(i64::from(*p))));
+            }
+            (ConstValue::Array(a), TypeKind::Array { elem, .. })
+                if yavs_elab::elem_of(db, db.base(*elem)) != yavs_kernel::Elem::Logic
+                    && matches!(
+                        db.types[db.base(*elem)].kind,
+                        TypeKind::Integer | TypeKind::Enum { .. }
+                    ) =>
+            {
+                let [(l, d, r)] = a.bounds[..] else {
+                    return Err("a multi-dimensional literal".into());
+                };
+                let b = Bounds {
+                    left: l,
+                    dir: d,
+                    right: r,
+                };
+                let mut vs: Vec<i64> = Vec::new();
+                match &a.elems {
+                    Elems::Bytes(bs) => vs.extend(bs.iter().map(|&x| i64::from(x))),
+                    Elems::Runs(runs) => {
+                        for (n, v) in runs.iter() {
+                            let v = v.as_int().ok_or("a literal of an unexpected shape")?;
+                            vs.extend(std::iter::repeat_n(v, *n as usize));
+                        }
+                    }
+                }
+                if vs.is_empty() || vs.len() as u64 != b.len() || vs.len() > 1 << 14 {
+                    return Err("a literal of an unexpected shape".into());
+                }
+                // Element `p` from the left is word `n - 1 - p`.
+                let val: Box<[u64]> = vs.iter().rev().map(|&v| v as u64).collect();
+                let mut t = self.tmp(64 * vs.len() as u32);
+                self.ops.push(Op::Lit { dst: t.r, val });
+                t.dims = Dims::wrap(b, Dims::wrap(WORD, Dims::NONE).expect("one deep"))
+                    .expect("two deep");
+                t.int = Some(IntElem {
+                    lo: *vs.iter().min().expect("not empty"),
+                    hi: *vs.iter().max().expect("not empty"),
+                    down: false,
+                    place: None,
+                });
+                return Ok(Val::Part(t));
             }
             (ConstValue::Record(fs), TypeKind::Record { elems }) if fs.len() == elems.len() => {
                 return (fs.iter().zip(elems.iter()))
@@ -3887,6 +4088,7 @@ fn part_of(r: Ref, len: u32) -> Part {
         at: None,
         obj: None,
         lit: None,
+        int: None,
     }
 }
 

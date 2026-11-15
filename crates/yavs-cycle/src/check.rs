@@ -94,32 +94,25 @@ const BUDGET: usize = 1 << 16;
 /// Rounds of a loop analysed without its parameter's value before the analysis gives up.
 const ROUNDS: usize = 24;
 
+/// The value of expression `x` of process `p` when it folds: constants, `known` (the values of
+/// names the caller knows: loop parameters, formals), and pure functions of them run by the
+/// analysis's evaluator.
+pub(crate) fn const_value(
+    db: &Db,
+    e: &Elaborated,
+    p: &ProcInst,
+    known: HashMap<DeclId, ConstValue>,
+    x: ExprId,
+) -> Option<ConstValue> {
+    let mut cx = Cx::new(db, e, p);
+    cx.loopv = known;
+    cx.fold(x)
+}
+
 /// Check process `pi`.
 pub(crate) fn check(db: &Db, e: &Elaborated, pi: usize) -> Verdict {
     let p = &e.procs[pi];
-    let mut cx = Cx {
-        db,
-        e,
-        p,
-        comb: false,
-        clock: None,
-        vars: NetGraph::default(),
-        var_obj: HashMap::new(),
-        part_obj: HashMap::new(),
-        loopv: HashMap::new(),
-        frames: Vec::new(),
-        var_any: ESet::default(),
-        undef_reads: Vec::new(),
-        reads: ESet::default(),
-        sig_any: ESet::default(),
-        read_at: HashMap::new(),
-        dropped: 0,
-        budget: BUDGET,
-        enumerating: 0,
-        lost: Vec::new(),
-        callees: HashMap::new(),
-        visiting: HashSet::new(),
-    };
+    let mut cx = Cx::new(db, e, p);
     match cx.process() {
         Ok(mut f) => {
             f.reads = std::mem::take(&mut cx.reads);
@@ -275,6 +268,34 @@ struct Cx<'a> {
     lost: Vec<(ESet, Span)>,
     callees: HashMap<DeclId, Callee>,
     visiting: HashSet<DeclId>,
+}
+
+impl<'a> Cx<'a> {
+    fn new(db: &'a Db, e: &'a Elaborated, p: &'a ProcInst) -> Cx<'a> {
+        Cx {
+            db,
+            e,
+            p,
+            comb: false,
+            clock: None,
+            vars: NetGraph::default(),
+            var_obj: HashMap::new(),
+            part_obj: HashMap::new(),
+            loopv: HashMap::new(),
+            frames: Vec::new(),
+            var_any: ESet::default(),
+            undef_reads: Vec::new(),
+            reads: ESet::default(),
+            sig_any: ESet::default(),
+            read_at: HashMap::new(),
+            dropped: 0,
+            budget: BUDGET,
+            enumerating: 0,
+            lost: Vec::new(),
+            callees: HashMap::new(),
+            visiting: HashSet::new(),
+        }
+    }
 }
 
 impl Cx<'_> {

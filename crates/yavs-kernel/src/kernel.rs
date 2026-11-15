@@ -1198,7 +1198,8 @@ pub struct SimControl {
     directb: Vec<OutB>,
     /// Signals with direct transactions (`commit_out`) for the next update.
     direct_sigs: Vec<u32>,
-    /// A signal is quiet (`Builder::quiet`): `cycle` finishes such signals at its end.
+    /// A signal is quiet (`Builder::quiet`): `phase` finishes such signals at the end of the
+    /// processes of each cycle (`Phase::EndOfProcesses` is then in `phase_mask`).
     quiet_any: bool,
     ops: Vec<SignalOp>,
     /// Signals with events in the current cycle.
@@ -1883,6 +1884,10 @@ impl SimControl {
             s.quiet &= !read && s.quiet_ok();
             sim.quiet_any |= s.quiet;
         }
+        // `phase` finishes the quiet signals: no test of its own in a run without them.
+        if sim.quiet_any {
+            sim.phase_mask |= 1 << Phase::EndOfProcesses as u32;
+        }
         Ok(sim)
     }
 
@@ -2218,6 +2223,9 @@ impl SimControl {
             .iter()
             .filter(|&&p| self.observers.iter().any(|o| o.wants_phase(p)))
             .fold(0, |m, &p| m | 1 << p as u32);
+        if self.quiet_any {
+            self.phase_mask |= 1 << Phase::EndOfProcesses as u32;
+        }
         self.watch_changes = self.observers.iter().any(|o| o.wants_value_changes());
         self.next_wanted = self.observers.iter().any(|o| o.wants_next_time());
         self.log_forces = self.observers.iter().any(|o| o.wants_forces());
@@ -3036,9 +3044,6 @@ impl SimControl {
             self.run_batch(ready, false, false)?;
         }
         self.phase(Phase::EndOfProcesses);
-        if self.quiet_any && !self.direct_sigs.is_empty() {
-            self.finish_quiet();
-        }
         self.last_delta()
     }
 
@@ -5419,6 +5424,9 @@ impl SimControl {
         let bit = 1u16 << phase as u32;
         if self.phase_mask & bit == 0 {
             return;
+        }
+        if phase == Phase::EndOfProcesses && self.quiet_any && !self.direct_sigs.is_empty() {
+            self.finish_quiet();
         }
         let serial = if phase == Phase::NextCycle {
             std::mem::replace(&mut self.serial_ran, false)

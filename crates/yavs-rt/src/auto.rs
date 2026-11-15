@@ -3648,6 +3648,15 @@ impl Worker {
                 .filter(|&k| self.left_want[k])
                 .map(|k| k as u32)
                 .collect(),
+            had: {
+                let mut v: Vec<u32> = (0..self.noted.len())
+                    .filter(|&k| self.noted[k])
+                    .map(|k| self.prog.base_of(FuncId(k as u32)).0)
+                    .collect();
+                v.sort_unstable();
+                v.dedup();
+                v
+            },
         }
     }
 
@@ -5014,6 +5023,33 @@ impl AutoTier {
                 job.earlier.long,
                 job.snap.early.len()
             );
+        }
+        if std::env::var_os("YAVS_AUTO_TRACE").is_some() {
+            // Each function tried early: whether the run before had code of it, and the verdict.
+            let line: Vec<String> = job
+                .snap
+                .early
+                .iter()
+                .filter(|b| job.earlier.hot.iter().any(|h| h.0 == **b && !h.2))
+                .map(|b| {
+                    let v = if p.hot.iter().any(|h| h.0 == *b && h.2) {
+                        "kept"
+                    } else if p.lost.contains(b) {
+                        "lost"
+                    } else {
+                        "open"
+                    };
+                    let had = if job.earlier.had.contains(b) {
+                        "had"
+                    } else {
+                        "new"
+                    };
+                    format!("f{b} {had} {v}")
+                })
+                .collect();
+            if !line.is_empty() {
+                eprintln!("trace: profile: verdict {}", line.join(", "));
+            }
         }
         let rank: std::collections::HashMap<u32, u32> =
             (0..).zip(&job.order).map(|(r, &id)| (id, r)).collect();

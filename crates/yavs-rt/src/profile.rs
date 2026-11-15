@@ -42,8 +42,9 @@ pub(crate) const HELD_MAX: usize = 1024;
 pub(crate) const LEFT_MAX: usize = 1024;
 
 /// Version 4 adds the `held` lines, 5 the `ran` lines, 6 the `made` lines, 7 the `work` and `long`
-/// lines, 8 the `left` lines; a profile of an earlier version is no profile (`parse`).
-const HEAD: &str = "yavs-auto-profile 8";
+/// lines, 8 the `left` lines, 9 the `had` lines; a profile of an earlier version is no profile
+/// (`parse`).
+const HEAD: &str = "yavs-auto-profile 9";
 
 /// What the earlier runs of a program left.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -76,6 +77,9 @@ pub(crate) struct Profile {
     /// The functions published native-frame code left its frames for (`Worker::left_to`) in this
     /// run or an earlier one: a run does not hold them (`Worker::waits`).
     pub left: Vec<u32>,
+    /// The functions (by process) the run of `work`, the one the verdicts compare with, compiled
+    /// or linked (`Snapshot::had`).
+    pub had: Vec<u32>,
 }
 
 impl Profile {
@@ -112,6 +116,10 @@ impl Profile {
             use std::fmt::Write;
             let _ = writeln!(s, "left {id}");
         }
+        for id in &self.had {
+            use std::fmt::Write;
+            let _ = writeln!(s, "had {id}");
+        }
         s
     }
 
@@ -131,6 +139,7 @@ impl Profile {
         self.ran = self.ran.iter().filter_map(|&id| f(id)).collect();
         self.made = self.made.iter().filter_map(|&id| f(id)).collect();
         self.left = self.left.iter().filter_map(|&id| f(id)).collect();
+        self.had = self.had.iter().filter_map(|&id| f(id)).collect();
     }
 
     /// The profile in `text`, `None` for anything this version did not write.
@@ -160,6 +169,7 @@ impl Profile {
                 "ran" => p.ran.push(u32::try_from(num(&mut w)?).ok()?),
                 "made" => p.made.push(u32::try_from(num(&mut w)?).ok()?),
                 "left" => p.left.push(u32::try_from(num(&mut w)?).ok()?),
+                "had" => p.had.push(u32::try_from(num(&mut w)?).ok()?),
                 "held" => {
                     let (id, us) = (u32::try_from(num(&mut w)?).ok()?, num(&mut w)?);
                     p.held.push((id, us, u32::try_from(num(&mut w)?).ok()?));
@@ -199,6 +209,8 @@ pub(crate) struct Snapshot {
     pub made: Vec<u32>,
     /// The functions this run did not hold for the frames published code left (`Profile::left`).
     pub left: Vec<u32>,
+    /// The functions (by process) this run compiled or linked (`Profile::had`).
+    pub had: Vec<u32>,
 }
 
 /// The profile after a run that took `cpu` simulation CPU microseconds and did `work` microseconds of
@@ -209,7 +221,9 @@ pub(crate) struct Snapshot {
 /// first time are judged by the run as a whole: it did clearly less work than the run before
 /// (`better`), or they are lost; but a run that paid compiles of them rather than links
 /// (`Snapshot::fresh`) loses none of those: it carries their cost, often for some copies only, and
-/// the next run judges them again. The functions a trial took back are lost. The functions seen for a good part
+/// the next run judges them again. One the run before had compiled code of too (`Profile::had`) is
+/// kept without a verdict: the two runs differ only in when it got its code, and whether that run had
+/// paid the compile decided the verdict. The functions a trial took back are lost. The functions seen for a good part
 /// of the sampled time join the hot ones; the ones already there stay and add this run's seen time to
 /// theirs (#679).
 pub(crate) fn next(earlier: &Profile, snap: &Snapshot, cpu: u64, work: u64, gate: u64) -> Profile {
@@ -232,14 +246,24 @@ pub(crate) fn next(earlier: &Profile, snap: &Snapshot, cpu: u64, work: u64, gate
         .collect();
     tried.sort_unstable();
     tried.dedup();
+    let keep = |p: &mut Profile, ids: &[u32]| {
+        p.hot
+            .iter_mut()
+            .filter(|h| ids.contains(&h.0))
+            .for_each(|h| h.2 = true);
+    };
+    let (had, tried): (Vec<u32>, Vec<u32>) =
+        tried.into_iter().partition(|b| earlier.had.contains(b));
+    keep(&mut p, &had);
+    let base_now = |p: &mut Profile| {
+        (p.base, p.work) = (Some(cpu), Some(work));
+        p.had = snap.had.clone();
+    };
     match (tried.is_empty(), earlier.work) {
-        (true, _) => (p.base, p.work) = (Some(cpu), Some(work)),
+        (true, _) => base_now(&mut p),
         (false, Some(base)) if better(base, work) => {
-            p.hot
-                .iter_mut()
-                .filter(|h| tried.contains(&h.0))
-                .for_each(|h| h.2 = true);
-            (p.base, p.work) = (Some(cpu), Some(work));
+            keep(&mut p, &tried);
+            base_now(&mut p);
         }
         (false, _) => tried
             .iter()
@@ -309,6 +333,7 @@ mod tests {
             ran: vec![8, 2, 5],
             made: vec![2, 6],
             left: vec![7],
+            had: vec![12, 4],
         };
         assert_eq!(Profile::parse(&p.render()), Some(p.clone()));
         assert_eq!(
@@ -335,8 +360,11 @@ mod tests {
             "yavs-auto-profile 6\nbase 5\n",
             // So is version 7 (no `left` lines).
             "yavs-auto-profile 7\nbase 5\n",
-            "yavs-auto-profile 8\nlong 1\n",
-            "yavs-auto-profile 8\nleft x\n",
+            // So is version 8 (no `had` lines).
+            "yavs-auto-profile 8\nbase 5\n",
+            "yavs-auto-profile 9\nlong 1\n",
+            "yavs-auto-profile 9\nleft x\n",
+            "yavs-auto-profile 9\nhad 1 2\n",
         ] {
             assert_eq!(Profile::parse(bad), None, "{bad:?}");
         }
@@ -356,6 +384,7 @@ mod tests {
             ran: Vec::new(),
             made: Vec::new(),
             left: Vec::new(),
+            had: Vec::new(),
         }
     }
 
@@ -401,6 +430,60 @@ mod tests {
         let two = next(&one, &left(&[4, 5]), 2_000_000, 2_000_000, GATE);
         assert_eq!(two.left, [3, 4, 5]);
         assert_eq!(Profile::parse(&two.render()), Some(two));
+    }
+
+    /// An early function the run before had compiled code of too is kept without a verdict, whether
+    /// that run had compiled it (and so did much more work) or linked it (and did as much); one it had
+    /// no code of is judged as before. The base's list moves with the base.
+    #[test]
+    fn an_early_function_the_run_before_had_is_kept_unjudged() {
+        let had = |h: &[u32]| Snapshot {
+            had: h.to_vec(),
+            ..snap(&[(5, 400_000), (6, 90_000)], &[], &[])
+        };
+        let one = next(
+            &Profile::default(),
+            &had(&[5, 9]),
+            2_000_000,
+            2_000_000,
+            GATE,
+        );
+        assert_eq!(one.had, [5, 9]);
+        // As much work as the run before: 5 (had) stays, 6 (not had) is lost.
+        let two = next(
+            &one,
+            &Snapshot {
+                had: vec![5, 6],
+                ..snap(&[(5, 400_000), (6, 90_000)], &[5, 6], &[])
+            },
+            2_000_000,
+            2_000_000,
+            GATE,
+        );
+        assert_eq!(two.hot, [(5, 800_000, true)]);
+        assert_eq!(two.lost, [6]);
+        assert_eq!(
+            (two.work, &two.had[..]),
+            (Some(2_000_000), &[5, 9][..]),
+            "the base stays"
+        );
+        // With 6 kept unjudged too, nothing is judged and the run is the next base.
+        let mut both = one.clone();
+        both.had.push(6);
+        let three = next(
+            &both,
+            &Snapshot {
+                had: vec![5, 6],
+                ..snap(&[(5, 400_000), (6, 90_000)], &[5, 6], &[])
+            },
+            2_100_000,
+            2_100_000,
+            GATE,
+        );
+        assert_eq!(three.hot, [(5, 800_000, true), (6, 180_000, true)]);
+        assert!(three.lost.is_empty());
+        assert_eq!((three.work, &three.had[..]), (Some(2_100_000), &[5, 6][..]));
+        assert_eq!(Profile::parse(&three.render()), Some(three));
     }
 
     /// The first run only lists what was hot; the next compiles it early and is judged against the

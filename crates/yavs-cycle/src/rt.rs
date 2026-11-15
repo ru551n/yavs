@@ -57,7 +57,10 @@ impl RegionProc {
                     v[k] |= ((src[k] >> lo) & m) << at;
                 }
             }
-            if o.last == Some(v) {
+            // Word by word: `==` on the arrays was a `memcmp` call per driver.
+            if let Some(l) = o.last
+                && (l[0] ^ v[0]) | (l[1] ^ v[1]) | (l[2] ^ v[2]) | (l[3] ^ v[3]) == 0
+            {
                 continue;
             }
             o.last = Some(v);

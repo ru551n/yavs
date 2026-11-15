@@ -516,7 +516,6 @@ pub(crate) struct Body {
     pub reads: BTreeSet<LeafId>,
     pub writes: BTreeSet<LeafId>,
     /// The elements read, per leaf (`(leaf, first, count)`, from the leaf's element 0).
-    #[allow(dead_code)]
     pub rparts: Vec<(LeafId, u32, u32)>,
     /// Words of `Loc` slots used, `0 .. locs`.
     pub locs: u32,

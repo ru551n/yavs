@@ -54,15 +54,42 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             }
         }
     }
+    // Drivers of each leaf: process and element range, by first element.
+    let mut drivers: BTreeMap<LeafId, Vec<(usize, u32, u32)>> = BTreeMap::new();
+    for d in &e.nets.drivers {
+        (drivers.entry(d.leaf).or_default()).push((d.proc.index(), d.range.offset, d.range.len));
+    }
+    for ds in drivers.values_mut() {
+        ds.sort_unstable_by_key(|d| (d.1, d.0));
+    }
+    // Per (process, leaf): another process driving some of the same elements.
+    let mut clash: BTreeMap<(usize, LeafId), usize> = BTreeMap::new();
+    for (&l, ds) in &drivers {
+        let mut far: Option<(u32, usize)> = None;
+        for &(q, lo, n) in ds {
+            if let Some((end, p)) = far
+                && lo < end
+                && p != q
+            {
+                clash.entry((q, l)).or_insert(p);
+                clash.entry((p, l)).or_insert(q);
+            }
+            if far.is_none_or(|f| lo + n > f.0) {
+                far = Some((lo + n, q));
+            }
+        }
+    }
     // Leave out what the set as a whole does not allow, until nothing changes.
     loop {
         let mut out: Vec<(usize, String)> = Vec::new();
         let joined = |v: &Verdict| matches!(v, Verdict::Join(_));
-        // Drivers of each leaf, by process.
-        let mut drivers: BTreeMap<LeafId, BTreeSet<usize>> = BTreeMap::new();
-        for d in &e.nets.drivers {
-            drivers.entry(d.leaf).or_default().insert(d.proc.index());
-        }
+        // Per leaf, a process outside the region that drives part of it.
+        let outside: BTreeMap<LeafId, usize> = (drivers.iter())
+            .filter_map(|(&l, ds)| {
+                let q = ds.iter().find(|d| !joined(&verdicts[d.0]))?;
+                Some((l, q.0))
+            })
+            .collect();
         // Leaves with a source no process owns: a constant source, or a port edge or converted
         // port the kernel updates (a member would read its own driving value from the image,
         // not the resolved one).
@@ -74,12 +101,18 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             consts.extend(cp.formal.iter().chain(&cp.actual).map(|x| x.0));
         }
         let mut clock: Option<Clock> = None;
-        let mut writer: BTreeMap<LeafId, usize> = BTreeMap::new();
+        // Per leaf, the element ranges members drive, by member.
+        let mut writer: BTreeMap<LeafId, Vec<(u32, u32, usize)>> = BTreeMap::new();
         for (pi, v) in verdicts.iter().enumerate() {
             let Verdict::Join(b) = v else { continue };
             let mut why = None;
-            for (&l, ps) in drivers.iter().filter(|(_, ps)| ps.contains(&pi)) {
-                if let Some(&q) = ps.iter().find(|&&q| q != pi) {
+            for &di in &e.procs[pi].drivers {
+                let l = e.nets.drivers[di].leaf;
+                // Another driver of the same elements, or of other elements of the leaf from
+                // outside the region (whose elements the region would not read).
+                let other = (clash.get(&(pi, l)).copied())
+                    .or_else(|| outside.get(&l).copied().filter(|&q| q != pi));
+                if let Some(q) = other {
                     why = Some(format!(
                         "{} is also driven by {}",
                         e.leaf_name(l),
@@ -104,7 +137,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
                 && let Some(c) = b.clock
             {
                 let leaf_driver = drivers.get(&c.leaf).into_iter().flatten();
-                if leaf_driver.clone().any(|&q| joined(&verdicts[q])) {
+                if leaf_driver.clone().any(|&(q, ..)| joined(&verdicts[q])) {
                     why = Some(format!(
                         "its clock {} is made inside the region",
                         e.leaf_name(c.leaf)
@@ -122,41 +155,64 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             match why {
                 Some(w) => out.push((pi, w)),
                 None => {
-                    for &l in &b.writes {
-                        writer.insert(l, pi);
+                    for &di in &e.procs[pi].drivers {
+                        let d = &e.nets.drivers[di];
+                        (writer.entry(d.leaf).or_default()).push((d.range.offset, d.range.len, pi));
                     }
                 }
             }
         }
-        // Combinational members in dependency order; a cycle (a process reading what it
-        // drives included) is a combinational loop and stays outside.
-        let comb: Vec<usize> = (0..n)
-            .filter(|&pi| !out.iter().any(|o| o.0 == pi))
+        for w in writer.values_mut() {
+            w.sort_unstable();
+        }
+        // Combinational members in dependency order, by elements; a cycle (a process reading
+        // what it drives included) is a combinational loop and stays outside.
+        let is_out: BTreeSet<usize> = out.iter().map(|o| o.0).collect();
+        let comb: BTreeSet<usize> = (0..n)
+            .filter(|pi| !is_out.contains(pi))
             .filter(|&pi| matches!(&verdicts[pi], Verdict::Join(b) if b.kind == Kind::Comb))
             .collect();
-        let deps = |pi: usize| -> BTreeSet<usize> {
+        // The combinational members each one reads from, and the reverse.
+        let mut deps: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+        let mut users: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for &pi in &comb {
             let Verdict::Join(b) = &verdicts[pi] else {
-                return BTreeSet::new();
+                continue;
             };
-            (b.reads.iter())
-                .filter_map(|l| writer.get(l))
-                .copied()
-                .filter(|q| comb.contains(q))
-                .collect()
-        };
-        let mut order: Vec<usize> = Vec::new();
-        let mut left: Vec<usize> = comb.clone();
-        while !left.is_empty() {
-            let ready: Vec<usize> = (left.iter().copied())
-                .filter(|&pi| deps(pi).iter().all(|q| order.contains(q)))
-                .collect();
-            if ready.is_empty() {
-                break;
+            let mut ds = BTreeSet::new();
+            for &(l, lo, len) in &b.rparts {
+                let Some(ws) = writer.get(&l) else { continue };
+                // Ranges of one leaf do not overlap (checked above): the first that can.
+                let k = ws.partition_point(|w| w.0 + w.1 <= lo);
+                for &(_, _, q) in ws[k..].iter().take_while(|w| w.0 < lo + len) {
+                    if comb.contains(&q) {
+                        ds.insert(q);
+                    }
+                }
             }
-            order.extend(&ready);
-            left.retain(|pi| !ready.contains(pi));
+            for &q in &ds {
+                users.entry(q).or_default().push(pi);
+            }
+            deps.insert(pi, ds);
         }
-        for pi in left {
+        let mut need: BTreeMap<usize, usize> = deps.iter().map(|(&p, d)| (p, d.len())).collect();
+        let mut ready: BTreeSet<usize> = (need.iter())
+            .filter(|(_, n)| **n == 0)
+            .map(|(&p, _)| p)
+            .collect();
+        let mut order: Vec<usize> = Vec::new();
+        while let Some(pi) = ready.pop_first() {
+            order.push(pi);
+            for &u in users.get(&pi).into_iter().flatten() {
+                let k = need.get_mut(&u).expect("a comb member");
+                *k -= 1;
+                if *k == 0 {
+                    ready.insert(u);
+                }
+            }
+        }
+        let placed: BTreeSet<usize> = order.iter().copied().collect();
+        for pi in comb.into_iter().filter(|p| !placed.contains(p)) {
             out.push((
                 pi,
                 "it is part of a combinational loop (it reads, through other processes or \

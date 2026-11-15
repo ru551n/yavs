@@ -683,6 +683,142 @@ fn clocked_and_combinational_shapes_give_the_same_result() {
     }
 }
 
+/// Standard output of a successful run with the delta numbers of report stamps left out (a region
+/// output changes one delta after its trigger, D14).
+fn run_text(dir: &Path, flags: &[&str], top: &str) -> (String, String) {
+    let mut args = vec!["run", "--work=work:lib", "--no-cache"];
+    args.extend(flags);
+    args.push(top);
+    let o = yavs(dir, &args);
+    let (out, err) = (
+        String::from_utf8_lossy(&o.stdout).into_owned(),
+        String::from_utf8_lossy(&o.stderr).into_owned(),
+    );
+    assert!(o.status.success(), "{top} {flags:?}: {out}{err}");
+    let mut text = String::new();
+    for l in out.lines() {
+        match l.split_once("fs+") {
+            Some((a, b)) => {
+                text.push_str(a);
+                text.push_str("fs");
+                text.push_str(b.trim_start_matches(|c: char| c.is_ascii_digit()));
+            }
+            None => text.push_str(l),
+        }
+        text.push('\n');
+    }
+    (text, err)
+}
+
+/// The RTL designs of the benchmark set, shortened: the same output in cycle mode, with their RTL
+/// processes inside the region. `lfsr64` prints its checksum from a process that joins (whose
+/// reports cycle mode does not evaluate), so the test moves the report into a process of its own.
+#[test]
+fn bench_rtl_designs_give_the_same_output_in_cycle_mode() {
+    let lfsr = |src: &str| {
+        src.replace("report \"sum=\" & integer'image(to_integer(a));", "null;")
+            .replace(
+                "end architecture;",
+                "  show : process\n  begin\n    wait until done;\n    \
+             report \"sum=\" & integer'image(to_integer(sums));\n    wait;\n  end process;\n\
+             end architecture;",
+            )
+    };
+    let designs: [(&str, String, &str, &[&str], &str); 6] = [
+        (
+            "rtl_ff",
+            include_str!("../../../tools/bench/designs/rtl_ff.vhd").into(),
+            "bench_rtl_ff",
+            &["-gN=256", "-gCYC=40"],
+            "256 of 258",
+        ),
+        (
+            "rtl_chain",
+            include_str!("../../../tools/bench/designs/rtl_chain.vhd").into(),
+            "bench_rtl_chain",
+            &["-gN=100", "-gCYC=40"],
+            "102 of 104",
+        ),
+        (
+            "rtl_fan",
+            include_str!("../../../tools/bench/designs/rtl_fan.vhd").into(),
+            "bench_rtl_fan",
+            &["-gN=100", "-gCYC=40"],
+            "100 of 102",
+        ),
+        (
+            "ff_rtl",
+            include_str!("../../../tools/bench/designs/ff_rtl.vhd").into(),
+            "bench_ff_rtl",
+            &["-gLANES=8", "-gCYCLES=40"],
+            "8 of 10",
+        ),
+        (
+            "lfsr64",
+            lfsr(include_str!("../../../tools/bench/designs/lfsr64.vhd")),
+            "bench_lfsr64",
+            &["-gNREG=8", "-gCYCLES=200"],
+            "9 of 11",
+        ),
+        (
+            "lfsr64_xor",
+            lfsr(include_str!("../../../tools/bench/designs/lfsr64_xor.vhd")),
+            "bench_lfsr64_xor",
+            &["-gNREG=8", "-gCYCLES=200"],
+            "9 of 11",
+        ),
+    ];
+    for (name, src, top, generics, members) in designs {
+        let dir = tempdir(&format!("cycle-bench-{name}"));
+        analyze(&dir, &format!("{name}.vhd"), &src);
+        for t in tiers() {
+            let flags = [&t[..], generics].concat();
+            let (normal, _) = run_text(&dir, &flags, top);
+            let (cycle, err) = run_text(&dir, &[&flags[..], &["--cycle"]].concat(), top);
+            assert!(normal.contains("Note"), "{name}: {normal}");
+            assert_eq!(cycle, normal, "{name} {t:?}\n{err}");
+            assert!(
+                err.contains(&format!("cycle mode: {members} processes run cycle-based")),
+                "{name}: {err}"
+            );
+        }
+    }
+}
+
+/// Bench designs whose processes cannot join (yet), with the reason the report gives.
+#[test]
+fn bench_designs_cycle_mode_leaves_out_say_why() {
+    for (name, src, top, why) in [
+        (
+            "rtl_lfsr",
+            include_str!("../../../tools/bench/designs/rtl_lfsr.vhd"),
+            "bench_rtl_lfsr",
+            "a comparison with a metavalue literal",
+        ),
+        (
+            "rtl_bus",
+            include_str!("../../../tools/bench/designs/rtl_bus.vhd"),
+            "bench_rtl_bus",
+            "a `'Z'` literal",
+        ),
+        (
+            "rtl_ram",
+            include_str!("../../../tools/bench/designs/rtl_ram.vhd"),
+            "bench_rtl_ram",
+            "(a RAM) is not supported in cycle mode yet",
+        ),
+    ] {
+        let dir = tempdir(&format!("cycle-out-{name}"));
+        analyze(&dir, &format!("{name}.vhd"), src);
+        let flags = ["--tier=interp", "-gCYC=20"];
+        let (normal, _) = run_text(&dir, &flags, top);
+        let (cycle, err) = run_text(&dir, &[&flags[..], &["--cycle"]].concat(), top);
+        assert_eq!(cycle, normal, "{name}\n{err}");
+        assert!(err.contains(" 0 of "), "{name}: {err}");
+        assert!(err.contains(why), "{name}: {err}");
+    }
+}
+
 /// A member that drives a null array (a pipeline of no stages under these generics): the region
 /// has nothing to read or drive of it (it once failed at initialisation with an invalid reference).
 const NULL_PIPE: &str = "\

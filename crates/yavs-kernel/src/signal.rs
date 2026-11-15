@@ -3097,10 +3097,10 @@ impl Signal {
     }
 
     /// The direct commits of this cycle (`commit_planes`) made effective at once, with no event:
-    /// the end of a cycle in which nothing can see one (a quiet signal nothing waits on). False,
-    /// nothing done, when the usual update must run.
+    /// the end of a cycle in which nothing can see one (a quiet signal nothing waits on); whether
+    /// the value changed. `None`, nothing done, when the usual update must run.
     #[inline(never)]
-    pub(crate) fn finish_quiet(&mut self, now: Time, cycle: u64) -> bool {
+    pub(crate) fn finish_quiet(&mut self, now: Time, cycle: u64) -> Option<bool> {
         if !self.quiet
             || self.watched
             || self.pend_one
@@ -3108,12 +3108,12 @@ impl Signal {
             || self.force_drv.is_some()
             || !self.force_ev.is_empty()
         {
-            return false;
+            return None;
         }
         let (Buf::Planes { b: cur, .. }, Buf::Planes { b: drv, .. }, Some(p)) =
             (&mut self.cur, &self.driving, self.pend.first_mut())
         else {
-            return false;
+            return None;
         };
         let m = block_diff(&cur[0], &drv[0]) & std::mem::take(p);
         self.pend_words.clear();
@@ -3122,7 +3122,7 @@ impl Signal {
             cur[0] = std::array::from_fn(|k| x[k] & !m | drv[0][k] & m);
             self.bare_last = (cycle, stamp(now));
         }
-        true
+        Some(m != 0)
     }
 
     /// `lean_words` once the codes and `inactive` are settled (the end of `SimControl::new`).

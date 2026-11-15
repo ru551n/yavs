@@ -1,0 +1,1 @@
+The compiled code of cycle mode (`yavs run --cycle`) is kept in the work library's compilation cache: later runs of the same design and generics, such as the other test cases of a test suite, link it instead of compiling the region again. `--no-cache` turns it off.

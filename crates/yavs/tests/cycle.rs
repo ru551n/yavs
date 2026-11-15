@@ -1602,7 +1602,7 @@ fn asynchronous_resets_made_inside_the_region_give_the_same_result() {
         );
         assert_eq!(cycle, normal, "{t:?}\n{err}");
         assert!(
-            err.contains("cycle mode: 8 of 11 processes run cycle-based"),
+            err.contains("cycle mode: 11 of 14 processes run cycle-based"),
             "{err}"
         );
         let names = [
@@ -1614,14 +1614,19 @@ fn asynchronous_resets_made_inside_the_region_give_the_same_result() {
             "cycle_inreset.c2reg",
             "cycle_inreset.q5",
             "cycle_inreset.rc <= ...",
+            "cycle_inreset.m4 <= ...",
+            "cycle_inreset.p8",
+            "cycle_inreset.q9",
         ];
         for (name, section) in sections(&err, &names) {
             assert_eq!(section, "cycle-based:", "{name}\n{err}");
         }
-        // What a reset branch reads wakes the region; the resets made inside do not.
+        // What a reset branch reads wakes the region, also another element of the reset's own
+        // signal (n9 at 231.2 ns); the resets made inside do not.
         assert!(
-            err.contains("1 wake the region (cycle_inreset.din)"),
+            err.contains("2 wake the region (cycle_inreset.din, cycle_inreset.ctl)"),
             "{err}"
         );
+        assert!(normal[22].ends_with("n9=FF"), "{normal:?}");
     }
 }

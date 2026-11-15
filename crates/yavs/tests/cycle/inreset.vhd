@@ -2,7 +2,8 @@
 -- outside, held at time 0) makes r2; processes on c1 and on c2 (twice the rate, the same clock
 -- process) use it; one reset branch reads a signal that changes while the reset holds; one reset
 -- is logic of r2 and a register; one is a register of c2 used on c1; a reset member's register is
--- read by a register of the other clock. The outside reset is pulsed between edges at the end.
+-- read by a register of the other clock, and logic of one by a register of the other clock. The
+-- outside reset is pulsed between edges at the end.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -14,7 +15,8 @@ architecture a of cycle_inreset is
   signal c2 : std_ulogic := '1';
   signal arst : std_ulogic := '1';
   signal r1, r2, soft, rc, r5 : std_ulogic := '0';
-  signal din, k2, n1, n2, n3, n4, n5 : unsigned(7 downto 0) := x"00";
+  signal din, k2, n1, n2, n3, n4, n5, m4, x8, n9 : unsigned(7 downto 0) := x"00";
+  signal ctl : std_ulogic_vector(127 downto 0) := (others => '0');
   signal done : boolean := false;
 begin
   sync : process (c1, arst)
@@ -63,6 +65,24 @@ begin
       n4 <= n4 + 1;
     end if;
   end process;
+  -- Logic of a reset member's register, sampled on the other clock: the reset branch runs before
+  -- the logic in the settle.
+  m4 <= n4 + 1;
+  p8 : process (c2)
+  begin
+    if rising_edge(c2) then
+      x8 <= m4;
+    end if;
+  end process;
+  -- A reset from outside whose branch reads another element of the reset's own signal.
+  q9 : process (c1, ctl)
+  begin
+    if ctl(0) = '1' then
+      n9 <= (others => ctl(100));
+    elsif rising_edge(c1) then
+      n9 <= n9 + 1;
+    end if;
+  end process;
   -- A reset made by a register of the other clock.
   c2reg : process (c2)
   begin
@@ -104,6 +124,13 @@ begin
     din <= din + 1;
     wait for 1.5 ns;
     arst <= '0';
+    -- ctl(100) changes between edges while ctl(0) holds, seen at 231.2 ns before the next edge.
+    wait for 8.2 ns;
+    ctl(0) <= '1';
+    wait for 0.8 ns;
+    ctl(100) <= '1';
+    wait for 4 ns;
+    ctl <= (others => '0');
     wait;
   end process;
   mon : process
@@ -113,7 +140,8 @@ begin
       wait for 10 ns;
       report "r2=" & std_ulogic'image(r2) & " n1=" & to_hstring(n1) & " n2=" & to_hstring(n2)
         & " n3=" & to_hstring(n3) & " n4=" & to_hstring(n4) & " n5=" & to_hstring(n5)
-        & " soft=" & std_ulogic'image(soft);
+        & " soft=" & std_ulogic'image(soft) & " m4=" & to_hstring(m4) & " x8=" & to_hstring(x8)
+        & " n9=" & to_hstring(n9);
     end loop;
     wait;
   end process;

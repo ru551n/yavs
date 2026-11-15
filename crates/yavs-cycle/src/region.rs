@@ -516,7 +516,8 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             let mut reset_reads: BTreeSet<LeafId> = BTreeSet::new();
             for (f, b) in taken.values() {
                 if let Some((r, ..)) = b.reset {
-                    reset_reads.extend(out_reads(f).filter(|&l| l != r));
+                    reset_reads
+                        .extend(out_reads(f).filter(|&l| l != r || e.nets.leaf(l).ty.len > 1));
                 }
             }
             let mut rest: BTreeMap<usize, Body> =

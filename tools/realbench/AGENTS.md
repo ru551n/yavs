@@ -68,6 +68,10 @@ Categories (`--category`): `rtl-datapath`, `fsm`, `numeric`, `memory`, `records`
   ("Real-world performance suite, baseline 2026-10-21") and each yavs failure has an issue.
 - Do not read the `codegen` ratio as a code generation ratio against the reference: it divides by the reference's whole elaboration (which contains its code generation). Compare yavs `elab-X` + `codegen-X` with the reference `elab-X` for that.
 - Scratch worlds are removed after each test; a killed run may leave `~/.cache/yavs-realbench/scratch/*`.
+- Nothing the VHDL reads may hold a world's path: VUnit tests get `output path : out/` (relative; the run starts in the
+  world). With the world's own path in `runner_cfg` the cells of one binary differed by up to 7 percent of instructions by
+  path text alone (`vunit_logging`, 2026-11-15): the memo of pure calls hashes argument bytes, so the collisions in its
+  tables follow the path, and every cell and binary had a fixed bias of its own that an A/A did not cancel.
 
 ## 5. How to work here
 

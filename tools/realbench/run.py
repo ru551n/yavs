@@ -388,7 +388,9 @@ def gen_args(t, w):
     if t["vunit"]:
         case = t["vunit"] if isinstance(t["vunit"], str) else "_all_"
         tbdir = (source_root(t["source"]) / t["path"]).parent
-        gens.append(f"runner_cfg=active python runner : false,enabled_test_cases : {case},seed : 12345,output path : {w}/out/,tb path : {tbdir}/,use_color : false")
+        # A relative output path (the run starts in the world): the text is the same for every cell and binary, since the memo of
+        # pure calls hashes argument bytes and a world's own path gave each cell its own hits (a fixed bias of a few percent).
+        gens.append(f"runner_cfg=active python runner : false,enabled_test_cases : {case},seed : 12345,output path : out/,tb path : {tbdir}/,use_color : false")
     return [f"-g{g}" for g in gens]
 
 

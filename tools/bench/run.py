@@ -114,7 +114,7 @@ def prep_vunit_vc(Y, key):
     cmds = []
     for line in (HERE / "vc_tests.tsv").read_text().splitlines():
         tb, case = line.split("\t")
-        cfg = f"active python runner : false,enabled_test_cases : {case},output path : {vc}/,tb path : {tests}/,use_color : false"
+        cfg = f"active python runner : false,enabled_test_cases : {case},output path : ./,tb path : {tests}/,use_color : false"
         cmds.append((["{Y}", "run", "--tier=interp", f"--std={STD}", "--relaxed", f"--work=vunit_lib:{vc}/vunit_lib", f"--map=osvvm:{libs}/osvvm",
                       tb, f"-grunner_cfg={cfg}"], str(vc)))
     return cmds
@@ -215,7 +215,7 @@ def prep_vai(tb, Y, key):
     case, gens = VAI_TBS[tb]
     if any(f.stem == tb for _, f in pending_after(marker)):
         raise Skip(f"{tb} does not analyse against {root}: see {marker}")
-    cfg = f"active python runner : false,enabled_test_cases : {case},seed : 12345,output path : {wd}/,tb path : {mod}/test/,use_color : false"
+    cfg = f"active python runner : false,enabled_test_cases : {case},seed : 12345,output path : ./,tb path : {mod}/test/,use_color : false"
     return [(["{Y}", "run", "--tier=interp", f"--std={STD}", "--relaxed", f"--work=cnn_accel:{wd}/cnn_accel"] + maps
              + [tb, f"-grunner_cfg={cfg}"] + [f"-g{g}" for g in gens], str(wd))]
 

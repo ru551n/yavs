@@ -356,8 +356,8 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
     let name = |l: &LeafId| e.leaf_name(*l);
     let _ = writeln!(
         report,
-        "  boundary: {} signal leaves exported ({} nothing outside waits on), {} read at each \
-         wake, {} wake the region{}",
+        "  boundary: {} signal leaves exported ({} nothing outside waits on), {} inputs, {} wake \
+         the region{}",
         sel.outputs.len(),
         sel.outputs.difference(&sel.waited).count(),
         sel.inputs.len(),
@@ -367,6 +367,36 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
             v => format!(" ({})", v.join(", ")),
         }
     );
+    // Which wakes are settled at once, and why; the others wait for the next edge.
+    if !sel.wakes.is_empty() {
+        let why = |r: &region::Reach| match *r {
+            region::Reach::Output(o, Some(p)) => format!(
+                "{} read by {}",
+                e.leaf_name(o),
+                e.hier.proc_label(&e.procs[p], yavs_elab::Case::Lrm)
+            ),
+            region::Reach::Output(o, None) => format!("{} read outside", e.leaf_name(o)),
+            region::Reach::Check(p) => format!(
+                "a check in {}",
+                e.hier.proc_label(&e.procs[p], yavs_elab::Case::Lrm)
+            ),
+        };
+        let at_once: Vec<String> = (sel.at_once.iter())
+            .map(|(l, r)| format!("{} to {}", name(l), why(r)))
+            .collect();
+        let _ = writeln!(
+            report,
+            "  wakes: {} settled at once, through combinational code to what outside sees{}; {} \
+             read when they change and settled at the next edge",
+            at_once.len(),
+            if at_once.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", at_once.join(", "))
+            },
+            sel.wakes.len() - at_once.len()
+        );
+    }
     let _ = writeln!(
         report,
         "  cycle-based, {}:",
@@ -830,11 +860,21 @@ fn build(
             lo: 0,
             len: nets.signal_len(yavs_kernel::SignalId(k)),
             bytes: bytes(k),
+            now: true,
         })
         .collect();
     // Inputs leaf by leaf (a kernel signal may also hold leaves the region drives), a leaf of
     // its own signal in chunks of one word, grouped by kernel signal: each chunk is read when the
     // kernel counted a change of it.
+    // The inputs whose change is settled and exported at once: the resets from outside and the
+    // wakes with a combinational path to something outside can see (`Selection::at_once`).
+    // `YAVS_CYCLE_EDGE_OUTPUTS=1`, an experiment: only the resets, so the outputs change at
+    // clock edges only.
+    let edge_outputs = std::env::var_os("YAVS_CYCLE_EDGE_OUTPUTS").is_some_and(|v| v == "1");
+    let now: std::collections::BTreeSet<LeafId> = (sel.members.iter())
+        .filter_map(|(_, b)| b.reset.map(|r| r.0))
+        .chain(sel.at_once.keys().copied().filter(|_| !edge_outputs))
+        .collect();
     let mut by_sig: BTreeMap<u32, Vec<(rt::Read, Range)>> = BTreeMap::new();
     for &l in sel.inputs.iter().filter(|&&l| nets.leaf(l).ty.len > 0) {
         let len = nets.leaf(l).ty.len;
@@ -850,6 +890,7 @@ fn build(
                 lo: at.base,
                 len: part.len,
                 bytes: b,
+                now: now.contains(&l),
             };
             chunks.push((read, nets.kpart(l, part).1));
         }
@@ -1003,6 +1044,7 @@ fn build(
             looked: false,
             check: import_check,
             exported: false,
+            pending: false,
             outs,
             spans,
             shadow: vec![0; shadow],

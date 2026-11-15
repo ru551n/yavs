@@ -25,6 +25,9 @@ pub(crate) struct Read {
     pub lo: u32,
     pub len: u32,
     pub bytes: u32,
+    /// A change is settled and exported at once (`region::Selection::at_once`, a reset); any
+    /// other change is read when it comes and settled at the next edge.
+    pub now: bool,
 }
 
 /// The input chunks of a group of kernel signals, `RegionProc::chunks[at .. at + n]`, and the
@@ -156,6 +159,9 @@ pub(crate) struct RegionProc {
     pub check: bool,
     /// The first export, which drives every output, is done.
     pub exported: bool,
+    /// Inputs read since the last settle changed no `Read::now` chunk: the settle waits for the
+    /// next edge, where it runs before that wake's inputs are read.
+    pub pending: bool,
     pub outs: Vec<Out>,
     pub spans: Vec<Span>,
     /// The words of every span as the last export left them.
@@ -225,14 +231,14 @@ impl RegionProc {
     /// Read the input chunks that changed since the last wake (all of a signal without an
     /// image); whether any was read. A count moves when an update changed an element of the
     /// chunk (or of its word's cover): back to an old value included, so nothing is missed.
-    fn import(&mut self, ctx: &Ctx<'_>) -> Result<bool, SimError> {
+    fn import(&mut self, ctx: &Ctx<'_>) -> Result<(bool, bool), SimError> {
         if !self.looked {
             self.looked = true;
             for g in &mut self.ins {
                 g.id = ctx.image_id(&g.spec).filter(|&id| id != NO_IMAGE);
             }
         }
-        let (mut metas, mut any) = (0, false);
+        let (mut metas, mut any, mut now) = (0, false, false);
         for g in &mut self.ins {
             let counts = match g.id {
                 Some(id) => {
@@ -255,6 +261,7 @@ impl RegionProc {
                 }
                 metas += Self::read(ctx, &mut self.img, &mut self.buf, &self.chunks[i])?;
                 any = true;
+                now |= self.chunks[i].now;
             }
         }
         if metas != 0 {
@@ -263,7 +270,7 @@ impl RegionProc {
         if self.check {
             self.check_import(ctx)?;
         }
-        Ok(any)
+        Ok((any, now))
     }
 
     /// Every input chunk read again: the image must hold what the kernel holds.
@@ -558,10 +565,19 @@ impl Process for RegionProc {
             }
             return Ok(());
         }
-        // Without an edge and with no input changed the settle would give what it gave last.
-        if self.import(ctx)? || edge {
+        // The settle a change seen earlier left for the edge, on the inputs before this wake's.
+        if edge && std::mem::take(&mut self.pending) {
+            self.run_code(ctx, Fun::Settle)?;
+        }
+        // Without an edge, only a change something outside can see before the next edge is
+        // settled now (with no input changed the settle would give what it gave last).
+        let (any, now) = self.import(ctx)?;
+        if edge || now {
+            self.pending = false;
             self.run_code(ctx, if edge { Fun::Edge } else { Fun::Settle })?;
             self.export(ctx)?;
+        } else if any {
+            self.pending = true;
         }
         if !ctx.wait_same() {
             for &w in &self.waits {

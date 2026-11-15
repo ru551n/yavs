@@ -50,9 +50,23 @@ pub(crate) struct Selection {
     /// those, the ones a combinational member reads wake the region.
     pub inputs: BTreeSet<LeafId>,
     pub wakes: BTreeSet<LeafId>,
+    /// The wakes whose change the region settles and exports at once, with the reason: a path
+    /// through combinational code (members, reset branches) to an exported output (its reader
+    /// outside) or to combinational code with a check. A change of any other input is read
+    /// when it comes and settled at the next wake that needs it (an edge at the latest).
+    pub at_once: BTreeMap<LeafId, Reach>,
     /// Leaves a clocked member writes and a clocked member reads: written to a next-state
     /// block, committed after all clocked bodies ran.
     pub next: BTreeSet<LeafId>,
+}
+
+/// Why a change of an input is settled at once: the exported output (and a process outside that
+/// reads it, if one is known) or the member process (its index) with a check its combinational
+/// path reaches.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Reach {
+    Output(LeafId, Option<usize>),
+    Check(usize),
 }
 
 /// A loop group of the settle: its steps, each member run at the pass levels of what it drives
@@ -1035,12 +1049,17 @@ fn boundary(
         .intersection(&clocked_reads)
         .copied()
         .collect();
-    let (outputs, waited) = if outside_reads_all(db, e, &is_member) {
-        (driven.clone(), driven.clone())
+    let (outputs, waited, readers) = if outside_reads_all(db, e, &is_member) {
+        (driven.clone(), driven.clone(), BTreeMap::new())
     } else {
-        let (seen, waited) = outside_reads(db, e, &is_member);
-        (driven.intersection(&seen).copied().collect(), waited)
+        let (seen, waited, readers) = outside_reads(db, e, &is_member);
+        (
+            driven.intersection(&seen).copied().collect(),
+            waited,
+            readers,
+        )
     };
+    let at_once = at_once(&members, reset_reads, &outputs, &readers, &wakes);
     Selection {
         members,
         settle: Vec::new(),
@@ -1054,8 +1073,58 @@ fn boundary(
         waited,
         inputs,
         wakes,
+        at_once,
         next,
     }
+}
+
+/// The wakes with a combinational path (combinational members, reset branches; leaf by leaf, a
+/// read reaching every leaf the code writes) to an exported output or to combinational code
+/// with a check: a change of such an input is visible before the next edge.
+fn at_once(
+    members: &[(usize, Body)],
+    reset_reads: &BTreeSet<LeafId>,
+    outputs: &BTreeSet<LeafId>,
+    readers: &BTreeMap<LeafId, usize>,
+    wakes: &BTreeSet<LeafId>,
+) -> BTreeMap<LeafId, Reach> {
+    let mut succ: BTreeMap<LeafId, BTreeSet<LeafId>> = BTreeMap::new();
+    let mut checked: BTreeMap<LeafId, usize> = BTreeMap::new();
+    for (pi, b) in members {
+        let reads: Vec<LeafId> = match b.kind {
+            Kind::Comb => b.reads.iter().copied().collect(),
+            Kind::Clocked if b.reset.is_some() => {
+                b.reads.intersection(reset_reads).copied().collect()
+            }
+            Kind::Clocked => continue,
+        };
+        for r in reads {
+            succ.entry(r).or_default().extend(b.writes.iter().copied());
+            if !b.checks.is_empty() {
+                checked.entry(r).or_insert(*pi);
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    for &w in wakes {
+        let (mut seen, mut todo) = (BTreeSet::from([w]), vec![w]);
+        while let Some(l) = todo.pop() {
+            if let Some(&pi) = checked.get(&l) {
+                out.insert(w, Reach::Check(pi));
+                break;
+            }
+            if l != w && outputs.contains(&l) {
+                out.insert(w, Reach::Output(l, readers.get(&l).copied()));
+                break;
+            }
+            for &n in succ.get(&l).into_iter().flatten() {
+                if seen.insert(n) {
+                    todo.push(n);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Something may read any signal: an external name anywhere in the design.
@@ -1076,9 +1145,10 @@ fn outside_reads(
     db: &Db,
     e: &Elaborated,
     members: &BTreeSet<usize>,
-) -> (BTreeSet<LeafId>, BTreeSet<LeafId>) {
+) -> (BTreeSet<LeafId>, BTreeSet<LeafId>, BTreeMap<LeafId, usize>) {
     let mut seen = BTreeSet::new();
     let mut waited = BTreeSet::new();
+    let mut readers = BTreeMap::new();
     let all = || -> BTreeSet<LeafId> { (0..e.nets.leaves.len() as u32).map(LeafId).collect() };
     let mut memo = BTreeMap::new();
     for (pi, p) in e.procs.iter().enumerate() {
@@ -1125,13 +1195,13 @@ fn outside_reads(
             }
         }
         if !follow {
-            return (all(), all());
+            return (all(), all(), BTreeMap::new());
         }
         // A subprogram declared outside a package reads the signals its body names and waits on
         // those its waits name; a wait on a formal waits on the call's actuals.
         for (c, args) in &calls {
             let Some(sum) = callee_sigs(db, *c, 0, &mut memo) else {
-                return (all(), all());
+                return (all(), all(), BTreeMap::new());
             };
             lsps.extend(sum.reads);
             waits.extend(sum.waits);
@@ -1152,11 +1222,14 @@ fn outside_reads(
                         if wait {
                             waited.extend(leaves.clone());
                         }
+                        for l in leaves.clone() {
+                            readers.entry(l).or_insert(pi);
+                        }
                         seen.extend(leaves);
                     }
-                    None => return (all(), all()),
+                    None => return (all(), all(), BTreeMap::new()),
                 },
-                ObjRoot::External(_) => return (all(), all()),
+                ObjRoot::External(_) => return (all(), all(), BTreeMap::new()),
                 ObjRoot::ImplicitSignal(_) => {}
             }
         }
@@ -1186,7 +1259,7 @@ fn outside_reads(
     }
     seen.extend(other.iter().copied());
     waited.extend(other);
-    (seen, waited)
+    (seen, waited, readers)
 }
 
 /// The members driving a signal whose history a process outside the region reads, each with

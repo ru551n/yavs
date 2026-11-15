@@ -698,6 +698,11 @@ Compiled tiers: Cranelift
      - any value
      - unset
      - ``run``
+   * - ``YAVS_CYCLE_EDGE_OUTPUTS``
+     - ``1``, an experiment: a cycle region (``--cycle``) settles and drives its outputs only at clock edges and at changes of asynchronous resets, so a process outside sees a change of an output that follows an input combinationally only after the next edge. Results can differ from the normal mode's; for developers measuring what that costs and gains.
+     - ``1``
+     - unset
+     - ``run``
    * - ``YAVS_CYCLE_FLAGS``
      - Developers: more Cranelift settings for the code of a cycle region (``--cycle``), as ``name=value`` pairs separated by commas (for example ``opt_level=none``), to measure what they cost; a name or value Cranelift does not know is an internal error of the region.
      - ``name=value,...``

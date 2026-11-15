@@ -136,7 +136,7 @@ fn a_region_with_processes_left_out_gives_the_same_result() {
             "{err}"
         );
         assert!(
-            err.contains("wake, 1 wake the region (cycle_partial.din)"),
+            err.contains("inputs, 1 wake the region (cycle_partial.din)"),
             "{err}"
         );
     }
@@ -204,6 +204,60 @@ fn region_outputs_seen_every_clock_on_events_and_through_local_subprograms() {
             "{err}"
         );
     }
+}
+
+#[test]
+fn inputs_settled_at_the_next_edge_give_the_same_result() {
+    let dir = tempdir("cycle-lazy");
+    analyze(&dir, "lazy.vhd", include_str!("cycle/lazy.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_lazy");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_lazy");
+        // Hand-checked: 24 edges; the bus model sees `ready` in 6 of its 10 handshakes (`busy`
+        // is `cnt(1)` of the edge before); the monitor's `q` follows `a xor ae xor b` an edge
+        // late (1 at 11 ns: `b` was 0, `a` toggled after the first edge and back twice by 3 ns).
+        assert!(
+            normal.len() == 25
+                && normal[1].ends_with("11000000fs+0: q=1 q2=0 tq=2 ready=0")
+                && normal[24].ends_with("q=0 q2=0 tq=4 handshakes=6"),
+            "{t:?} {normal:?}"
+        );
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 4 of 8 processes run cycle-based"),
+            "{err}"
+        );
+        // `valid` reaches an output the bus model reads, `sel` the index check of `look`; `a`,
+        // `ae` and `b` reach only the register `q`.
+        assert!(
+            err.contains(
+                "wakes: 2 settled at once, through combinational code to what outside sees \
+                 (cycle_lazy.valid to cycle_lazy.ready read by cycle_lazy.bus_model, \
+                 cycle_lazy.sel to a check in cycle_lazy.look); 3 read when they change and \
+                 settled at the next edge"
+            ),
+            "{err}"
+        );
+    }
+    // The experiment that publishes outputs at clock edges only: the bus model never sees
+    // `ready` in the time step of its `valid`.
+    let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .current_dir(&dir)
+        .env("YAVS_STD_CACHE", "off")
+        .env("YAVS_CYCLE_EDGE_OUTPUTS", "1")
+        .args([
+            "--color",
+            "never",
+            "run",
+            "--work=work:lib",
+            "--no-cache",
+            "--cycle",
+        ])
+        .arg("cycle_lazy")
+        .output()
+        .expect("run yavs");
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("q=0 q2=0 tq=4 handshakes=0"), "{out}");
 }
 
 /// A sensitivity list naming part of a signal is not complete for cycle mode even when it names

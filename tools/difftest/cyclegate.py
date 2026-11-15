@@ -41,6 +41,7 @@ CYCLE_TESTS = {
     "history.vhd": [("cycle_history", "", None)],
     "inputs.vhd": [("cycle_inputs", "", None)],
     "inreset.vhd": [("cycle_inreset", "", None)],
+    "lazy.vhd": [("cycle_lazy", "", None)],
     "intarr.vhd": [("cycle_intarr", "", None)],
     "ints.vhd": [("cycle_ints", "", None)],
     "numeric.vhd": [("cycle_ops2", "", lambda s, w=w: W.sub(str(w), s)) for w in (8, 63, 65)],

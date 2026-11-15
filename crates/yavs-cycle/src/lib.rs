@@ -436,9 +436,24 @@ fn build(
             n - codegen::words(klen(k))
         });
     }
+    // Memories clocked members write: their writes wait for the commit (`defer`), so they need no
+    // next-state block (`region::ram_rule` kept only writes at run-time indices).
+    let mut rams: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    for (_, b) in sel.members.iter().filter(|(_, b)| b.kind == Kind::Clocked) {
+        let mut w = BTreeMap::new();
+        region::sig_writes(&b.ops, &mut w);
+        rams.extend(
+            (w.into_iter())
+                .filter(|&(k, h)| h.indexed && region::big_signal(e, k))
+                .map(|(k, _)| k),
+        );
+    }
     let mut next: BTreeMap<u32, u32> = BTreeMap::new();
     for &l in &sel.next {
         let k = ksig(l);
+        if rams.contains(&k) {
+            continue;
+        }
         next.entry(k).or_insert_with(|| {
             n += codegen::words(klen(k));
             n - codegen::words(klen(k))
@@ -471,9 +486,23 @@ fn build(
     // Each member's slots and resolution.
     let none = BTreeMap::new();
     let mut rs: Vec<Resolve> = Vec::new();
+    // Per member: its clocked body with the memory writes kept back, and those writes.
+    let mut deferred: Vec<(Vec<Op>, Vec<Pending>)> = Vec::new();
     for (pi, b) in &sel.members {
         let base = n;
         n += b.locs;
+        let mut pend = Vec::new();
+        let ops = if b.kind == Kind::Clocked && !rams.is_empty() {
+            let mut at = b.locs;
+            let ops = defer(&b.ops, &rams, &mut at, &mut pend);
+            // The writes' words hold state from the body to the commit.
+            state.push((base + b.locs, at - b.locs));
+            n += at - b.locs;
+            ops
+        } else {
+            Vec::new()
+        };
+        deferred.push((ops, pend));
         init.extend(b.init.iter().map(|&(w, v)| (base + w, v)));
         let sites = checks.len() as u32;
         checks.extend(b.checks.iter().map(|c| (c.clone(), *pi)));
@@ -592,7 +621,12 @@ fn build(
         if b.kind != Kind::Clocked {
             continue;
         }
-        let mut ops: Vec<Op> = b.ops.iter().map(|op| r.op(op)).collect();
+        let body = if deferred[k].1.is_empty() {
+            &b.ops
+        } else {
+            &deferred[k].0
+        };
+        let mut ops: Vec<Op> = body.iter().map(|op| r.op(op)).collect();
         if several {
             ops = vec![Op::If {
                 cond: Ref::Loc(r.edge),
@@ -602,7 +636,27 @@ fn build(
         }
         edge.push(ops);
     }
-    edge.push(commit(&next, &cur, klen));
+    // The memory writes of this edge, in member and program order, then the next-state blocks.
+    let mut writes = Vec::new();
+    for (k, (_, pend)) in deferred.iter().enumerate() {
+        let r = &rs[k];
+        for p in pend {
+            writes.push(r.op(&Op::If {
+                cond: Ref::Loc(p.flag),
+                then: vec![
+                    p.write.clone(),
+                    Op::Lit {
+                        dst: Ref::Loc(p.flag),
+                        val: Box::new([0]),
+                    },
+                ],
+                else_: Vec::new(),
+            }));
+        }
+    }
+    let mut c = commit(&next, &cur, klen);
+    writes.append(&mut c);
+    edge.push(writes);
     let err = n;
     n += 2;
     // The save words of each loop group.
@@ -822,6 +876,81 @@ fn build(
 }
 
 /// The next-state words into the current ones.
+/// A memory write of a clocked member kept back to the commit: the write, from the member's
+/// words that hold its index and value, and the word that says it happened (member slots).
+struct Pending {
+    write: Op,
+    flag: u32,
+}
+
+/// `ops` with every write of a memory in `rams` replaced by saving its index and value in new
+/// member slots from `at` on and setting its flag; the writes, for the commit.
+fn defer(
+    ops: &[Op],
+    rams: &std::collections::BTreeSet<u32>,
+    at: &mut u32,
+    out: &mut Vec<Pending>,
+) -> Vec<Op> {
+    let mut res = Vec::with_capacity(ops.len());
+    for op in ops {
+        match op {
+            Op::If { cond, then, else_ } => res.push(Op::If {
+                cond: *cond,
+                then: defer(then, rams, at, out),
+                else_: defer(else_, rams, at, out),
+            }),
+            Op::IndexWrite {
+                dst: Ref::Sig(k),
+                src,
+                lo,
+                n,
+                stride,
+                w,
+                idx,
+                left,
+                down,
+                site,
+            } if rams.contains(k) => {
+                let (i, v, f) = (*at, *at + 1, *at + 1 + codegen::words(*w));
+                *at = f + 1;
+                res.extend([
+                    Op::Copy {
+                        dst: Ref::Loc(i),
+                        src: *idx,
+                        len: 64,
+                    },
+                    Op::Copy {
+                        dst: Ref::Loc(v),
+                        src: *src,
+                        len: *w,
+                    },
+                    Op::Lit {
+                        dst: Ref::Loc(f),
+                        val: Box::new([1]),
+                    },
+                ]);
+                out.push(Pending {
+                    write: Op::IndexWrite {
+                        dst: Ref::Sig(*k),
+                        src: Ref::Loc(v),
+                        lo: *lo,
+                        n: *n,
+                        stride: *stride,
+                        w: *w,
+                        idx: Ref::Loc(i),
+                        left: *left,
+                        down: *down,
+                        site: *site,
+                    },
+                    flag: f,
+                });
+            }
+            op => res.push(op.clone()),
+        }
+    }
+    res
+}
+
 fn commit(
     next: &BTreeMap<u32, u32>,
     cur: &BTreeMap<u32, u32>,

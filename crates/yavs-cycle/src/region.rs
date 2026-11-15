@@ -516,6 +516,9 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             }
         }
         if gone.is_empty() {
+            gone = ram_rule(db, e, &taken);
+        }
+        if gone.is_empty() {
             gone = cross_delta(db, e, &taken);
         }
         if gone.is_empty() {
@@ -859,6 +862,111 @@ fn cross_delta(
                 name(from),
                 name(to)
             )));
+        }
+    }
+    gone
+}
+
+/// A memory: a kernel signal of more than 64 words (4096 logic elements, or 64 integers). A
+/// clocked member's writes of one are kept back to the commit (`build`), so it needs no
+/// next-state copy; that takes writes of elements or slices at run-time indices only. One read
+/// outside the region would be exported whole at every change.
+pub(crate) fn big_signal(e: &Elaborated, k: u32) -> bool {
+    let nets = &e.nets;
+    let n = nets.signal_len(yavs_kernel::SignalId(k));
+    match nets.leaf(nets.packs[k as usize].0).ty.elem {
+        yavs_kernel::Elem::Logic => n > 4096,
+        yavs_kernel::Elem::Bytes(_) => n > 64,
+    }
+}
+
+/// The kernel signals `ops` write, each with how: at run-time indices (`IndexWrite`), otherwise,
+/// or both.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct How {
+    pub indexed: bool,
+    pub other: bool,
+}
+
+pub(crate) fn sig_writes(ops: &[Op], out: &mut BTreeMap<u32, How>) {
+    let none = How {
+        indexed: false,
+        other: false,
+    };
+    for op in ops {
+        match op {
+            Op::If { then, else_, .. } => {
+                sig_writes(then, out);
+                sig_writes(else_, out);
+            }
+            Op::IndexWrite {
+                dst: Ref::Sig(k), ..
+            } => out.entry(*k).or_insert(none).indexed = true,
+            op => {
+                let w = std::cell::RefCell::new(Vec::new());
+                op.map(
+                    &|r| r,
+                    &|r| {
+                        w.borrow_mut().push(r);
+                        r
+                    },
+                    &|x| x,
+                );
+                for r in w.into_inner() {
+                    if let Ref::Sig(k) = r {
+                        out.entry(k).or_insert(none).other = true;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Clocked members writing a memory both at run-time indices and otherwise, or one read outside
+/// the region: not implemented yet. A big signal no clocked member writes at a run-time index is
+/// no memory (whole writes go through a next-state block, as for any signal).
+fn ram_rule(db: &Db, e: &Elaborated, taken: &BTreeMap<usize, (Fit, Body)>) -> Vec<(usize, String)> {
+    let mut rams: BTreeMap<u32, Vec<(usize, bool)>> = BTreeMap::new();
+    for (&pi, (_, b)) in taken.iter().filter(|(_, (_, b))| b.kind == Kind::Clocked) {
+        let mut w = BTreeMap::new();
+        sig_writes(&b.ops, &mut w);
+        for (k, how) in w
+            .into_iter()
+            .filter(|&(k, h)| h.indexed && big_signal(e, k))
+        {
+            rams.entry(k).or_default().push((pi, !how.other));
+        }
+    }
+    if rams.is_empty() {
+        return Vec::new();
+    }
+    let members: BTreeSet<usize> = taken.keys().copied().collect();
+    let seen = (!outside_reads_all(db, e, &members)).then(|| outside_reads(db, e, &members).0);
+    let mut gone = Vec::new();
+    for (k, ws) in rams {
+        let (a, z) = e.nets.packs[k as usize];
+        let name = e.leaf_name(a);
+        let outside = seen
+            .as_ref()
+            .is_none_or(|s| (a.0..z.0).any(|l| s.contains(&LeafId(l))));
+        for (pi, ok) in ws {
+            if !ok {
+                gone.push((
+                    pi,
+                    format!(
+                        "it writes the memory {name} both at indices chosen at run time and \
+                         otherwise, which cycle mode does not take for a signal of this size yet"
+                    ),
+                ));
+            } else if outside {
+                gone.push((
+                    pi,
+                    format!(
+                        "the memory {name} it writes is read outside the region, which cycle mode \
+                         does not export yet"
+                    ),
+                ));
+            }
         }
     }
     gone

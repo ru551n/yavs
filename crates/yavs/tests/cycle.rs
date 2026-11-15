@@ -14,6 +14,8 @@ fn yavs(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_yavs"))
         .current_dir(dir)
         .env("YAVS_STD_CACHE", "off")
+        // Every import read again and compared: an input the region missed is an error.
+        .env("YAVS_CYCLE_IMPORT_CHECK", "1")
         .args(["--color", "never"])
         .args(args)
         .output()
@@ -706,6 +708,32 @@ begin
     wait;
   end process;
 end architecture;
+
+entity cycle_ramidx is
+end entity;
+architecture a of cycle_ramidx is
+  signal clk : bit := '0';
+  signal x : integer := 4192;
+  signal v : bit_vector(4199 downto 0) := (others => '0');
+begin
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      x <= x + 1;
+      v(x) <= '1';
+    end if;
+  end process;
+  main : process
+  begin
+    for i in 1 to 40 loop
+      clk <= '1';
+      wait for 5 ns;
+      clk <= '0';
+      wait for 5 ns;
+    end loop;
+    wait;
+  end process;
+end architecture;
 ";
 
 #[test]
@@ -727,6 +755,12 @@ fn failed_checks_in_region_code_stop_the_run_as_in_the_normal_mode() {
             "cycle_idx",
             "error[E3009]: index 8 outside of range 7 downto 0 for v",
             "at 80 ns, delta 1, in process cycle_idx.reg",
+        ),
+        // A memory: the write waits for the commit, its index check fails there.
+        (
+            "cycle_ramidx",
+            "error[E3009]: index 4200 outside of range 4199 downto 0 for v",
+            "at 80 ns, delta 1, in process cycle_ramidx.reg",
         ),
     ] {
         for mode in [None, Some("--cycle")] {
@@ -1310,6 +1344,37 @@ fn arrays_of_integers_give_the_same_result() {
     }
 }
 
+/// Memories written by clocked members at run-time indices: their writes wait for the commit, so a
+/// read at the same edge gives the old value (`tests/cycle/ram.vhd`); one the testbench reads stays
+/// out with the reason.
+#[test]
+fn memories_equal_the_normal_mode_at_widths_around_a_word() {
+    let dir = tempdir("cycle-ram");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("ram{w}.vhd"),
+            &with_width(include_str!("cycle/ram.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_ram");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_ram");
+            assert_eq!(normal.len(), 20, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            // `writer`, `reader`, `fast` and the concurrent read.
+            assert!(
+                err.contains("cycle mode: 4 of 7 processes run cycle-based"),
+                "{w}: {err}"
+            );
+            let (_, why) = row(&err, "cycle_ram.shadow");
+            assert!(
+                why.contains("the memory cycle_ram.seen it writes is read outside the region"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 #[test]
 fn clocked_and_combinational_shapes_give_the_same_result() {
     let dir = tempdir("cycle-shapes");
@@ -1370,7 +1435,7 @@ fn bench_rtl_designs_give_the_same_output_in_cycle_mode() {
              end architecture;",
             )
     };
-    let designs: [(&str, String, &str, &[&str], &str); 6] = [
+    let designs: [(&str, String, &str, &[&str], &str); 7] = [
         (
             "rtl_ff",
             include_str!("../../../tools/bench/designs/rtl_ff.vhd").into(),
@@ -1413,6 +1478,14 @@ fn bench_rtl_designs_give_the_same_output_in_cycle_mode() {
             &["-gNREG=8", "-gCYCLES=200"],
             "9 of 11",
         ),
+        // A memory of 65536 elements: its writes wait for the commit.
+        (
+            "rtl_ram",
+            include_str!("../../../tools/bench/designs/rtl_ram.vhd").into(),
+            "bench_rtl_ram",
+            &["-gCYC=40"],
+            "1 of 3",
+        ),
     ];
     for (name, src, top, generics, members) in designs {
         let dir = tempdir(&format!("cycle-bench-{name}"));
@@ -1446,12 +1519,6 @@ fn bench_designs_cycle_mode_leaves_out_say_why() {
             include_str!("../../../tools/bench/designs/rtl_bus.vhd"),
             "bench_rtl_bus",
             "E4118 a `'Z'` value",
-        ),
-        (
-            "rtl_ram",
-            include_str!("../../../tools/bench/designs/rtl_ram.vhd"),
-            "bench_rtl_ram",
-            "(a RAM) is not supported in cycle mode yet",
         ),
     ] {
         let dir = tempdir(&format!("cycle-out-{name}"));

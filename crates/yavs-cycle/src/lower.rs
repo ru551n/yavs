@@ -1822,15 +1822,8 @@ impl Lx<'_> {
                     self.writes.insert(l);
                 }
                 if let Some((idx, b, stride, _)) = d.at {
-                    // ponytail: a big array signal written at a run-time index is a RAM, whose
-                    // next-state copy would cost the whole array per edge; RAMs are the next step.
-                    if matches!(d.r, Ref::Sig(_)) && d.full > 4096 {
-                        return Err(
-                            "an array signal of more than 4096 elements written at an index \
-                             chosen at run time (a RAM) is not supported in cycle mode yet"
-                                .into(),
-                        );
-                    }
+                    // A memory (a big signal written here) is the region's to judge
+                    // (`region::ram_rule`, `build`'s pending writes).
                     let s = self.whole(s);
                     let site = self.index_site(d, b);
                     self.ops.push(Op::IndexWrite {
@@ -1920,7 +1913,7 @@ impl Lx<'_> {
             // An element of an array of integers.
             (Val::Part(d), Val::Int(s)) if d.dims.n == 1 && d.int.is_some() => {
                 let w = self.elem_word(s, d.int.expect("matched"));
-                self.assign(&Val::Part(Part { int: None, ..*d }), Val::Part(w))
+                self.assign(&Val::Part(*d), Val::Part(w))
             }
             _ => Err("an assignment whose value has another shape than its target".into()),
         }
@@ -2466,9 +2459,8 @@ impl Lx<'_> {
             _ => Err("a signal leaf placed twice".to_string()),
         };
         match v {
-            // ponytail: the image keeps one word per byte signal and the boundary reads and
-            // drives one integer, so a signal of integers stays out; its words and boundary
-            // conversion (`rt.rs`) are the next step.
+            // ponytail: a signal of integers stays out for now; joining needs its place here, the
+            // image's words from the right (`rt.rs` turns them round already).
             Val::Part(p) if p.int.is_some() => Err(format!(
                 "an array signal of integers or enumerations is not supported in cycle mode yet \
                  (signal {})",
@@ -2535,9 +2527,10 @@ impl Lx<'_> {
                         None => (p.lo, p.len),
                     };
                     self.reads.insert(l);
-                    // An array of integers: a word per element.
+                    // An array of integers: a word per element, from the right; the kernel's
+                    // elements (the subset checker's) from the left.
                     let (lo, n) = match p.int {
-                        Some(_) => (lo / 64, n / 64),
+                        Some(_) => (p.full / 64 - lo / 64 - n / 64, n / 64),
                         None => (lo, n),
                     };
                     self.rparts.push((l, lo - base, n));
@@ -2597,61 +2590,8 @@ impl Lx<'_> {
             Shape::Scalar { .. } => {
                 Err("a value of a real or physical type is not supported in cycle mode yet".into())
             }
-            Shape::Array { dims, elem, .. } if matches!(**elem, Shape::Scalar { elem: e, .. } if e != yavs_kernel::Elem::Logic) =>
-            {
-                let [b] = &dims[..] else {
-                    return Err(
-                        "a multi-dimensional array is not supported in cycle mode yet".into(),
-                    );
-                };
-                let Shape::Scalar {
-                    ty,
-                    sub,
-                    range: Some(r),
-                    ..
-                } = &**elem
-                else {
-                    return Err(
-                        "an array of real or physical values is not supported in cycle mode yet"
-                            .into(),
-                    );
-                };
-                if !matches!(
-                    db.types[*ty].kind,
-                    TypeKind::Integer | TypeKind::Enum { .. }
-                ) {
-                    return Err(
-                        "an array of real or physical values is not supported in cycle mode yet"
-                            .into(),
-                    );
-                }
-                let n = b.len();
-                if n == 0 || n > 1 << 14 {
-                    return Err(format!(
-                        "an array of {n} integers (cycle mode takes 1 to 2**14 for now)"
-                    ));
-                }
-                let (lo, hi) = r.low_high();
-                let n = 64 * n as u32;
-                Ok(Val::Part(Part {
-                    r: leaf(n),
-                    lo: 0,
-                    len: n,
-                    full: n,
-                    dims: Dims::wrap(*b, Dims::wrap(WORD, Dims::NONE).expect("one deep"))
-                        .expect("two deep"),
-                    fresh: false,
-                    leaf: None,
-                    at: None,
-                    obj: Some(d),
-                    lit: None,
-                    int: Some(IntElem {
-                        lo,
-                        hi,
-                        down: r.dir == Direction::Downto,
-                        place: Some((*sub, d)),
-                    }),
-                }))
+            Shape::Array { .. } if let Some((ds, el)) = self.int_dims(shape)? => {
+                self.int_part(ds, el, d, leaf)
             }
             Shape::Array { dims, elem, .. } if matches!(**elem, Shape::Record { .. }) => {
                 let [b] = &dims[..] else {
@@ -2707,6 +2647,18 @@ impl Lx<'_> {
                 .collect::<R<Vec<_>>>()
                 .map(Val::Rec);
         }
+        if let Some((ds, el)) = self.int_dims(shape)? {
+            let ds = Dims::wrap(outer, ds)
+                .ok_or_else(|| "an array nested more than four deep".to_string())?;
+            return self.int_part(ds, el, d, leaf);
+        }
+        if let Shape::Scalar { elem, .. } = shape
+            && *elem != yavs_kernel::Elem::Logic
+        {
+            let ds = Dims::wrap(outer, Dims::wrap(WORD, Dims::NONE).expect("one deep"))
+                .expect("two deep");
+            return self.int_part(ds, shape, d, leaf);
+        }
         let ds = Dims::wrap(outer, self.logic_dims(shape)?)
             .ok_or_else(|| "an array nested more than four deep".to_string())?;
         let n = u64::from(ds.elem_len()) * ds.b[0].len();
@@ -2728,6 +2680,86 @@ impl Lx<'_> {
             obj: Some(d),
             lit: None,
             int: None,
+        }))
+    }
+
+    /// The index ranges of an array of integers or enumerations (or of such arrays), the word of
+    /// each element innermost, and the element's shape; `None` for an array of logic elements.
+    fn int_dims<'s>(&self, shape: &'s Shape) -> R<Option<(Dims, &'s Shape)>> {
+        let Shape::Array { dims, elem, .. } = shape else {
+            return Ok(None);
+        };
+        let inner = match &**elem {
+            Shape::Scalar { elem: e, .. } if *e != yavs_kernel::Elem::Logic => {
+                Some((Dims::wrap(WORD, Dims::NONE).expect("one deep"), &**elem))
+            }
+            Shape::Array { .. } => self.int_dims(elem)?,
+            _ => None,
+        };
+        let Some((inner, el)) = inner else {
+            return Ok(None);
+        };
+        let [b] = &dims[..] else {
+            return Err("a multi-dimensional array is not supported in cycle mode yet".into());
+        };
+        let ds = Dims::wrap(*b, inner)
+            .ok_or_else(|| "an array nested more than four deep".to_string())?;
+        Ok(Some((ds, el)))
+    }
+
+    /// The place of an array of integers or enumerations of index ranges `ds` (the word last) and
+    /// element shape `el`: a word per element.
+    fn int_part(
+        &self,
+        ds: Dims,
+        el: &Shape,
+        d: DeclId,
+        leaf: &mut dyn FnMut(u32) -> Ref,
+    ) -> R<Val> {
+        let Shape::Scalar {
+            ty,
+            sub,
+            range: Some(r),
+            ..
+        } = el
+        else {
+            return Err(
+                "an array of real or physical values is not supported in cycle mode yet".into(),
+            );
+        };
+        if !matches!(
+            self.db.types[*ty].kind,
+            TypeKind::Integer | TypeKind::Enum { .. }
+        ) {
+            return Err(
+                "an array of real or physical values is not supported in cycle mode yet".into(),
+            );
+        }
+        let n = (ds.b[..ds.n as usize - 1].iter()).fold(1u64, |a, b| a.saturating_mul(b.len()));
+        if n == 0 || n > 1 << 14 {
+            return Err(format!(
+                "an array of {n} integers (cycle mode takes 1 to 2**14 for now)"
+            ));
+        }
+        let (lo, hi) = r.low_high();
+        let n = 64 * n as u32;
+        Ok(Val::Part(Part {
+            r: leaf(n),
+            lo: 0,
+            len: n,
+            full: n,
+            dims: ds,
+            fresh: false,
+            leaf: None,
+            at: None,
+            obj: Some(d),
+            lit: None,
+            int: Some(IntElem {
+                lo,
+                hi,
+                down: r.dir == Direction::Downto,
+                place: Some((*sub, d)),
+            }),
         }))
     }
 

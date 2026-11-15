@@ -2232,6 +2232,19 @@ impl Lx<'_> {
     fn object(&mut self, x: ExprId, d: DeclId, target: bool) -> R<Val> {
         let (db, e) = (self.db, self.e);
         let decl = &db.decls[d];
+        // An alias of an object: its name, with the alias's index range when it has a subtype.
+        if let yavs_sem::decl::DeclKind::Alias(yavs_sem::decl::Alias::Object {
+            target: t,
+            subtype,
+        }) = &decl.kind
+        {
+            let v = self.name(*t, target)?;
+            return match (v, subtype) {
+                (Val::Part(p), Some(st)) if p.at.is_none() => Ok(Val::Part(self.rebound(p, *st)?)),
+                (Val::Part(_), Some(_)) => Err("an alias of an element chosen at run time".into()),
+                (v, _) => Ok(v),
+            };
+        }
         let yavs_sem::decl::DeclKind::Object(o) = &decl.kind else {
             return Err(format!("the name `{}`, which is not an object", decl.name));
         };

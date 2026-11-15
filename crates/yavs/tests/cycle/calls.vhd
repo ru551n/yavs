@@ -2,7 +2,7 @@
 -- fills in: functions and procedures of a package and of a process, inlined. Unconstrained formals
 -- given `to` objects and slices, nested calls, early returns in loops, a recursion whose depth the
 -- lengths fix, record results, `out` and `inout` parameters (by reference, as the normal mode
--- passes them), signal parameters, a concurrent procedure call, `exit` and `next`.
+-- passes them), signal parameters, a concurrent procedure call, `exit` and `next`, aliases.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -169,6 +169,9 @@ architecture a of cycle_calls is
   signal k : integer range -4 to 4 := 0;
   signal r1, r2, r3, r4, z, zz : std_ulogic_vector(W - 1 downto 0);
   signal zg : std_ulogic_vector(W / 2 downto 0);
+  signal r6 : std_ulogic_vector(W downto 0);
+  alias bt : std_ulogic_vector(0 to W - 1) is b;
+  alias b0 : std_ulogic is b(0);
   signal red : std_ulogic_vector(4 downto 0);
   signal pos, post, dv, cnt, enc, xo : integer range -1000 to 1000;
   signal ep : ends_t;
@@ -189,6 +192,7 @@ begin
     cnt <= pop(a);
     ep <= ends(t);
     xo <= exit_or(a);
+    r6 <= rev(bt) & to_sl(b0 = '1');
   end process;
 
   -- A call in an unrolled loop with the loop parameter as its argument, and a static `exit`.
@@ -277,7 +281,7 @@ begin
       wait for 5 ns;
       report "c=" & integer'image(c) & " r1=" & to_hstring(r1) & " r2=" & to_hstring(r2)
         & " r3=" & to_hstring(r3) & " r4=" & to_hstring(r4) & " z=" & to_hstring(z)
-        & " zz=" & to_hstring(zz) & " zg=" & to_string(zg)
+        & " zz=" & to_hstring(zz) & " zg=" & to_string(zg) & " r6=" & to_hstring(r6)
         & " red=" & to_string(red) & " pos=" & integer'image(pos) & " post=" & integer'image(post)
         & " dv=" & integer'image(dv) & " cnt=" & integer'image(cnt) & " enc=" & integer'image(enc)
         & " xo=" & integer'image(xo)

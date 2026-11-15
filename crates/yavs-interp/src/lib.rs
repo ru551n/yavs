@@ -71,9 +71,10 @@ pub use exec::{
 pub use heap::{HEAP_LOG, Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
 pub use pmemo::{
-    MEMO_DIR, MEMO_DIR_ENTS, MEMO_DIR_HITS, MEMO_DIR_OFF_AT, MEMO_DIR_OFF_SEEN, MEMO_ENT_FUNC,
-    MEMO_ENT_MASK, MEMO_ENT_SIZE, MEMO_ENT_TAB, MEMO_FREE, MEMO_SLOT_AT, MEMO_SLOT_HASH,
-    MEMO_SLOT_KLEN, MEMO_SLOT_VLEN, MEMO_SLOT_WORD, pmemo_inline_hits, pmemo_off, pmemo_stats,
+    MEMO_DIR, MEMO_DIR_ENTS, MEMO_DIR_HITS, MEMO_DIR_NONE, MEMO_DIR_OFF_AT, MEMO_DIR_OFF_SEEN,
+    MEMO_ENT_FUNC, MEMO_ENT_MASK, MEMO_ENT_SHIFT, MEMO_ENT_SIZE, MEMO_ENT_TAB, MEMO_FREE,
+    MEMO_SLOT_AT, MEMO_SLOT_HASH, MEMO_SLOT_KLEN, MEMO_SLOT_VLEN, MEMO_SLOT_WORD,
+    pmemo_inline_hits, pmemo_off, pmemo_stats,
 };
 pub use pre::{
     FusedCopy, ScalarDrive, fused_drives, light_ieee as light_native, retreating_brs, static_wait,

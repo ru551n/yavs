@@ -766,8 +766,13 @@ case!(
 // A cheap pure function (no loop, recursion, concatenation of bytes or native call but `ieee`
 // gates and conversions) called with 40 different arguments, and a recursive one: the
 // interpreter answers repeats of both from the memo (compiled callers ask it for the recursive
-// one only, `clift::memo_loopfree`).
-case!(memo_loopfree, "s=4190", &[], [("pmemo_hits", Min(740))]);
+// one only, `clift::memo_loopfree`). A key has two slots (269 runs with one).
+case!(
+    memo_loopfree,
+    "s=4190",
+    &[],
+    [("pmemo_hits", Min(740)), ("pmemo_runs", Max(165))]
+);
 // A hex-digit parser of two 22-arm case functions (character to integer and to a nibble),
 // 384 calls of each: the result tables (#722) read them inline, so none reaches the memo.
 case!(
@@ -2015,11 +2020,15 @@ mod clift {
         "memo_loopfree",
         "s=4190",
         [
-            // `half` (recursive) only: `pick` would add its 248 hits.
+            // `half` (recursive) only: `pick` would add its 248 hits. A key has two slots: more
+            // calls of the whole vector hit, so fewer of its halves are called at all (hits 509
+            // and runs 121 with one slot); the second slot is read inline (`cb_memo` was 317
+            // without it).
             ("pmemo_hits", Max(525)),
-            ("pmemo_hits", Min(495)),
-            ("pmemo_inline_hits", Min(460)),
-            ("cb_memo", Max(270)),
+            ("pmemo_hits", Min(430)),
+            ("pmemo_inline_hits", Min(400)),
+            ("pmemo_runs", Max(65)),
+            ("cb_memo", Max(150)),
             ("clift_memo_unprobed_sites", Min(1)),
         ]
     );

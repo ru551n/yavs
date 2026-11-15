@@ -25,6 +25,25 @@
 | `yavs lint` | all rule classes, `--facts`, reports, configuration, waivers (#895): `crates/yavs-lint`, `crates/yavs/src/lint.rs`, `docs/lint.rst`, `--yavs-lint` in `vunit-yavs`, problem matcher `$yavs` in VS Code; pinned in `crates/yavs/tests/lint.rs`. `file_list` in the configuration reads the files to check; every unknown key, rule id and rule group in the configuration or waiver file is E0134, all listed in one run, and the four YAML files yavs reads (these two, the coverage exclusion file and `cov --config`) are checked against declared schemas by one reader, `yavs_diag::yaml`, so a configuration written for a style tool needs its style settings removed first (#895). Rule ids of analysis (lint_006, lint_782) stay nameable and report nothing. Definite findings on the corpora and the realbench designs are confirmed real (#895); known noise of the advisory rules: see the issues linked there. lint_720 follows statements (#989); the rules beyond the definite class were compared with the source project's tests (#1002, `docs/decisions.md`), with `rtl:` and `testbench:` rule blocks and a heuristic for what a testbench is. |
 | M5, M10 | M5 in progress, partial (#143; what works and what does not is in `docs/vhpi.md`): the `vhpi_*` export surface (#266), `yavs run --vhpi` (#267), the hierarchy (#269), values and types (#270), puts (#271), callbacks (#272), foreign models (#274, #330, #357) and plusargs (#298) are done, `crates/yavs-vhpi`, coverage in `docs/vhpi.md`; cocotb 2.1.0's own simulator regression passes on yavs (`tools/cocotb/run.py`, 78 of 78 jobs, 43 of them run VHDL tests, at 1 and 4 threads, run in the `conformance` CI workflow, #122); M10 (the graphical debugger) is dropped: `yavs-gui` was built (slices G1 #388 and G2 #399, 2026-10-19) and removed again with `yavs run --gui` and its release files (maintainer, 2026-10-29; #871 closed 2026-10-31; `docs/plan.md` M10); the DAP server slices made for it (#396, #397, #398) were closed 2026-10-30 and DAP clients cover debugging. Corrected 2026-11-14: this row described the GUI as in progress) |
 
+### The memo of pure calls: judged at the 64th call, two slots per key (2026-11-15)
+
+A memoised function is judged at its 64th call in a process whatever that call finds (before, a hit there skipped the
+judgement and the function stayed on for good), and a key has two slots in its function's table, the low and the top
+bits of its hash (one step of cuckoo hashing on a full pair); compiled code's inline probe reads both without a branch.
+Keys that differ only in their last bytes (text) no longer share one slot, and dense small keys keep their own. Counts:
+`perf.rs` `memo_loopfree` 747 hits and 157 runs in the interpreter (757 and 269 before), compiled 447 and 59 (509 and
+121); an inline hit costs 12 instructions more (195 -> 207 an iteration), a forced compile of six probe sites 0.68 M
+more. Measured (all-thread instructions, fresh worlds with a fixed output path, bench builds, A/A = byte copy of the
+base): realbench 40 tests x 3 worlds x 10 runs, geomean sum 0.9947 (A/A 0.9992), steady 0.9919 (0.9989), run 1 1.0019
+(1.0043); bench h2h and external 19 x 4 x 10 sum 0.9945 (0.9987); VUnit cells A and D 0.994 and 0.994 (0.994, 1.009).
+Largest: `uvvm_util_rand` 0.960, `vai_window_gen_interlock` 0.973, `olo_fix_cordic_rot` 0.974, `osvvm_axis_random` sum
+0.976 and steady 0.944 with run 1 1.063 +-2.1 (10 worlds; the accepted trade: OSVVM `to_hxstring` is given up and then
+compiles in the first cold run), `vunit_logging` 0.989, the small `hdlm_*`, `olo_*` and `vai_*` tests 0.986 to 0.999.
+Re-run at 10 worlds x 10 runs, nothing above the A/A: `grlib_leon3mp` 1.001 (1.001), `uvvm_sb_slv` 1.004 +-1.3 (1.015),
+`sc5_timestamp` 1.003 (1.009), `fletcher_bufferreader` 1.001 (1.000), `compute_h2h` 1.000 (0.999) and `rtl_bus` 1.006
++-1.5 (0.996 +-1.4; neither calls a memoised function, its steady state is bimodal). `docs/decisions.md` "Memo of pure
+calls: judged at the 64th call whatever it finds, and two slots per key".
+
 ### In-place `ieee` vector results written without zeroing first (2026-11-15)
 
 Cranelift code that computes a `numeric_std` or `std_logic_1164` vector result itself (`Gen::ieee_put`) reserves its

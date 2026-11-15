@@ -27,8 +27,9 @@ use cranelift_module::{
     DataDescription, DataId, FuncId as ClifId, FuncOrDataId, Linkage, Module, ModuleReloc,
 };
 use yavs_interp::{
-    MEMO_DIR_HITS, MEMO_DIR_OFF_AT, MEMO_DIR_OFF_SEEN, MEMO_ENT_FUNC, MEMO_ENT_MASK, MEMO_ENT_TAB,
-    MEMO_SLOT_AT, MEMO_SLOT_HASH, MEMO_SLOT_KLEN, MEMO_SLOT_VLEN, MEMO_SLOT_WORD, space,
+    MEMO_DIR_HITS, MEMO_DIR_NONE, MEMO_DIR_OFF_AT, MEMO_DIR_OFF_SEEN, MEMO_ENT_FUNC, MEMO_ENT_MASK,
+    MEMO_ENT_SHIFT, MEMO_ENT_TAB, MEMO_SLOT_AT, MEMO_SLOT_HASH, MEMO_SLOT_KLEN, MEMO_SLOT_VLEN,
+    MEMO_SLOT_WORD, space,
 };
 use yavs_ir::{
     AddrSpace, BoolOp, CheckKind, CmpOp, FOp, FUnOp, Func, FuncId, FuncKind, Inst, IntOp, IntUnOp,
@@ -6383,13 +6384,25 @@ impl Gen<'_> {
         let x = self.b.ins().rotl_imm_s(h, 5);
         h = self.b.ins().imul_imm_s(x, MEMO_K as i64);
         let tab = self.b.ins().load(I64, tf, dir, ent + MEMO_ENT_TAB as i32);
+        // A key's two slots (`pmemo::ways`): the low bits of the hash and its top bits; the
+        // second unless the first has the hash. An empty one reads as the directory's `none`
+        // (no key matches it), so no branch is taken before the slot's words are compared.
         let mask = self.b.ins().load(I64, tf, dir, ent + MEMO_ENT_MASK as i32);
-        let i = self.b.ins().band(h, mask);
-        let io = self.b.ins().ishl_imm_s(i, 3);
-        let sa = self.b.ins().iadd(tab, io);
-        let sp = self.b.ins().load(I64, tf, sa, 0);
-        let full = self.b.ins().icmp_imm_s(IntCC::NotEqual, sp, 0);
-        test(self, full);
+        let shift = self.b.ins().load(I64, tf, dir, ent + MEMO_ENT_SHIFT as i32);
+        let none = self.b.ins().iadd_imm_s(dir, MEMO_DIR_NONE as i64);
+        let way = |s: &mut Self, i: Value| {
+            let io = s.b.ins().ishl_imm_s(i, 3);
+            let sa = s.b.ins().iadd(tab, io);
+            let sp = s.b.ins().load(I64, tf, sa, 0);
+            s.b.ins().select(sp, sp, none)
+        };
+        let i0 = self.b.ins().band(h, mask);
+        let s0 = way(self, i0);
+        let i1 = self.b.ins().ushr(h, shift);
+        let s1 = way(self, i1);
+        let h0 = self.b.ins().load(I64, tf, s0, MEMO_SLOT_HASH as i32);
+        let first = self.b.ins().icmp(IntCC::Equal, h0, h);
+        let sp = self.b.ins().select(first, s0, s1);
         let sh_ = self.b.ins().load(I64, tf, sp, MEMO_SLOT_HASH as i32);
         let kl = self.b.ins().load(I64, tf, sp, MEMO_SLOT_KLEN as i32);
         let vl = self.b.ins().load(I64, tf, sp, MEMO_SLOT_VLEN as i32);

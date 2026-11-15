@@ -3,12 +3,12 @@
 //! it has seen before is answered without running the function (`Machine::memo_probe`).
 //!
 //! One memo per function and process (no locks; the same hits on every thread count but where the
-//! switch off for all, `Pre::memo_off`, flips while other threads run): a
-//! direct-mapped table of `SLOTS` entries, each the key (the argument words and, for an array,
-//! its descriptor and element bytes), a hash of it and the result. A key is compared whole, so
-//! a hit is exact. The first `WARM` calls of a function decide whether it is kept: a function
-//! whose calls rarely repeat costs the key and the entry for nothing, and is switched off for
-//! the process.
+//! switch off for all, `Pre::memo_off`, flips while other threads run): a table of `FIRST` to
+//! `LAST` entries where a key has two slots ([`ways`]), each the key (the argument words and, for
+//! an array, its descriptor and element bytes), a hash of it and the result. A key is compared
+//! whole, so a hit is exact. The first `WARM` calls of a function decide whether it is kept: a
+//! function whose calls rarely repeat costs the key and the entry for nothing, and is switched
+//! off for the process.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
@@ -136,6 +136,9 @@ pub struct MemoDir {
     /// Calls compiled code answered from these tables.
     pub hits: AtomicU64,
     _pad: u64,
+    /// What compiled code reads for an empty slot: the words of a [`Slot`] up to its bytes,
+    /// a key length no key has, so it never matches.
+    pub none: [u64; 5],
     pub ents: [MemoEnt; MEMO_DIR],
 }
 
@@ -144,20 +147,24 @@ pub struct MemoDir {
 pub struct MemoEnt {
     /// The function, [`MEMO_FREE`] for none.
     pub func: AtomicU64,
-    /// The slots (`Option<Box<Slot>>`: an address or null) and their number less one.
+    /// The slots (`Option<Box<Slot>>`: an address or null), and the mask and the shift of a
+    /// hash that give a key's two slots ([`ways`]).
     pub tab: AtomicU64,
+    pub shift: AtomicU64,
     pub mask: AtomicU64,
-    _pad: u64,
 }
 
 /// Byte offsets compiled code reads at.
 pub const MEMO_DIR_OFF_AT: usize = std::mem::offset_of!(MemoDir, off_at);
 pub const MEMO_DIR_OFF_SEEN: usize = std::mem::offset_of!(MemoDir, off_seen);
 pub const MEMO_DIR_HITS: usize = std::mem::offset_of!(MemoDir, hits);
+pub const MEMO_DIR_NONE: usize = std::mem::offset_of!(MemoDir, none);
+const _: () = assert!(MEMO_SLOT_AT < 40);
 pub const MEMO_DIR_ENTS: usize = std::mem::offset_of!(MemoDir, ents);
 pub const MEMO_ENT_SIZE: usize = std::mem::size_of::<MemoEnt>();
 pub const MEMO_ENT_FUNC: usize = std::mem::offset_of!(MemoEnt, func);
 pub const MEMO_ENT_TAB: usize = std::mem::offset_of!(MemoEnt, tab);
+pub const MEMO_ENT_SHIFT: usize = std::mem::offset_of!(MemoEnt, shift);
 pub const MEMO_ENT_MASK: usize = std::mem::offset_of!(MemoEnt, mask);
 pub const MEMO_SLOT_HASH: usize = std::mem::offset_of!(Slot, hash);
 pub const MEMO_SLOT_WORD: usize = std::mem::offset_of!(Slot, word);
@@ -183,11 +190,16 @@ impl MemoDir {
             off_seen: AtomicU64::new(OFF.load(Ordering::Relaxed)),
             hits: AtomicU64::new(0),
             _pad: 0,
+            none: {
+                let mut w = [0; 5];
+                w[MEMO_SLOT_KLEN / 8] = u64::MAX;
+                w
+            },
             ents: std::array::from_fn(|_| MemoEnt {
                 func: AtomicU64::new(MEMO_FREE),
                 tab: AtomicU64::new(0),
+                shift: AtomicU64::new(0),
                 mask: AtomicU64::new(0),
-                _pad: 0,
             }),
         });
         let mut ds = DIRS.lock().unwrap_or_else(PoisonError::into_inner);
@@ -254,6 +266,19 @@ fn hash(key: &[u8]) -> u64 {
     let mut tail = [0u8; 8];
     tail[..rest.len()].copy_from_slice(rest);
     (h.rotate_left(5) ^ u64::from_le_bytes(tail)).wrapping_mul(K)
+}
+
+/// The shift that takes a hash to its slot in a table of `n` slots (a power of two, at least 2).
+fn shift(n: usize) -> u64 {
+    64 - u64::from(n.trailing_zeros())
+}
+
+/// The two slots of `hash` in a table of `n` slots: its low bits, then its top bits. The low bits
+/// give small integers that differ by little a slot each, but see only the low bits of the last
+/// word, so keys that differ only in its upper bytes (an output path's text) share that one; the
+/// last multiply mixes every bit of the key into the top bits.
+fn ways(hash: u64, n: usize) -> (usize, usize) {
+    (hash as usize & (n - 1), (hash >> shift(n)) as usize)
 }
 
 /// The answer to a lookup.
@@ -336,19 +361,27 @@ impl State {
             if m.slots.is_empty() {
                 m.slots.resize_with(FIRST, || None);
             }
-            let i = hash as usize & (m.slots.len() - 1);
+            let (i, j) = ways(hash, m.slots.len());
             m.calls += 1;
-            let hit = m.slots[i]
-                .as_ref()
-                .is_some_and(|s| s.hash == hash && s.key() == &key[..]);
-            m.hits += u32::from(hit);
+            let is = |s: &Option<Box<Slot>>| {
+                s.as_ref()
+                    .is_some_and(|s| s.hash == hash && s.key() == &key[..])
+            };
+            let at = if is(&m.slots[i]) {
+                Some(i)
+            } else if is(&m.slots[j]) {
+                Some(j)
+            } else {
+                None
+            };
+            m.hits += u32::from(at.is_some());
             // Judged at the `WARM`-th call whatever it finds: a hit there used to skip the
             // judgement, so a function with few hits stayed on for good.
             if m.calls == WARM && m.hits < WARM / RATE {
                 m.off = true;
                 m.slots = Vec::new();
                 Look::GaveUp
-            } else if hit {
+            } else if let Some(i) = at {
                 HITS.fetch_add(1, Ordering::Relaxed);
                 Look::Hit(i)
             } else {
@@ -380,6 +413,7 @@ impl State {
             return;
         }
         e.tab.store(m.slots.as_ptr() as u64, Ordering::Relaxed);
+        e.shift.store(shift(m.slots.len()), Ordering::Relaxed);
         e.mask.store(m.slots.len() as u64 - 1, Ordering::Relaxed);
         e.func.store(u64::from(m.func), Ordering::Relaxed);
         m.shown = Some(k);
@@ -392,6 +426,9 @@ impl State {
             d.ents[k]
                 .tab
                 .store(m.slots.as_ptr() as u64, Ordering::Relaxed);
+            d.ents[k]
+                .shift
+                .store(shift(m.slots.len()), Ordering::Relaxed);
             d.ents[k]
                 .mask
                 .store(m.slots.len() as u64 - 1, Ordering::Relaxed);
@@ -432,11 +469,7 @@ impl State {
         if m.slots.is_empty() {
             return;
         }
-        let i = hash as usize & (m.slots.len() - 1);
-        if m.slots[i].is_some() {
-            m.evicted += 1;
-        }
-        m.slots[i] = Some(Box::new(Slot::new(hash, key, val)));
+        m.put(Box::new(Slot::new(hash, key, val)));
         if m.evicted >= m.slots.len() && m.slots.len() < LAST {
             m.grow();
             let at = self.index(func);
@@ -583,12 +616,17 @@ impl Machine {
         let Some(m) = st.memos.iter().find(|m| m.func == func.0) else {
             return false;
         };
-        let Some(Some(s)) = m.slots.get(h as usize & m.slots.len().wrapping_sub(1)) else {
-            return false;
-        };
-        if s.hash != h || s.key() != &key[..] {
+        if m.slots.is_empty() {
             return false;
         }
+        let (i, j) = ways(h, m.slots.len());
+        let Some(s) = [i, j]
+            .into_iter()
+            .filter_map(|i| m.slots[i].as_ref())
+            .find(|s| s.hash == h && s.key() == &key[..])
+        else {
+            return false;
+        };
         match s.val() {
             ValRef::Word(w) => w == v,
             ValRef::Array(b) => {
@@ -928,10 +966,31 @@ impl Memo {
         let old = std::mem::take(&mut self.slots);
         self.slots.resize_with(n, || None);
         for s in old.into_iter().flatten() {
-            let i = s.hash as usize & (n - 1);
-            self.slots[i] = Some(s);
+            self.put(s);
         }
         self.evicted = 0;
+    }
+
+    /// Put `s` in a free one of its two slots, else in its first: the entry there moves to its
+    /// own other slot, whose entry is evicted (one step of cuckoo hashing).
+    fn put(&mut self, s: Box<Slot>) {
+        let n = self.slots.len();
+        let (i, j) = ways(s.hash, n);
+        if self.slots[i].is_none() {
+            self.slots[i] = Some(s);
+        } else if self.slots[j].is_none() {
+            self.slots[j] = Some(s);
+        } else {
+            let old = self.slots[i].replace(s).expect("full");
+            let (a, b) = ways(old.hash, n);
+            let alt = if a == i { b } else { a };
+            if alt == i || self.slots[alt].is_some() {
+                self.evicted += 1;
+            }
+            if alt != i {
+                self.slots[alt] = Some(old);
+            }
+        }
     }
 }
 
@@ -945,7 +1004,7 @@ impl Machine {
 
 #[cfg(test)]
 mod tests {
-    use super::{Look, RATE, State, Val, WARM, hash};
+    use super::{LAST, Look, RATE, State, Val, WARM, hash, ways};
 
     /// A function whose calls rarely repeat is given up at its `WARM`-th call even when that
     /// call is one of its few hits.
@@ -969,5 +1028,64 @@ mod tests {
         const { assert!(WARM / RATE > 1) };
         assert!(matches!(look(&mut st, u64::from(WARM - 2)), Look::GaveUp));
         assert!(st.is_off(7));
+    }
+
+    /// Keys that differ only in the upper bytes of their last word (a string's text) spread over
+    /// the table by their second slot; the low bits of the hash put them all in one.
+    #[test]
+    fn keys_that_differ_in_their_last_bytes_spread() {
+        for len in [8, 13, 16, 21] {
+            for byte in 1..8 {
+                let at = (len - 1) / 8 * 8 + byte;
+                if at >= len {
+                    continue;
+                }
+                let slots: std::collections::HashSet<usize> = (0..=255u8)
+                    .map(|v| {
+                        let mut key = vec![b'a'; len];
+                        key[at] = v;
+                        ways(hash(&key), LAST).1
+                    })
+                    .collect();
+                assert!(
+                    slots.len() > 100,
+                    "len {len} byte {byte}: {} slots",
+                    slots.len()
+                );
+            }
+        }
+    }
+
+    /// Keys whose first slot is one (they differ in the last byte of a string) stay in their
+    /// second slots: a second pass over them hits.
+    #[test]
+    fn keys_of_one_first_slot_stay() {
+        let keys: Vec<Vec<u8>> = (0..16u8)
+            .map(|v| {
+                let mut k = vec![b'a'; 15];
+                k[14] = v;
+                k
+            })
+            .collect();
+        let n = super::FIRST;
+        assert!(
+            keys.iter()
+                .all(|k| ways(hash(k), n).0 == ways(hash(&keys[0]), n).0)
+        );
+        let mut st = State::default();
+        let at = st.index(5);
+        for k in &keys {
+            st.key = k.clone();
+            assert!(matches!(st.look(at), Look::Miss));
+            st.keep(5, hash(k), k, Val::Word(1));
+        }
+        let hits = keys
+            .iter()
+            .filter(|k| {
+                st.key = k.to_vec();
+                matches!(st.look(at), Look::Hit(_))
+            })
+            .count();
+        assert!(hits >= 12, "{hits} of 16 hit");
     }
 }

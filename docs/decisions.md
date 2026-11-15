@@ -16939,3 +16939,31 @@ the next run".
 - **References:** corpus `composite/aggregate_scalar_impure` (hand: sim2's values on every line except where the range
   is not leftmost, `(1 to 2 => t, others => t)` giving `3 1 2 4` by the #909 choice order where sim2 counts in element
   order and sim1 gives `2 1 1 2`), catalogue `aggregate-range-impure-scalar`.
+
+## Memo of pure calls: judged at the 64th call whatever it finds, and two slots per key (yavs-interp `pmemo.rs`, yavs-clift `Gen::memo_inline`, 2026-11-15)
+
+- **Defect** (agent). `State::look` judged a function (fewer than 8 hits in its first 64 calls: off for the process)
+  only after a miss: a function whose 64th call hit was never judged and stayed memoised for good. Which call came
+  64th decided it, so the decision moved with any change of key placement (a VUnit test's output path text, the slot
+  index). Never a wrong result. Now the 64th call judges whatever it finds (`a_function_is_judged_at_its_warm_call_whatever_it_finds`).
+- **Slot index** (agent). A key's slot was the low bits of the hash's last multiply, which see only the low bits of
+  the key's last word: keys that differ only in its upper bytes (string text) always shared one slot. The top bits
+  alone spread those, but placed small integers that differ by little at random: 40 dense keys in the first 32 slots
+  collided where the low bits gave each its own (`memo_loopfree` 740 -> 425 hits; the small realbench tests 0.2 to
+  0.4 percent slower). Now a key has two slots, the low bits and the top bits of the hash (`pmemo::ways`, skewed: a
+  set of two per key, not per slot); a key goes into a free one, else into its first, and the entry there moves to
+  its own other slot, whose entry is evicted (one step of cuckoo hashing, `Memo::put`). Screened in the interpreter
+  (exact counts, 40 tests on one path and 20 VUnit tests on 12 output paths): top bits alone, a pair of neighbours
+  under the top bits, two slots without the move, two slots with it, low bits alone (the old index with the fixed
+  judgement); the last kept was best or level on every test, and halved the spread over output paths (0.33 against
+  0.73 percent).
+- **The probe in compiled code** reads both slots without a branch: an empty slot reads as the directory's `none` (a
+  key length no key has), the first slot is taken when it holds the hash, else the second, then the one compare of
+  hash, lengths and key words as before. A branch per slot cost twice the compile (+1.36 M instructions on a forced
+  compile of a recursive function with six sites against +0.68 M) for 4 instructions less a hit. A hit costs 12
+  instructions more than with one slot (195 -> 207 instructions per iteration of a loop of one inline hit).
+- **User decision (2026-11-15).** Build the two-way sets and land them together with the judgement fix if nothing
+  else is slower than the byte-copy A/A; otherwise bring the numbers back. Accepted trades: `osvvm_axis_random` run 1
+  slower (it gives OSVVM `to_hxstring` up, which then compiles in the first cold run; about +7.5 percent accepted)
+  with its steady state and ten-run sum faster, and `vunit_logging` about +0.5 percent (it came out faster).
+- **Measured**: in `docs/STATUS.md` "The memo of pure calls: judged at the 64th call, two slots per key".

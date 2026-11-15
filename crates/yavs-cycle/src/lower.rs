@@ -2552,7 +2552,7 @@ impl Lx<'_> {
                         if o.class == yavs_sem::decl::ObjClass::Constant =>
                     {
                         // A constant of the regions around the process, else of a package.
-                        (self.e.value(self.p.scope, *d))
+                        (self.e.constant(self.p.scope, *d))
                             .or_else(|| {
                                 (self.e.hier.scopes.iter().enumerate())
                                     .filter(|(_, sc)| {

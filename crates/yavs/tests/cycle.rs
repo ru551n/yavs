@@ -900,6 +900,25 @@ fn arrays_of_records_equal_the_normal_mode_at_widths_around_a_word() {
     }
 }
 
+/// Constants a plain elaboration evaluates only when something needs it (an architecture
+/// constant computed by a function, a deferred package constant), read only by region code.
+#[test]
+fn constants_only_region_code_reads_have_their_values() {
+    let dir = tempdir("cycle-consts");
+    analyze(&dir, "consts.vhd", include_str!("cycle/consts.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_consts");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_consts");
+        assert_eq!(normal.len(), 4, "{t:?} {normal:?}");
+        assert!(normal[0].ends_with("o=ED h=38"), "{normal:?}");
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 1 of 2 processes run cycle-based"),
+            "{err}"
+        );
+    }
+}
+
 #[test]
 fn clocked_and_combinational_shapes_give_the_same_result() {
     let dir = tempdir("cycle-shapes");

@@ -84,6 +84,71 @@ pub(crate) enum Check {
     },
     /// `index V outside of range B for W`.
     Index { b: Bounds, what: String },
+    /// Not a check: an assert or report of a top-level member that fired (A19); its site is a
+    /// check's, so a site names the member.
+    Note(Box<Note>),
+}
+
+/// An assert or report of a process of the top-level unit, evaluated in region code (user
+/// decision A19): its severity, its message as pieces and the words that hold the values the
+/// pieces format, copied there where the statement ran (a member's slots; image words once
+/// `lib.rs` placed the member).
+#[derive(Clone, Debug)]
+pub(crate) struct Note {
+    pub severity: u8,
+    pub pieces: Vec<Piece>,
+    pub args: Vec<(Ref, u32)>,
+}
+
+/// A piece of a report's message.
+#[derive(Clone, Debug)]
+pub(crate) enum Piece {
+    Text(Box<[u8]>),
+    /// The integer in the words of arg `n`, in decimal.
+    Int(usize),
+    /// The enumeration value in the words of arg `n` (a position, or a logic value's 0 or 1):
+    /// the text of each.
+    Enum(usize, Box<[Box<[u8]>]>),
+    /// The `len` elements of arg `n`, leftmost first, `bits` per digit (1, 3 or 4).
+    Bits {
+        n: usize,
+        len: u32,
+        bits: u32,
+    },
+}
+
+impl Note {
+    /// The message, from the image words of the args.
+    pub(crate) fn text(&self, img: &[u64]) -> String {
+        let mut out: Vec<u8> = Vec::new();
+        let word = |n: usize, k: u32| match self.args[n].0 {
+            Ref::Loc(w) => img[(w + k) as usize],
+            _ => 0,
+        };
+        for p in &self.pieces {
+            match p {
+                Piece::Text(t) => out.extend_from_slice(t),
+                Piece::Int(n) => out.extend(yavs_std::image::integer_image(word(*n, 0) as i64)),
+                Piece::Enum(n, names) => {
+                    let v = word(*n, 0) as usize;
+                    out.extend_from_slice(names.get(v).map_or(&b"?"[..], |t| &t[..]));
+                }
+                Piece::Bits { n, len, bits } => {
+                    let bit = |i: u32| (word(*n, i / 64) >> (i % 64)) & 1;
+                    let digits = len.div_ceil(*bits);
+                    for d in (0..digits).rev() {
+                        let mut v = 0;
+                        for b in (0..*bits).rev() {
+                            let i = d * bits + b;
+                            v = v << 1 | if i < *len { bit(i) } else { 0 };
+                        }
+                        out.push(b"0123456789ABCDEF"[v as usize]);
+                    }
+                }
+            }
+        }
+        out.iter().map(|&b| b as char).collect()
+    }
 }
 
 impl Check {
@@ -130,6 +195,7 @@ impl Check {
                     range(lo, hi, x.dir == Direction::Downto)
                 )
             }
+            Check::Note(_) => "an assert or report fired".into(),
         }
     }
 }
@@ -343,6 +409,12 @@ pub(crate) enum Op {
         then: Vec<Op>,
         else_: Vec<Op>,
     },
+    /// Report `site` (a [`Check::Note`]) fired: its args' words into memory and the site into
+    /// the region's log; only in a member's last run (no effect where checks do not exit).
+    Note {
+        site: u32,
+        args: Vec<(Ref, u32)>,
+    },
 }
 
 impl Op {
@@ -375,6 +447,7 @@ impl Op {
             | Op::Insert { .. }
             | Op::IndexWrite { .. }
             | Op::Range { .. }
+            | Op::Note { .. }
             | Op::If { .. } => None,
         }
     }
@@ -473,6 +546,12 @@ impl Op {
                     *op = op.map(s, d, site);
                 }
             }
+            Op::Note { site: x, args } => {
+                *x = site(*x);
+                for a in args {
+                    a.0 = s(a.0);
+                }
+            }
         }
         o
     }
@@ -530,6 +609,10 @@ pub(crate) struct Body {
     pub vars: Vec<(u32, u32)>,
     /// Asserts and reports left out (not evaluated in cycle mode).
     pub dropped: u32,
+    /// A process of the top-level unit: why an assert or report of it cannot be evaluated in
+    /// region code (with `dropped` above 0), and how many are (`Op::Note`).
+    pub note_why: Option<String>,
+    pub notes: u32,
     /// Literals with a metavalue (`'U'`, `'X'`, `'W'`, `'-'`), read as 0.
     pub metas: u32,
     /// Elements of logic variables without an initial value (`'U'`), which start at 0.
@@ -751,6 +834,11 @@ fn merge_guarded(saved: Vec<Jump>, rest: Vec<Jump>) -> Vec<Jump> {
 /// Most calls inlined into one another.
 const DEPTH_MAX: usize = 32;
 
+/// Why an assert or report of a top-level process outside a clock edge is not evaluated in
+/// region code: the region settles once per wake where the normal mode runs the process at
+/// every event of what it waits on.
+const NOTE_COMB: &str = "an assert or report that runs outside a clock edge";
+
 /// Why a comparison or arithmetic with a literal holding a metavalue keeps its process out.
 const META_CMP: &str = "a comparison with a metavalue literal (`'U'`, `'X'`, `'-'`, ...), which two-state \
                         values never equal";
@@ -786,6 +874,10 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         init: Vec::new(),
         var_words: Vec::new(),
         dropped: 0,
+        top: crate::region::in_top_unit(e, pi),
+        at_edge: false,
+        note_why: None,
+        notes: 0,
         metas: 0,
         uninit: 0,
         checks: Vec::new(),
@@ -813,6 +905,9 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
             postponed: false, ..
         } => {
             lx.dropped += 1;
+            if lx.top {
+                lx.note_why = Some(NOTE_COMB.into());
+            }
             Ok(lx.body(Kind::Comb, None, None))
         }
         StmtKind::ConcProcCall {
@@ -856,6 +951,12 @@ struct Lx<'a> {
     init: Vec<(u32, u64)>,
     var_words: Vec<(u32, u32)>,
     dropped: u32,
+    /// A process of the top-level unit: its asserts and reports are evaluated (A19) where they
+    /// can be: at the clock edge of a clocked process (`at_edge`).
+    top: bool,
+    at_edge: bool,
+    note_why: Option<String>,
+    notes: u32,
     metas: u32,
     uninit: u64,
     checks: Vec<(Check, Vec<Span>)>,
@@ -881,6 +982,8 @@ impl Lx<'_> {
             init: self.init,
             vars: self.var_words,
             dropped: self.dropped,
+            note_why: self.note_why,
+            notes: self.notes,
             metas: self.metas,
             uninit: self.uninit,
             checks: self.checks,
@@ -961,10 +1064,13 @@ impl Lx<'_> {
     /// The body of a clocked process under its edge condition `cond`: the edge itself, or the
     /// edge `and` a condition that decides whether the body runs at the edge.
     fn edge_body(&mut self, cond: ExprId, body: &[StmtId]) -> R<()> {
-        match self.edge_rest(cond)? {
+        self.at_edge = true;
+        let r = match self.edge_rest(cond)? {
             None => self.stmts(body),
             Some(c) => self.if_chain(&[(Some(c), Br::Stmts(body))]),
-        }
+        };
+        self.at_edge = false;
+        r
     }
 
     /// What of an edge condition is not the edge (as the elaborator found it): `None` for the
@@ -1231,8 +1337,28 @@ impl Lx<'_> {
             StmtKind::Exit { loop_, when } => self.jump(Tgt::Exit(*loop_), *when),
             StmtKind::Wait { .. } => Err("a wait statement runs in the event kernel".into()),
             // Simulation-only: compiled to nothing, counted for the report (the mode is for speed).
-            StmtKind::Assert { .. } | StmtKind::Report { .. } => {
+            StmtKind::Assert { .. } | StmtKind::Report { .. } if !self.top => {
                 self.dropped += 1;
+                Ok(())
+            }
+            // A process of the top-level unit (A19): evaluated at the clock edge, else it
+            // keeps the process in the event kernel (`region::select`).
+            StmtKind::Assert { .. } | StmtKind::Report { .. } => {
+                let made = if self.at_edge {
+                    self.capture_known(|lx| lx.note(s)).map(|(ops, _)| ops)
+                } else {
+                    Err(NOTE_COMB.into())
+                };
+                match made {
+                    Ok(ops) => {
+                        self.ops.extend(ops);
+                        self.notes += 1;
+                    }
+                    Err(w) => {
+                        self.dropped += 1;
+                        self.note_why.get_or_insert(w);
+                    }
+                }
                 Ok(())
             }
             StmtKind::ProcCall(call) => self.proc_call(call),
@@ -1751,6 +1877,240 @@ impl Lx<'_> {
             return Err("a condition that is not a boolean".into());
         }
         Ok(self.whole(c))
+    }
+
+    /// Assert or report `s` of a process of the top-level unit, evaluated here (A19): the
+    /// condition, then the values of its message copied into words of their own, then the note
+    /// into the region's log.
+    fn note(&mut self, s: StmtId) -> R<()> {
+        let db = self.db;
+        let (cond, msg, sev, default) = match &db.stmts[s].kind {
+            StmtKind::Assert {
+                cond,
+                report,
+                severity,
+            } => (Some(*cond), *report, *severity, 2),
+            StmtKind::Report { report, severity } => (None, Some(*report), *severity, 0),
+            _ => return Err("a statement that is not an assert or report".into()),
+        };
+        let severity = match sev {
+            None => default,
+            Some(x) => match self.fold(x) {
+                Some(ConstValue::Enum(p)) if p < 4 => p as u8,
+                _ => return Err("a severity that is not known during elaboration".into()),
+            },
+        };
+        let c = cond.map(|c| self.cond(c)).transpose()?;
+        let (mut pieces, mut args) = (Vec::new(), Vec::new());
+        // The message is evaluated only when the assertion fails, as in the normal mode.
+        let mut made = Vec::new();
+        if let Some(m) = msg {
+            made = self.capture(|lx| lx.message(m, &mut pieces, &mut args))?;
+        } else {
+            pieces.push(Piece::Text(b"Assertion violation."[..].into()));
+        }
+        let site = self.site(Check::Note(Box::new(Note {
+            severity,
+            pieces,
+            args: args.clone(),
+        })));
+        made.push(Op::Note { site, args });
+        match c {
+            Some(c) => self.ops.push(Op::If {
+                cond: c,
+                then: Vec::new(),
+                else_: made,
+            }),
+            None => self.ops.extend(made),
+        }
+        Ok(())
+    }
+
+    /// The pieces of message `x` (a string): literal text, concatenations, and `'image`,
+    /// `to_string`, `to_hstring` and `to_ostring` of a value, which is copied into words of its
+    /// own in `args` here.
+    fn message(&mut self, x: ExprId, out: &mut Vec<Piece>, args: &mut Vec<(Ref, u32)>) -> R<()> {
+        let db = self.db;
+        let cannot = || Err("a report message cycle mode cannot format in region code".into());
+        let ty = db.base(db.exprs[x].subtype);
+        if let Some(c) = self.fold(x) {
+            return match c {
+                ConstValue::Array(a) => match &a.elems {
+                    Elems::Bytes(b) => {
+                        out.push(Piece::Text(b.clone()));
+                        Ok(())
+                    }
+                    Elems::Runs(_) => cannot(),
+                },
+                // A character of a concatenation.
+                ConstValue::Enum(p) if Some(ty) == db.well_known.character => {
+                    out.push(Piece::Text(Box::new([p as u8])));
+                    Ok(())
+                }
+                _ => cannot(),
+            };
+        }
+        match &db.exprs[x].kind {
+            ExprKind::Qualified { operand, .. } => self.message(*operand, out, args),
+            ExprKind::Attr {
+                attr: PredefAttr::Image,
+                prefix: AttrPrefix::Subtype(_),
+                args: a,
+            } if a.len() == 1 => self.value_piece(a[0], true, out, args),
+            ExprKind::Call {
+                callee,
+                args: cargs,
+                method_of: None,
+                ..
+            } => {
+                let mut callee = *callee;
+                while let yavs_sem::decl::DeclKind::Alias(yavs_sem::decl::Alias::NonObject {
+                    target,
+                }) = &db.decls[callee].kind
+                {
+                    callee = *target;
+                }
+                let Some(sp) = db.decls[callee].kind.subprogram() else {
+                    return cannot();
+                };
+                let arg = |k: usize| match cargs.get(k).map(|a| &a.actual) {
+                    Some(Actual::Expr(e)) => Ok(*e),
+                    _ => {
+                        Err("a report message cycle mode cannot format in region code".to_string())
+                    }
+                };
+                let digits = |lx: &mut Self, bits: u32, out: &mut Vec<Piece>, args: &mut Vec<_>| {
+                    let a = arg(0)?;
+                    lx.bits_piece(a, bits, out, args)
+                };
+                match &sp.body {
+                    yavs_sem::decl::Body::Implicit(op)
+                        if cargs.len() == 2 && op.family == Family::Cat =>
+                    {
+                        self.message(arg(0)?, out, args)?;
+                        self.message(arg(1)?, out, args)
+                    }
+                    yavs_sem::decl::Body::Implicit(op) if cargs.len() == 1 => match op.family {
+                        Family::ToString => self.value_piece(arg(0)?, false, out, args),
+                        Family::ToHString => digits(self, 4, out, args),
+                        Family::ToOString => digits(self, 3, out, args),
+                        _ => cannot(),
+                    },
+                    _ => match yavs_ir::ieee::native_symbol(sp.mangled.as_str())
+                        .as_deref()
+                        .and_then(yavs_ir::ieee::symbol_key)
+                        .and_then(yavs_ir::ieee::parse)
+                    {
+                        Some(yavs_ir::ieee::Op::Str(octal)) if cargs.len() == 1 => {
+                            digits(self, if octal { 3 } else { 4 }, out, args)
+                        }
+                        _ => cannot(),
+                    },
+                }
+            }
+            _ => cannot(),
+        }
+    }
+
+    /// `x'image` (`image`) or `to_string(x)` of a scalar, or `to_string` of a vector of logic
+    /// or bit elements.
+    fn value_piece(
+        &mut self,
+        x: ExprId,
+        image: bool,
+        out: &mut Vec<Piece>,
+        args: &mut Vec<(Ref, u32)>,
+    ) -> R<()> {
+        let db = self.db;
+        let ty = db.base(db.exprs[x].subtype);
+        let lit = |d: DeclId| match db.decls[d].name {
+            yavs_sem::decl::Designator::Char(c) => {
+                let c = c as u8;
+                if image {
+                    yavs_std::image::character_image(c)
+                } else {
+                    yavs_std::image::character_to_string(c)
+                }
+            }
+            n => yavs_std::image::identifier_image(n.to_string().as_bytes()),
+        };
+        match &db.types[ty].kind {
+            TypeKind::Integer | TypeKind::UniversalInteger => {
+                let v = self.expr(x)?;
+                let i = self.int(v)?;
+                let r = self.keep_arg(i.r, 64, args);
+                out.push(Piece::Int(r));
+                Ok(())
+            }
+            TypeKind::Enum { lits } => {
+                let v = self.expr(x)?;
+                let all = || -> Box<[Box<[u8]>]> { lits.iter().map(|&d| lit(d).into()).collect() };
+                let (r, len, names) = match v {
+                    Val::Int(i) => (i.r, 64, all()),
+                    // A logic value is its element's 0 or 1: BIT and BOOLEAN their two
+                    // literals, STD_ULOGIC '0' and '1'.
+                    Val::Part(p) if p.len == 1 => {
+                        let names = if lits.len() == 2 {
+                            all()
+                        } else {
+                            let at = |c: char| {
+                                (lits.iter()).find(|&&d| {
+                                    matches!(db.decls[d].name, yavs_sem::decl::Designator::Char(x) if x == c)
+                                })
+                            };
+                            let (Some(&z), Some(&o)) = (at('0'), at('1')) else {
+                                return Err("a logic value of an unknown type in a report".into());
+                            };
+                            Box::new([lit(z).into(), lit(o).into()])
+                        };
+                        let p = self.materialise(p);
+                        (self.whole(p), 1, names)
+                    }
+                    _ => return Err("an enumeration value of another form in a report".into()),
+                };
+                let n = self.keep_arg(r, len, args);
+                out.push(Piece::Enum(n, names));
+                Ok(())
+            }
+            TypeKind::Array { .. } if !image => self.bits_piece(x, 1, out, args),
+            _ => Err(
+                "a value of this type in a report message, which cycle mode cannot format \
+                      in region code"
+                    .into(),
+            ),
+        }
+    }
+
+    /// The digits of a vector of logic or bit elements, `bits` elements each.
+    fn bits_piece(
+        &mut self,
+        x: ExprId,
+        bits: u32,
+        out: &mut Vec<Piece>,
+        args: &mut Vec<(Ref, u32)>,
+    ) -> R<()> {
+        let v = self.expr(x)?;
+        let p = self.part(v)?;
+        if p.int.is_some() || p.len == 0 {
+            return Err("a vector in a report message cycle mode cannot format".into());
+        }
+        let len = p.len;
+        let w = self.whole(p);
+        let n = self.keep_arg(w, len, args);
+        out.push(Piece::Bits { n, len, bits });
+        Ok(())
+    }
+
+    /// The value in `r` (`len` elements) copied into words of its own, as arg `n` of a note.
+    fn keep_arg(&mut self, r: Ref, len: u32, args: &mut Vec<(Ref, u32)>) -> usize {
+        let t = self.loc(words(len));
+        self.ops.push(Op::Copy {
+            dst: t,
+            src: r,
+            len,
+        });
+        args.push((t, words(len)));
+        args.len() - 1
     }
 
     fn signal_rooted(&self, v: &Val) -> bool {

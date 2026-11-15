@@ -396,7 +396,7 @@ fn span(op: &Op) -> u32 {
         | Op::Int { .. }
         | Op::Reduce { .. }
         | Op::ToInt { .. } => 1,
-        Op::Range { .. } | Op::If { .. } => 0,
+        Op::Range { .. } | Op::If { .. } | Op::Note { .. } => 0,
     }
 }
 
@@ -422,6 +422,7 @@ pub(crate) fn compile<'a>(
     groups: Vec<(Vec<(u32, u32)>, u32)>,
     keep: &[bool],
     err: u32,
+    log: (u32, u32),
     name: &str,
 ) -> Result<Code, String> {
     let words = keep.len();
@@ -608,6 +609,7 @@ pub(crate) fn compile<'a>(
                 b,
                 base,
                 err: err as i32 * 8,
+                log: (log.0 as i32 * 8, log.1),
                 checks: checks && *checked,
                 exits: *checked,
                 ptr,
@@ -721,6 +723,9 @@ struct Gen<'a> {
     base: Value,
     /// Byte offset of the first error word.
     err: i32,
+    /// The log of the notes that fired (`Op::Note`): the byte offset of its count, which the
+    /// sites follow, and how many it holds.
+    log: (i32, u32),
     checks: bool,
     /// A failed check (a zero divisor: the one check `checks` off keeps) exits the function;
     /// without, a division by zero divides by one.
@@ -1652,6 +1657,37 @@ impl Gen<'_> {
                 v[0] = x;
                 self.top(&mut v, *len);
                 self.sts(*dst, &v);
+            }
+            // Only in a member's last run, which has the exits of its checks.
+            Op::Note { .. } if !self.exits => {}
+            Op::Note { site, args } => {
+                for &(r, n) in args {
+                    for k in 0..n {
+                        let off = word(r) + k as i32 * 8;
+                        let v = self.ld(r, k);
+                        self.store(off, v);
+                        if let Some(e) = self.cache.get_mut(&off) {
+                            e.1 = false;
+                        }
+                    }
+                }
+                // log[min(count, cap)] = site; count += 1 (the run reads a count over the cap
+                // as an internal error).
+                let (at, cap) = self.log;
+                let cnt = self
+                    .b
+                    .ins()
+                    .load(I64, MemFlagsData::trusted(), self.base, at);
+                let top = self.konst(u64::from(cap));
+                let k = self.b.ins().umin(cnt, top);
+                let k = self.b.ins().ishl_imm_s(k, 3);
+                let a = self.b.ins().iadd(self.base, k);
+                let sv = self.konst(u64::from(*site));
+                self.b.ins().store(MemFlagsData::trusted(), sv, a, at + 8);
+                let one = self.b.ins().iadd_imm_s(cnt, 1);
+                self.b
+                    .ins()
+                    .store(MemFlagsData::trusted(), one, self.base, at);
             }
             Op::If { cond, then, else_ } => {
                 let c = self.ld(*cond, 0);

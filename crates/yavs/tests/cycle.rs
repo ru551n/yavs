@@ -2765,61 +2765,90 @@ fn instances_of_one_shape_share_a_body_and_others_do_not() {
     }
 }
 
-/// Asserts and reports of the top-level unit (A19): a clocked checker failing with severity error,
-/// one checking in a called procedure, a concurrent assert and a combinational report stay in the
-/// event kernel, so every message and the exit status are the normal mode's; the design below the
-/// top joins. Not an error under `--cycle-strict`.
+/// Asserts and reports of the top-level unit (A19): the clocked ones evaluated at the edge in
+/// region code (a checker failing with severity error, a passing one, one checking in a called
+/// procedure, one formatting vectors of `W` elements, logic values, a boolean, integers and
+/// enumerations, a variable changed after its report), the concurrent assert and the
+/// combinational report in the event kernel; every message, its time and process, and the exit
+/// status are the normal mode's, also when a checker of severity failure ends the run. Not an
+/// error under `--cycle-strict`.
 #[test]
 fn asserts_and_reports_of_the_top_level_unit_are_evaluated() {
     let dir = tempdir("cycle-topcheck");
-    analyze(&dir, "topcheck.vhd", include_str!("cycle/topcheck.vhd"));
-    let go = |flags: &[&str]| {
-        let mut args = vec!["run", "--work=work:lib", "--no-cache"];
-        args.extend(flags);
-        args.push("cycle_topcheck");
-        let o = yavs(&dir, &args);
-        let err = String::from_utf8_lossy(&o.stderr).into_owned();
-        // Without the delta of each stamp: the region saves the delta of `q <= r`.
-        let out: String = String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .map(|l| match l.split_once("fs+") {
-                Some((a, b)) => format!(
-                    "{a}fs{}\n",
-                    b.trim_start_matches(|c: char| c.is_ascii_digit())
-                ),
-                None => format!("{l}\n"),
-            })
-            .collect();
-        (o.status.code(), out, err)
-    };
-    let (code, normal, _) = go(&[]);
-    for msg in ["q reached 3", "q 12 not below 12", "q is 9", "q is 6"] {
-        assert!(normal.contains(msg), "{msg}: {normal}");
-    }
-    assert_eq!(code, Some(1), "{normal}");
-    for mode in ["--cycle", "--cycle-strict"] {
-        let (c, out, err) = go(&[mode]);
-        assert_eq!((c, &out), (code, &normal), "{mode}\n{err}");
-        // The counter and `q <= r` below the top.
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("topcheck{w}.vhd"),
+            &with_width(include_str!("cycle/topcheck.vhd"), w),
+        );
+        let go = |flags: &[&str], top: &str| {
+            let mut args = vec!["run", "--work=work:lib", "--no-cache"];
+            args.extend(flags);
+            args.push(top);
+            let o = yavs(&dir, &args);
+            let err = String::from_utf8_lossy(&o.stderr).into_owned();
+            // Without the delta of each stamp: the region saves the deltas of its logic.
+            let out: String = String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|l| match l.split_once("fs+") {
+                    Some((a, b)) => format!(
+                        "{a}fs{}\n",
+                        b.trim_start_matches(|c: char| c.is_ascii_digit())
+                    ),
+                    None => format!("{l}\n"),
+                })
+                .collect();
+            (o.status.code(), out, err)
+        };
+        let (code, normal, _) = go(&[], "cycle_topcheck");
+        for msg in [
+            "q reached 3",
+            "q 12 not below 12",
+            "q is 9",
+            "q is 6",
+            "fmt ",
+            "n=4 ",
+            "Assertion violation.",
+        ] {
+            assert!(normal.contains(msg), "{w} {msg}: {normal}");
+        }
+        assert!(!normal.contains("never"), "{normal}");
+        assert_eq!(code, Some(1), "{normal}");
+        let (stop_code, stop, _) = go(&[], "cycle_topstop");
+        assert!(stop.contains("q reached 5"), "{stop}");
+        for mode in ["--cycle", "--cycle-strict"] {
+            for t in tiers() {
+                let flags = [&t[..], &[mode]].concat();
+                let (c, out, err) = go(&flags, "cycle_topcheck");
+                assert_eq!((c, &out), (code, &normal), "{w} {flags:?}\n{err}");
+                // The design below the top and the clocked checkers.
+                assert!(
+                    err.contains("cycle mode: 7 of 11 processes run cycle-based"),
+                    "{w} {mode}: {err}"
+                );
+                let (c, out, err) = go(&flags, "cycle_topstop");
+                assert_eq!((c, &out), (stop_code, &stop), "{w} {flags:?}\n{err}");
+            }
+        }
+        let report = with_report(&dir, &["--cycle"], "cycle_topcheck", String::new());
+        assert_eq!(
+            report
+                .matches("it holds an assert or report of the top-level unit that cycle mode evaluates only in the event kernel: an assert or report that runs outside a clock edge")
+                .count(),
+            2,
+            "{report}"
+        );
+        for p in ["rep", "assert"] {
+            assert!(
+                report.contains(&format!("cycle_topcheck.{p} ")),
+                "{p}: {report}"
+            );
+        }
         assert!(
-            err.contains("cycle mode: 2 of 8 processes run cycle-based"),
-            "{mode}: {err}"
+            !report.contains("not evaluated in cycle mode, held by"),
+            "{report}"
         );
     }
-    let report = with_report(&dir, &["--cycle"], "cycle_topcheck", String::new());
-    for p in ["chk", "chk2", "rep", "assert"] {
-        assert!(
-            report.contains(&format!("cycle_topcheck.{p} ")),
-            "{p}: {report}"
-        );
-    }
-    assert_eq!(
-        report
-            .matches("it holds an assert or report of the top-level unit")
-            .count(),
-        4,
-        "{report}"
-    );
 }
 
 /// A cycle run with the compilation cache of the work library on and `YAVS_CYCLE_STATS`: its

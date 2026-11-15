@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use yavs_kernel::{
-    Ctx, DelayMode, DriverId, ErrorKind, ImageSpec, NO_IMAGE, ProcId, Process, Range, SigRef,
-    SimError, Time,
+    Ctx, DelayMode, DriverId, ErrorKind, ImageSpec, NO_IMAGE, ProcId, Process, Range, Severity,
+    SigRef, SimError, Time,
 };
 
 use crate::codegen::{Code, Fun, mask, words};
@@ -182,6 +182,10 @@ pub(crate) struct RegionProc {
     pub checks: Arc<Vec<Site>>,
     /// The first of the two words a failed check stores its operands in.
     pub err: usize,
+    /// The log of the notes that fired in a run (`Op::Note`): its first word and how many it
+    /// holds; and the normal mode's report path for them.
+    pub log: (usize, usize),
+    pub reporter: crate::Reporter,
     pub metas: Arc<crate::Metas>,
     /// Elements of member variables without an initial value, counted at initialisation.
     pub uninit: u64,
@@ -482,10 +486,50 @@ impl RegionProc {
         e
     }
 
-    fn run_code(&mut self, ctx: &Ctx<'_>, f: Fun) -> Result<(), SimError> {
-        self.code
-            .run(&mut self.img, f)
-            .map_err(|site| self.failed(ctx, site))
+    fn run_code(&mut self, ctx: &mut Ctx<'_>, f: Fun) -> Result<(), SimError> {
+        let r = self.code.run(&mut self.img, f);
+        // The notes of the run come first, as in the normal mode before a failed check.
+        if self.log.1 > 0 && self.img[self.log.0] > 0 {
+            self.notes(ctx)?;
+        }
+        r.map_err(|site| self.failed(ctx, site))
+    }
+
+    /// Report the notes the last run logged, in the order they fired, as their members.
+    #[cold]
+    fn notes(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        let (at, cap) = self.log;
+        let n = std::mem::take(&mut self.img[at]) as usize;
+        let internal =
+            |ctx: &Ctx<'_>, m: &str| ctx.error(ErrorKind::Internal(format!("cycle mode: {m}")));
+        if n > cap {
+            return Err(internal(
+                ctx,
+                "more notes fired in one run than the region has",
+            ));
+        }
+        let Some(report) = self.reporter.get().cloned() else {
+            return Err(internal(
+                ctx,
+                "no report path for the asserts of the top-level unit",
+            ));
+        };
+        for k in 0..n {
+            let site = self.img[at + 1 + k] as usize;
+            let Some((Check::Note(nt), _, pi, _)) = self.checks.get(site) else {
+                return Err(internal(ctx, "a note of a site that is no note"));
+            };
+            let sev = match nt.severity {
+                0 => Severity::Note,
+                1 => Severity::Warning,
+                2 => Severity::Error,
+                _ => Severity::Failure,
+            };
+            if let Some(text) = report(ctx, sev, nt.text(&self.img)) {
+                ctx.report_as(ProcId(*pi as u32), sev, text);
+            }
+        }
+        Ok(())
     }
 }
 

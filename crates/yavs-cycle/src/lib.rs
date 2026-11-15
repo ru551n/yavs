@@ -94,7 +94,17 @@ pub struct Plan {
     pub region: Option<Region>,
     /// What the region read as 0 for a metavalue, for [`Metas::summary`] after the run.
     pub metas: Arc<Metas>,
+    /// The report path of the normal mode, which the caller sets once the run's runtime exists:
+    /// the asserts and reports of top-level members (A19) go through it (the assert counts of
+    /// `std.env`, the exit status, the enabled severities), then out as the member's.
+    pub reporter: Reporter,
 }
+
+/// The normal mode's report path: the text to report for a severity and message, or `None` when
+/// the severity is disabled (`yavs_interp::Runtime::assert_report`).
+pub type ReportFn =
+    dyn Fn(&yavs_kernel::Ctx<'_>, yavs_kernel::Severity, String) -> Option<String> + Send + Sync;
+pub type Reporter = Arc<std::sync::OnceLock<Arc<ReportFn>>>;
 
 /// A short name of what a code stands for, for the headings of the region report.
 fn title(code: &str) -> &'static str {
@@ -309,6 +319,10 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
             "  cycle-based processes give no warnings of the ieee libraries (numeric_std \
              metavalue and compare warnings)\n",
         );
+        report.push_str(
+            "  asserts and reports of processes of the top-level unit are evaluated: at the \
+             clock edge in region code, else the process stays in the event kernel\n",
+        );
     }
     let _ = writeln!(
         report,
@@ -352,6 +366,7 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
             summary,
             region: None,
             metas,
+            reporter: Reporter::default(),
         });
     }
     let name = |l: &LeafId| e.leaf_name(*l);
@@ -412,9 +427,11 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
             summary,
             region: None,
             metas,
+            reporter: Reporter::default(),
         });
     }
-    let region = build(db, e, sel, metas.clone()).map_err(|m| {
+    let reporter = Reporter::default();
+    let region = build(db, e, sel, metas.clone(), reporter.clone()).map_err(|m| {
         vec![
             Diagnostic::error(
                 "E9999",
@@ -428,6 +445,7 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
         summary,
         region: Some(region),
         metas,
+        reporter,
     })
 }
 
@@ -437,6 +455,7 @@ fn build(
     e: &Elaborated,
     sel: region::Selection,
     metas: Arc<Metas>,
+    reporter: Reporter,
 ) -> Result<Region, String> {
     let nets = &e.nets;
     let ksig = |l: LeafId| nets.loc[l.index()].signal.0;
@@ -536,7 +555,22 @@ fn build(
         deferred.push((ops, pend));
         init.extend(b.init.iter().map(|&(w, v)| (base + w, v)));
         let sites = checks.len() as u32;
-        checks.extend(b.checks.iter().map(|(c, at)| (c.clone(), at.clone(), *pi)));
+        checks.extend(b.checks.iter().map(|(c, at)| {
+            let c = match c {
+                // A note's words, at the member's place in the image.
+                lower::Check::Note(nt) => {
+                    let mut nt = nt.clone();
+                    for a in &mut nt.args {
+                        if let Ref::Loc(w) = a.0 {
+                            a.0 = Ref::Loc(base + w);
+                        }
+                    }
+                    lower::Check::Note(nt)
+                }
+                c => c.clone(),
+            };
+            (c, at.clone(), *pi)
+        }));
         uninit += b.uninit;
         let clocked = b.kind == Kind::Clocked;
         if clocked {
@@ -596,6 +630,7 @@ fn build(
         // A member with memory writes kept back for the commit keeps its own code.
         if !looped.contains(&k)
             && deferred[k].1.is_empty()
+            && b.notes == 0
             && b.ops.iter().map(codegen::weight_of).sum::<usize>() >= SHARE_MIN
         {
             by_key.entry(shape_key(b, &next)).or_default().push(k);
@@ -796,6 +831,14 @@ fn build(
     edge.push(codegen::Step::Ops(writes));
     let err = n;
     n += 2;
+    // The log of the notes that fired in a run: a count, then a site per note (each runs at most
+    // once per run) and one more the code writes past a full log.
+    let notes = checks
+        .iter()
+        .filter(|c| matches!(c.0, lower::Check::Note(_)))
+        .count() as u32;
+    let log = n;
+    n += 2 + notes;
     // The save words of each loop group.
     for g in &mut groups {
         g.1 = n;
@@ -846,7 +889,16 @@ fn build(
         })
         .collect();
     let code = Arc::new(codegen::compile(
-        &settle, &edge, &init_fn, &bodies, &shapes, groups, &keep, err, &label,
+        &settle,
+        &edge,
+        &init_fn,
+        &bodies,
+        &shapes,
+        groups,
+        &keep,
+        err,
+        (log, notes),
+        &label,
     )?);
     let whole = |k: u32| {
         let s = yavs_kernel::SignalId(k);
@@ -1055,6 +1107,8 @@ fn build(
             started: false,
             checks: checks.clone(),
             err: err as usize,
+            log: (log as usize, notes as usize),
+            reporter: reporter.clone(),
             metas: metas.clone(),
             uninit,
             buf: Vec::new(),

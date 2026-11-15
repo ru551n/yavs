@@ -226,11 +226,11 @@ pub struct RunArgs {
     /// what it supports) run as one region on a static schedule with compiled code; the rest
     /// stays in the event kernel. One line on standard error says how many processes joined;
     /// `--cycle-report` lists them all, with reasons. The asserts and reports of cycle-based
-    /// processes are not evaluated; a process of the top-level unit that holds one stays in the
-    /// event kernel, so the checks of a testbench run as in the normal mode (a checker entity
-    /// instantiated below the top joins and loses them). Not with a debug session, `--wave`,
-    /// `--cov`, `--vhpi`, `--surfer` or `--activity` (E4102). The strict form is `--cycle-strict`,
-    /// given instead of this option.
+    /// processes below the top-level unit are not evaluated; those of the top-level unit are,
+    /// at the clock edge in compiled code or with their process in the event kernel, so the checks
+    /// of a testbench run as in the normal mode (a checker entity instantiated below the top
+    /// joins and loses them). Not with a debug session, `--wave`, `--cov`, `--vhpi`, `--surfer`
+    /// or `--activity` (E4102). The strict form is `--cycle-strict`, given instead of this option.
     #[arg(long, conflicts_with = "cycle_strict")]
     cycle: bool,
     /// Cycle mode in its strict form, instead of `--cycle`: the same selection, but a process
@@ -1972,6 +1972,7 @@ fn run_design(
     }
     // Cycle mode: select and compile the region while the analysis is still there.
     let mut cycle_metas = None;
+    let mut cycle_reporter: Option<yavs_cycle::Reporter> = None;
     if a.cycle_on() {
         let mode = match (a.cycle_strict, a.cycle_report.is_some()) {
             (true, _) => yavs_cycle::Mode::Strict,
@@ -2006,6 +2007,7 @@ fn run_design(
                 eprint!("{}", plan.summary);
                 e.region = plan.region;
                 cycle_metas = Some(plan.metas);
+                cycle_reporter = Some(plan.reporter);
             }
             Err(ds) => {
                 for d in &ds {
@@ -2211,6 +2213,16 @@ fn run_design(
     let on_pipe = sim.interrupt();
     crate::stdout::on_broken(move || on_pipe.stop());
     let mut rt = built.as_ref().map(|b| b.rt.clone());
+    // The asserts of the cycle region's top-level members go through the normal mode's report
+    // path: the assert counts (the exit status), enables and formats.
+    if let (Some(slot), Some(rt)) = (&cycle_reporter, &rt) {
+        let rt = rt.clone();
+        let _ = slot.set(Arc::new(
+            move |ctx: &yavs_kernel::Ctx<'_>, s: yavs_kernel::Severity, t: String| {
+                rt.assert_report(ctx, s, t)
+            },
+        ));
+    }
     // Toggle coverage watches the value-change bus; without it nothing is subscribed.
     let toggles = kind(CovKindArg::Toggle).then(|| {
         let (t, skipped) = yavs_cov::toggle::toggles(&db, &e, a.cov_toggle_max);

@@ -20,6 +20,7 @@ yavs-ir = { path = "../yavs-ir" }
 yavs-kernel = { path = "../yavs-kernel" }
 yavs-rt = { path = "../yavs-rt" }
 yavs-sem = { path = "../yavs-sem" }
+yavs-std = { path = "../yavs-std" }
 yavs-syntax.workspace = true
 
 # Generated code and raw pointers need unsafe, confined to `src/codegen.rs`.

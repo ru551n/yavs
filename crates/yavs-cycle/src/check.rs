@@ -262,6 +262,9 @@ struct Cx<'a> {
     /// Where each signal leaf is first read (for messages).
     read_at: HashMap<u64, Span>,
     dropped: u32,
+    /// A process of the top-level unit: its asserts and reports are evaluated (A19), so what
+    /// they read counts.
+    top: bool,
     budget: usize,
     enumerating: u32,
     /// Elements a join of branches lost from the definitely assigned ones, and where.
@@ -289,6 +292,7 @@ impl<'a> Cx<'a> {
             sig_any: ESet::default(),
             read_at: HashMap::new(),
             dropped: 0,
+            top: crate::region::in_top_scope(e, p.scope),
             budget: BUDGET,
             enumerating: 0,
             lost: Vec::new(),
@@ -2490,6 +2494,13 @@ impl Cx<'_> {
             StmtKind::Null => Ok(Flow::fall(st)),
             StmtKind::Assert { .. } | StmtKind::Report { .. } => {
                 self.dropped += 1;
+                if self.top {
+                    let mut lsps = Vec::new();
+                    db.stmt_exprs(s, &mut |x, _| db.reads(x, &mut lsps));
+                    let mut reads = std::mem::take(&mut self.reads);
+                    self.lsps_into(&lsps, &mut reads);
+                    self.reads = reads;
+                }
                 Ok(Flow::fall(st))
             }
             StmtKind::VarAssign { target, rhs } => match rhs {

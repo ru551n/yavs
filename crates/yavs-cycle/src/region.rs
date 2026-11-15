@@ -435,17 +435,19 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             Ok(b) if differs(e, &f, &b).is_some() => {
                 out.push((pi, Why::NotYet(differs(e, &f, &b).expect("checked"))))
             }
-            // Region code does not evaluate asserts and reports (A6): a testbench checker in the
-            // top-level unit keeps them in the event kernel (A19).
+            // The asserts and reports of the top-level unit are evaluated (A19): at a clock edge
+            // in region code, else the process stays in the event kernel.
             Ok(b) if b.dropped > 0 && in_top_unit(e, pi) => {
                 nfits -= 1;
                 out.push((
                     pi,
-                    Why::Behavioural(
-                        "it holds an assert or report of the top-level unit, which cycle mode \
-                         evaluates only in the event kernel"
-                            .into(),
-                    ),
+                    Why::Behavioural(format!(
+                        "it holds an assert or report of the top-level unit that cycle mode \
+                         evaluates only in the event kernel: {}",
+                        b.note_why
+                            .as_deref()
+                            .unwrap_or("not evaluated in region code")
+                    )),
                 ))
             }
             Ok(b) => {
@@ -1928,7 +1930,12 @@ fn local_subprogram(db: &Db, d: yavs_sem::DeclId) -> bool {
 /// The process is directly in the top-level design unit (its architecture, or a block or
 /// generate of it): the testbench, exempt under `--cycle-strict`.
 pub(crate) fn in_top_unit(e: &Elaborated, pi: usize) -> bool {
-    let mut s = e.hier.scope(e.procs[pi].scope).parent;
+    in_top_scope(e, e.procs[pi].scope)
+}
+
+/// Whether a process of scope `scope` is one of the top-level unit.
+pub(crate) fn in_top_scope(e: &Elaborated, scope: yavs_elab::ScopeId) -> bool {
+    let mut s = e.hier.scope(scope).parent;
     while let Some(x) = s {
         let sc = e.hier.scope(x);
         if let ScopeKind::Instance { .. } = sc.kind {

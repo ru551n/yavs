@@ -177,20 +177,22 @@ fn region_outputs_seen_every_clock_on_events_and_through_local_subprograms() {
         let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_export");
         // Hand-checked: 40 edges, `v` is `cnt` xor `cnt` rotated by one, `w` a Johnson counter
         // (40 ones), `pulse` has no event after the initial run of `on_pulse`; `hw` changes in
-        // its high word only (an event at time 0 and at every edge), `pk.b` in the word above
-        // its first element (after 16 and 32 edges); `sum` holds both, 276 and 32.
+        // its high word only (an event at time 0 and at every edge), the driver of `mid(79 downto
+        // 20)` only above element 63 (at every edge), `pk.b(9 downto 6)` after 16 and 32 edges;
+        // `sum` holds them: 276, 276 and 32.
         assert!(
             normal.len() == 2
                 && normal[0].ends_with(
-                    "cnt=28 v=3C ra=0 rb=A w=000000000000000FFFFFFFFFF both=2B acc=58 sum=5786 \
+                    "cnt=28 v=3C ra=0 rb=A w=000000000000000FFFFFFFFFF both=2B acc=58 sum=6062 \
                      ones=20020 nd=16 nn=8"
                 )
-                && normal[1].ends_with("events v3=5 ra=32 w=41 pulse=1 p=3 f=2 cnt=2 hw=42 pk=3"),
+                && normal[1]
+                    .ends_with("events v3=5 ra=32 w=41 pulse=1 p=3 f=2 cnt=2 hw=42 pk=3 mid=41"),
             "{t:?} {normal:?}"
         );
         assert_eq!(cycle, normal, "{t:?}\n{err}");
         assert!(
-            err.contains("cycle mode: 2 of 10 processes run cycle-based"),
+            err.contains("cycle mode: 2 of 11 processes run cycle-based"),
             "{err}"
         );
         // Exported: every output but `inner`, which only members read; the testbench calls local
@@ -198,7 +200,7 @@ fn region_outputs_seen_every_clock_on_events_and_through_local_subprograms() {
         // allocator's, `viap` and through a formal `viaformal` (waited on), and the predefined `=`
         // of `state_t`. Nothing outside waits on `both`, `acc`, `viaf`, `viad`, `vian` and `st`.
         assert!(
-            err.contains("16 signal leaves exported (6 nothing outside waits on)"),
+            err.contains("17 signal leaves exported (6 nothing outside waits on)"),
             "{err}"
         );
     }

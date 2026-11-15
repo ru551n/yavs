@@ -16915,9 +16915,9 @@ the next run".
   majority the old order stays (catalogue `variable-assignment-target-order`). User decision 2026-11-15: keep the
   split orders (scalar elements and whole objects through an access value value first); do not unify.
 - **Compiled and interpreted code:** a slice of a plain array lowers its checks before the value and its address
-  arithmetic after it (`slice_checked`, `slice_place`, which makes the slice's descriptor again after a value with a
-  call: the optimiser forgets the length of the first at the call, and a slice of `to_signed(x, 8)` kept a length
-  check and a copy of run-time length, 43 percent more instructions on a loop of them), so the fusions of that arithmetic with the copy and the copy of
+  arithmetic after it (`slice_checked`, `slice_place`; the descriptor made before the value keeps its length across a
+  call in the value since "Descriptor lengths survive calls", which replaced a second descriptor made after such a
+  value), so the fusions of that arithmetic with the copy and the copy of
   a native's result into an element (`rt::in_place_results`) still apply, and while the value is lowered the target's
   subtype is the target's descriptor (`Fx::target_dope`), so an aggregate taking its bounds from it does not evaluate
   the range again (a second evaluation ran an impure bound twice, #1157, and its length check kept Cranelift's copy
@@ -16969,3 +16969,25 @@ the next run".
   slower (it gives OSVVM `to_hxstring` up, which then compiles in the first cold run; about +7.5 percent accepted)
   with its steady state and ten-run sum faster, and `vunit_logging` about +0.5 percent (it came out faster).
 - **Measured**: in `docs/STATUS.md` "The memo of pure calls: judged at the 64th call, two slots per key".
+
+## Descriptor lengths survive calls (yavs-ir `opt.rs` `kill_all`, `BoundsLen`, 2026-11-15)
+
+- **Decision** (agent): the walk keeps, across a call (`Call`, `CallProt`, `CallIndirect`, `CallNative`), the
+  length it knows of a descriptor that a `MakeDope` wrote at the start of a block of this activation (`Key::Dope` of
+  the register an `Alloc` or `NewFrame` defined once, `Cls::Block` of itself; not a descriptor inside a block). Every other memory fact still goes at a call, the words of that
+  descriptor included (a `Load` of a bound is read again). `BoundsLen` of bounds that are one register plus constants
+  or linear forms of one value (`affine_len`, `lin_len`, as the `MakeDope` arm) is the constant length, so a
+  descriptor that `dopes.rs` reads in registers keeps its length too.
+- **Why it is sound:** a callee never changes a descriptor's bounds. It gets an array's bounds as values (natives,
+  `Param::flat` cells) or a descriptor to read (`Key::ParamDope`, `dopes.rs`, which takes a call as a read already);
+  the value kept is a constant or a register, which no call changes. A write of this code into the block (`MakeDope`,
+  `Copy`, a store, an unknown write) still forgets it. Foreign calls are not in the list.
+- **Measured** (Cranelift bench builds, instructions): a loop of `v(8 * i + 7 downto 8 * i) :=
+  std_ulogic_vector(to_signed(x, 8))` as with the #1156 workaround, which this replaces (without either, 37 percent
+  more under clift); in a procedure with the loop variable in the bounds 1 percent fewer than before. realbench
+  `--tier=clift` against base in `docs/STATUS.md` "Descriptor lengths survive calls".
+- **Rejected:** keeping every fact of such a block across calls once a scan of the code had shown that only its
+  `MakeDope` writes it and everything else only reads it (as `dopes.rs` decides): the scan per walk cost 0.7 to 2.3
+  percent more instructions on short testbenches whose run is mostly the optimiser (`uvvm_func_cov`), not found to
+  pay; the lengths alone as pure keys after the same scan cost 0.85 percent there. Where in that work the cost lies
+  was not localised by a profile (too few samples on a 0.4 s run); the patch is kept outside the repository.

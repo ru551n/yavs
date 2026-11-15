@@ -1056,8 +1056,7 @@ impl Fx<'_, '_> {
                 let v = self.value_expr(e);
                 self.target_dope = outer;
                 let v = v?;
-                let again = self.has_call(e);
-                (self.slice_place(s, again, span)?, v)
+                (self.slice_place(s, span)?, v)
             } else if first {
                 let p: Place = self.place(target)?;
                 (p, self.value_expr(e)?)
@@ -1090,15 +1089,6 @@ impl Fx<'_, '_> {
             s => s,
         };
         self.assign_aggregate(target, v, t, span)
-    }
-
-    /// Whether expression `e` has a call (an operator, a native, a function) in it.
-    fn has_call(&self, e: ExprId) -> bool {
-        let mut found = false;
-        self.db.walk_expr(e, &mut |x| {
-            found |= matches!(self.db.exprs[x].kind, ExprKind::Call { .. });
-        });
-        found
     }
 
     /// Whether the name `e` has an index or a slice (through fields and dereferences).

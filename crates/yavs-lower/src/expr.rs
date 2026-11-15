@@ -93,8 +93,6 @@ pub(crate) struct SliceChecked {
     p: Reg,
     n: Reg,
     pub nd: Reg,
-    /// Left, right and direction of the slice.
-    bounds: [Reg; 3],
     t: TypeId,
 }
 
@@ -5855,18 +5853,6 @@ impl<'a> Fx<'a, '_> {
         what: &str,
         span: Span,
     ) -> R<(Reg, Reg, Reg)> {
-        let (p, n, nd, _) = self.slice_bounds(dope, range, what, span)?;
-        Ok((p, n, nd))
-    }
-
-    /// [`Fx::slice_of`] and the slice's left, right and direction.
-    fn slice_bounds(
-        &mut self,
-        dope: Reg,
-        range: &RangeC,
-        what: &str,
-        span: Span,
-    ) -> R<(Reg, Reg, Reg, [Reg; 3])> {
         let r = self.range(range, span)?;
         let dir = self.dir_reg(r.dir);
         let nd = self.one_dope(r.left, r.right, dir);
@@ -5883,7 +5869,7 @@ impl<'a> Fx<'a, '_> {
             what: what_id,
             dir_what,
         });
-        Ok((p, n, nd, [r.left, r.right, dir]))
+        Ok((p, n, nd))
     }
 
     fn slice(&mut self, prefix: ExprId, range: &RangeC, span: Span) -> R<V> {
@@ -6036,7 +6022,7 @@ impl<'a> Fx<'a, '_> {
                     return self.slice_place_comp(*prefix, range, span);
                 }
                 let s = self.slice_checked(*prefix, range, span)?;
-                self.slice_place(s, false, span)
+                self.slice_place(s, span)
             }
             ExprKind::Field { prefix, elem } => self.field_place(*prefix, *elem, span),
             ExprKind::Deref { prefix } => self.deref_place(*prefix, span),
@@ -6059,10 +6045,9 @@ impl<'a> Fx<'a, '_> {
         else {
             return Err(self.cx.ice(span, "sliced non-array"));
         };
-        let (p, n, nd, bounds) = self.slice_bounds(dope, range, &what, span)?;
+        let (p, n, nd) = self.slice_of(dope, range, &what, span)?;
         let t = self.db.base(self.db.exprs[prefix].subtype);
         Ok(SliceChecked {
-            bounds,
             data,
             dope,
             off,
@@ -6075,8 +6060,7 @@ impl<'a> Fx<'a, '_> {
         })
     }
 
-    /// `again`: a value with a call was lowered since `slice_checked`.
-    pub fn slice_place(&mut self, s: SliceChecked, again: bool, span: Span) -> R<Place> {
+    pub fn slice_place(&mut self, s: SliceChecked, span: Span) -> R<Place> {
         let SliceChecked {
             data,
             dope,
@@ -6086,12 +6070,8 @@ impl<'a> Fx<'a, '_> {
             p,
             n,
             nd,
-            bounds: [l, r, d],
             t,
         } = s;
-        // The descriptor again after a value with a call: the optimiser forgets the length of the
-        // first at the call, and the store's length check and copy need it.
-        let nd = if again { self.one_dope(l, r, d) } else { nd };
         if self.is_logic(tid) {
             let count = self.dope_len(dope);
             let a = self.bin(IntOp::Sub, count, p);

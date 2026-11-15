@@ -1288,6 +1288,133 @@ fn a_slice_whose_bounds_differ_by_a_constant_has_that_length() {
     assert_eq!(len(0, 0, false), Some(1));
 }
 
+/// The descriptor `(x, x + 3, to)` made in a block, then (with `call`) a call that cannot be
+/// inlined (it writes a slot of its own whose address it takes), then `read` of the descriptor,
+/// whose value the function returns. Returns the optimised code.
+fn read_after_call(call_g: bool, read: impl FnOnce(&mut FuncBuilder<'_>, Reg) -> Reg) -> Vec<Inst> {
+    let mut pb = ProgramBuilder::new();
+    let g = pb.declare("g", FuncKind::Procedure, None);
+    let mut gb = pb.define(g);
+    gb.slot(16, 8);
+    gb.stmt(StmtKind::Return, sp());
+    pin(&mut gb, 0);
+    let a = gb.addr(AddrSpace::Frame, 0);
+    let k = gb.int(1);
+    gb.emit(Inst::Store {
+        addr: a,
+        src: k,
+        w: Width::B8,
+    });
+    gb.emit(Inst::Ret { v: None });
+    gb.finish();
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    fb.slot(16, 8);
+    fb.stmt(StmtKind::Return, sp());
+    pin(&mut fb, 0);
+    let x = load(&mut fb, 0);
+    let (k, lo, hi) = (fb.int(3), fb.int(-1000), fb.int(1000));
+    let what = fb.program().check_msg("range", Dir::To);
+    let r = fb.reg(RegTy::I64);
+    fb.emit(Inst::BinRange {
+        op: IntOp::Add,
+        dst: r,
+        a: x,
+        b: k,
+        lo,
+        hi,
+        what,
+    });
+    let size = fb.int(24);
+    let dope = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Alloc { dst: dope, size });
+    let d = fb.int(0);
+    let parts = fb.regs(&[x, r, d]);
+    fb.emit(Inst::MakeDope { at: dope, parts });
+    // A pointer into the block stored where a callee could find it.
+    let at = fb.reg(RegTy::Ptr);
+    let one = fb.int(1);
+    fb.emit(Inst::Index {
+        dst: at,
+        base: dope,
+        pos: one,
+        stride: 8,
+    });
+    let st = fb.addr(AddrSpace::Frame, 8);
+    fb.emit(Inst::Store {
+        addr: st,
+        src: at,
+        w: Width::B8,
+    });
+    if call_g {
+        call(&mut fb, g);
+    }
+    let v = read(&mut fb, dope);
+    fb.emit(Inst::Ret { v: Some(v) });
+    fb.finish();
+    let p = pb.finish().expect("verifies");
+    let code = p.func(f).expect("f").code.clone();
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Call { .. })),
+        usize::from(call_g),
+        "{code:?}"
+    );
+    code
+}
+
+#[test]
+fn a_descriptor_this_code_made_keeps_its_length_across_a_call() {
+    if !on() {
+        return;
+    }
+    // A callee never changes a descriptor's bounds, even one it can reach.
+    let code = read_after_call(true, |fb, dope| {
+        let n = fb.reg(RegTy::I64);
+        fb.emit(Inst::DopeLen {
+            dst: n,
+            dope,
+            dim: 0,
+        });
+        n
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::DopeLen { .. })),
+        0,
+        "{code:?}"
+    );
+    assert_eq!(returned_const(&code), Some(4), "{code:?}");
+}
+
+#[test]
+fn a_word_of_a_descriptor_is_read_again_after_a_call() {
+    if !on() {
+        return;
+    }
+    // The right bound read from the block: the register it was made from, but not after a call.
+    let loads = |call_g: bool| {
+        let code = read_after_call(call_g, |fb, dope| {
+            let w = fb.reg(RegTy::Ptr);
+            let one = fb.int(1);
+            fb.emit(Inst::Index {
+                dst: w,
+                base: dope,
+                pos: one,
+                stride: 8,
+            });
+            let v = fb.reg(RegTy::I64);
+            fb.emit(Inst::Load {
+                dst: v,
+                addr: w,
+                w: Width::B8,
+            });
+            v
+        });
+        count(&code, |i| matches!(i, Inst::Load { .. }))
+    };
+    assert_eq!(loads(false), 1);
+    assert_eq!(loads(true), 2);
+}
+
 #[test]
 fn a_descriptor_from_zero_to_a_length_minus_one_has_that_length() {
     if !on() {

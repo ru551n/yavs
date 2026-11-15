@@ -196,6 +196,9 @@ case!(agg_locals, "acc=", &[], [("ops", Max(2230))]);
 // Slices between variables in the frame, one block: more facts than the optimiser's table keeps
 // (#1059), so a table that stopped learning shows here as ops per statement.
 case!(frame_slices, "x=", &[], [("ops", Max(11400))]);
+// Byte lanes written from a call's result: the slice's length is known from its bounds after the
+// call, so the store has no length check and copies a constant count (#1156 had kept both).
+case!(slice_call_len, "acc=20", &[], [("ops", Max(3850))]);
 // A function of 120 vectors with run-time bounds: the pass that reads descriptors in registers
 // looks at each instruction a few times, not once per vector (a scan per vector made the
 // optimiser cost grow with the square of the function).

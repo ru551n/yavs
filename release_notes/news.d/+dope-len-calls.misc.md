@@ -1,0 +1,1 @@
+A slice whose bounds the code computes, such as a byte lane `v(8 * i + 7 downto 8 * i)` written from a function result, keeps its known length across the call: the store checks no length and copies a fixed count, in compiled and interpreted code.

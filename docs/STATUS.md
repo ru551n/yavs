@@ -11597,3 +11597,20 @@ element that is an operand of its own result, metavalues, a truncation warning o
 and a signal parameter; sim1 and sim2 agree) and `composite/element_results_fault` (an index error in such a statement; since #1156 the index is checked before the operation),
 perf design `clift_elem_operands` (`clift_inplace_result_sites`). Frame-mode subprograms (no liveness) and the interpreter
 keep the copy.
+
+## Descriptor lengths survive calls (2026-11-15)
+
+The optimiser's walk keeps, across a call, the length of a descriptor that a `MakeDope` wrote into a block of the
+activation (every other memory fact still goes, the descriptor's words included), and folds `BoundsLen` of bounds
+that are one register plus constants or linear forms of one value (`docs/decisions.md` "Descriptor lengths survive
+calls"). It replaces the second slice descriptor that #1156 made after a value with a call (`slice_place`): a slice
+target `v(8 * i + 7 downto 8 * i) := std_ulogic_vector(to_signed(x, 8))` has no length check and copies 8
+elements without it, in a process or in a procedure with the loop variable in the bounds. Tests: `yavs-ir`
+`tests/opt.rs` `a_descriptor_this_code_made_keeps_its_length_across_a_call`,
+`a_word_of_a_descriptor_is_read_again_after_a_call`, `a_slice_whose_bounds_differ_by_a_constant_has_that_length`;
+perf design `slice_call_len` (`ops` 3741, 4381 without the change).
+
+Measured on Cranelift bench builds (instructions, user space): a loop of such byte lanes 532 M as with the #1156
+workaround (728 M with neither), the same loop in a procedure 1.0 percent fewer than before. realbench `--tier=clift`
+against base, 38 tests: geomean 0.9998, every test within 0.15 percent above base (same-binary A/A: up to 0.3 percent;
+removing the workaround alone: `vai_window_gen_interlock` +0.63 percent, now 0.9999).

@@ -4241,8 +4241,12 @@ impl<'a> Opt<'a> {
             | Inst::Report { .. }
             | Inst::Output { .. }
             | Inst::Cover { .. } => {}
-            // Writes through a pointer, calls: anything may have changed.
-            _ => self.kill_all(),
+            Inst::Call { .. }
+            | Inst::CallProt { .. }
+            | Inst::CallIndirect { .. }
+            | Inst::CallNative { .. } => self.kill_all(true),
+            // Writes through a pointer: anything may have changed.
+            _ => self.kill_all(false),
         }
     }
 
@@ -4258,8 +4262,11 @@ impl<'a> Opt<'a> {
     }
 
     /// A call or an unknown write: nothing survives but constants and frame slots that
-    /// neither a debugger shows nor any pointer reaches.
-    fn kill_all(&mut self) {
+    /// neither a debugger shows nor any pointer reaches; after a `call`, also the lengths of the
+    /// descriptors this activation made at the start of its own blocks (`Alloc`, `NewFrame`): a callee never
+    /// changes a descriptor's bounds (it gets bounds as values or a descriptor to read, as for
+    /// `Key::ParamDope`), and the value is a constant or a register.
+    fn kill_all(&mut self, call: bool) {
         if self.tbl.mem.is_empty() {
             return;
         }
@@ -4267,6 +4274,8 @@ impl<'a> Opt<'a> {
         let esc = self.esc.as_deref().unwrap_or(&[]);
         let named = &self.named;
         let cls = &self.cls;
+        // (The block's own register: a descriptor at its start, not one inside a block.)
+        let own = |r: Reg| matches!(cls.get(r.0 as usize), Some(Some(Cls::Block(b))) if *b == r.0);
         self.tbl.forget(|k| match k.region() {
             None => false,
             Some((a, ..)) if read_only(cls, a) => false,
@@ -4274,6 +4283,7 @@ impl<'a> Opt<'a> {
                 let a = i64::from(o) + lo;
                 !(clear_of(named, a, n) && clear_of(esc, a, n))
             }
+            _ if call && matches!(*k, Key::Dope(Opn::R(r), _) if own(r)) => false,
             Some(_) => true,
         });
     }
@@ -5404,6 +5414,16 @@ impl<'a> Opt<'a> {
                     && let Some(n) = dim_len(l, r, w == 1).filter(|&n| n <= i64::MAX as u64)
                 {
                     return self.make_const(pc, dst, n as i64);
+                }
+                // Bounds of one register, `x + p` to `x + q` or `8 * i + 7` downto `8 * i`: the
+                // length a `MakeDope` of them would have. A descriptor read in registers
+                // (`dopes.rs`) keeps it across calls, which forget the `MakeDope`'s.
+                if let Opn::K(w) = self.opn(dir)
+                    && let Some(n) = self
+                        .affine_len(left, right, w)
+                        .or_else(|| self.lin_len(left, right, w))
+                {
+                    return self.make_const(pc, dst, n);
                 }
                 if let (Some(a), Some(b), Some(w)) =
                     (self.kopn(left), self.kopn(right), self.kopn(dir))

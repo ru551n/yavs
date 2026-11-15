@@ -1,0 +1,3308 @@
+//! The subset checker: whether a process can run cycle-based at all, independent of what the
+//! lowering supports yet. It reads the elaborated HIR of one process instance (generics folded,
+//! loop parameters of static `for` loops enumerated) and answers with the process's shape and
+//! its combinational dependences ([`Fit`]), a behavioural process ([`Verdict::Behavioural`]), or
+//! the reason it is outside the subset ([`Reason`], with a stable code).
+//!
+//! Soundness by direction: the elements a value may depend on are over-approximated (a dynamic
+//! index reads the whole object, a call depends on all its arguments), the elements assigned on
+//! every path are under-approximated (a dynamic index or an unbounded loop assigns nothing), and
+//! the wait set of a process is under-approximated. Every imprecision leaves a process out; none
+//! can let a latch, a state variable or an incomplete sensitivity list in.
+
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::rc::Rc;
+
+use yavs_diag::Span;
+use yavs_elab::{Elaborated, LeafId, NetGraph, ObjId, ProcInst, Sel, Shape};
+use yavs_kernel::Elem;
+use yavs_sem::decl::{Alias, Body, DeclKind, ObjClass, ObjRole, SubprogramKind};
+use yavs_sem::hir::{
+    Actual, AttrPrefix, ExprKind, LoopScheme, Mode, PredefAttr, Rhs, Sensitivity, StmtKind,
+    Waveform,
+};
+use yavs_sem::implicit::Family;
+use yavs_sem::stat::{ConstValue, Elems};
+use yavs_sem::types::{Constraint, Direction, RangeC, TypeKind};
+use yavs_sem::{Db, DeclId, ExprId, Id, StmtId, SubtypeId};
+
+use crate::codes;
+use crate::dep::{Dep, ESet, Out, VAR};
+
+/// The shape of a process that fits the subset.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Form {
+    Clocked,
+    Comb,
+}
+
+/// A process inside the subset.
+#[derive(Clone)]
+pub(crate) struct Fit {
+    pub form: Form,
+    /// The clock: leaf, element, rising.
+    pub clock: Option<(LeafId, u32, bool)>,
+    /// The signals an asynchronous reset reads.
+    pub reset: Vec<LeafId>,
+    /// Its combinational dependences: of every driven run of a combinational process, of what the
+    /// reset branch of a clocked one assigns.
+    pub outs: Vec<Out>,
+    /// Asserts and reports, not evaluated in cycle mode.
+    pub dropped: u32,
+    /// Every signal element it reads (over-approximated).
+    pub reads: ESet,
+}
+
+/// Why a process is outside the subset.
+#[derive(Clone, Debug)]
+pub(crate) struct Reason {
+    pub code: &'static str,
+    pub span: Span,
+    pub text: String,
+}
+
+pub(crate) enum Verdict {
+    Fit(Fit),
+    /// A process of the testbench kind, which stays in the event kernel by nature.
+    Behavioural(String),
+    Out(Reason),
+}
+
+enum Stop {
+    Out(Reason),
+    Behav(String),
+    /// The statement budget of static loop enumeration ran out.
+    Budget,
+}
+
+type R<T> = Result<T, Stop>;
+
+/// Runs of elements: key, first, end.
+type Parts = Vec<(u64, u32, u32)>;
+
+fn out<T>(code: &'static str, span: Span, text: impl Into<String>) -> R<T> {
+    Err(Stop::Out(Reason {
+        code,
+        span,
+        text: text.into(),
+    }))
+}
+
+/// Statement instances a process may take while static loops are enumerated; past that, loops
+/// are analysed without their parameter's value.
+const BUDGET: usize = 1 << 16;
+/// Rounds of a loop analysed without its parameter's value before the analysis gives up.
+const ROUNDS: usize = 24;
+
+/// Check process `pi`.
+pub(crate) fn check(db: &Db, e: &Elaborated, pi: usize) -> Verdict {
+    let p = &e.procs[pi];
+    let mut cx = Cx {
+        db,
+        e,
+        p,
+        comb: false,
+        clock: None,
+        vars: NetGraph::default(),
+        var_obj: HashMap::new(),
+        part_obj: HashMap::new(),
+        loopv: HashMap::new(),
+        frames: Vec::new(),
+        var_any: ESet::default(),
+        undef_reads: Vec::new(),
+        reads: ESet::default(),
+        sig_any: ESet::default(),
+        read_at: HashMap::new(),
+        dropped: 0,
+        budget: BUDGET,
+        enumerating: 0,
+        lost: Vec::new(),
+        callees: HashMap::new(),
+        visiting: HashSet::new(),
+    };
+    match cx.process() {
+        Ok(mut f) => {
+            f.reads = std::mem::take(&mut cx.reads);
+            // The clock is read too (its edge test adds no dependence).
+            if let Some((l, el, _)) = f.clock {
+                f.reads.add(u64::from(l.0), el, el + 1);
+            }
+            Verdict::Fit(f)
+        }
+        Err(Stop::Out(r)) => Verdict::Out(r),
+        Err(Stop::Behav(w)) => Verdict::Behavioural(w),
+        Err(Stop::Budget) => Verdict::Out(Reason {
+            code: codes::ANALYSIS,
+            span: db.stmts[p.stmt].span,
+            text: "its loops are too large for the analysis".into(),
+        }),
+    }
+}
+
+/// How a statement list of a pure function run on constants ends.
+enum Pure {
+    Fall,
+    Return(ConstValue),
+    Exit(StmtId),
+    Next(StmtId),
+    /// A value or statement the evaluation does not know: the call is not folded.
+    GiveUp,
+}
+
+/// A scalar value: the evaluator of pure functions keeps no composites, whose bounds would have
+/// to be the object's subtype's.
+fn scalar(v: &ConstValue) -> bool {
+    matches!(
+        v,
+        ConstValue::Int(_) | ConstValue::Enum(_) | ConstValue::Phys(_)
+    )
+}
+
+/// What a call does, as far as a process cares (memoised per subprogram).
+#[derive(Clone, Default)]
+struct Callee {
+    /// A procedure that may wait.
+    waits: bool,
+    /// It uses files, text input and output or access values.
+    files: bool,
+    /// Calls into code the analysis cannot see.
+    opaque: Option<String>,
+    /// Changes something outside it (a variable or signal it is not given, a shared variable).
+    writes_outside: Option<String>,
+    /// Signals it reads that are not its parameters.
+    sig_reads: Vec<DeclId>,
+    /// Per parameter: an `out` one assigned as a whole by a statement every call runs.
+    must_out: Vec<bool>,
+    /// It calls `std.env` or another simulator procedure.
+    control: bool,
+    /// What it does that no process of the region may: the code and what.
+    bad: Option<(&'static str, String)>,
+}
+
+/// The analysis state at one point of a process.
+#[derive(Clone, Default, PartialEq)]
+struct St {
+    /// What each assigned element (a variable's, or a signal's pending value) depends on, as
+    /// runs `lo .. hi` per key.
+    vals: BTreeMap<u64, Vec<(u32, u32, Dep)>>,
+    /// Elements assigned on every path to here.
+    def: ESet,
+    /// What reaching here depends on (conditions of enclosing statements and earlier exits).
+    ctl: Rc<ESet>,
+}
+
+/// Where control goes after a statement list.
+#[derive(Default)]
+struct Flow {
+    fall: Option<St>,
+    exits: Vec<(StmtId, St)>,
+    nexts: Vec<(StmtId, St)>,
+}
+
+impl Flow {
+    fn fall(s: St) -> Flow {
+        Flow {
+            fall: Some(s),
+            ..Flow::default()
+        }
+    }
+}
+
+/// A value's dependences: runs in element order, or one set for all elements.
+enum Dv {
+    Flat(Rc<ESet>),
+    Runs(Vec<(u32, Dep)>),
+}
+
+/// A name resolved to elements.
+struct Place {
+    /// Signal leaves, or variable leaves with `VAR` set.
+    parts: Vec<(u64, u32, u32)>,
+    /// The parts are exactly the elements named (no dynamic index, no rebased alias).
+    precise: bool,
+    sig: bool,
+    /// What the index and slice expressions read.
+    idx: ESet,
+    decl: Option<DeclId>,
+}
+
+enum Root {
+    Sig(ObjId),
+    Var(DeclId),
+    /// A constant, generic, loop parameter or literal: no dependence.
+    Const,
+}
+
+struct Name {
+    root: Root,
+    decl: Option<DeclId>,
+    sels: Vec<Sel>,
+    stopped: bool,
+    idx: ESet,
+}
+
+struct Cx<'a> {
+    db: &'a Db,
+    e: &'a Elaborated,
+    p: &'a ProcInst,
+    /// Combinational analysis (latches, state variables) is on: a combinational process or the
+    /// reset branch of a clocked one.
+    comb: bool,
+    /// The clock element: an edge test of it is the trigger, not a history read.
+    clock: Option<(LeafId, u32)>,
+    /// The layout of the process's variables and of ports collapsed into parts of leaves.
+    vars: NetGraph,
+    var_obj: HashMap<DeclId, Option<ObjId>>,
+    part_obj: HashMap<ObjId, ObjId>,
+    /// Values of loop parameters being enumerated.
+    loopv: HashMap<DeclId, ConstValue>,
+    /// Parameters and variables of pure functions being run on constants.
+    frames: Vec<HashMap<DeclId, ConstValue>>,
+    /// Variable elements the process may write.
+    var_any: ESet,
+    /// Variable elements read before they were assigned on some path, where, and the variable.
+    undef_reads: Vec<(ESet, Span, Option<DeclId>)>,
+    /// Signal elements read.
+    reads: ESet,
+    /// Signal elements any path may assign.
+    sig_any: ESet,
+    /// Where each signal leaf is first read (for messages).
+    read_at: HashMap<u64, Span>,
+    dropped: u32,
+    budget: usize,
+    enumerating: u32,
+    /// Elements a join of branches lost from the definitely assigned ones, and where.
+    lost: Vec<(ESet, Span)>,
+    callees: HashMap<DeclId, Callee>,
+    visiting: HashSet<DeclId>,
+}
+
+impl Cx<'_> {
+    fn span(&self) -> Span {
+        self.db.stmts[self.p.stmt].span
+    }
+
+    fn process(&mut self) -> R<Fit> {
+        let (db, p) = (self.db, self.p);
+        if p.postponed {
+            return out(
+                codes::GUARDED,
+                self.span(),
+                "a postponed process runs at the end of a time step, which a cycle does not have",
+            );
+        }
+        if p.guard.is_some() {
+            return out(
+                codes::GUARDED,
+                self.span(),
+                "the guard of a guarded block: guarded signals and assignments are not in the \
+                 two-state subset",
+            );
+        }
+        if let Some(pa) = &p.actual {
+            // `formal <= expr`: a combinational process with the expression's reads as its list.
+            self.comb = true;
+            let mut st = St::default();
+            let v = self.expr(pa.expr, &st)?;
+            let v = self.flat(&v);
+            let mut wait = ESet::default();
+            let mut lsps = Vec::new();
+            db.reads(pa.expr, &mut lsps);
+            self.lsps_into(&lsps, &mut wait);
+            for (l, r) in self.driven() {
+                st.def.add(l, r.0, r.1);
+                st.vals
+                    .insert(l, vec![(r.0, r.1, Dep::set(Rc::new(v.clone())))]);
+            }
+            return self.finish_comb(st, wait);
+        }
+        let s = &db.stmts[p.stmt];
+        match &s.kind {
+            StmtKind::Process {
+                sensitivity,
+                body,
+                scope,
+                ..
+            } => {
+                if matches!(sensitivity, Sensitivity::None) {
+                    self.waits_behavioural(body)?;
+                }
+                self.decls(*scope)?;
+                self.uses_files(body)?;
+                self.process_body(sensitivity, body)
+            }
+            StmtKind::ConcSignalAssign {
+                guarded,
+                target,
+                delay,
+                rhs,
+                ..
+            } => {
+                if *guarded {
+                    return out(
+                        codes::GUARDED,
+                        s.span,
+                        "a guarded assignment: guarded signals are not in the two-state subset",
+                    );
+                }
+                // `q <= d when <edge>;` is a clocked process.
+                if let Rhs::Conditional(alts) = rhs
+                    && let [(_, Some(c))] = &alts[..]
+                    && let Some((edge, extras)) = self.edge_head(*c)
+                {
+                    let (leaf, el) = self.clock_elem(edge.sig)?;
+                    self.clock = Some((leaf, el));
+                    let st = St::default();
+                    for x in extras {
+                        self.expr(x, &st)?;
+                    }
+                    let mut st = St::default();
+                    if let Rhs::Conditional(alts) = rhs {
+                        self.signal_assign_value(&mut st, target.expr, delay, &alts[0].0, s.span)?;
+                    }
+                    return Ok(Fit {
+                        form: Form::Clocked,
+                        clock: Some((leaf, el, edge.rising)),
+                        reset: Vec::new(),
+                        outs: Vec::new(),
+                        dropped: 0,
+                        reads: ESet::default(),
+                    });
+                }
+                self.comb = true;
+                let st = St::default();
+                let flow = self.signal_assign(st, target.expr, delay, rhs, s.span)?;
+                let st = flow.fall.unwrap_or_default();
+                let mut wait = ESet::default();
+                let mut lsps = Vec::new();
+                db.stmt_reads(p.stmt, &mut lsps);
+                self.lsps_into(&lsps, &mut wait);
+                self.finish_comb(st, wait)
+            }
+            StmtKind::ConcAssert { .. } => Ok(Fit {
+                form: Form::Comb,
+                clock: None,
+                reset: Vec::new(),
+                outs: Vec::new(),
+                dropped: 1,
+                reads: ESet::default(),
+            }),
+            StmtKind::ConcProcCall { call, .. } => {
+                let c = self.callee(call.callee);
+                if c.waits {
+                    return Err(Stop::Behav(format!(
+                        "it calls `{}`, which may wait",
+                        db.decls[call.callee].name
+                    )));
+                }
+                self.comb = true;
+                let st = St::default();
+                let st = self.proc_call(st, call.callee, &call.args, call.span)?;
+                let mut wait = ESet::default();
+                let mut lsps = Vec::new();
+                db.stmt_reads(p.stmt, &mut lsps);
+                self.lsps_into(&lsps, &mut wait);
+                self.finish_comb(st, wait)
+            }
+            _ => out(
+                codes::ANALYSIS,
+                s.span,
+                "a kind of statement the analysis does not know",
+            ),
+        }
+    }
+
+    /// The process's own declarations: files and access values make it behavioural; real,
+    /// time, protected objects are outside the subset.
+    fn decls(&mut self, scope: yavs_sem::ScopeId) -> R<()> {
+        let db = self.db;
+        for &d in &db.scopes[scope].order {
+            let decl = &db.decls[d];
+            let DeclKind::Object(o) = &decl.kind else {
+                continue;
+            };
+            if o.class == ObjClass::File {
+                return Err(Stop::Behav(format!("it declares the file `{}`", decl.name)));
+            }
+            match &db.types[db.base(o.subtype)].kind {
+                TypeKind::Access { .. } => {
+                    return Err(Stop::Behav(format!(
+                        "it declares `{}`, an access value (text lines and the like)",
+                        decl.name
+                    )));
+                }
+                TypeKind::Protected { .. } => {
+                    return Err(Stop::Behav(format!(
+                        "it declares `{}`, a protected object (a random generator and the like)",
+                        decl.name
+                    )));
+                }
+                TypeKind::Floating | TypeKind::Physical { .. } if o.class != ObjClass::Constant => {
+                    return out(
+                        codes::NOT_TWO_STATE,
+                        decl.span,
+                        format!("`{}` is a real or physical (time) object", decl.name),
+                    );
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Files, text input and output, `std.env` anywhere in the process make it behavioural.
+    fn uses_files(&mut self, body: &[StmtId]) -> R<()> {
+        let db = self.db;
+        let mut calls = Vec::new();
+        let mut stmts = Vec::new();
+        deep(db, body, &mut stmts);
+        for &s in &stmts {
+            if matches!(
+                db.stmts[s].kind,
+                StmtKind::Assert { .. } | StmtKind::Report { .. }
+            ) {
+                continue;
+            }
+            if let StmtKind::ProcCall(c) = &db.stmts[s].kind {
+                calls.push(c.callee);
+            }
+            db.stmt_exprs(s, &mut |x, _| {
+                db.walk_expr(x, &mut |y| {
+                    if let ExprKind::Call { callee, .. } = &db.exprs[y].kind {
+                        calls.push(*callee);
+                    }
+                })
+            });
+        }
+        for c in calls {
+            let info = self.callee(c);
+            if info.files {
+                return Err(Stop::Behav(format!(
+                    "it calls `{}`, which uses files or text input and output",
+                    db.decls[c].name
+                )));
+            }
+            if info.control {
+                return Err(Stop::Behav(format!(
+                    "it calls `{}`, which controls the simulation",
+                    db.decls[c].name
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn process_body(&mut self, sens: &Sensitivity, body: &[StmtId]) -> R<Fit> {
+        let db = self.db;
+        // Asserts and reports at the top level are not evaluated, so they do not shape it.
+        let kept: Vec<StmtId> = (body.iter().copied())
+            .filter(|&s| {
+                let msg = matches!(
+                    db.stmts[s].kind,
+                    StmtKind::Assert { .. } | StmtKind::Report { .. }
+                );
+                self.dropped += u32::from(msg);
+                !msg
+            })
+            .collect();
+        if matches!(sens, Sensitivity::None) {
+            return self.wait_form(&kept);
+        }
+        let wait = self.wait_set(sens);
+        // `if E then B end if;` or `if R then A elsif E then B end if;`.
+        if let [only] = &kept[..]
+            && let StmtKind::If { branches, else_ } = &db.stmts[*only].kind
+        {
+            let heads: Vec<Option<_>> = branches.iter().map(|b| self.edge_head(b.0)).collect();
+            let shape = match (&branches[..], &heads[..], else_) {
+                ([(_, b)], [Some(h)], None) => Some((None, b, h.clone())),
+                ([(r, a), (_, b)], [None, Some(h)], None) => {
+                    Some((Some((*r, &a[..])), b, h.clone()))
+                }
+                _ => None,
+            };
+            if let Some((reset, inner, (edge, extras))) = shape {
+                return self.clocked(&wait, reset, inner, edge, extras, db.stmts[*only].span);
+            }
+        }
+        // Not a clocked shape: an edge test anywhere is one cycle mode does not take.
+        if let Some(x) = self.find_edge(body) {
+            return out(
+                codes::SHAPE,
+                db.exprs[x].span,
+                "an edge test in a form cycle mode does not take: a clocked process is `if \
+                 <edge> then ... end if;`, with an optional asynchronous reset branch before \
+                 it, and nothing else",
+            );
+        }
+        self.comb = true;
+        let flow = self.stmts(body, St::default())?;
+        let st = self.ended(flow)?;
+        self.finish_comb(st, wait)
+    }
+
+    /// A process without a sensitivity list that waits for a time, forever, more than once or
+    /// in a called procedure is behavioural.
+    fn waits_behavioural(&mut self, body: &[StmtId]) -> R<()> {
+        let db = self.db;
+        let mut all = Vec::new();
+        deep(db, body, &mut all);
+        let mut waits = 0;
+        for &s in &all {
+            match &db.stmts[s].kind {
+                StmtKind::Wait {
+                    on, until, timeout, ..
+                } => {
+                    waits += 1;
+                    if timeout.is_some() {
+                        return Err(Stop::Behav("it waits for a time".into()));
+                    }
+                    if on.is_empty() && until.is_none() {
+                        return Err(Stop::Behav("it waits forever (`wait;`)".into()));
+                    }
+                }
+                StmtKind::ProcCall(c) if self.callee(c.callee).waits => {
+                    return Err(Stop::Behav(format!(
+                        "it calls `{}`, which may wait",
+                        db.decls[c.callee].name
+                    )));
+                }
+                _ => {}
+            }
+        }
+        if waits != 1 {
+            return Err(Stop::Behav(format!("it has {waits} wait statements")));
+        }
+        Ok(())
+    }
+
+    /// `wait until <edge>;` first, then the body.
+    fn wait_form(&mut self, kept: &[StmtId]) -> R<Fit> {
+        let db = self.db;
+        let mut all = Vec::new();
+        deep(db, kept, &mut all);
+        let Some((i, w)) = kept
+            .iter()
+            .enumerate()
+            .find(|(_, s)| matches!(db.stmts[**s].kind, StmtKind::Wait { .. }))
+        else {
+            let w = (all.iter())
+                .find(|s| matches!(db.stmts[**s].kind, StmtKind::Wait { .. }))
+                .expect("one wait counted");
+            return out(
+                codes::SHAPE,
+                db.stmts[*w].span,
+                "its wait is inside another statement; a clocked process waits once, first",
+            );
+        };
+        let StmtKind::Wait { on, until, .. } = &db.stmts[*w].kind else {
+            unreachable!("found as a wait");
+        };
+        let Some((edge, extras)) = until.and_then(|u| self.edge_head(u)) else {
+            return out(
+                codes::WAIT,
+                db.stmts[*w].span,
+                "a wait that is not on a clock edge: only `wait until <edge>;` as the first \
+                 statement makes a clocked process",
+            );
+        };
+        if i != 0 {
+            return out(
+                codes::SHAPE,
+                db.stmts[kept[0]].span,
+                "statements before its `wait until` run once at initialisation, without an edge",
+            );
+        }
+        let (leaf, el) = self.clock_elem(edge.sig)?;
+        // The wait must resume on every event of the clock; events of other signals leave
+        // the edge test false.
+        if !on.is_empty() {
+            let mut s = ESet::default();
+            self.lsps_into(on, &mut s);
+            if s.first_missing(u64::from(leaf.0), el, el + 1).is_some() {
+                return out(
+                    codes::SHAPE,
+                    db.stmts[*w].span,
+                    "its wait does not name its clock in its `on` list",
+                );
+            }
+        }
+        self.clock = Some((leaf, el));
+        let st = St::default();
+        for x in extras {
+            self.expr(x, &st)?;
+        }
+        self.stmts(&kept[1..], st)?;
+        Ok(Fit {
+            form: Form::Clocked,
+            clock: Some((leaf, el, edge.rising)),
+            reset: Vec::new(),
+            outs: Vec::new(),
+            dropped: self.dropped,
+            reads: ESet::default(),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn clocked(
+        &mut self,
+        wait: &ESet,
+        reset: Option<(ExprId, &[StmtId])>,
+        inner: &[StmtId],
+        edge: yavs_sem::edge::EdgeShape,
+        extras: Vec<ExprId>,
+        span: Span,
+    ) -> R<Fit> {
+        let db = self.db;
+        let (leaf, el) = self.clock_elem(edge.sig)?;
+        if wait.first_missing(u64::from(leaf.0), el, el + 1).is_some() {
+            return out(
+                codes::SHAPE,
+                span,
+                format!(
+                    "its sensitivity list does not name its clock {}",
+                    self.e.leaf_name(leaf)
+                ),
+            );
+        }
+        self.clock = Some((leaf, el));
+        let mut fit = Fit {
+            form: Form::Clocked,
+            clock: Some((leaf, el, edge.rising)),
+            reset: Vec::new(),
+            outs: Vec::new(),
+            dropped: 0,
+            reads: ESet::default(),
+        };
+        if let Some((r, a)) = reset {
+            // The condition of an asynchronous reset: signals of its sensitivity list, not the
+            // clock (`rst = '1'`, `a = '1' or b = '1'`). An edge test there is no trigger.
+            let clock = self.clock.take();
+            let mut before = std::mem::take(&mut self.reads);
+            let mut st = St::default();
+            let rd = self.expr(r, &st)?;
+            let rs = std::mem::take(&mut self.reads);
+            if rs.is_empty() {
+                return out(
+                    codes::SHAPE,
+                    db.exprs[r].span,
+                    "the branch before the edge test does not test a signal: it is no asynchronous \
+                     reset",
+                );
+            }
+            if rs.first_missing(u64::from(leaf.0), el, el + 1).is_none() {
+                return out(
+                    codes::SHAPE,
+                    db.exprs[r].span,
+                    "the asynchronous reset condition reads the clock",
+                );
+            }
+            if let Some(l) = self.missing(&rs, wait) {
+                return out(
+                    codes::SHAPE,
+                    db.exprs[r].span,
+                    format!(
+                        "its sensitivity list does not name {l}, which its asynchronous reset reads"
+                    ),
+                );
+            }
+            fit.reset = rs.iter().map(|(k, _, _)| LeafId(k as u32)).collect();
+            before.union(&rs);
+            fit.reset.dedup();
+            // While the reset holds, the branch is combinational logic of what it reads.
+            self.comb = true;
+            st.ctl = Rc::new(self.flat(&rd));
+            let flow = self.stmts(a, st)?;
+            let st = self.ended(flow)?;
+            self.assigns_what_it_drives()?;
+            self.stale_reads()?;
+            let reads = std::mem::replace(&mut self.reads, before);
+            self.reads.union(&reads);
+            if let Some(l) = self.missing(&reads, wait) {
+                return out(
+                    codes::SENSITIVITY,
+                    db.exprs[r].span,
+                    format!("its reset branch reads {l}, which its sensitivity list does not name"),
+                );
+            }
+            for (&k, segs) in &st.vals {
+                if k & VAR == 0 {
+                    for (lo, hi, d) in segs {
+                        fit.outs.push(Out {
+                            leaf: k,
+                            lo: *lo,
+                            hi: *hi,
+                            dep: d.clone(),
+                        });
+                    }
+                }
+            }
+            self.comb = false;
+            self.clock = clock;
+        }
+        let st = St::default();
+        for x in extras {
+            self.expr(x, &st)?;
+        }
+        self.stmts(inner, st)?;
+        fit.dropped = self.dropped;
+        Ok(fit)
+    }
+
+    /// The fall-through state of a body that must end normally.
+    fn ended(&mut self, flow: Flow) -> R<St> {
+        if let Some((s, _)) = flow.exits.first().or(flow.nexts.first()) {
+            return out(
+                codes::ANALYSIS,
+                self.db.stmts[*s].span,
+                "an `exit` or `next` of a loop the analysis does not see",
+            );
+        }
+        Ok(flow.fall.unwrap_or_default())
+    }
+
+    /// Check a combinational process at its end: every driven element assigned on every path,
+    /// every read in its wait set; its dependences.
+    fn finish_comb(&mut self, st: St, wait: ESet) -> R<Fit> {
+        self.assigns_what_it_drives()?;
+        self.stale_reads()?;
+        let mut outs = Vec::new();
+        for (l, (lo, hi)) in self.driven() {
+            // An element no path assigns keeps its initial value: a constant, no latch.
+            let mut want = ESet::default();
+            want.add(l, lo, hi);
+            let want = want.intersect(&self.sig_any);
+            if let Some((_, x, _)) = want.minus(&st.def).iter().next() {
+                let mut text = format!(
+                    "it does not assign {} on every path, so it keeps its value: a latch",
+                    self.elem_name(l, x)
+                );
+                let mut at = self.span();
+                if let Some((_, s)) = self
+                    .lost
+                    .iter()
+                    .find(|(s, _)| s.first_missing(l, x, x + 1).is_none())
+                {
+                    text.push_str(" (this statement leaves it unassigned on a path)");
+                    at = *s;
+                }
+                return out(codes::LATCH, at, text);
+            }
+            for (s_lo, s_hi, d) in st.vals.get(&l).into_iter().flatten() {
+                let (a, z) = ((*s_lo).max(lo), (*s_hi).min(hi));
+                if a < z {
+                    outs.push(Out {
+                        leaf: l,
+                        lo: a,
+                        hi: z,
+                        dep: shift(d, a - s_lo),
+                    });
+                }
+            }
+        }
+        if let Some(l) = self.missing(&self.reads.clone(), &wait) {
+            let (k, _, _) = self.reads.minus(&wait).iter().next().expect("one missing");
+            return out(
+                codes::SENSITIVITY,
+                self.read_at.get(&k).copied().unwrap_or(self.span()),
+                format!(
+                    "it reads {l}, which its sensitivity list does not name: the normal mode \
+                     would not run it when that changes"
+                ),
+            );
+        }
+        Ok(Fit {
+            form: Form::Comb,
+            clock: None,
+            reset: Vec::new(),
+            outs,
+            dropped: self.dropped,
+            reads: ESet::default(),
+        })
+    }
+
+    /// A variable element read before it was assigned on some path, and assigned somewhere:
+    /// the value of the previous run, state. One never assigned keeps its initial value.
+    fn stale_reads(&self) -> R<()> {
+        for (need, span, decl) in &self.undef_reads {
+            if let Some((k, x, _)) = need.intersect(&self.var_any).iter().next() {
+                return out(
+                    codes::STATE,
+                    *span,
+                    format!(
+                        "it reads {} before assigning it on some path: a variable that keeps its \
+                         value from one run to the next is state, not combinational logic",
+                        self.var_name(*decl, k, x)
+                    ),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Every signal element the analysis saw assigned is one elaboration made a driver for: a
+    /// cross-check of the element mapping the latch rule relies on.
+    fn assigns_what_it_drives(&self) -> R<()> {
+        let mut driven = ESet::default();
+        for (l, (a, z)) in self.driven() {
+            driven.add(l, a, z);
+        }
+        if let Some((k, x, _)) = self.sig_any.minus(&driven).iter().next() {
+            return out(
+                codes::ANALYSIS,
+                self.span(),
+                format!(
+                    "the analysis sees it assign {}, which elaboration does not list among its \
+                     drivers",
+                    self.elem_name(k, x)
+                ),
+            );
+        }
+        Ok(())
+    }
+
+    /// The first element of `reads` not in `wait`, named.
+    fn missing(&self, reads: &ESet, wait: &ESet) -> Option<String> {
+        let (k, a, _) = reads.minus(wait).iter().next()?;
+        Some(self.elem_name(k, a))
+    }
+
+    /// The elements process `p` drives, from elaboration.
+    fn driven(&self) -> Vec<(u64, (u32, u32))> {
+        let nets = &self.e.nets;
+        (self.p.drivers.iter())
+            .map(|&d| {
+                let d = &nets.drivers[d];
+                (u64::from(d.leaf.0), (d.range.offset, d.range.end()))
+            })
+            .collect()
+    }
+
+    /// The signal elements a process waits on: its list, or for `all` what elaboration took;
+    /// a name that does not resolve exactly adds nothing (under-approximated).
+    fn wait_set(&mut self, sens: &Sensitivity) -> ESet {
+        let db = self.db;
+        let mut w = ESet::default();
+        match sens {
+            Sensitivity::List(l) => self.lsps_into(l, &mut w),
+            Sensitivity::All => {
+                let info = match &db.stmts[self.p.stmt].kind {
+                    StmtKind::Process { info, .. } => info.reads_all.clone(),
+                    _ => None,
+                };
+                if let Some(l) = info {
+                    self.lsps_into(&l, &mut w);
+                }
+            }
+            Sensitivity::None => {}
+        }
+        w
+    }
+
+    /// The elements of longest static prefixes, those that resolve exactly.
+    fn lsps_into(&mut self, lsps: &[yavs_sem::hir::Lsp], out: &mut ESet) {
+        for l in lsps {
+            let yavs_sem::hir::ObjRoot::Decl(d) = l.root else {
+                continue;
+            };
+            let Some(o) = self.e.signal(self.p.scope, d) else {
+                continue;
+            };
+            let mut sels = Vec::new();
+            let mut ok = true;
+            for s in l.path.iter() {
+                match s {
+                    yavs_sem::hir::LspStep::Field(f) => sels.push(Sel::Field(*f)),
+                    yavs_sem::hir::LspStep::Index(ix) => {
+                        let v: Option<Vec<i64>> = ix
+                            .iter()
+                            .map(|&x| self.fold(x).and_then(|c| c.as_int()))
+                            .collect();
+                        match v {
+                            Some(v) => sels.push(Sel::Index(v)),
+                            None => ok = false,
+                        }
+                    }
+                    yavs_sem::hir::LspStep::Slice(r) => match self.range_bounds(r) {
+                        Some(b) => sels.push(Sel::Slice(b)),
+                        None => ok = false,
+                    },
+                    yavs_sem::hir::LspStep::Rebase(_) => ok = false,
+                }
+                if !ok {
+                    break;
+                }
+            }
+            if !ok {
+                continue;
+            }
+            if let (parts, true) = self.sig_parts(o, &sels) {
+                for (k, a, z) in parts {
+                    out.add(k, a, z);
+                }
+            }
+        }
+    }
+
+    // -- names ------------------------------------------------------------------------------
+
+    /// The elements of signal object `o` selected by `sels`, and whether exactly.
+    fn sig_parts(&mut self, o: ObjId, sels: &[Sel]) -> (Parts, bool) {
+        let obj = self.e.nets.obj(o);
+        // A port collapsed into its actual has the actual's leaves, whose record paths are the
+        // actual's: select in its own layout, by position (`collapse.rs`).
+        let collapsed = obj.leaves.0 != obj.leaves.1 && self.e.nets.leaf(obj.leaves.0).obj != o;
+        if obj.parts.is_empty() && !collapsed {
+            return match self.e.nets.select(o, sels) {
+                Ok((ps, _)) => (
+                    ps.iter()
+                        .map(|(l, r)| (u64::from(l.0), r.offset, r.end()))
+                        .collect(),
+                    true,
+                ),
+                Err(_) => (self.whole(o), false),
+            };
+        }
+        // Select in a layout of its own shape, then move to the actual's leaves and parts.
+        let local = match self.part_obj.get(&o) {
+            Some(&l) => l,
+            None => {
+                let l = add_layout(&mut self.vars, obj.decl, obj.name, obj.scope, &obj.shape);
+                self.part_obj.insert(o, l);
+                l
+            }
+        };
+        let first = self.vars.obj(local).leaves.0.0;
+        match self.vars.select(local, sels) {
+            Ok((ps, _)) => (
+                ps.iter()
+                    .map(|(l, r)| {
+                        let k = (l.0 - first) as usize;
+                        let base = obj.part(k).map_or(0, |p| p.offset);
+                        (
+                            u64::from(obj.leaves.0.0 + k as u32),
+                            base + r.offset,
+                            base + r.end(),
+                        )
+                    })
+                    .collect(),
+                true,
+            ),
+            Err(_) => (self.whole(o), false),
+        }
+    }
+
+    fn whole(&self, o: ObjId) -> Vec<(u64, u32, u32)> {
+        let nets = &self.e.nets;
+        let obj = nets.obj(o);
+        (obj.leaves.0.0..obj.leaves.1.0)
+            .enumerate()
+            .map(|(k, l)| {
+                let r = obj
+                    .part(k)
+                    .unwrap_or(yavs_kernel::Range::new(0, nets.leaf(LeafId(l)).ty.len));
+                (u64::from(l), r.offset, r.end())
+            })
+            .collect()
+    }
+
+    /// The layout object of a process variable (`None`: one element standing for all of it).
+    fn var_layout(&mut self, d: DeclId) -> Option<ObjId> {
+        if let Some(o) = self.var_obj.get(&d) {
+            return *o;
+        }
+        let e = self.e;
+        let key = (Some(self.p.scope), d);
+        let up = (e.hier.scope(self.p.scope).parent, d);
+        let yavs_sem::decl::Designator::Ident(name) = self.db.decls[d].name else {
+            self.var_obj.insert(d, None);
+            return None;
+        };
+        let o = (e.var_shapes.get(&key).or_else(|| e.var_shapes.get(&up)))
+            .map(|sh| add_layout(&mut self.vars, d, name, self.p.scope, sh));
+        self.var_obj.insert(d, o);
+        o
+    }
+
+    fn var_parts(&mut self, d: DeclId, sels: &[Sel]) -> (Vec<(u64, u32, u32)>, bool) {
+        let Some(o) = self.var_layout(d) else {
+            // One coarse element per variable, keyed by its declaration.
+            return (
+                vec![(VAR | (1 << 40) | d.index() as u64, 0, 1)],
+                sels.is_empty(),
+            );
+        };
+        let whole = |v: &NetGraph| -> Vec<(u64, u32, u32)> {
+            let ob = v.obj(o);
+            (ob.leaves.0.0..ob.leaves.1.0)
+                .map(|l| (VAR | u64::from(l), 0, v.leaf(LeafId(l)).ty.len))
+                .collect()
+        };
+        match self.vars.select(o, sels) {
+            Ok((ps, _)) => (
+                ps.iter()
+                    .map(|(l, r)| (VAR | u64::from(l.0), r.offset, r.end()))
+                    .collect(),
+                true,
+            ),
+            Err(_) => (whole(&self.vars), false),
+        }
+    }
+
+    /// Resolve a name; `None` when `x` is not a name of an object.
+    fn name(&mut self, x: ExprId, st: &St) -> R<Option<Name>> {
+        let db = self.db;
+        let ex = &db.exprs[x];
+        Ok(Some(match &ex.kind {
+            ExprKind::Obj(d) => match &db.decls[*d].kind {
+                DeclKind::Alias(Alias::Object { target, subtype }) => {
+                    let Some(mut n) = self.name(*target, st)? else {
+                        return Ok(None);
+                    };
+                    // An alias with an array subtype indexes in its own index space.
+                    if subtype.is_some_and(|st| {
+                        matches!(db.types[db.base(st)].kind, TypeKind::Array { .. })
+                    }) {
+                        n.stopped = true;
+                    }
+                    n
+                }
+                DeclKind::Object(o) => {
+                    let root = match (o.class, &o.role) {
+                        (_, ObjRole::ImplicitSignal) => {
+                            return out(
+                                codes::HISTORY,
+                                ex.span,
+                                "an implicit signal (`'stable`, `'quiet`, `'delayed`, \
+                                 `'transaction`): the region keeps no signal history",
+                            );
+                        }
+                        (_, ObjRole::Guard) => {
+                            return out(codes::GUARDED, ex.span, "the `GUARD` signal of a block");
+                        }
+                        (ObjClass::Signal, _) => match self.e.signal(self.p.scope, *d) {
+                            Some(o) => Root::Sig(o),
+                            None => {
+                                return out(
+                                    codes::ANALYSIS,
+                                    ex.span,
+                                    format!(
+                                        "`{}`, a signal the analysis cannot find",
+                                        db.decls[*d].name
+                                    ),
+                                );
+                            }
+                        },
+                        (ObjClass::Variable, _) => Root::Var(*d),
+                        (ObjClass::SharedVariable, _) => {
+                            return out(
+                                codes::TESTBENCH,
+                                ex.span,
+                                format!("`{}` is a shared variable", db.decls[*d].name),
+                            );
+                        }
+                        (ObjClass::File, _) => {
+                            return Err(Stop::Behav(format!(
+                                "it uses the file `{}`",
+                                db.decls[*d].name
+                            )));
+                        }
+                        (ObjClass::Constant, _) => {
+                            self.no_z_const(x)?;
+                            Root::Const
+                        }
+                    };
+                    Name {
+                        root,
+                        decl: Some(*d),
+                        sels: Vec::new(),
+                        stopped: false,
+                        idx: ESet::default(),
+                    }
+                }
+                _ => return Ok(None),
+            },
+            ExprKind::External(_) => {
+                return out(
+                    codes::ANALYSIS,
+                    ex.span,
+                    "an external name: the analysis does not follow it",
+                );
+            }
+            ExprKind::Field { prefix, elem } => {
+                let Some(mut n) = self.name(*prefix, st)? else {
+                    return Ok(None);
+                };
+                if !n.stopped {
+                    n.sels.push(Sel::Field(*elem));
+                }
+                n
+            }
+            ExprKind::Index { prefix, indices } => {
+                let Some(mut n) = self.name(*prefix, st)? else {
+                    return Ok(None);
+                };
+                let mut vals = Vec::new();
+                for &i in indices.iter() {
+                    let d = self.expr(i, st)?;
+                    let d = self.flat(&d);
+                    n.idx.union(&d);
+                    vals.push(self.fold(i).and_then(|c| c.as_int()));
+                }
+                match vals.into_iter().collect::<Option<Vec<i64>>>() {
+                    Some(v) if !n.stopped => n.sels.push(Sel::Index(v)),
+                    _ => n.stopped = true,
+                }
+                n
+            }
+            ExprKind::Slice { prefix, range } => {
+                let Some(mut n) = self.name(*prefix, st)? else {
+                    return Ok(None);
+                };
+                if let RangeC::Explicit { left, right, .. } = range {
+                    for x in [*left, *right] {
+                        let d = self.expr(x, st)?;
+                        let d = self.flat(&d);
+                        n.idx.union(&d);
+                    }
+                }
+                match self.range_bounds(range) {
+                    Some(b) if !n.stopped => n.sels.push(Sel::Slice(b)),
+                    _ => n.stopped = true,
+                }
+                n
+            }
+            ExprKind::Deref { .. } => {
+                return out(
+                    codes::TESTBENCH,
+                    ex.span,
+                    "an access value: dynamic memory is not in the subset",
+                );
+            }
+            _ => return Ok(None),
+        }))
+    }
+
+    fn place(&mut self, x: ExprId, st: &St) -> R<Option<Place>> {
+        let Some(n) = self.name(x, st)? else {
+            return Ok(None);
+        };
+        let decl = n.decl;
+        Ok(match n.root {
+            Root::Const => None,
+            Root::Sig(o) => {
+                let (parts, exact) = self.sig_parts(o, &n.sels);
+                Some(Place {
+                    parts,
+                    precise: exact && !n.stopped,
+                    sig: true,
+                    idx: n.idx,
+                    decl,
+                })
+            }
+            Root::Var(d) => {
+                let (parts, exact) = self.var_parts(d, &n.sels);
+                Some(Place {
+                    parts,
+                    precise: exact && !n.stopped,
+                    sig: false,
+                    idx: n.idx,
+                    decl,
+                })
+            }
+        })
+    }
+
+    /// The one static element a clock or reset name denotes.
+    fn clock_elem(&mut self, x: ExprId) -> R<(LeafId, u32)> {
+        let st = St::default();
+        let span = self.db.exprs[x].span;
+        match self.place(x, &st)? {
+            Some(Place {
+                parts,
+                precise: true,
+                sig: true,
+                ..
+            }) if parts.len() == 1 && parts[0].2 == parts[0].1 + 1 => {
+                Ok((LeafId(parts[0].0 as u32), parts[0].1))
+            }
+            _ => out(
+                codes::SHAPE,
+                span,
+                "a clock or reset that is not one static element of a signal",
+            ),
+        }
+    }
+
+    // -- static values ----------------------------------------------------------------------
+
+    /// The value of `x` when elaboration knows it: literals, generics, constants, loop
+    /// parameters being enumerated, array attributes of objects with known bounds, and
+    /// predefined operations of those.
+    fn fold(&mut self, x: ExprId) -> Option<ConstValue> {
+        let (db, e) = (self.db, self.e);
+        if let Some(v) = db.value(x) {
+            return Some(v.clone());
+        }
+        match &db.exprs[x].kind {
+            ExprKind::Obj(d) => {
+                if let Some(v) = self.frames.last().and_then(|f| f.get(d)) {
+                    return Some(v.clone());
+                }
+                if let Some(v) = self.loopv.get(d) {
+                    return Some(v.clone());
+                }
+                if let Some(v) = e.value(self.p.scope, *d) {
+                    return Some(v.clone());
+                }
+                // A constant elaboration left to run time: its initial value, folded here.
+                if let DeclKind::Object(o) = &db.decls[*d].kind
+                    && o.class == ObjClass::Constant
+                    && matches!(o.role, ObjRole::Plain | ObjRole::Deferred)
+                    && let Some(init) = o.default
+                    && self.frames.len() < 16
+                {
+                    self.frames.push(HashMap::new());
+                    let v = self.fold(init).filter(scalar);
+                    self.frames.pop();
+                    return v;
+                }
+            }
+            ExprKind::Attr {
+                attr,
+                prefix: pre @ (AttrPrefix::Expr(_) | AttrPrefix::Subtype(_)),
+                args,
+            } if matches!(
+                attr,
+                PredefAttr::Length
+                    | PredefAttr::Left
+                    | PredefAttr::Right
+                    | PredefAttr::High
+                    | PredefAttr::Low
+            ) =>
+            {
+                let dim = match args.first() {
+                    Some(&a) => u32::try_from(self.fold(a)?.as_int()? - 1).ok()?,
+                    None => 0,
+                };
+                let b = match pre {
+                    AttrPrefix::Expr(p) => self.prefix_bounds(*p, dim)?,
+                    AttrPrefix::Subtype(st) => self.subtype_bounds(*st, dim)?,
+                    AttrPrefix::Entity(_) => return None,
+                };
+                let (lo, hi) = b.low_high();
+                return Some(ConstValue::Int(match attr {
+                    PredefAttr::Length => b.len() as i64,
+                    PredefAttr::Left => b.left,
+                    PredefAttr::Right => b.right,
+                    PredefAttr::High => hi,
+                    _ => lo,
+                }));
+            }
+            // A pure function of constants (`is_write_mode(regs(i).mode)`, `log2ceil(n)`).
+            ExprKind::Call {
+                callee,
+                args,
+                method_of: None,
+                ..
+            } if matches!(
+                db.decls[*callee]
+                    .kind
+                    .subprogram()
+                    .map(|s| (&s.kind, &s.body)),
+                Some((SubprogramKind::Function { pure: true }, Body::Hir { .. }))
+            ) =>
+            {
+                return self.call_value(*callee, args);
+            }
+            // An element or field of a constant (`table(i)`, `cfg.width`).
+            ExprKind::Index { prefix, indices } if indices.len() == 1 => {
+                let i = indices[0];
+                if let (Some(ConstValue::Array(a)), Some(i)) =
+                    (self.fold(*prefix), self.fold(i).and_then(|c| c.as_int()))
+                    && let [(l, d, r)] = &a.bounds[..]
+                {
+                    let p = match d {
+                        Direction::To if i >= *l && i <= *r => i - l,
+                        Direction::Downto if i <= *l && i >= *r => l - i,
+                        _ => return None,
+                    };
+                    let p = u64::try_from(p).ok()?;
+                    return match &a.elems {
+                        Elems::Bytes(b) => {
+                            b.get(p as usize).map(|&v| ConstValue::Enum(u32::from(v)))
+                        }
+                        Elems::Runs(runs) => {
+                            let mut at = 0u64;
+                            runs.iter().find_map(|(n, v)| {
+                                at += n;
+                                (p < at).then(|| v.clone())
+                            })
+                        }
+                    };
+                }
+            }
+            ExprKind::Field { prefix, elem } => {
+                if let Some(ConstValue::Record(fs)) = self.fold(*prefix) {
+                    return fs.get(*elem as usize).cloned();
+                }
+            }
+            _ => {}
+        }
+        db.fold_with(x, &mut |y| self.fold(y)).ok().flatten()
+    }
+
+    /// Run pure function `f` on constant arguments: scalar variables, `if`, `case`, loops,
+    /// `return`; `None` for anything else, or past a step or depth limit.
+    fn call_value(&mut self, f: DeclId, args: &[yavs_sem::hir::Arg]) -> Option<ConstValue> {
+        let db = self.db;
+        let sp = db.decls[f].kind.subprogram()?;
+        let Body::Hir { scope, stmts } = &sp.body else {
+            return None;
+        };
+        if self.frames.len() >= 16 {
+            return None;
+        }
+        // The body names its own declarations of the parameters (a package body repeats them).
+        let own: Vec<DeclId> = (db.scopes[*scope].order.iter().copied())
+            .filter(
+                |&d| matches!(&db.decls[d].kind, DeclKind::Object(o) if o.role == ObjRole::Param),
+            )
+            .collect();
+        let mut frame: HashMap<DeclId, ConstValue> = HashMap::new();
+        for a in args {
+            let i = usize::from(a.formal);
+            let p = sp.params.get(i)?;
+            let v = match &a.actual {
+                Actual::Expr(x) => self.fold(*x)?,
+                Actual::Default => self.fold(p.default?)?,
+                _ => return None,
+            };
+            if !scalar(&v) {
+                return None;
+            }
+            let d = if own.len() == sp.params.len() {
+                own[i]
+            } else {
+                p.decl?
+            };
+            frame.insert(d, v);
+        }
+        self.frames.push(frame);
+        // Declarations of the body with initial values, in order.
+        let mut ok = true;
+        for &d in &db.scopes[*scope].order {
+            if let DeclKind::Object(o) = &db.decls[d].kind
+                && matches!(o.class, ObjClass::Constant | ObjClass::Variable)
+                && o.role == ObjRole::Plain
+            {
+                match o.default.and_then(|x| self.fold(x)).filter(scalar) {
+                    Some(v) => {
+                        self.frames.last_mut().expect("pushed").insert(d, v);
+                    }
+                    None if o.class == ObjClass::Variable => {}
+                    None => ok = false,
+                }
+            }
+        }
+        let mut steps = 10_000usize;
+        let r = if ok {
+            match self.run_pure(stmts, &mut steps) {
+                Pure::Return(v) => Some(v),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        self.frames.pop();
+        r
+    }
+
+    /// Run a statement list of a pure function on constants. Every value it cannot fold gives
+    /// up the whole call (`Pure::GiveUp`), never a fall-through.
+    fn run_pure(&mut self, body: &[StmtId], steps: &mut usize) -> Pure {
+        // `Some(v)` or give the call up.
+        macro_rules! or_give_up {
+            ($e:expr) => {
+                match $e {
+                    Some(v) => v,
+                    None => return Pure::GiveUp,
+                }
+            };
+        }
+        let db = self.db;
+        for &s in body {
+            *steps = or_give_up!(steps.checked_sub(1));
+            let flow = match &db.stmts[s].kind {
+                StmtKind::Null | StmtKind::Assert { .. } | StmtKind::Report { .. } => Pure::Fall,
+                StmtKind::VarAssign {
+                    target,
+                    rhs: Rhs::Simple(v),
+                } => {
+                    let ExprKind::Obj(d) = db.exprs[target.expr].kind else {
+                        return Pure::GiveUp;
+                    };
+                    // Only a scalar variable of the function itself.
+                    let local = matches!(&db.decls[d].kind,
+                        DeclKind::Object(o) if o.class == ObjClass::Variable && o.role == ObjRole::Plain);
+                    let v = or_give_up!(self.fold(*v).filter(scalar));
+                    if !local {
+                        return Pure::GiveUp;
+                    }
+                    or_give_up!(self.frames.last_mut()).insert(d, v);
+                    Pure::Fall
+                }
+                StmtKind::Return(Some(x)) => {
+                    Pure::Return(or_give_up!(self.fold(*x).filter(scalar)))
+                }
+                StmtKind::If { branches, else_ } => {
+                    let mut taken = else_.as_deref();
+                    for (c, b) in branches.iter() {
+                        if or_give_up!(self.static_bool(*c)) {
+                            taken = Some(b);
+                            break;
+                        }
+                    }
+                    match taken {
+                        Some(b) => self.run_pure(b, steps),
+                        None => Pure::Fall,
+                    }
+                }
+                StmtKind::Case { expr, alts, .. } => {
+                    let v = or_give_up!(self.fold(*expr).and_then(|c| c.as_int()));
+                    let mut taken = None;
+                    for (cs, b) in alts.iter() {
+                        let hit = match &cs.intervals {
+                            Some(iv) => iv.iter().any(|&(a, z)| a <= v && v <= z),
+                            None => (cs.choices.iter())
+                                .any(|c| matches!(c, yavs_sem::hir::Choice::Others)),
+                        };
+                        if hit {
+                            taken = Some(b);
+                            break;
+                        }
+                    }
+                    self.run_pure(or_give_up!(taken), steps)
+                }
+                StmtKind::Loop { scheme, body, .. } => {
+                    let mut flow = Pure::Fall;
+                    let mut i = 0u64;
+                    loop {
+                        *steps = or_give_up!(steps.checked_sub(1));
+                        match scheme {
+                            LoopScheme::For { param, range } => {
+                                let b = or_give_up!(self.range_bounds(range));
+                                if i >= b.len() {
+                                    break;
+                                }
+                                let v = match b.dir {
+                                    Direction::To => b.left + i as i64,
+                                    Direction::Downto => b.left - i as i64,
+                                };
+                                let v = match (self.enum_param(*param), u32::try_from(v)) {
+                                    (true, Ok(p)) => ConstValue::Enum(p),
+                                    _ => ConstValue::Int(v),
+                                };
+                                or_give_up!(self.frames.last_mut()).insert(*param, v);
+                            }
+                            LoopScheme::While(c) => {
+                                if !or_give_up!(self.static_bool(*c)) {
+                                    break;
+                                }
+                            }
+                            LoopScheme::Forever => {}
+                        }
+                        i += 1;
+                        match self.run_pure(body, steps) {
+                            Pure::Exit(l) if l == s => break,
+                            Pure::Next(l) if l == s => {}
+                            Pure::Fall => {}
+                            other => {
+                                flow = other;
+                                break;
+                            }
+                        }
+                    }
+                    flow
+                }
+                StmtKind::Exit { loop_, when } | StmtKind::Next { loop_, when } => {
+                    let go = match when {
+                        Some(c) => or_give_up!(self.static_bool(*c)),
+                        None => true,
+                    };
+                    match (go, matches!(db.stmts[s].kind, StmtKind::Exit { .. })) {
+                        (false, _) => Pure::Fall,
+                        (true, true) => Pure::Exit(*loop_),
+                        (true, false) => Pure::Next(*loop_),
+                    }
+                }
+                _ => Pure::GiveUp,
+            };
+            if !matches!(flow, Pure::Fall) {
+                return flow;
+            }
+        }
+        Pure::Fall
+    }
+
+    /// A loop parameter of an enumeration type: its values are positions.
+    fn enum_param(&self, d: DeclId) -> bool {
+        let db = self.db;
+        matches!(&db.decls[d].kind,
+            DeclKind::Object(o) if matches!(db.types[db.base(o.subtype)].kind, TypeKind::Enum { .. }))
+    }
+
+    /// A boolean condition elaboration knows.
+    fn static_bool(&mut self, c: ExprId) -> Option<bool> {
+        let db = self.db;
+        if Some(db.base(db.exprs[c].subtype)) != db.well_known.boolean {
+            return None;
+        }
+        match self.fold(c)? {
+            ConstValue::Enum(p) => Some(p == 1),
+            _ => None,
+        }
+    }
+
+    /// The bounds of dimension `dim` of the array object or value `p`.
+    fn prefix_bounds(&mut self, p: ExprId, dim: u32) -> Option<yavs_elab::Bounds> {
+        if let Some(b) = self.subtype_bounds(self.db.exprs[p].subtype, dim) {
+            return Some(b);
+        }
+        // A constant or generic: the bounds of its value.
+        if let Some(ConstValue::Array(a)) = self.fold(p) {
+            let &(left, dir, right) = a.bounds.get(dim as usize)?;
+            return Some(yavs_elab::Bounds { left, dir, right });
+        }
+        let st = St::default();
+        let saved = std::mem::take(&mut self.reads);
+        let n = self.name(p, &st).ok().flatten();
+        self.reads = saved;
+        let n = n.filter(|n| !n.stopped)?;
+        let shape = match n.root {
+            Root::Sig(o) => self.e.nets.select(o, &n.sels).ok()?.1,
+            Root::Var(d) => {
+                let o = self.var_layout(d)?;
+                self.vars.select(o, &n.sels).ok()?.1
+            }
+            Root::Const => return None,
+        };
+        match shape {
+            Shape::Array { dims, .. } => dims.get(dim as usize).copied(),
+            _ => None,
+        }
+    }
+
+    fn range_bounds(&mut self, r: &RangeC) -> Option<yavs_elab::Bounds> {
+        match r {
+            RangeC::Explicit { left, dir, right } => Some(yavs_elab::Bounds {
+                left: self.fold(*left)?.as_int()?,
+                dir: *dir,
+                right: self.fold(*right)?.as_int()?,
+            }),
+            RangeC::Attr {
+                prefix,
+                reverse,
+                dim,
+            } => {
+                // `dim` counts from 1.
+                let d = dim.saturating_sub(1);
+                let b = match prefix {
+                    AttrPrefix::Subtype(st) => self.subtype_bounds(*st, d)?,
+                    AttrPrefix::Expr(x) => self.prefix_bounds(*x, d)?,
+                    AttrPrefix::Entity(_) => return None,
+                };
+                Some(if *reverse {
+                    yavs_elab::Bounds {
+                        left: b.right,
+                        dir: match b.dir {
+                            Direction::To => Direction::Downto,
+                            Direction::Downto => Direction::To,
+                        },
+                        right: b.left,
+                    }
+                } else {
+                    b
+                })
+            }
+        }
+    }
+
+    fn subtype_bounds(&mut self, st: SubtypeId, dim: u32) -> Option<yavs_elab::Bounds> {
+        let db = self.db;
+        match &db.subtypes[st].constraint {
+            Constraint::Array { dims: Some(d), .. } => self.range_bounds(d.get(dim as usize)?),
+            // Bounds elaboration evaluated (a function of generics, say) come from it.
+            Constraint::Range(r) if dim == 0 => self.range_bounds(r).or_else(|| match r {
+                RangeC::Explicit { left, .. } => self.e.range(self.p.scope, *left),
+                RangeC::Attr { .. } => None,
+            }),
+            Constraint::None if dim == 0 => match &db.types[db.base(st)].kind {
+                TypeKind::Enum { lits } => Some(yavs_elab::Bounds {
+                    left: 0,
+                    dir: Direction::To,
+                    right: lits.len() as i64 - 1,
+                }),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// A folded value of a logic type holding `'Z'`.
+    fn no_z(&self, x: ExprId, v: &ConstValue) -> R<()> {
+        let db = self.db;
+        let t = db.base(db.exprs[x].subtype);
+        let elem = match &db.types[t].kind {
+            TypeKind::Array { elem, .. } => db.base(*elem),
+            _ => t,
+        };
+        let wk = &db.well_known;
+        if Some(elem) == wk.bit
+            || Some(elem) == wk.boolean
+            || yavs_elab::elem_of(db, elem) != Elem::Logic
+            || !matches!(db.types[elem].kind, TypeKind::Enum { .. })
+        {
+            return Ok(());
+        }
+        let z = match v {
+            ConstValue::Enum(4) => true,
+            ConstValue::Array(a) => match &a.elems {
+                Elems::Bytes(b) => b.contains(&4),
+                Elems::Runs(r) => r.iter().any(|(_, v)| *v == ConstValue::Enum(4)),
+            },
+            _ => false,
+        };
+        if z {
+            return out(
+                codes::HIGH_Z,
+                db.exprs[x].span,
+                "a `'Z'` value: two-state values have no high impedance",
+            );
+        }
+        Ok(())
+    }
+
+    fn no_z_const(&mut self, x: ExprId) -> R<()> {
+        if let Some(v) = self.fold(x) {
+            self.no_z(x, &v)?;
+        }
+        Ok(())
+    }
+
+    // -- expressions --------------------------------------------------------------------------
+
+    fn flat(&self, v: &Dv) -> ESet {
+        match v {
+            Dv::Flat(s) => (**s).clone(),
+            Dv::Runs(rs) => {
+                let mut s = ESet::default();
+                for (n, d) in rs {
+                    s.union(&d.set);
+                    if let Some((k, b)) = d.ident {
+                        s.add(k, b, b + n);
+                    }
+                }
+                s
+            }
+        }
+    }
+
+    fn empty() -> Dv {
+        Dv::Flat(Rc::new(ESet::default()))
+    }
+
+    /// What expression `x` depends on.
+    fn expr(&mut self, x: ExprId, st: &St) -> R<Dv> {
+        let db = self.db;
+        let ex = &db.exprs[x];
+        if let Some(c) = ex.value {
+            self.no_z(x, &db.consts[c])?;
+            return Ok(Self::empty());
+        }
+        let ty = db.base(ex.subtype);
+        if matches!(
+            db.types[ty].kind,
+            TypeKind::Floating | TypeKind::Physical { .. } | TypeKind::UniversalReal
+        ) && self.fold(x).is_none()
+        {
+            return out(
+                codes::NOT_TWO_STATE,
+                ex.span,
+                "a real or physical (time) value computed at run time",
+            );
+        }
+        match &ex.kind {
+            ExprKind::Obj(_)
+            | ExprKind::Field { .. }
+            | ExprKind::Index { .. }
+            | ExprKind::Slice { .. }
+            | ExprKind::External(_)
+            | ExprKind::Deref { .. } => self.read(x, st),
+            ExprKind::Attr { attr, prefix, args } => {
+                use PredefAttr::*;
+                if let Some((leaf, el)) = self.edge_of_clock(x)? {
+                    // The edge itself: the trigger, true whenever the body runs.
+                    let _ = (leaf, el);
+                    return Ok(Self::empty());
+                }
+                if matches!(
+                    attr,
+                    Event
+                        | Active
+                        | LastEvent
+                        | LastActive
+                        | LastValue
+                        | Driving
+                        | DrivingValue
+                        | Delayed
+                        | Stable
+                        | Quiet
+                        | Transaction
+                ) {
+                    let name = match attr {
+                        Event => "event",
+                        Active => "active",
+                        LastEvent => "last_event",
+                        LastActive => "last_active",
+                        LastValue => "last_value",
+                        Driving => "driving",
+                        DrivingValue => "driving_value",
+                        Delayed => "delayed",
+                        Stable => "stable",
+                        Quiet => "quiet",
+                        _ => "transaction",
+                    };
+                    return out(
+                        codes::HISTORY,
+                        ex.span,
+                        format!("`'{name}`: the region keeps no signal history"),
+                    );
+                }
+                let mut s = ESet::default();
+                if matches!(
+                    attr,
+                    Image | Value | Pos | Val | Succ | Pred | Leftof | Rightof
+                ) && let AttrPrefix::Expr(p) = prefix
+                    && self.fold(*p).is_none()
+                {
+                    // `x'image`-like reads of a value given as the prefix (2019 forms).
+                    let d = self.expr(*p, st)?;
+                    s.union(&self.flat(&d));
+                }
+                for &a in args.iter() {
+                    let d = self.expr(a, st)?;
+                    s.union(&self.flat(&d));
+                }
+                Ok(Dv::Flat(Rc::new(s)))
+            }
+            ExprKind::Call {
+                callee,
+                args,
+                method_of,
+                ..
+            } => {
+                if method_of.is_some() {
+                    return out(codes::TESTBENCH, ex.span, "a method of a protected object");
+                }
+                if self.edge_of_clock(x)?.is_some() {
+                    return Ok(Self::empty());
+                }
+                if db.edge_shape(x).is_some() {
+                    return out(
+                        codes::HISTORY,
+                        ex.span,
+                        "an edge test of a signal other than the clock: the region keeps no \
+                         signal history",
+                    );
+                }
+                let sp = db.decls[*callee].kind.subprogram();
+                // `a & b` of two logic vectors is a copy element by element.
+                if let Some(sp) = sp
+                    && let Body::Implicit(op) = &sp.body
+                    && op.family == Family::Cat
+                    && let [a, b] = &args[..]
+                    && let (Actual::Expr(a), Actual::Expr(b)) = (&a.actual, &b.actual)
+                    && self.is_logic(ex.subtype)
+                    && self.is_logic(db.exprs[*a].subtype)
+                    && self.is_logic(db.exprs[*b].subtype)
+                {
+                    let (da, db_) = (self.expr(*a, st)?, self.expr(*b, st)?);
+                    let mut flat = self.flat(&da);
+                    flat.union(&self.flat(&db_));
+                    // The right operand holds the low elements.
+                    return Ok(match (self.runs(db_, *b), self.runs(da, *a)) {
+                        (Some(mut lo), Some(hi)) => {
+                            lo.extend(hi);
+                            Dv::Runs(lo)
+                        }
+                        _ => Dv::Flat(Rc::new(flat)),
+                    });
+                }
+                let s = self.call_deps(*callee, args, st, ex.span)?;
+                Ok(Dv::Flat(Rc::new(s)))
+            }
+            ExprKind::Aggregate { assocs, .. } => {
+                let mut s = ESet::default();
+                for a in assocs.iter() {
+                    for c in a.choices.iter() {
+                        if let yavs_sem::hir::Choice::Expr(c) = c {
+                            let d = self.expr(*c, st)?;
+                            s.union(&self.flat(&d));
+                        }
+                    }
+                    let d = self.expr(a.value, st)?;
+                    s.union(&self.flat(&d));
+                }
+                Ok(Dv::Flat(Rc::new(s)))
+            }
+            ExprKind::Qualified { operand, .. }
+            | ExprKind::Conv { operand, .. }
+            | ExprKind::ImplicitConv { operand } => self.expr(*operand, st),
+            ExprKind::Conditional { alts } => {
+                let mut s = ESet::default();
+                for (v, c) in alts.iter() {
+                    let d = self.expr(*v, st)?;
+                    s.union(&self.flat(&d));
+                    if let Some(c) = c {
+                        let d = self.expr(*c, st)?;
+                        s.union(&self.flat(&d));
+                    }
+                }
+                Ok(Dv::Flat(Rc::new(s)))
+            }
+            ExprKind::New { .. } | ExprKind::Null => out(
+                codes::TESTBENCH,
+                ex.span,
+                "an access value: dynamic memory is not in the subset",
+            ),
+            ExprKind::PrivateVar { .. } => out(codes::TESTBENCH, ex.span, "a protected object"),
+            ExprKind::Const(_) | ExprKind::AttrValue { .. } | ExprKind::Open | ExprKind::Error => {
+                Ok(Self::empty())
+            }
+        }
+    }
+
+    /// The value as runs of its elements, `None` when it is not one per element.
+    fn runs(&mut self, v: Dv, x: ExprId) -> Option<Vec<(u32, Dep)>> {
+        match v {
+            Dv::Runs(r) => Some(r),
+            Dv::Flat(s) => {
+                let n = self.len_of(x)?;
+                Some(vec![(n, Dep::set(s))])
+            }
+        }
+    }
+
+    /// The number of elements of a one-dimensional logic value, when static.
+    fn len_of(&mut self, x: ExprId) -> Option<u32> {
+        let db = self.db;
+        if let Some(c) = db.exprs[x].value
+            && let ConstValue::Array(a) = &db.consts[c]
+            && let [(l, d, r)] = &a.bounds[..]
+        {
+            let n = if *d == Direction::To {
+                r - l + 1
+            } else {
+                l - r + 1
+            };
+            return u32::try_from(n.max(0)).ok();
+        }
+        if !matches!(
+            db.types[db.base(db.exprs[x].subtype)].kind,
+            TypeKind::Array { .. }
+        ) {
+            return Some(1);
+        }
+        let b = self.subtype_bounds(db.exprs[x].subtype, 0)?;
+        u32::try_from(b.len()).ok()
+    }
+
+    fn is_logic(&self, st: SubtypeId) -> bool {
+        let db = self.db;
+        match &db.types[db.base(st)].kind {
+            TypeKind::Array { indexes, elem } => {
+                indexes.len() == 1 && yavs_elab::elem_of(db, db.base(*elem)) == Elem::Logic
+            }
+            _ => false,
+        }
+    }
+
+    /// `x` is an edge test of the clock (the leaf of `rising_edge(clk)` or `clk'event and ...`).
+    fn edge_of_clock(&mut self, x: ExprId) -> R<Option<(LeafId, u32)>> {
+        let Some(clk) = self.clock else {
+            return Ok(None);
+        };
+        let db = self.db;
+        let sig = match db.edge_shape(x) {
+            Some(s) => s.sig,
+            None => match &db.exprs[x].kind {
+                ExprKind::Attr {
+                    attr: PredefAttr::Event,
+                    prefix: AttrPrefix::Expr(p),
+                    ..
+                } => *p,
+                _ => return Ok(None),
+            },
+        };
+        let st = St::default();
+        match self.place(sig, &st)? {
+            Some(Place {
+                parts,
+                precise: true,
+                sig: true,
+                ..
+            }) if parts == [(u64::from(clk.0.0), clk.1, clk.1 + 1)] => Ok(Some(clk)),
+            _ => Ok(None),
+        }
+    }
+
+    /// The edge test a condition starts with (`E`, `E and X and ...`), and the other operands.
+    fn edge_head(&self, c: ExprId) -> Option<(yavs_sem::edge::EdgeShape, Vec<ExprId>)> {
+        let db = self.db;
+        if let Some(s) = db.edge_shape(c) {
+            return Some((s, Vec::new()));
+        }
+        let ExprKind::Call { callee, args, .. } = &db.exprs[c].kind else {
+            return None;
+        };
+        let sp = db.decls[*callee].kind.subprogram()?;
+        let Body::Implicit(op) = &sp.body else {
+            return None;
+        };
+        if op.family != Family::And {
+            return None;
+        }
+        let [a, b] = &args[..] else { return None };
+        let (Actual::Expr(a), Actual::Expr(b)) = (&a.actual, &b.actual) else {
+            return None;
+        };
+        let (s, mut extras) = self.edge_head(*a)?;
+        extras.push(*b);
+        Some((s, extras))
+    }
+
+    /// The first edge test anywhere in a statement list.
+    fn find_edge(&self, body: &[StmtId]) -> Option<ExprId> {
+        let db = self.db;
+        let mut stmts = Vec::new();
+        deep(db, body, &mut stmts);
+        let mut found = None;
+        for s in stmts {
+            db.stmt_exprs(s, &mut |x, _| {
+                db.walk_expr(x, &mut |y| {
+                    if found.is_none() && db.edge_shape(y).is_some() {
+                        found = Some(y);
+                    }
+                })
+            });
+        }
+        found
+    }
+
+    /// A name read for its value.
+    fn read(&mut self, x: ExprId, st: &St) -> R<Dv> {
+        let Some(p) = self.place(x, st)? else {
+            return Ok(Self::empty());
+        };
+        let idx = Rc::new(p.idx.clone());
+        if p.sig {
+            for &(k, a, z) in &p.parts {
+                self.reads.add(k, a, z);
+                self.read_at.entry(k).or_insert(self.db.exprs[x].span);
+            }
+            if !p.precise {
+                let mut s = p.idx;
+                for &(k, a, z) in &p.parts {
+                    s.add(k, a, z);
+                }
+                return Ok(Dv::Flat(Rc::new(s)));
+            }
+            return Ok(Dv::Runs(
+                (p.parts.iter())
+                    .map(|&(k, a, z)| {
+                        (
+                            z - a,
+                            Dep {
+                                ident: Some((k, a)),
+                                set: idx.clone(),
+                            },
+                        )
+                    })
+                    .collect(),
+            ));
+        }
+        // A variable: in combinational code an element read before it is assigned is state
+        // when the process assigns it anywhere (checked at the end, `stale_reads`).
+        if self.comb {
+            let mut need = ESet::default();
+            for &(k, a, z) in &p.parts {
+                need.add(k, a, z);
+            }
+            let need = need.minus(&st.def);
+            if !need.is_empty() {
+                self.undef_reads.push((need, self.db.exprs[x].span, p.decl));
+            }
+        }
+        let mut runs = Vec::new();
+        for &(k, a, z) in &p.parts {
+            let mut at = a;
+            for (s_lo, s_hi, d) in st.vals.get(&k).into_iter().flatten() {
+                let (lo, hi) = ((*s_lo).max(at), (*s_hi).min(z));
+                if lo >= hi {
+                    continue;
+                }
+                if lo > at {
+                    runs.push((lo - at, Dep::set(idx.clone())));
+                }
+                runs.push((hi - lo, with_set(&shift(d, lo - s_lo), &idx)));
+                at = hi;
+            }
+            if at < z {
+                runs.push((z - at, Dep::set(idx.clone())));
+            }
+        }
+        if !p.precise {
+            let mut s = self.flat(&Dv::Runs(runs));
+            s.union(&p.idx);
+            return Ok(Dv::Flat(Rc::new(s)));
+        }
+        Ok(Dv::Runs(runs))
+    }
+
+    /// The dependences of a call: its arguments, and the signals the subprogram reads itself.
+    fn call_deps(
+        &mut self,
+        callee: DeclId,
+        args: &[yavs_sem::hir::Arg],
+        st: &St,
+        span: Span,
+    ) -> R<ESet> {
+        let db = self.db;
+        let c = self.callee(callee);
+        self.callee_ok(callee, &c, span)?;
+        let mut s = ESet::default();
+        for a in args {
+            for x in actual_exprs(&a.actual) {
+                let d = self.expr(x, st)?;
+                s.union(&self.flat(&d));
+            }
+        }
+        for &d in &c.sig_reads {
+            let Some(o) = self.e.signal(self.p.scope, d) else {
+                return out(
+                    codes::CALL,
+                    span,
+                    format!(
+                        "`{}` reads `{}`, a signal the analysis cannot find",
+                        db.decls[callee].name, db.decls[d].name
+                    ),
+                );
+            };
+            for (k, a, z) in self.whole(o) {
+                self.reads.add(k, a, z);
+                s.add(k, a, z);
+            }
+        }
+        Ok(s)
+    }
+
+    fn callee_ok(&self, callee: DeclId, c: &Callee, span: Span) -> R<()> {
+        let name = &self.db.decls[callee].name;
+        if c.files {
+            return Err(Stop::Behav(format!(
+                "it calls `{name}`, which uses files or text input and output"
+            )));
+        }
+        if c.control {
+            return Err(Stop::Behav(format!(
+                "it calls `{name}`, which controls the simulation"
+            )));
+        }
+        if let Some(w) = &c.opaque {
+            return out(codes::CALL, span, format!("it calls `{name}`: {w}"));
+        }
+        // A procedure of a clocked process changing the process's own state is register logic.
+        if let Some(w) = &c.writes_outside
+            && self.comb
+        {
+            return out(codes::CALL, span, format!("it calls `{name}`, which {w}"));
+        }
+        if let Some((code, w)) = &c.bad {
+            return out(code, span, format!("it calls `{name}`, which {w}"));
+        }
+        Ok(())
+    }
+
+    // -- subprograms --------------------------------------------------------------------------
+
+    fn callee(&mut self, d: DeclId) -> Callee {
+        if let Some(c) = self.callees.get(&d) {
+            return c.clone();
+        }
+        if !self.visiting.insert(d) {
+            // Recursion: what is known so far (the walk of `d` adds the rest).
+            return Callee::default();
+        }
+        let c = self.callee_walk(d);
+        self.visiting.remove(&d);
+        self.callees.insert(d, c.clone());
+        c
+    }
+
+    fn callee_walk(&mut self, d: DeclId) -> Callee {
+        let db = self.db;
+        let decl = &db.decls[d];
+        let mut c = Callee::default();
+        let target = match &decl.kind {
+            DeclKind::Alias(Alias::NonObject { target }) => Some(*target),
+            _ => None,
+        };
+        if let Some(t) = target {
+            return self.callee(t);
+        }
+        let Some(sp) = decl.kind.subprogram() else {
+            c.opaque = Some("it is not a subprogram the analysis knows".into());
+            return c;
+        };
+        let procedure = sp.kind == SubprogramKind::Procedure;
+        let pure = matches!(sp.kind, SubprogramKind::Function { pure: true });
+        c.must_out = vec![false; sp.params.len()];
+        for p in sp.params.iter() {
+            if p.class == ObjClass::File
+                || matches!(
+                    db.types[db.base(p.subtype)].kind,
+                    TypeKind::Access { .. } | TypeKind::File { .. }
+                )
+            {
+                c.files = true;
+            }
+        }
+        match &sp.body {
+            Body::Implicit(_) => return c,
+            Body::Native(_) => {
+                // A procedure of the simulator (`std.env`, file and text procedures).
+                c.control = procedure && !c.files;
+                return c;
+            }
+            Body::Foreign(_) => {
+                c.opaque = Some("a foreign subprogram".into());
+                return c;
+            }
+            Body::Hir { .. } => {}
+            _ if pure => return c,
+            _ => {
+                c.opaque = Some("a subprogram whose body the analysis does not see".into());
+                return c;
+            }
+        }
+        let Body::Hir { scope, stmts } = &sp.body else {
+            unreachable!("matched above");
+        };
+        let inside = |s: yavs_sem::ScopeId| {
+            let mut x = Some(s);
+            while let Some(y) = x {
+                if y == *scope {
+                    return true;
+                }
+                x = db.scopes[y].parent;
+            }
+            false
+        };
+        let params: HashSet<DeclId> = sp.params.iter().filter_map(|p| p.decl).collect();
+        let mine = |x: DeclId| params.contains(&x) || inside(db.decls[x].scope);
+        // The formals a top-level statement before any `return` assigns as a whole.
+        for &s in stmts.iter() {
+            match &db.stmts[s].kind {
+                StmtKind::VarAssign {
+                    target,
+                    rhs: Rhs::Simple(_),
+                }
+                | StmtKind::SignalAssign {
+                    target,
+                    rhs: Rhs::Simple(_),
+                    ..
+                } => {
+                    if let ExprKind::Obj(x) = db.exprs[target.expr].kind
+                        && let Some(i) = sp.params.iter().position(|p| p.decl == Some(x))
+                    {
+                        c.must_out[i] = true;
+                    }
+                }
+                StmtKind::Return(_) => break,
+                _ if db.stmt_children(s).is_empty() => {}
+                _ => {}
+            }
+        }
+        let mut all = Vec::new();
+        deep(db, stmts, &mut all);
+        let mut calls = Vec::new();
+        let mut bad: Option<(&'static str, String)> = None;
+        for &s in &all {
+            match &db.stmts[s].kind {
+                StmtKind::Wait { .. } => c.waits = true,
+                StmtKind::Assert { .. } | StmtKind::Report { .. } => continue,
+                StmtKind::ProcCall(call) => calls.push(call.callee),
+                StmtKind::Force { .. } | StmtKind::Release { .. } => {
+                    bad.get_or_insert((codes::FORCE, "forces a signal".into()));
+                }
+                StmtKind::SignalAssign { delay, rhs, .. }
+                    if !matches!(delay, yavs_sem::hir::Delay::Default)
+                        || waveforms(rhs).any(|w| match w {
+                            Waveform::Elements(e) => {
+                                e.len() != 1 || e.iter().any(|x| x.after.is_some())
+                            }
+                            Waveform::Unaffected => false,
+                        }) =>
+                {
+                    bad.get_or_insert((codes::DELAY, "assigns a signal with a delay".into()));
+                }
+                StmtKind::VarAssign { target, .. } | StmtKind::SignalAssign { target, .. } => {
+                    if let Some(yavs_sem::lsp::NameRoot::Obj(yavs_sem::hir::ObjRoot::Decl(x))) =
+                        db.name_root(target.expr)
+                        && !mine(x)
+                        && c.writes_outside.is_none()
+                    {
+                        c.writes_outside = Some(format!(
+                            "assigns `{}`, which it is not given as a parameter",
+                            db.decls[x].name
+                        ));
+                    }
+                }
+                _ => {}
+            }
+            db.stmt_exprs(s, &mut |x, _| {
+                db.walk_expr(x, &mut |y| {
+                    let ex = &db.exprs[y];
+                    if ex.value.is_none()
+                        && matches!(
+                            db.types[db.base(ex.subtype)].kind,
+                            TypeKind::Floating
+                                | TypeKind::Physical { .. }
+                                | TypeKind::UniversalReal
+                        )
+                    {
+                        bad.get_or_insert((
+                            codes::NOT_TWO_STATE,
+                            "computes a real or physical (time) value".into(),
+                        ));
+                    }
+                    if db.edge_shape(y).is_some() {
+                        bad.get_or_insert((codes::HISTORY, "tests a signal edge".into()));
+                    }
+                    match &ex.kind {
+                        ExprKind::Attr { attr, .. }
+                            if attr.reads_value() || *attr == PredefAttr::Event =>
+                        {
+                            bad.get_or_insert((
+                                codes::HISTORY,
+                                "reads the history of a signal".into(),
+                            ));
+                        }
+                        ExprKind::Call {
+                            method_of: Some(_), ..
+                        }
+                        | ExprKind::PrivateVar { .. } => {
+                            bad.get_or_insert((codes::TESTBENCH, "uses a protected object".into()));
+                        }
+                        ExprKind::Call { callee, .. } => calls.push(*callee),
+                        ExprKind::Obj(_) => {
+                            let x = match db.name_root(y) {
+                                Some(yavs_sem::lsp::NameRoot::Obj(
+                                    yavs_sem::hir::ObjRoot::Decl(x),
+                                )) => x,
+                                _ => return,
+                            };
+                            let x = &x;
+                            if let DeclKind::Object(o) = &db.decls[*x].kind
+                                && o.role == ObjRole::ImplicitSignal
+                            {
+                                bad.get_or_insert((
+                                    codes::HISTORY,
+                                    "reads an implicit signal (`'stable` and the like)".into(),
+                                ));
+                            }
+                            if let DeclKind::Object(o) = &db.decls[*x].kind
+                                && !mine(*x)
+                            {
+                                match o.class {
+                                    ObjClass::Signal => c.sig_reads.push(*x),
+                                    ObjClass::Variable if c.writes_outside.is_none() => {
+                                        c.writes_outside = Some(format!(
+                                            "uses `{}`, a variable outside it",
+                                            db.decls[*x].name
+                                        ));
+                                    }
+                                    ObjClass::SharedVariable => {
+                                        bad.get_or_insert((
+                                            codes::TESTBENCH,
+                                            format!(
+                                                "uses the shared variable `{}`",
+                                                db.decls[*x].name
+                                            ),
+                                        ));
+                                    }
+                                    ObjClass::File => c.files = true,
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                })
+            });
+        }
+        c.bad = bad;
+        // Declarations of the body: files and access values.
+        for &x in &db.scopes[*scope].order {
+            if let DeclKind::Object(o) = &db.decls[x].kind
+                && (o.class == ObjClass::File
+                    || matches!(db.types[db.base(o.subtype)].kind, TypeKind::Access { .. }))
+            {
+                c.files = true;
+            }
+        }
+        calls.sort_unstable();
+        calls.dedup();
+        for k in calls {
+            let o = self.callee(k);
+            c.waits |= o.waits;
+            c.files |= o.files;
+            c.control |= o.control;
+            if c.opaque.is_none() {
+                c.opaque = o
+                    .opaque
+                    .map(|w| format!("it calls `{}`: {w}", db.decls[k].name));
+            }
+            if c.bad.is_none() {
+                c.bad = o
+                    .bad
+                    .map(|(code, w)| (code, format!("calls `{}`, which {w}", db.decls[k].name)));
+            }
+            if c.writes_outside.is_none() {
+                c.writes_outside = o
+                    .writes_outside
+                    .map(|w| format!("calls `{}`, which {w}", db.decls[k].name));
+            }
+            c.sig_reads.extend(o.sig_reads);
+        }
+        c.sig_reads.sort_unstable();
+        c.sig_reads.dedup();
+        c
+    }
+
+    // -- statements ---------------------------------------------------------------------------
+
+    fn stmts(&mut self, body: &[StmtId], st: St) -> R<Flow> {
+        let mut flow = Flow::fall(st);
+        for &s in body {
+            let Some(cur) = flow.fall.take() else {
+                break;
+            };
+            let f = self.stmt(s, cur)?;
+            flow.fall = f.fall;
+            flow.exits.extend(f.exits);
+            flow.nexts.extend(f.nexts);
+        }
+        Ok(flow)
+    }
+
+    fn stmt(&mut self, s: StmtId, mut st: St) -> R<Flow> {
+        if self.enumerating > 0 {
+            if self.budget == 0 {
+                return Err(Stop::Budget);
+            }
+            self.budget -= 1;
+        }
+        let db = self.db;
+        let span = db.stmts[s].span;
+        match &db.stmts[s].kind {
+            StmtKind::Null => Ok(Flow::fall(st)),
+            StmtKind::Assert { .. } | StmtKind::Report { .. } => {
+                self.dropped += 1;
+                Ok(Flow::fall(st))
+            }
+            StmtKind::VarAssign { target, rhs } => match rhs {
+                Rhs::Simple(v) => {
+                    let d = self.expr(*v, &st)?;
+                    self.assign(&mut st, target.expr, d)?;
+                    Ok(Flow::fall(st))
+                }
+                Rhs::Conditional(alts) => {
+                    let conds: Vec<Option<ExprId>> = alts.iter().map(|a| a.1).collect();
+                    self.cond_assign(st, &conds, span, &mut |cx, st, i| {
+                        let d = cx.expr(alts[i].0, st)?;
+                        cx.assign(st, target.expr, d)
+                    })
+                }
+                Rhs::Selected { expr, alts, .. } => {
+                    self.sel_assign(st, *expr, alts.len(), span, &mut |cx, st, i| {
+                        let d = cx.expr(alts[i].0, st)?;
+                        cx.assign(st, target.expr, d)
+                    })
+                }
+            },
+            StmtKind::SignalAssign { target, delay, rhs } => {
+                self.signal_assign(st, target.expr, delay, rhs, span)
+            }
+            StmtKind::If { branches, else_ } => self.if_stmt(st, branches, else_.as_deref(), span),
+            StmtKind::Case { expr, alts, .. } => {
+                let ctl0 = st.ctl.clone();
+                let d = self.expr(*expr, &st)?;
+                let mut ctl = (*ctl0).clone();
+                ctl.union(&self.flat(&d));
+                let ctl = Rc::new(ctl);
+                let mut flows = Vec::new();
+                for (_, body) in alts.iter() {
+                    let mut b = st.clone();
+                    b.ctl = ctl.clone();
+                    flows.push(self.stmts(body, b)?);
+                }
+                Ok(self.merge(flows, ctl0, ctl, span))
+            }
+            StmtKind::Loop { scheme, body, .. } => self.loop_stmt(s, st, scheme, body),
+            StmtKind::Next { loop_, when } | StmtKind::Exit { loop_, when } => {
+                let next = matches!(db.stmts[s].kind, StmtKind::Next { .. });
+                let mut f = Flow::default();
+                let mut taken = st.clone();
+                if let Some(c) = when {
+                    let d = self.expr(*c, &st)?;
+                    let mut ctl = (*st.ctl).clone();
+                    ctl.union(&self.flat(&d));
+                    taken.ctl = Rc::new(ctl.clone());
+                    st.ctl = Rc::new(ctl);
+                    f.fall = Some(st);
+                }
+                if next {
+                    f.nexts.push((*loop_, taken));
+                } else {
+                    f.exits.push((*loop_, taken));
+                }
+                Ok(f)
+            }
+            StmtKind::Wait { .. } => out(
+                codes::WAIT,
+                span,
+                "a wait other than the one `wait until <edge>;` of a clocked process",
+            ),
+            StmtKind::ProcCall(c) => {
+                if c.method_of.is_some() {
+                    return out(codes::TESTBENCH, span, "a method of a protected object");
+                }
+                let info = self.callee(c.callee);
+                if info.waits {
+                    return out(
+                        codes::WAIT,
+                        span,
+                        format!("it calls `{}`, which may wait", db.decls[c.callee].name),
+                    );
+                }
+                let st = self.proc_call(st, c.callee, &c.args, span)?;
+                Ok(Flow::fall(st))
+            }
+            StmtKind::Force { .. } | StmtKind::Release { .. } => out(
+                codes::FORCE,
+                span,
+                "`force` and `release` change signals from outside their drivers",
+            ),
+            StmtKind::SeqBlock { body, scope } => {
+                self.decls(*scope)?;
+                self.stmts(body, st)
+            }
+            StmtKind::Return(_) => out(codes::ANALYSIS, span, "a `return` outside a subprogram"),
+            _ => out(
+                codes::ANALYSIS,
+                span,
+                "a statement the analysis does not know",
+            ),
+        }
+    }
+
+    fn if_stmt(
+        &mut self,
+        st: St,
+        branches: &[(ExprId, Box<[StmtId]>)],
+        else_: Option<&[StmtId]>,
+        span: Span,
+    ) -> R<Flow> {
+        let ctl0 = st.ctl.clone();
+        let mut acc = (*ctl0).clone();
+        let mut flows = Vec::new();
+        let mut covered = false;
+        for (c, body) in branches {
+            // A condition elaboration knows (a generic) picks its branch statically.
+            match self.static_bool(*c) {
+                Some(false) => continue,
+                Some(true) => covered = true,
+                None => {
+                    let d = self.expr(*c, &st)?;
+                    acc.union(&self.flat(&d));
+                }
+            }
+            let mut b = st.clone();
+            b.ctl = Rc::new(acc.clone());
+            flows.push(self.stmts(body, b)?);
+            if covered {
+                break;
+            }
+        }
+        let acc = Rc::new(acc);
+        if !covered {
+            let mut b = st;
+            b.ctl = acc.clone();
+            flows.push(match else_ {
+                Some(e) => self.stmts(e, b)?,
+                None => Flow::fall(b),
+            });
+        }
+        Ok(self.merge(flows, ctl0, acc, span))
+    }
+
+    /// Join the flows of the branches of one statement. After it, what runs depends on the
+    /// conditions only when a branch left the enclosing loop early.
+    fn merge(&mut self, flows: Vec<Flow>, ctl0: Rc<ESet>, conds: Rc<ESet>, span: Span) -> Flow {
+        let mut out = Flow::default();
+        let mut falls = Vec::new();
+        let mut early = false;
+        for f in flows {
+            match f.fall {
+                Some(s) => falls.push(s),
+                None => early = true,
+            }
+            early |= !f.exits.is_empty() || !f.nexts.is_empty();
+            out.exits.extend(f.exits);
+            out.nexts.extend(f.nexts);
+        }
+        if let Some(mut j) = self.join_all(falls, span) {
+            // What the branches depend on, from conditions of inner early exits too.
+            j.ctl = if early {
+                let mut c = (*j.ctl).clone();
+                c.union(&conds);
+                Rc::new(c)
+            } else {
+                ctl0
+            };
+            out.fall = Some(j);
+        }
+        out
+    }
+
+    fn join_all(&mut self, states: Vec<St>, span: Span) -> Option<St> {
+        let mut it = states.into_iter();
+        let mut acc = it.next()?;
+        let mut any = acc.def.clone();
+        for s in it {
+            any.union(&s.def);
+            acc = join(acc, s);
+        }
+        if self.comb {
+            let lost = any.minus(&acc.def);
+            if !lost.is_empty() {
+                self.lost.push((lost, span));
+            }
+        }
+        Some(acc)
+    }
+
+    fn loop_stmt(&mut self, s: StmtId, st: St, scheme: &LoopScheme, body: &[StmtId]) -> R<Flow> {
+        let db = self.db;
+        let span = db.stmts[s].span;
+        let ctl0 = st.ctl.clone();
+        // Static `for`: one pass per value, with the parameter known.
+        if let LoopScheme::For { param, range } = scheme
+            && self.comb
+            && self.budget > 0
+            && let Some(b) = self.range_bounds(range)
+        {
+            let enumd = (|| -> R<Option<St>> {
+                self.enumerating += 1;
+                let mut cur = Some(st.clone());
+                let mut exits = Vec::new();
+                let n = b.len();
+                let enumerated = self.enum_param(*param);
+                for i in 0..n {
+                    let Some(s0) = cur.take() else { break };
+                    if self.budget == 0 {
+                        return Err(Stop::Budget);
+                    }
+                    self.budget -= 1;
+                    let v = match b.dir {
+                        Direction::To => b.left + i as i64,
+                        Direction::Downto => b.left - i as i64,
+                    };
+                    // An enumeration parameter is its position, as elaboration folds it.
+                    let v = match (enumerated, u32::try_from(v)) {
+                        (true, Ok(p)) => ConstValue::Enum(p),
+                        _ => ConstValue::Int(v),
+                    };
+                    self.loopv.insert(*param, v);
+                    let f = self.stmts(body, s0)?;
+                    let mut back = Vec::new();
+                    back.extend(f.fall);
+                    for (l, x) in f.nexts {
+                        if l == s {
+                            back.push(x);
+                        } else {
+                            return Ok(None);
+                        }
+                    }
+                    for (l, x) in f.exits {
+                        if l == s {
+                            exits.push(x);
+                        } else {
+                            return Ok(None);
+                        }
+                    }
+                    cur = self.join_all(back, span);
+                }
+                exits.extend(cur);
+                Ok(self.join_all(exits, span))
+            })();
+            // The parameter is unbound on every way out, or a fallback would fold with it.
+            self.loopv.remove(param);
+            self.enumerating -= 1;
+            match enumd {
+                Ok(Some(mut j)) => {
+                    j.ctl = ctl0;
+                    return Ok(Flow::fall(j));
+                }
+                Ok(None) => {}
+                Err(Stop::Budget) if self.enumerating == 0 => self.budget = 0,
+                Err(e) => return Err(e),
+            }
+        }
+        // Otherwise: rounds without the parameter's value until the dependences settle.
+        let mut cond = ESet::default();
+        match scheme {
+            LoopScheme::While(c) => {
+                let d = self.expr(*c, &st)?;
+                cond = self.flat(&d);
+            }
+            LoopScheme::For { range, .. } => {
+                if let RangeC::Explicit { left, right, .. } = range {
+                    for x in [*left, *right] {
+                        let d = self.expr(x, &st)?;
+                        cond.union(&self.flat(&d));
+                    }
+                }
+            }
+            LoopScheme::Forever => {}
+        }
+        let forever = matches!(scheme, LoopScheme::Forever);
+        let entry = st;
+        let mut cur = entry.clone();
+        let rounds = if self.comb { ROUNDS } else { 1 };
+        let mut exits = Vec::new();
+        for round in 0..rounds {
+            let mut b = cur.clone();
+            let mut ctl = (*b.ctl).clone();
+            ctl.union(&cond);
+            if let LoopScheme::While(c) = scheme {
+                let d = self.expr(*c, &b)?;
+                ctl.union(&self.flat(&d));
+            }
+            b.ctl = Rc::new(ctl);
+            let f = self.stmts(body, b)?;
+            let mut back = vec![entry.clone()];
+            back.extend(f.fall);
+            exits.clear();
+            for (l, x) in f.nexts {
+                if l == s {
+                    back.push(x);
+                } else {
+                    return out(
+                        codes::ANALYSIS,
+                        span,
+                        "a `next` of an outer loop: the analysis does not follow it",
+                    );
+                }
+            }
+            for (l, x) in f.exits {
+                if l == s {
+                    exits.push(x);
+                } else {
+                    return out(
+                        codes::ANALYSIS,
+                        span,
+                        "an `exit` of an outer loop: the analysis does not follow it",
+                    );
+                }
+            }
+            let next = self
+                .join_all(back, span)
+                .expect("the entry state is one of them");
+            if next.vals == cur.vals && next.ctl == cur.ctl {
+                break;
+            }
+            if round + 1 == rounds && self.comb {
+                return out(
+                    codes::ANALYSIS,
+                    span,
+                    "a loop whose dependences the analysis cannot bound",
+                );
+            }
+            cur = next;
+        }
+        if !forever {
+            exits.push(cur);
+        }
+        match self.join_all(exits, span) {
+            Some(mut j) => {
+                j.ctl = ctl0;
+                Ok(Flow::fall(j))
+            }
+            None => out(
+                codes::ANALYSIS,
+                span,
+                "a loop without an exit in a process that must finish each run",
+            ),
+        }
+    }
+
+    fn signal_assign(
+        &mut self,
+        st: St,
+        target: ExprId,
+        delay: &yavs_sem::hir::Delay,
+        rhs: &Rhs<Waveform>,
+        span: Span,
+    ) -> R<Flow> {
+        match rhs {
+            Rhs::Simple(w) => {
+                let mut st = st;
+                self.signal_assign_value(&mut st, target, delay, w, span)?;
+                Ok(Flow::fall(st))
+            }
+            Rhs::Conditional(alts) => {
+                let conds: Vec<Option<ExprId>> = alts.iter().map(|a| a.1).collect();
+                self.cond_assign(st, &conds, span, &mut |cx, st, i| {
+                    cx.signal_assign_value(st, target, delay, &alts[i].0, span)
+                })
+            }
+            Rhs::Selected { expr, alts, .. } => {
+                self.sel_assign(st, *expr, alts.len(), span, &mut |cx, st, i| {
+                    cx.signal_assign_value(st, target, delay, &alts[i].0, span)
+                })
+            }
+        }
+    }
+
+    /// `v1 when c1 else v2 when c2 else ...` as an `if` chain: `f` assigns alternative `i`.
+    fn cond_assign(
+        &mut self,
+        st: St,
+        conds: &[Option<ExprId>],
+        span: Span,
+        f: &mut dyn FnMut(&mut Self, &mut St, usize) -> R<()>,
+    ) -> R<Flow> {
+        let ctl0 = st.ctl.clone();
+        let mut acc = (*ctl0).clone();
+        let mut states = Vec::new();
+        let mut covered = false;
+        for (i, c) in conds.iter().enumerate() {
+            let mut b = st.clone();
+            match c.map(|c| (c, self.static_bool(c))) {
+                Some((_, Some(false))) => continue,
+                Some((_, Some(true))) | None => covered = true,
+                Some((c, None)) => {
+                    let d = self.expr(c, &st)?;
+                    acc.union(&self.flat(&d));
+                }
+            }
+            b.ctl = Rc::new(acc.clone());
+            f(self, &mut b, i)?;
+            states.push(b);
+            if covered {
+                break;
+            }
+        }
+        if !covered {
+            let mut b = st;
+            b.ctl = Rc::new(acc);
+            states.push(b);
+        }
+        let mut j = self.join_all(states, span).expect("one alternative");
+        j.ctl = ctl0;
+        Ok(Flow::fall(j))
+    }
+
+    fn sel_assign(
+        &mut self,
+        st: St,
+        sel: ExprId,
+        n: usize,
+        span: Span,
+        f: &mut dyn FnMut(&mut Self, &mut St, usize) -> R<()>,
+    ) -> R<Flow> {
+        let ctl0 = st.ctl.clone();
+        let d = self.expr(sel, &st)?;
+        let mut ctl = (*ctl0).clone();
+        ctl.union(&self.flat(&d));
+        let ctl = Rc::new(ctl);
+        let mut states = Vec::new();
+        for i in 0..n {
+            let mut b = st.clone();
+            b.ctl = ctl.clone();
+            f(self, &mut b, i)?;
+            states.push(b);
+        }
+        let mut j = self.join_all(states, span).unwrap_or(st);
+        j.ctl = ctl0;
+        Ok(Flow::fall(j))
+    }
+
+    fn signal_assign_value(
+        &mut self,
+        st: &mut St,
+        target: ExprId,
+        delay: &yavs_sem::hir::Delay,
+        w: &Waveform,
+        span: Span,
+    ) -> R<()> {
+        use yavs_sem::hir::Delay;
+        match delay {
+            Delay::Transport => {
+                return out(
+                    codes::DELAY,
+                    span,
+                    "a `transport` delay needs time inside a cycle",
+                );
+            }
+            Delay::Inertial { reject: Some(_) } => {
+                return out(
+                    codes::DELAY,
+                    span,
+                    "a `reject` limit needs time inside a cycle",
+                );
+            }
+            _ => {}
+        }
+        let Waveform::Elements(els) = w else {
+            // `unaffected`: no assignment on this path.
+            return Ok(());
+        };
+        let [el] = &els[..] else {
+            return out(
+                codes::DELAY,
+                span,
+                "a waveform of several elements needs time inside a cycle",
+            );
+        };
+        if el.after.is_some_and(|a| {
+            !matches!(
+                self.fold(a),
+                Some(ConstValue::Phys(0)) | Some(ConstValue::Int(0))
+            )
+        }) {
+            return out(
+                codes::DELAY,
+                span,
+                "a delayed assignment (`after`) needs time inside a cycle",
+            );
+        }
+        let Some(v) = el.value else {
+            return out(
+                codes::GUARDED,
+                span,
+                "a `null` waveform disconnects a guarded signal",
+            );
+        };
+        let d = self.expr(v, st)?;
+        self.assign(st, target, d)
+    }
+
+    /// Assign `val` to the target `t` (a name, or an aggregate of names).
+    fn assign(&mut self, st: &mut St, t: ExprId, val: Dv) -> R<()> {
+        let db = self.db;
+        if let ExprKind::Aggregate { assocs, .. } = &db.exprs[t].kind {
+            let s = Rc::new(self.flat(&val));
+            for a in assocs.iter() {
+                self.assign(st, a.value, Dv::Flat(s.clone()))?;
+            }
+            return Ok(());
+        }
+        let Some(p) = self.place(t, st)? else {
+            return out(
+                codes::ANALYSIS,
+                db.exprs[t].span,
+                "an assignment target the analysis does not resolve",
+            );
+        };
+        let mut extra = (*st.ctl).clone();
+        extra.union(&p.idx);
+        let extra = Rc::new(extra);
+        let total: u32 = p.parts.iter().map(|x| x.2 - x.1).sum();
+        // The new dependences, as runs over the target's elements.
+        let runs: Vec<(u32, Dep)> = match val {
+            Dv::Runs(r) if p.precise && r.iter().map(|x| x.0).sum::<u32>() == total => {
+                r.iter().map(|(n, d)| (*n, with_set(d, &extra))).collect()
+            }
+            v => {
+                let mut s = self.flat(&v);
+                s.union(&extra);
+                vec![(total, Dep::set(Rc::new(s)))]
+            }
+        };
+        // Walk the target's parts and the value's runs side by side.
+        let (mut ri, mut used) = (0usize, 0u32);
+        for &(k, a, z) in &p.parts {
+            let mut at = a;
+            while at < z && ri < runs.len() {
+                let (n, d) = &runs[ri];
+                let take = (z - at).min(n - used);
+                set_vals(st, k, at, at + take, shift(d, used), p.precise);
+                at += take;
+                used += take;
+                if used == *n {
+                    ri += 1;
+                    used = 0;
+                }
+            }
+            if p.precise {
+                st.def.add(k, a, z);
+            }
+            if p.sig {
+                self.sig_any.add(k, a, z);
+            } else {
+                self.var_any.add(k, a, z);
+            }
+        }
+        Ok(())
+    }
+
+    fn proc_call(
+        &mut self,
+        mut st: St,
+        callee: DeclId,
+        args: &[yavs_sem::hir::Arg],
+        span: Span,
+    ) -> R<St> {
+        let db = self.db;
+        let c = self.callee(callee);
+        self.callee_ok(callee, &c, span)?;
+        let Some(sp) = db.decls[callee].kind.subprogram() else {
+            return out(
+                codes::CALL,
+                span,
+                "a call of something that is not a subprogram",
+            );
+        };
+        // Reads: every `in` and `inout` actual, and the signals the procedure reads itself.
+        let mut ins = ESet::default();
+        for a in args {
+            let mode = sp
+                .params
+                .get(usize::from(a.formal))
+                .map_or(Mode::In, |p| p.mode);
+            if matches!(mode, Mode::In | Mode::Inout) {
+                for x in actual_exprs(&a.actual) {
+                    let d = self.expr(x, &st)?;
+                    ins.union(&self.flat(&d));
+                }
+            }
+        }
+        for &d in &c.sig_reads {
+            let Some(o) = self.e.signal(self.p.scope, d) else {
+                return out(
+                    codes::CALL,
+                    span,
+                    format!(
+                        "`{}` reads a signal the analysis cannot find",
+                        db.decls[callee].name
+                    ),
+                );
+            };
+            for (k, a, z) in self.whole(o) {
+                self.reads.add(k, a, z);
+                ins.add(k, a, z);
+            }
+        }
+        let ins = Rc::new(ins);
+        // Writes: `out` and `inout` actuals, each depending on everything read.
+        for a in args {
+            let Some(p) = sp.params.get(usize::from(a.formal)) else {
+                continue;
+            };
+            if !matches!(p.mode, Mode::Out | Mode::Inout | Mode::Buffer) {
+                continue;
+            }
+            let x = match &a.actual {
+                Actual::Expr(x) => *x,
+                Actual::Converted { actual, .. } => *actual,
+                _ => {
+                    return out(
+                        codes::ANALYSIS,
+                        span,
+                        "an `out` actual the analysis does not resolve",
+                    );
+                }
+            };
+            let before = st.def.clone();
+            self.assign(&mut st, x, Dv::Flat(ins.clone()))?;
+            // Assigned for sure only when every call assigns the formal.
+            let whole = c
+                .must_out
+                .get(usize::from(a.formal))
+                .copied()
+                .unwrap_or(false)
+                || p.mode == Mode::Inout;
+            if !whole {
+                st.def = before;
+            }
+        }
+        Ok(st)
+    }
+
+    // -- names for messages -------------------------------------------------------------------
+
+    /// Element `x` of signal leaf `k`, as VHDL writes it where it can.
+    fn elem_name(&self, k: u64, x: u32) -> String {
+        if k & VAR != 0 {
+            return format!("element {x} of a variable");
+        }
+        let e = self.e;
+        let l = LeafId(k as u32);
+        let leaf = e.nets.leaf(l);
+        let name = e.leaf_name(l);
+        if leaf.ty.len == 1 {
+            return name;
+        }
+        // The index of a one-dimensional array leaf of scalars.
+        let mut sh = &e.nets.obj(leaf.obj).shape;
+        for &f in &leaf.path {
+            if let Shape::Record { fields, .. } = sh {
+                sh = &fields[f as usize].1;
+            }
+        }
+        if let Shape::Array { dims, elem, .. } = sh
+            && let [b] = &dims[..]
+            && matches!(**elem, Shape::Scalar { .. })
+            && b.len() == u64::from(leaf.ty.len)
+        {
+            let p = if leaf.ty.elem == Elem::Logic {
+                u64::from(leaf.ty.len - 1 - x)
+            } else {
+                u64::from(x)
+            };
+            let i = match b.dir {
+                Direction::To => b.left + p as i64,
+                Direction::Downto => b.left - p as i64,
+            };
+            return format!("{name}({i})");
+        }
+        format!("element {x} of {name}")
+    }
+
+    fn var_name(&self, d: Option<DeclId>, k: u64, x: u32) -> String {
+        let Some(d) = d else {
+            return "a variable".into();
+        };
+        let name = &self.db.decls[d].name;
+        if k & (1 << 40) != 0 {
+            return format!("the variable `{name}`");
+        }
+        let l = LeafId((k & !VAR) as u32);
+        let leaf = self.vars.leaf(l);
+        if leaf.ty.len == 1 {
+            format!("the variable `{name}`")
+        } else {
+            format!("element {x} of the variable `{name}`")
+        }
+    }
+}
+
+/// `d` for the elements from its own element `off` on.
+fn shift(d: &Dep, off: u32) -> Dep {
+    Dep {
+        ident: d.ident.map(|(k, b)| (k, b + off)),
+        set: d.set.clone(),
+    }
+}
+
+fn with_set(d: &Dep, extra: &Rc<ESet>) -> Dep {
+    if extra.is_empty() {
+        return d.clone();
+    }
+    if d.set.is_empty() {
+        return Dep {
+            ident: d.ident,
+            set: extra.clone(),
+        };
+    }
+    let mut s = (*d.set).clone();
+    s.union(extra);
+    Dep {
+        ident: d.ident,
+        set: Rc::new(s),
+    }
+}
+
+/// Set (`strong`) or widen the dependences of elements `a .. z` of `k`.
+fn set_vals(st: &mut St, k: u64, a: u32, z: u32, d: Dep, strong: bool) {
+    let segs = st.vals.entry(k).or_default();
+    let mut out: Vec<(u32, u32, Dep)> = Vec::with_capacity(segs.len() + 2);
+    let mut covered = ESet::default();
+    for (lo, hi, old) in segs.drain(..) {
+        if hi <= a || lo >= z {
+            out.push((lo, hi, old));
+            continue;
+        }
+        if lo < a {
+            out.push((lo, a, old.clone()));
+        }
+        if hi > z {
+            out.push((z, hi, shift(&old, z - lo)));
+        }
+        if !strong {
+            // The overlap keeps the old dependences too.
+            let (x, y) = (lo.max(a), hi.min(z));
+            let o = shift(&old, x - lo);
+            let n = shift(&d, x - a);
+            out.push((x, y, union_dep(&o, &n, y - x)));
+            covered.add(0, x, y);
+        }
+    }
+    if strong {
+        out.push((a, z, d));
+    } else {
+        let gaps = {
+            let mut g = ESet::default();
+            g.add(0, a, z);
+            g.minus(&covered)
+        };
+        for (_, x, y) in gaps.iter() {
+            out.push((x, y, shift(&d, x - a)));
+        }
+    }
+    out.sort_by_key(|r| r.0);
+    *segs = out;
+}
+
+/// Element by element the union of two dependences of runs of `n` elements.
+fn union_dep(a: &Dep, b: &Dep, n: u32) -> Dep {
+    if a == b {
+        return a.clone();
+    }
+    if a.ident == b.ident {
+        let mut s = (*a.set).clone();
+        s.union(&b.set);
+        return Dep {
+            ident: a.ident,
+            set: Rc::new(s),
+        };
+    }
+    let mut s = (*a.set).clone();
+    s.union(&b.set);
+    for (k, x) in [a.ident, b.ident].into_iter().flatten() {
+        s.add(k, x, x + n);
+    }
+    Dep::set(Rc::new(s))
+}
+
+/// The join of the states at the end of two paths: dependences of either, elements assigned on
+/// both.
+fn join(a: St, b: St) -> St {
+    if a == b {
+        return a;
+    }
+    let mut vals = a.vals;
+    for (k, segs) in b.vals {
+        match vals.get(&k) {
+            None => {
+                vals.insert(k, segs);
+            }
+            Some(mine) if *mine == segs => {}
+            Some(_) => {
+                let mut st = St {
+                    vals: std::mem::take(&mut vals),
+                    ..St::default()
+                };
+                for (lo, hi, d) in segs {
+                    set_vals(&mut st, k, lo, hi, d, false);
+                }
+                vals = st.vals;
+            }
+        }
+    }
+    let ctl = if a.ctl == b.ctl {
+        a.ctl
+    } else {
+        let mut c = (*a.ctl).clone();
+        c.union(&b.ctl);
+        Rc::new(c)
+    };
+    St {
+        vals,
+        def: a.def.intersect(&b.def),
+        ctl,
+    }
+}
+
+/// Every statement of a list and of the lists inside it.
+fn deep(db: &Db, body: &[StmtId], out: &mut Vec<StmtId>) {
+    for &s in body {
+        out.push(s);
+        deep(db, &db.stmt_children(s), out);
+    }
+}
+
+fn waveforms(r: &Rhs<Waveform>) -> Box<dyn Iterator<Item = &Waveform> + '_> {
+    match r {
+        Rhs::Simple(w) => Box::new(std::iter::once(w)),
+        Rhs::Conditional(a) => Box::new(a.iter().map(|x| &x.0)),
+        Rhs::Selected { alts, .. } => Box::new(alts.iter().map(|x| &x.0)),
+    }
+}
+
+fn actual_exprs(a: &Actual) -> Vec<ExprId> {
+    match a {
+        Actual::Expr(x) => vec![*x],
+        Actual::Converted { actual, .. } => vec![*actual],
+        Actual::Individual(parts) => parts.iter().map(|p| p.1).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// A layout object for `shape` in `g` (leaves as elaboration makes them).
+fn add_layout(
+    g: &mut NetGraph,
+    decl: DeclId,
+    name: yavs_syntax::ast::Ident,
+    scope: yavs_elab::ScopeId,
+    shape: &Shape,
+) -> ObjId {
+    let id = ObjId(g.objs.len() as u32);
+    let first = LeafId(g.leaves.len() as u32);
+    for (path, leaf, n) in shape.leaves() {
+        let elem = match leaf {
+            Shape::Scalar { elem, .. } => *elem,
+            _ => Elem::Logic,
+        };
+        g.leaves.push(yavs_elab::Leaf {
+            obj: id,
+            path,
+            ty: yavs_kernel::SignalType {
+                elem,
+                len: u32::try_from(n).unwrap_or(u32::MAX),
+            },
+            float: false,
+            resolution: None,
+            guard: None,
+            disconnect: yavs_kernel::Time::ZERO,
+            implicit: None,
+            implicit_more: Vec::new(),
+            init: yavs_kernel::Value::Bytes(Vec::new()),
+        });
+    }
+    let end = LeafId(g.leaves.len() as u32);
+    g.objs.push(yavs_elab::SigObj {
+        scope,
+        decl,
+        name,
+        kind: yavs_elab::ObjKind::Signal,
+        shape: shape.clone(),
+        leaves: (first, end),
+        parts: Vec::new(),
+    });
+    id
+}

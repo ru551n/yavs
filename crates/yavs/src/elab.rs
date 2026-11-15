@@ -231,7 +231,8 @@ pub struct RunArgs {
     cycle: bool,
     /// Cycle mode in its strict form, instead of `--cycle`: the same selection, but a process
     /// below the top-level design unit that is not behavioural and cannot run cycle-based is an
-    /// error (E4101), and the run stops before simulation.
+    /// error, all of them listed, and the run stops before simulation: outside the subset with
+    /// the code of the reason (E4110 to E4126), not implemented yet E4101.
     #[arg(long)]
     cycle_strict: bool,
     // The text names the tiers this build has, so it is built by `tier_help`.
@@ -1927,6 +1928,9 @@ fn run_design(
         match yavs_cycle::plan(&db, &e, a.cycle_strict) {
             Ok(plan) => {
                 eprint!("{}", plan.report);
+                if plan.verdicts_only {
+                    return out.finish(0);
+                }
                 e.region = plan.region;
                 cycle_metas = Some(plan.metas);
             }

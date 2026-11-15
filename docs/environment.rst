@@ -693,6 +693,11 @@ Compiled tiers: Cranelift
      - any value
      - unset
      - ``run``
+   * - ``YAVS_CYCLE_VERDICTS``
+     - ``1``: ``--cycle`` prints its region report, what fits cycle mode and why the rest does not, and stops before simulation; nothing is compiled.
+     - ``1``
+     - unset
+     - ``run``
 
 Compiled tiers: when to compile
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

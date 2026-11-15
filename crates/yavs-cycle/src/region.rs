@@ -1,6 +1,9 @@
-//! Which processes join the region, and the region's boundary. Selection is automatic: a
-//! process joins when its body lowers ([`classify`]) and the boundary rules below hold for the
-//! set; every other process stays in the event kernel, listed with its reason.
+//! Which processes join the region, and the region's boundary. Selection is automatic: the
+//! subset checker (`check`) decides which processes fit cycle mode at all, the set rules and the
+//! element-level dependence graph (`dep`) decide which of those can run together, and the
+//! lowering decides what is implemented yet. Every other process stays in the event kernel,
+//! listed with its reason, and the two kinds of reason stay apart: outside the subset (a code)
+//! or not implemented yet.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -8,28 +11,31 @@ use yavs_elab::{Case, Elaborated, LeafId, LeafRes, ScopeKind};
 use yavs_sem::hir::{ExprKind, ObjRoot, Sensitivity, StmtKind};
 use yavs_sem::{Db, ExprId, StmtId};
 
+use crate::check::{self, Fit, Form, Reason};
+use crate::dep::{self, VAR};
 use crate::lower::{self, Body, Clock, Kind};
 
-/// What happens to one process.
-pub(crate) enum Verdict {
-    Join(Box<Body>),
-    Out(String),
-}
-
-/// The one membership decision for a single process (milestone 3's checker replaces its body).
-pub(crate) fn classify(db: &Db, e: &Elaborated, pi: usize) -> Verdict {
-    match lower::lower(db, e, pi) {
-        Ok(b) => Verdict::Join(Box::new(b)),
-        Err(why) => Verdict::Out(why),
-    }
+/// Why a process stays in the event kernel.
+pub(crate) enum Why {
+    /// Outside the subset.
+    Subset(Reason),
+    /// A process of the testbench kind.
+    Behavioural(String),
+    /// In the subset; cycle mode does not implement something it needs yet.
+    NotYet(String),
 }
 
 /// The region: members (in schedule order: clocked first, then combinational in dependency
 /// order) and the boundary.
 pub(crate) struct Selection {
     pub members: Vec<(usize, Body)>,
-    pub out: Vec<(usize, String)>,
+    pub out: Vec<(usize, Why)>,
     pub clock: Option<Clock>,
+    /// Loop groups of the processes in the subset (before what is implemented is known).
+    pub groups: Vec<dep::Group>,
+    /// Processes in the subset, and asserts and reports they hold.
+    pub fits: usize,
+    pub dropped: u32,
     /// Leaves members drive, and of those the ones something outside reads (exported).
     pub driven: BTreeSet<LeafId>,
     pub outputs: BTreeSet<LeafId>,
@@ -44,52 +50,310 @@ pub(crate) struct Selection {
     pub next: BTreeSet<LeafId>,
 }
 
-pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
-    let n = e.procs.len();
-    let mut verdicts: Vec<Verdict> = (0..n).map(|pi| classify(db, e, pi)).collect();
-    if !db.facts().forces.is_empty() {
-        for v in &mut verdicts {
-            if let Verdict::Join(_) = v {
-                *v = Verdict::Out("the design uses `force` or `release`".into());
+/// Kernel parts of leaves.
+type Parts = Vec<(LeafId, yavs_kernel::Range)>;
+
+/// What fits, why the rest does not, and the loop groups of what fits.
+type Subset = (BTreeMap<usize, Fit>, Vec<(usize, Why)>, Vec<dep::Group>);
+
+/// The subset verdict of every process: what fits, and why the others do not.
+pub(crate) fn subset(db: &Db, e: &Elaborated) -> Subset {
+    let mut fits: BTreeMap<usize, Fit> = BTreeMap::new();
+    let mut out: Vec<(usize, Why)> = Vec::new();
+    for pi in 0..e.procs.len() {
+        match check::check(db, e, pi) {
+            check::Verdict::Fit(f) => {
+                fits.insert(pi, f);
             }
+            check::Verdict::Behavioural(w) => out.push((pi, Why::Behavioural(w))),
+            check::Verdict::Out(r) => out.push((pi, Why::Subset(r))),
         }
     }
-    // Drivers of each leaf: process and element range, by first element.
+    // Every element a fitting process drives must have it as its only source.
     let mut drivers: BTreeMap<LeafId, Vec<(usize, u32, u32)>> = BTreeMap::new();
     for d in &e.nets.drivers {
-        (drivers.entry(d.leaf).or_default()).push((d.proc.index(), d.range.offset, d.range.len));
+        drivers
+            .entry(d.leaf)
+            .or_default()
+            .push((d.proc.index(), d.range.offset, d.range.end()));
     }
-    for ds in drivers.values_mut() {
-        ds.sort_unstable_by_key(|d| (d.1, d.0));
-    }
-    // Per (process, leaf): another process driving some of the same elements.
-    let mut clash: BTreeMap<(usize, LeafId), usize> = BTreeMap::new();
-    for (&l, ds) in &drivers {
-        let mut far: Option<(u32, usize)> = None;
-        for &(q, lo, n) in ds {
-            if let Some((end, p)) = far
-                && lo < end
-                && p != q
-            {
-                clash.entry((q, l)).or_insert(p);
-                clash.entry((p, l)).or_insert(q);
+    let span = |pi: usize| db.stmts[e.procs[pi].stmt].span;
+    let shared: Vec<(usize, Reason)> = (fits.keys().copied())
+        .filter_map(|pi| {
+            for &d in &e.procs[pi].drivers {
+                let d = &e.nets.drivers[d];
+                let (l, a, z) = (d.leaf, d.range.offset, d.range.end());
+                let leaf = e.nets.leaf(l);
+                let other = (drivers[&l].iter())
+                    .find(|&&(q, b, y)| q != pi && b < z && a < y)
+                    .map(|o| o.0);
+                let text = if let Some(q) = other {
+                    format!(
+                        "{} is also driven by {}",
+                        e.leaf_name(l),
+                        e.proc_label(&e.procs[q])
+                    )
+                } else if leaf.guard.is_some() {
+                    format!("{} is a guarded signal", e.leaf_name(l))
+                } else if matches!(leaf.resolution, Some(LeafRes::Func(_) | LeafRes::Whole(_))) {
+                    format!("{} has a resolution function of its own", e.leaf_name(l))
+                } else {
+                    continue;
+                };
+                return Some((
+                    pi,
+                    Reason {
+                        code: crate::codes::SHARED,
+                        span: span(pi),
+                        text,
+                    },
+                ));
             }
-            if far.is_none_or(|f| lo + n > f.0) {
-                far = Some((lo + n, q));
+            None
+        })
+        .collect();
+    for (pi, r) in shared {
+        fits.remove(&pi);
+        out.push((pi, Why::Subset(r)));
+    }
+    loop {
+        // Clocks come from outside the region. Made by combinational logic (a gate, a copy),
+        // the maker stays out and the kernel computes the clock; made by a register (a
+        // divider), the process using it stays out. An asynchronous reset made inside is fine:
+        // its branch is combinational logic while it holds (its edges are in the graph).
+        let mut made: Vec<(usize, Reason)> = Vec::new();
+        for (pi, f) in &fits {
+            if let Some((l, what)) = f.clock.map(|c| (c.0, "clock")) {
+                for &(q, _, _) in drivers.get(&l).into_iter().flatten() {
+                    let Some(m) = fits.get(&q) else { continue };
+                    let (who, text) = if m.form == Form::Comb {
+                        (
+                            q,
+                            format!(
+                                "it drives {}, the {what} of {}: clocks come from outside the region",
+                                e.leaf_name(l),
+                                e.proc_label(&e.procs[*pi])
+                            ),
+                        )
+                    } else {
+                        (
+                            *pi,
+                            format!(
+                                "its {what} {} is made by a register of the region ({}); clocks come \
+                             from outside the region",
+                                e.leaf_name(l),
+                                e.proc_label(&e.procs[q])
+                            ),
+                        )
+                    };
+                    if !made.iter().any(|m| m.0 == who) {
+                        made.push((
+                            who,
+                            Reason {
+                                code: crate::codes::CLOCK_MADE,
+                                span: span(who),
+                                text,
+                            },
+                        ));
+                    }
+                }
             }
         }
+        // A loop element by element in the combinational logic.
+        let a = analyse(db, e, &fits);
+        for (ps, path) in &a.cycles {
+            for &q in ps {
+                if !made.iter().any(|m| m.0 == q) {
+                    made.push((
+                        q,
+                        Reason {
+                            code: crate::codes::LOOP,
+                            span: span(q),
+                            text: format!("it is in a combinational loop: {path}"),
+                        },
+                    ));
+                }
+            }
+        }
+        if made.is_empty() {
+            return (fits, out, a.groups);
+        }
+        for (pi, r) in made {
+            fits.remove(&pi);
+            out.push((pi, Why::Subset(r)));
+        }
     }
-    // Leave out what the set as a whole does not allow, until nothing changes.
+}
+
+/// The lowering sees the shape, clock and reset the checker proved, and reads nothing the
+/// checker did not count (the order of the members rests on its reads): `None`, else why not.
+fn differs(e: &Elaborated, f: &Fit, b: &Body) -> Option<String> {
+    let shape = match (f.form, b.kind, f.clock, b.clock) {
+        (Form::Comb, Kind::Comb, None, None) => true,
+        (Form::Clocked, Kind::Clocked, Some(c), Some(d)) => {
+            (c.0, c.1, c.2) == (d.leaf, d.elem, d.rising)
+        }
+        _ => false,
+    };
+    let reset = match b.reset {
+        Some((l, _, _)) => f.reset == [l],
+        None => f.reset.is_empty(),
+    };
+    if !shape || !reset {
+        return Some(
+            "the lowering takes it for another shape, clock or reset than the subset checker"
+                .into(),
+        );
+    }
+    let (l, x) = (b.rparts.iter()).find_map(|&(l, lo, n)| {
+        f.reads
+            .first_missing(u64::from(l.0), lo, lo + n)
+            .map(|x| (l, x))
+    })?;
+    Some(format!(
+        "the lowering reads element {x} of {}, which the subset checker did not count",
+        e.leaf_name(l)
+    ))
+}
+
+/// The dependence analysis of the fitting processes.
+fn analyse(db: &Db, e: &Elaborated, fits: &BTreeMap<usize, Fit>) -> dep::Analysis {
+    let _ = db;
+    let n = e.procs.len();
+    let mut procs: Vec<(usize, Vec<dep::Out>)> = (fits.iter())
+        .filter(|(_, f)| !f.outs.is_empty() || f.form == Form::Comb)
+        .map(|(pi, f)| (*pi, f.outs.clone()))
+        .collect();
+    // Port edges the kernel updates are copies in the same delta: an `in` formal depends on its
+    // actual, an `out` actual on its formal (a conversion: on all of the other side). They are
+    // pseudo processes after the real ones, so a loop through a port is seen.
+    let side = |ps: &Parts| -> std::rc::Rc<dep::ESet> {
+        let mut s = dep::ESet::default();
+        for (l, r) in ps {
+            s.add(u64::from(l.0), r.offset, r.end());
+        }
+        std::rc::Rc::new(s)
+    };
+    // Each edge: what it drives, what from, whether through a conversion.
+    let mut edges: Vec<(Parts, Parts, bool)> = Vec::new();
+    for pe in &e.nets.ports {
+        let conv = pe.to_formal.is_some() || pe.to_actual.is_some();
+        match pe.mode {
+            yavs_kernel::PortMode::In => edges.push((vec![pe.formal], vec![pe.actual], conv)),
+            yavs_kernel::PortMode::Out | yavs_kernel::PortMode::Buffer => {
+                edges.push((vec![pe.actual], vec![pe.formal], conv))
+            }
+            // ponytail: an `inout` edge goes both ways, a loop of its own; such a port's
+            // drivers are kernel sources, so its processes are not implemented yet anyway.
+            yavs_kernel::PortMode::Inout => {}
+        }
+    }
+    for cp in &e.nets.conv_ports {
+        match cp.mode {
+            yavs_kernel::PortMode::In => edges.push((cp.formal.clone(), cp.actual.clone(), true)),
+            yavs_kernel::PortMode::Out | yavs_kernel::PortMode::Buffer => {
+                edges.push((cp.actual.clone(), cp.formal.clone(), true))
+            }
+            yavs_kernel::PortMode::Inout => {}
+        }
+    }
+    for (i, (dst, src, conv)) in edges.into_iter().enumerate() {
+        let outs = if conv || dst.len() != 1 || src.len() != 1 || dst[0].1.len != src[0].1.len {
+            let s = side(&src);
+            (dst.iter())
+                .map(|(l, r)| dep::Out {
+                    leaf: u64::from(l.0),
+                    lo: r.offset,
+                    hi: r.end(),
+                    dep: dep::Dep::set(s.clone()),
+                })
+                .collect()
+        } else {
+            vec![dep::Out {
+                leaf: u64::from(dst[0].0.0),
+                lo: dst[0].1.offset,
+                hi: dst[0].1.end(),
+                dep: dep::Dep {
+                    ident: Some((u64::from(src[0].0.0), src[0].1.offset)),
+                    set: std::rc::Rc::new(dep::ESet::default()),
+                },
+            }]
+        };
+        procs.push((n + i, outs));
+    }
+    let atom = |k: u64, a: u32, z: u32| -> String {
+        if k & VAR != 0 {
+            return "a variable".into();
+        }
+        let l = LeafId(k as u32);
+        let n = e.leaf_name(l);
+        if e.nets.leaf(l).ty.len == z - a {
+            n
+        } else if z == a + 1 {
+            format!("{n} (element {a})")
+        } else {
+            format!("{n} (elements {a} to {})", z - 1)
+        }
+    };
+    let pname = |pi: usize| {
+        if pi < n {
+            e.proc_label(&e.procs[pi])
+        } else {
+            "a port".into()
+        }
+    };
+    let mut a = dep::analyse(&procs, &atom, &pname);
+    // Only real processes leave the region or form groups.
+    for c in &mut a.cycles {
+        c.0.retain(|&p| p < n);
+    }
+    for g in &mut a.groups {
+        g.procs.retain(|&p| p < n);
+    }
+    a.groups.retain(|g| !g.procs.is_empty());
+    a.order.retain(|&p| p < n);
+    a
+}
+
+pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
+    let (fits, mut out, groups) = subset(db, e);
+    let mut drivers: BTreeMap<LeafId, Vec<(usize, u32, u32)>> = BTreeMap::new();
+    for d in &e.nets.drivers {
+        drivers
+            .entry(d.leaf)
+            .or_default()
+            .push((d.proc.index(), 0, 0));
+    }
+    let nfits = fits.len();
+    let dropped = fits.values().map(|f| f.dropped).sum();
+    let forced = !db.facts().forces.is_empty();
+    let mut taken: BTreeMap<usize, (Fit, Body)> = BTreeMap::new();
+    for (pi, f) in fits {
+        if forced {
+            out.push((
+                pi,
+                Why::NotYet(
+                    "the design uses `force` or `release`, which cycle mode \
+                does not combine with a region yet"
+                        .into(),
+                ),
+            ));
+            continue;
+        }
+        match lower::lower(db, e, pi) {
+            // The lowering must see the shape the checker proved, clock included.
+            Ok(b) if differs(e, &f, &b).is_some() => {
+                out.push((pi, Why::NotYet(differs(e, &f, &b).expect("checked"))))
+            }
+            Ok(b) => {
+                taken.insert(pi, (f, b));
+            }
+            Err(w) => out.push((pi, Why::NotYet(w))),
+        }
+    }
+    // Leave out what the set as a whole does not allow yet, until nothing changes.
     loop {
-        let mut out: Vec<(usize, String)> = Vec::new();
-        let joined = |v: &Verdict| matches!(v, Verdict::Join(_));
-        // Per leaf, a process outside the region that drives part of it.
-        let outside: BTreeMap<LeafId, usize> = (drivers.iter())
-            .filter_map(|(&l, ds)| {
-                let q = ds.iter().find(|d| !joined(&verdicts[d.0]))?;
-                Some((l, q.0))
-            })
-            .collect();
+        let mut gone: Vec<(usize, String)> = Vec::new();
         // Leaves with a source no process owns: a constant source, or a port edge or converted
         // port the kernel updates (a member would read its own driving value from the image,
         // not the resolved one).
@@ -101,150 +365,111 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             consts.extend(cp.formal.iter().chain(&cp.actual).map(|x| x.0));
         }
         let mut clock: Option<Clock> = None;
-        // Per leaf, the element ranges members drive, by member.
-        let mut writer: BTreeMap<LeafId, Vec<(u32, u32, usize)>> = BTreeMap::new();
-        for (pi, v) in verdicts.iter().enumerate() {
-            let Verdict::Join(b) = v else { continue };
-            let mut why = None;
-            for &di in &e.procs[pi].drivers {
-                let l = e.nets.drivers[di].leaf;
-                // Another driver of the same elements, or of other elements of the leaf from
-                // outside the region (whose elements the region would not read).
-                let other = (clash.get(&(pi, l)).copied())
-                    .or_else(|| outside.get(&l).copied().filter(|&q| q != pi));
-                if let Some(q) = other {
-                    why = Some(format!(
-                        "{} is also driven by {}",
+        for (&pi, (_, b)) in &taken {
+            let p = &e.procs[pi];
+            let src = (p.drivers.iter())
+                .map(|&d| e.nets.drivers[d].leaf)
+                .find(|l| consts.contains(l));
+            if let Some(l) = src {
+                gone.push((
+                    pi,
+                    format!(
+                        "{} has a port or other source cycle mode does not model \
+                    yet",
+                        e.leaf_name(l)
+                    ),
+                ));
+                continue;
+            }
+            // Other elements of a driven leaf driven outside the region: the region would not
+            // read them. Members driving different elements of one leaf are fine.
+            let split = (p.drivers.iter())
+                .map(|&d| e.nets.drivers[d].leaf)
+                .find_map(|l| {
+                    (drivers[&l].iter())
+                        .find(|o| o.0 != pi && !taken.contains_key(&o.0))
+                        .map(|o| (l, o.0))
+                });
+            if let Some((l, q)) = split {
+                gone.push((
+                    pi,
+                    format!(
+                        "other elements of {} are driven by {}, outside the region; cycle mode \
+                         does not split a signal between the region and the kernel yet",
                         e.leaf_name(l),
                         e.proc_label(&e.procs[q])
-                    ));
-                    break;
-                }
-                let leaf = e.nets.leaf(l);
-                if consts.contains(&l)
-                    || leaf.guard.is_some()
-                    || matches!(leaf.resolution, Some(LeafRes::Func(_) | LeafRes::Whole(_)))
-                {
-                    why = Some(format!(
-                        "{} has a resolution, guard, port or other source cycle mode does not \
-                         model yet",
-                        e.leaf_name(l)
-                    ));
-                    break;
-                }
+                    ),
+                ));
+                continue;
             }
-            if why.is_none()
-                && let Some(c) = b.clock
-            {
-                let leaf_driver = drivers.get(&c.leaf).into_iter().flatten();
-                if leaf_driver.clone().any(|&(q, ..)| joined(&verdicts[q])) {
-                    why = Some(format!(
-                        "its clock {} is made inside the region",
-                        e.leaf_name(c.leaf)
-                    ));
-                } else if clock.is_some_and(|k| k != c) {
-                    why = Some(
-                        "it runs on another clock or edge than the region (several clocks are \
-                         not supported yet)"
+            if let Some(c) = b.clock {
+                if clock.is_some_and(|k| k != c) {
+                    gone.push((
+                        pi,
+                        "it runs on another clock or edge than the region (several \
+                        clocks are not supported yet)"
                             .into(),
-                    );
+                    ));
                 } else {
                     clock = Some(c);
                 }
             }
-            match why {
-                Some(w) => out.push((pi, w)),
-                None => {
-                    for &di in &e.procs[pi].drivers {
-                        let d = &e.nets.drivers[di];
-                        (writer.entry(d.leaf).or_default()).push((d.range.offset, d.range.len, pi));
-                    }
-                }
-            }
         }
-        for w in writer.values_mut() {
-            w.sort_unstable();
-        }
-        // Combinational members in dependency order, by elements; a cycle (a process reading
-        // what it drives included) is a combinational loop and stays outside.
-        let is_out: BTreeSet<usize> = out.iter().map(|o| o.0).collect();
-        let comb: BTreeSet<usize> = (0..n)
-            .filter(|pi| !is_out.contains(pi))
-            .filter(|&pi| matches!(&verdicts[pi], Verdict::Join(b) if b.kind == Kind::Comb))
+        // Loop groups need several passes or a split, which the schedule does not do yet.
+        let fits: BTreeMap<usize, Fit> = (taken.iter())
+            .filter(|(pi, _)| !gone.iter().any(|g| g.0 == **pi))
+            .map(|(pi, (f, _))| (*pi, f.clone()))
             .collect();
-        // The combinational members each one reads from, and the reverse.
-        let mut deps: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
-        let mut users: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-        for &pi in &comb {
-            let Verdict::Join(b) = &verdicts[pi] else {
-                continue;
-            };
-            let mut ds = BTreeSet::new();
-            for &(l, lo, len) in &b.rparts {
-                let Some(ws) = writer.get(&l) else { continue };
-                // Ranges of one leaf do not overlap (checked above): the first that can.
-                let k = ws.partition_point(|w| w.0 + w.1 <= lo);
-                for &(_, _, q) in ws[k..].iter().take_while(|w| w.0 < lo + len) {
-                    if comb.contains(&q) {
-                        ds.insert(q);
-                    }
-                }
-            }
-            for &q in &ds {
-                users.entry(q).or_default().push(pi);
-            }
-            deps.insert(pi, ds);
-        }
-        let mut need: BTreeMap<usize, usize> = deps.iter().map(|(&p, d)| (p, d.len())).collect();
-        let mut ready: BTreeSet<usize> = (need.iter())
-            .filter(|(_, n)| **n == 0)
-            .map(|(&p, _)| p)
-            .collect();
-        let mut order: Vec<usize> = Vec::new();
-        while let Some(pi) = ready.pop_first() {
-            order.push(pi);
-            for &u in users.get(&pi).into_iter().flatten() {
-                let k = need.get_mut(&u).expect("a comb member");
-                *k -= 1;
-                if *k == 0 {
-                    ready.insert(u);
-                }
+        let a = analyse(db, e, &fits);
+        for g in &a.groups {
+            for &pi in &g.procs {
+                gone.push((pi, format!(
+                    "it is in a loop group of {} process{} (reading, through {} or itself, what \
+                     it drives) that needs {} passes, or a split into {} pieces; cycle mode \
+                     runs one pass and does not split processes yet",
+                    g.procs.len(),
+                    if g.procs.len() == 1 { "" } else { "es" },
+                    if g.procs.len() == 1 { "nothing else" } else { "the others" },
+                    g.k,
+                    g.slices
+                )));
             }
         }
-        let placed: BTreeSet<usize> = order.iter().copied().collect();
-        for pi in comb.into_iter().filter(|p| !placed.contains(p)) {
-            out.push((
-                pi,
-                "it is part of a combinational loop (it reads, through other processes or \
-                 itself, what it drives)"
-                    .into(),
-            ));
-        }
-        if out.is_empty() {
+        if gone.is_empty() {
             let mut members = Vec::new();
-            let mut outs = Vec::new();
-            let mut taken: Vec<Option<Body>> = Vec::new();
-            for (pi, v) in verdicts.into_iter().enumerate() {
-                match v {
-                    Verdict::Join(b) => taken.push(Some(*b)),
-                    Verdict::Out(w) => {
-                        outs.push((pi, w));
-                        taken.push(None);
-                    }
+            let order: Vec<usize> = a
+                .order
+                .iter()
+                .copied()
+                .filter(|pi| taken.contains_key(pi))
+                .collect();
+            let mut rest: BTreeMap<usize, Body> =
+                taken.into_iter().map(|(pi, (_, b))| (pi, b)).collect();
+            let clocked: Vec<usize> = (rest.iter())
+                .filter(|(_, b)| b.kind == Kind::Clocked)
+                .map(|(pi, _)| *pi)
+                .collect();
+            for pi in clocked {
+                members.push((pi, rest.remove(&pi).expect("listed")));
+            }
+            for pi in order {
+                if let Some(b) = rest.remove(&pi) {
+                    members.push((pi, b));
                 }
             }
-            for (pi, t) in taken.iter_mut().enumerate() {
-                if matches!(t, Some(b) if b.kind == Kind::Clocked) {
-                    members.push((pi, t.take().expect("checked")));
-                }
-            }
-            for &pi in &order {
-                members.push((pi, taken[pi].take().expect("a comb member")));
-            }
-            return boundary(db, e, members, outs, clock);
+            // Members the dependence order does not list (no outputs): any place.
+            members.extend(rest);
+            out.sort_by_key(|o| o.0);
+            let mut sel = boundary(db, e, members, out, clock);
+            sel.groups = groups;
+            sel.fits = nfits;
+            sel.dropped = dropped;
+            return sel;
         }
-        for (pi, w) in out {
-            verdicts[pi] = Verdict::Out(w);
+        for (pi, w) in gone {
+            if taken.remove(&pi).is_some() {
+                out.push((pi, Why::NotYet(w)));
+            }
         }
     }
 }
@@ -253,7 +478,7 @@ fn boundary(
     db: &Db,
     e: &Elaborated,
     members: Vec<(usize, Body)>,
-    out: Vec<(usize, String)>,
+    out: Vec<(usize, Why)>,
     clock: Option<Clock>,
 ) -> Selection {
     let is_member: BTreeSet<usize> = members.iter().map(|m| m.0).collect();
@@ -293,6 +518,9 @@ fn boundary(
         members,
         out,
         clock,
+        groups: Vec::new(),
+        fits: 0,
+        dropped: 0,
         driven,
         outputs,
         waited,
@@ -539,51 +767,6 @@ fn local_subprogram(db: &Db, d: yavs_sem::DeclId) -> bool {
         }
     }
     false
-}
-
-/// A behavioural process: one the testbench side of a design is made of. Milestone 1's
-/// reading, from the statements alone: a process that declares a file, or one without a
-/// sensitivity list that waits for a time, waits forever (`wait;`), has more than one wait or
-/// calls a procedure (which may wait).
-pub(crate) fn behavioural(db: &Db, e: &Elaborated, pi: usize) -> bool {
-    let p = &e.procs[pi];
-    let StmtKind::Process {
-        sensitivity,
-        body,
-        scope,
-        ..
-    } = &db.stmts[p.stmt].kind
-    else {
-        return false;
-    };
-    let files = db.scopes[*scope].order.iter().any(|&d| {
-        matches!(&db.decls[d].kind, yavs_sem::decl::DeclKind::Object(o)
-            if o.class == yavs_sem::decl::ObjClass::File)
-    });
-    if files {
-        return true;
-    }
-    if !matches!(sensitivity, Sensitivity::None) {
-        return false;
-    }
-    let mut stmts = Vec::new();
-    deep(db, body, &mut stmts);
-    let mut waits = 0;
-    for &s in &stmts {
-        match &db.stmts[s].kind {
-            StmtKind::Wait {
-                on, until, timeout, ..
-            } => {
-                waits += 1;
-                if timeout.is_some() || (on.is_empty() && until.is_none()) {
-                    return true;
-                }
-            }
-            StmtKind::ProcCall(_) => return true,
-            _ => {}
-        }
-    }
-    waits != 1
 }
 
 /// The process is directly in the top-level design unit (its architecture, or a block or

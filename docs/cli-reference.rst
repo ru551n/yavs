@@ -505,7 +505,7 @@ Arguments:
 
 .. option:: --cycle-strict
 
-   Cycle mode in its strict form, instead of ``--cycle``: the same selection, but a process below the top-level design unit that is not behavioural and cannot run cycle-based is an error (E4101), and the run stops before simulation.
+   Cycle mode in its strict form, instead of ``--cycle``: the same selection, but a process below the top-level design unit that is not behavioural and cannot run cycle-based is an error, all of them listed, and the run stops before simulation: outside the subset with the code of the reason (E4110 to E4126), not implemented yet E4101.
 
 .. option:: --tier=interp|auto|clift|clift-auto
 
@@ -575,7 +575,7 @@ Arguments:
 
    May be repeated.
 
-Diagnostics named above: ``E0105``, ``E0106``, ``E0107``, ``E0120``, ``E0136``, ``E0701``, ``E0801``, ``E0901``, ``E0902``, ``E3002``, ``E4101``, ``E4102``; ``yavs --explain CODE`` explains each.
+Diagnostics named above: ``E0105``, ``E0106``, ``E0107``, ``E0120``, ``E0136``, ``E0701``, ``E0801``, ``E0901``, ``E0902``, ``E3002``, ``E4101``, ``E4102``, ``E4110``, ``E4126``; ``yavs --explain CODE`` explains each.
 
 ``yavs cov merge``
 ------------------

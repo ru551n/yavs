@@ -209,9 +209,12 @@ fn a_sensitivity_list_naming_a_part_keeps_the_process_out() {
         "{normal:?}"
     );
     assert_eq!(cycle, normal);
+    // Element by element: `half` reads `v(1)`, which its list does not name.
     assert!(
         err.contains("0 of 2 processes run cycle-based")
-            && err.contains("a sensitivity list naming part of a signal"),
+            && err.contains(
+                "E4121 it reads cycle_part_list.v(1), which its sensitivity list does not name"
+            ),
         "{err}"
     );
 }
@@ -235,7 +238,7 @@ fn cycle_strict_refuses_rtl_that_cannot_join() {
     assert!(o.stdout.is_empty(), "no simulation runs");
     // The RTL process below the top level that cannot join is listed; the testbench is exempt.
     assert!(
-        err.contains("error[E4101]: process cycle_partial.dut.pick cannot run cycle-based"),
+        err.contains("error[E4101]: process cycle_partial.dut.pick cannot run cycle-based yet"),
         "{err}"
     );
     assert!(err.contains("partial.vhd:59:3"), "{err}");
@@ -799,7 +802,7 @@ fn bench_designs_cycle_mode_leaves_out_say_why() {
             "rtl_bus",
             include_str!("../../../tools/bench/designs/rtl_bus.vhd"),
             "bench_rtl_bus",
-            "a `'Z'` literal",
+            "E4118 a `'Z'` value",
         ),
         (
             "rtl_ram",
@@ -856,6 +859,291 @@ begin
 end architecture;
 ";
 
+/// The verdicts of the subset checker on a design, without running it.
+fn verdicts(dir: &Path, top: &str) -> String {
+    let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .current_dir(dir)
+        .env("YAVS_STD_CACHE", "off")
+        .env("YAVS_CYCLE_VERDICTS", "1")
+        .args([
+            "--color",
+            "never",
+            "run",
+            "--work=work:lib",
+            "--no-cache",
+            "--cycle",
+            top,
+        ])
+        .output()
+        .expect("run yavs");
+    let err = String::from_utf8_lossy(&o.stderr).into_owned();
+    assert!(o.status.success(), "{err}");
+    assert!(o.stdout.is_empty(), "nothing runs: {err}");
+    err
+}
+
+/// The report row of process `label`, and the section it is in.
+fn row<'a>(report: &'a str, label: &str) -> (&'a str, &'a str) {
+    let mut section = "";
+    for l in report.lines() {
+        if l.starts_with("  ") && !l.starts_with("    ") {
+            section = l.trim();
+        }
+        if l.trim_start().starts_with(&format!("{label} (")) {
+            return (section, l);
+        }
+    }
+    panic!("no row for {label}:\n{report}");
+}
+
+/// The line of `subset.vhd` holding `needle`, at or after the line of process `label`.
+fn line_of(label: &str, needle: &str) -> usize {
+    let text = include_str!("cycle/subset.vhd");
+    let lines: Vec<&str> = text.lines().collect();
+    let start = (lines.iter())
+        .position(|l| l.trim_start().starts_with(&format!("{label} :")))
+        .unwrap_or_else(|| panic!("no process {label}"));
+    let at = (lines[start..].iter())
+        .position(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("no `{needle}` in {label}"));
+    start + at + 1
+}
+
+#[test]
+fn subset_reasons_are_reported_with_their_code_and_position() {
+    let dir = tempdir("cycle-subset");
+    analyze(&dir, "subset.vhd", include_str!("cycle/subset.vhd"));
+    let report = verdicts(&dir, "sub_tb");
+    // Process, code, the construct named (its line is the position given).
+    let want = [
+        ("wait_on", "E4110", "wait on a;"),
+        ("delayed", "E4111", "after 1 ns"),
+        ("history", "E4112", "'last_value"),
+        ("real_var", "E4113", "variable acc"),
+        ("shared_call", "E4114", "sh.inc"),
+        ("late", "E4115", "postponed"),
+        ("changes_state", "E4117", "ri <= bump"),
+        ("high_z", "E4118", "'Z'"),
+        ("latch", "E4119", "if en = '1'"),
+        ("state", "E4120", "q7 <= v"),
+        ("incomplete", "E4121", "q8 <= a and b"),
+        ("loop_x", "E4122", "loop_x"),
+        ("loop_y", "E4122", "loop_y"),
+        ("outside_edge", "E4123", "rising_edge"),
+        ("drive_1", "E4124", "drive_1"),
+        ("drive_2", "E4124", "drive_2"),
+        ("gate", "E4125", "gate"),
+        ("on_divided", "E4125", "on_divided"),
+        ("external", "E4126", "<<signal"),
+        ("real_read", "E4113", "ri2 <="),
+        ("before_wait", "E4123", "g1 <= a"),
+        ("clock_unlisted", "E4123", "rising_edge"),
+        ("reset_unlisted", "E4123", "if rst = '1'"),
+        ("reset_reads", "E4121", "if rst = '1'"),
+        ("on_without_clock", "E4123", "wait on a until"),
+        // Assigned only when the loop was not left early: a loop through the exit condition.
+        ("early_exit", "E4122", "early_exit"),
+        ("from_w", "E4122", "from_w"),
+        ("called_history", "E4112", "prev(a)"),
+        // The static compare of an enumeration parameter keeps the edge from `e2`.
+        ("enum_loop", "E4122", "enum_loop"),
+        ("from_e1", "E4122", "from_e1"),
+        // A function the evaluation gives up on, a loop past the budget: no pruning.
+        ("give_up", "E4119", "if half_known(3)"),
+        ("long_loop", "E4119", "if i = 99999"),
+        ("transport_delay", "E4111", "<= transport"),
+        ("reject_limit", "E4111", "<= reject"),
+        ("waveform", "E4111", "after 2 ns"),
+        ("guarding.h6 <= ...", "E4115", "guarded a"),
+        ("guarding.GUARD <= ...", "E4115", "block (en"),
+        ("calls_foreign", "E4117", "outside(a)"),
+        ("with_else", "E4123", "rising_edge"),
+        ("nested_wait", "E4123", "wait until"),
+        ("slow_loop", "E4126", "while"),
+        ("drives_bus", "E4124", "drives_bus"),
+        ("drives_resolved", "E4124", "drives_resolved"),
+    ];
+    for (label, code, needle) in want {
+        let line = line_of(label.split('.').next().expect("a label"), needle);
+        let (section, r) = row(&report, &format!("sub_tb.dut.{label}"));
+        assert_eq!(section, "outside the subset, in the event kernel:", "{r}");
+        assert!(
+            r.contains(&format!("  {code} ")) && r.ends_with(&format!("(subset.vhd:{line})")),
+            "{label}, want {code} at line {line}: {r}"
+        );
+    }
+    // A port on a slice of its actual: the latch is named in the actual's elements.
+    {
+        let (section, r) = row(&report, "sub_tb.lower.bad_bits.bits");
+        let line = line_of("bad_bits", "if x(0) = '1'");
+        assert_eq!(section, "outside the subset, in the event kernel:", "{r}");
+        assert!(
+            r.contains("E4119 it does not assign sub_tb.bus16(7) on every path")
+                && r.ends_with(&format!("(subset.vhd:{line})")),
+            "{r}"
+        );
+    }
+    // Loops through record ports associated field by field: a port edge the kernel updates, and
+    // a port collapsed into its actual's leaf (whose record path is the actual's, not the
+    // formal's: by position).
+    for label in ["fields.pass", "back", "fields.pass_one", "back_one"] {
+        let (section, r) = row(&report, &format!("sub_tb.{label}"));
+        assert_eq!(section, "outside the subset, in the event kernel:", "{r}");
+        assert!(r.contains("  E4122 it is in a combinational loop"), "{r}");
+    }
+    assert!(
+        report.contains("sub_tb.gx -> sub_tb.fields.pass_one -> sub_tb.go -> sub_tb.back_one")
+            && report.contains("sub_tb.fx -> a port -> sub_tb.fields.i.a -> sub_tb.fields.pass"),
+        "{report}"
+    );
+    // The loop is named element by element, through both processes.
+    assert!(
+        report.contains(
+            "sub_tb.dut.x -> sub_tb.dut.loop_y -> sub_tb.dut.y -> sub_tb.dut.loop_x -> sub_tb.dut.x"
+        ),
+        "{report}"
+    );
+    // Testbench kinds stay in the event kernel by nature, with the reason.
+    for (label, why) in [
+        ("timed", "it waits for a time"),
+        ("forever", "it waits forever (`wait;`)"),
+        ("two_waits", "it has 2 wait statements"),
+        ("logger", "it declares `l`, an access value"),
+        ("waits_inside", "it calls `tick`, which may wait"),
+        ("dut.protected_var", "it declares `cnt`, a protected object"),
+    ] {
+        let (section, r) = row(&report, &format!("sub_tb.{label}"));
+        assert_eq!(section, "behavioural, in the event kernel:", "{r}");
+        assert!(r.contains(why), "{r}");
+    }
+}
+
+#[test]
+fn every_shape_of_the_subset_fits() {
+    let dir = tempdir("cycle-shapes");
+    analyze(&dir, "subset.vhd", include_str!("cycle/subset.vhd"));
+    let report = verdicts(&dir, "sub_tb");
+    for label in [
+        "clocked",
+        "falling",
+        "legacy",
+        "enabled",
+        "wait_edge",
+        "wait_enabled",
+        "async",
+        "async_two",
+        "comb_all",
+        "comb_if",
+        "f11 <= ...",
+        "f12 <= ...",
+        "f13 <= ...",
+        "f14 <= ...",
+        "assert",
+        "levels",
+        "comb_rec",
+        "reg_rec",
+        "reset_maker",
+        "made_reset",
+        "on_gated",
+        "enum_only",
+        "divider",
+        "static_call",
+        "clocked_proc",
+        "partial_var",
+    ] {
+        let (section, r) = row(&report, &format!("sub_tb.dut.{label}"));
+        assert!(
+            section == "cycle-based:"
+                || section == "in the subset, not implemented in cycle mode yet:",
+            "{label} does not fit: {r}"
+        );
+    }
+    // Its writes map to the actual's elements from the slice's offset, as its drivers do.
+    let (section, r) = row(&report, "sub_tb.upper.good_bits.bits");
+    assert!(
+        section.starts_with("in the subset") || section == "cycle-based:",
+        "{r}"
+    );
+    // `levels` reads its own levels: no loop of elements, three ordered passes (or a split).
+    assert!(
+        report.contains("subset: 27 of 81 processes fit, 1 loop group among them")
+            && report.contains(
+                "loop group of 1 process: 3 passes, or 3 pieces after a split: sub_tb.dut.levels"
+            ),
+        "{report}"
+    );
+    // Asserts and reports are counted, never a reason to stay out.
+    assert!(
+        report.contains("3 asserts and reports in processes that fit, not evaluated"),
+        "{report}"
+    );
+}
+
+#[test]
+fn force_is_outside_the_subset() {
+    let dir = tempdir("cycle-force");
+    analyze(
+        &dir,
+        "force.vhd",
+        "library ieee;\nuse ieee.std_logic_1164.all;\nentity cycle_force is end entity;\n\
+         architecture a of cycle_force is\n  signal a, q : std_ulogic := '0';\nbegin\n\
+         \x20 f : process (a)\n  begin\n    q <= force a;\n  end process;\nend architecture;\n",
+    );
+    let report = verdicts(&dir, "cycle_force");
+    let (_, r) = row(&report, "cycle_force.f");
+    assert!(r.contains("E4116 ") && r.ends_with("(force.vhd:9)"), "{r}");
+}
+
+/// Processes that would give another result if cycle mode took them: they stay out, and the
+/// run equals the normal mode.
+const WRONG_IF_TAKEN: &str = "\
+library ieee;
+use ieee.std_logic_1164.all;
+entity cycle_wrong is
+end entity;
+architecture a of cycle_wrong is
+  signal a1, b1, a2, en, a3 : std_ulogic := '0';
+  signal q_list, q_latch, q_state : std_ulogic := '0';
+begin
+  -- Runs on `a1` only: after `b1` changes alone, the normal mode keeps the old value.
+  list : process (a1)
+  begin
+    q_list <= a1 and b1;
+  end process;
+  -- Keeps its value while `en` is low.
+  latch : process (a2, en)
+  begin
+    if en = '1' then
+      q_latch <= a2;
+    end if;
+  end process;
+  -- Gives the value of `a3` from its previous run.
+  state : process (a3)
+    variable v : std_ulogic := '0';
+  begin
+    q_state <= v;
+    v := a3;
+  end process;
+  main : process
+  begin
+    a1 <= '1';
+    a2 <= '1';
+    a3 <= '1';
+    wait for 1 ns;
+    b1 <= '1';
+    en <= '1';
+    wait for 1 ns;
+    en <= '0';
+    a2 <= '0';
+    a3 <= '0';
+    wait for 1 ns;
+    report \"q_list=\" & to_string(q_list) & \" q_latch=\" & to_string(q_latch)
+      & \" q_state=\" & to_string(q_state);
+    wait;
+  end process;
+end architecture;
+";
+
 #[test]
 fn a_member_driving_a_null_array_gives_the_same_result() {
     let dir = tempdir("cycle-null");
@@ -873,4 +1161,64 @@ fn a_member_driving_a_null_array_gives_the_same_result() {
             "{err}"
         );
     }
+}
+
+#[test]
+fn latches_state_and_incomplete_lists_stay_out_and_the_result_is_the_normal_one() {
+    let dir = tempdir("cycle-wrong");
+    analyze(&dir, "wrong.vhd", WRONG_IF_TAKEN);
+    // Hand-checked: functions of the inputs alone would give q_list=1 q_latch=0 q_state=0.
+    let (normal, _) = run(&dir, &["--tier=interp"], "cycle_wrong");
+    assert!(
+        normal.len() == 1 && normal[0].ends_with("q_list=0 q_latch=1 q_state=1"),
+        "{normal:?}"
+    );
+    for t in tiers() {
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_wrong");
+        assert_eq!(cycle, normal, "{t:?}");
+        for (label, code) in [("list", "E4121"), ("latch", "E4119"), ("state", "E4120")] {
+            let (_, r) = row(&err, &format!("cycle_wrong.{label}"));
+            assert!(r.contains(&format!("  {code} ")), "{r}");
+        }
+    }
+}
+
+#[test]
+fn cycle_strict_names_the_code_of_each_reason() {
+    let dir = tempdir("cycle-strict-codes");
+    analyze(&dir, "subset.vhd", include_str!("cycle/subset.vhd"));
+    let o = yavs(
+        &dir,
+        &[
+            "run",
+            "--work=work:lib",
+            "--no-cache",
+            "--cycle-strict",
+            "sub_tb",
+        ],
+    );
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(2), "{err}");
+    assert!(o.stdout.is_empty(), "no simulation runs");
+    for (code, label) in [
+        ("E4110", "wait_on"),
+        ("E4119", "latch"),
+        ("E4122", "loop_x"),
+        ("E4125", "gate"),
+    ] {
+        assert!(
+            err.contains(&format!(
+                "error[{code}]: process sub_tb.dut.{label} is outside what cycle mode can run"
+            )),
+            "{code} {label}: {err}"
+        );
+    }
+    // In the subset but not implemented yet: the code of that.
+    assert!(
+        err.contains("error[E4101]: process sub_tb.dut.levels cannot run cycle-based yet"),
+        "{err}"
+    );
+    // The testbench, the top-level unit, is exempt, behavioural or not.
+    assert!(!err.contains("process sub_tb.timed"), "{err}");
+    assert!(!err.contains("process sub_tb.logger"), "{err}");
 }

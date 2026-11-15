@@ -2,7 +2,9 @@
 //! run by one kernel process on a static schedule with compiled code; everything else stays in
 //! the event kernel. Read `AGENTS.md` first.
 
+mod check;
 mod codegen;
+mod dep;
 mod lower;
 mod region;
 mod rt;
@@ -19,12 +21,49 @@ use yavs_sem::Db;
 
 use lower::{Kind, Op, Ref};
 
+/// Codes of cycle mode. Under `--cycle-strict` every reason a process below the top-level unit
+/// stays out is an error with its code; under `--cycle` the report gives the same codes.
 pub mod codes {
-    /// `--cycle-strict`: a process below the top-level design unit that is not behavioural
-    /// cannot run cycle-based.
+    /// The process is in the subset, but cycle mode does not implement something it needs yet.
     pub const LEFT_OUT: &str = "E4101";
     /// `--cycle` with an option that observes or changes signals inside the region.
     pub const NOT_WITH: &str = "E4102";
+    /// A wait other than the one `wait until <edge>;` of a clocked process.
+    pub const WAIT: &str = "E4110";
+    /// `after`, `transport`, `reject`, a waveform of several elements.
+    pub const DELAY: &str = "E4111";
+    /// Signal history: `'event` outside the clock's edge test, `'last_value`, `'stable`, ...
+    pub const HISTORY: &str = "E4112";
+    /// A real or physical (time) value computed at run time.
+    pub const NOT_TWO_STATE: &str = "E4113";
+    /// Shared variables, methods of protected objects, allocators and access values.
+    pub const TESTBENCH: &str = "E4114";
+    /// Postponed processes, guarded blocks, signals and assignments.
+    pub const GUARDED: &str = "E4115";
+    /// `force` and `release`.
+    pub const FORCE: &str = "E4116";
+    /// A call the analysis cannot follow: foreign, no body, or (combinational) changing state
+    /// outside the subprogram.
+    pub const CALL: &str = "E4117";
+    /// A `'Z'` value.
+    pub const HIGH_Z: &str = "E4118";
+    /// A combinational process that does not assign a driven element on every path.
+    pub const LATCH: &str = "E4119";
+    /// A variable of a combinational process read before it is assigned.
+    pub const STATE: &str = "E4120";
+    /// A combinational process reading a signal its sensitivity list does not name.
+    pub const SENSITIVITY: &str = "E4121";
+    /// A loop in the combinational logic, element by element.
+    pub const LOOP: &str = "E4122";
+    /// A clocked process of a shape cycle mode does not take.
+    pub const SHAPE: &str = "E4123";
+    /// A signal it drives has another source: another process, a resolution, a guard.
+    pub const SHARED: &str = "E4124";
+    /// A clock made inside the region: its combinational maker, or the users of a register-made
+    /// one.
+    pub const CLOCK_MADE: &str = "E4125";
+    /// The analysis cannot prove the process fits (it does not follow a construct).
+    pub const ANALYSIS: &str = "E4126";
 }
 
 /// What `--cycle` decided for a design: the region report and the region to build.
@@ -34,6 +73,8 @@ pub struct Plan {
     pub region: Option<Region>,
     /// What the region read as 0 for a metavalue, for [`Metas::summary`] after the run.
     pub metas: Arc<Metas>,
+    /// Only the report was asked for (`YAVS_CYCLE_VERDICTS=1`): stop before simulation.
+    pub verdicts_only: bool,
 }
 
 /// Elements the region read as 0 because they held a metavalue (`'U'`, `'X'`, `'Z'`, `'W'`,
@@ -62,35 +103,52 @@ impl Metas {
     }
 }
 
+/// `file:line` of a span.
+fn at(db: &Db, span: yavs_diag::Span) -> String {
+    let f = db.sources.get(span.file);
+    let file = std::path::Path::new(&f.path)
+        .file_name()
+        .map_or(f.path.clone(), |n| n.to_string_lossy().into_owned());
+    format!("{file}:{}", f.line_col(span.start).0)
+}
+
 /// Select the region of `e` and compile it. Under `strict`, a process left out that is
-/// neither in the top-level design unit nor behavioural is an error (`E4101`), all of them
-/// listed.
+/// neither in the top-level design unit nor behavioural is an error with the code of its
+/// reason, all of them listed. With `YAVS_CYCLE_VERDICTS=1` (a developer switch) only the
+/// report is made: [`Plan::verdicts_only`], nothing compiled, nothing to run.
 pub fn plan(db: &Db, e: &Elaborated, strict: bool) -> Result<Plan, Vec<Diagnostic>> {
+    let verdicts_only = std::env::var_os("YAVS_CYCLE_VERDICTS").is_some_and(|v| v == "1");
     let sel = region::select(db, e);
-    let reason = |pi: usize, why: &str| {
-        if region::behavioural(db, e, pi) {
-            "behavioural (timed or several waits, a procedure call or a file)".to_string()
-        } else {
-            why.to_string()
-        }
-    };
-    if strict {
+    let label = |pi: usize| e.hier.proc_label(&e.procs[pi], yavs_elab::Case::Lrm);
+    if strict && !verdicts_only {
         let errs: Vec<Diagnostic> = (sel.out.iter())
-            .filter(|(pi, _)| !region::in_top_unit(e, *pi) && !region::behavioural(db, e, *pi))
+            .filter(|(pi, why)| {
+                !region::in_top_unit(e, *pi) && !matches!(why, region::Why::Behavioural(_))
+            })
             .map(|(pi, why)| {
-                Diagnostic::error(
-                    codes::LEFT_OUT,
-                    format!(
-                        "process {} cannot run cycle-based",
-                        e.hier.proc_label(&e.procs[*pi], yavs_elab::Case::Lrm)
+                let note = "`--cycle-strict` needs every process below the top-level design \
+                            unit that is not behavioural to run cycle-based";
+                let help = "run with `--cycle` to leave it in the event kernel";
+                match why {
+                    region::Why::Subset(r) => Diagnostic::error(
+                        r.code,
+                        format!("process {} is outside what cycle mode can run", label(*pi)),
+                    )
+                    .with_primary(r.span, r.text.clone()),
+                    _ => Diagnostic::error(
+                        codes::LEFT_OUT,
+                        format!("process {} cannot run cycle-based yet", label(*pi)),
+                    )
+                    .with_primary(
+                        db.stmts[e.procs[*pi].stmt].span,
+                        match why {
+                            region::Why::NotYet(w) => w.clone(),
+                            _ => String::new(),
+                        },
                     ),
-                )
-                .with_primary(db.stmts[e.procs[*pi].stmt].span, why.clone())
-                .with_note(
-                    "`--cycle-strict` needs every process below the top-level design unit that \
-                     is not behavioural to run cycle-based",
-                )
-                .with_help("run with `--cycle` to leave it in the event kernel")
+                }
+                .with_note(note)
+                .with_help(help)
             })
             .collect();
         if !errs.is_empty() {
@@ -113,7 +171,16 @@ pub fn plan(db: &Db, e: &Elaborated, strict: bool) -> Result<Plan, Vec<Diagnosti
         );
     }
     report.push('\n');
-    let mut rows: Vec<(String, String)> = Vec::new();
+    // Sections of rows (where, what).
+    let mut sections: Vec<(&str, Vec<(String, String)>)> = vec![
+        ("cycle-based", Vec::new()),
+        ("outside the subset, in the event kernel", Vec::new()),
+        ("behavioural, in the event kernel", Vec::new()),
+        (
+            "in the subset, not implemented in cycle mode yet",
+            Vec::new(),
+        ),
+    ];
     for (pi, b) in &sel.members {
         let k = match b.kind {
             Kind::Clocked => "clocked",
@@ -131,28 +198,68 @@ pub fn plan(db: &Db, e: &Elaborated, strict: bool) -> Result<Plan, Vec<Diagnosti
                 let _ = write!(k, ", {n} literals with a metavalue read as 0");
             }
         }
-        rows.push((region::where_(db, e, *pi), k));
+        sections[0].1.push((region::where_(db, e, *pi), k));
     }
-    let joined = rows.len();
     for (pi, why) in &sel.out {
-        rows.push((region::where_(db, e, *pi), reason(*pi, why)));
+        let (i, text) = match why {
+            region::Why::Subset(r) => (1, format!("{} {} ({})", r.code, r.text, at(db, r.span))),
+            region::Why::Behavioural(w) => (2, w.clone()),
+            region::Why::NotYet(w) => (3, w.clone()),
+        };
+        sections[i].1.push((region::where_(db, e, *pi), text));
     }
-    let w = rows.iter().map(|r| r.0.chars().count()).max().unwrap_or(0);
-    for (i, (name, what)) in rows.iter().enumerate() {
-        if i == 0 && joined > 0 {
-            report.push_str("  cycle-based:\n");
+    let w = (sections.iter().flat_map(|s| &s.1))
+        .map(|r| r.0.chars().count())
+        .max()
+        .unwrap_or(0);
+    for (title, rows) in &sections {
+        if rows.is_empty() {
+            continue;
         }
-        if i == joined {
-            report.push_str("  in the event kernel:\n");
+        let _ = writeln!(report, "  {title}:");
+        for (name, what) in rows {
+            let _ = writeln!(report, "    {name:<w$}  {what}");
         }
-        let _ = writeln!(report, "    {name:<w$}  {what}");
+    }
+    let _ = writeln!(
+        report,
+        "  subset: {} of {total} processes fit, {} loop group{} among them",
+        sel.fits,
+        sel.groups.len(),
+        if sel.groups.len() == 1 { "" } else { "s" }
+    );
+    for g in &sel.groups {
+        let names: Vec<String> = g.procs.iter().take(3).map(|&pi| label(pi)).collect();
+        let more = match g.procs.len() {
+            n if n > 3 => format!(" and {} more", n - 3),
+            _ => String::new(),
+        };
+        let _ = writeln!(
+            report,
+            "    loop group of {} process{}: {} passes, or {} pieces after a split: {}{more}",
+            g.procs.len(),
+            if g.procs.len() == 1 { "" } else { "es" },
+            g.k,
+            g.slices,
+            names.join(", ")
+        );
+    }
+    if sel.dropped > 0 {
+        let _ = writeln!(
+            report,
+            "  {} assert{} and report{} in processes that fit, not evaluated in cycle mode",
+            sel.dropped,
+            if sel.dropped == 1 { "" } else { "s" },
+            if sel.dropped == 1 { "" } else { "s" },
+        );
     }
     let metas = Arc::new(Metas::default());
-    if sel.members.is_empty() {
+    if sel.members.is_empty() || verdicts_only {
         return Ok(Plan {
             report,
             region: None,
             metas,
+            verdicts_only,
         });
     }
     let name = |l: &LeafId| e.leaf_name(*l);
@@ -182,6 +289,7 @@ pub fn plan(db: &Db, e: &Elaborated, strict: bool) -> Result<Plan, Vec<Diagnosti
         report,
         region: Some(region),
         metas,
+        verdicts_only,
     })
 }
 

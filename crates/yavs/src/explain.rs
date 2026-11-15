@@ -536,11 +536,79 @@ const EXPLAIN: &[(&str, &str)] = &[
     // yavs-cycle: cycle mode (`yavs run --cycle`)
     (
         "E4101",
-        "`yavs run --cycle-strict` found a process below the top-level design unit that is not behavioural and cannot run cycle-based. Cycle mode takes clocked processes (`if rising_edge(clk) then ... end if;`) and combinational processes (a sensitivity list naming every signal they read, variables assigned before they are read) whose statements and operators it supports; the label of each error gives the reason. A behavioural process (one that waits for a time, waits forever, has several waits, calls a procedure or declares a file) and every process of the top-level design unit, the testbench, stay in the event kernel without an error. `--cycle` alone runs the same selection and leaves such processes in the event kernel, listed in its report.",
+        "`yavs run --cycle-strict` found a process below the top-level design unit that is in the subset cycle mode can run, but needs something cycle mode does not implement yet; the label names it. Every reason a process stays outside the subset has a code of its own (E4110 to E4126). A behavioural process (one that waits for a time, waits forever, has several waits, calls a procedure that waits, or uses files or text input and output) and every process of the top-level design unit, the testbench, stay in the event kernel without an error. `--cycle` alone runs the same selection and leaves such processes in the event kernel, listed in its report.",
     ),
     (
         "E4102",
         "`yavs run --cycle` cannot be used with an option that observes or changes signals inside the cycle region: a debug session, `--wave`, `--cov` or `--vhpi`. Cycle mode keeps those signals in an image of its own and updates the kernel only with what processes outside the region read. Run without `--cycle` for these.",
+    ),
+    (
+        "E4110",
+        "Cycle mode takes a process with a wait only in one shape: `wait until <edge>;` as the first statement, the only wait, a clocked process (`rising_edge(clk)`, `falling_edge(clk)` or `clk'event and clk = '1'`, optionally followed by `and` more conditions). Any other wait (`wait on a;`, a wait on a level, a call of a procedure that waits) keeps the process in the event kernel. A process that waits for a time, waits forever or waits more than once is behavioural and stays in the event kernel without this code.",
+    ),
+    (
+        "E4111",
+        "A cycle-based process has no time inside a clock cycle: an `after` delay (other than zero), `transport`, a `reject` limit or a waveform of several elements keeps it in the event kernel.",
+    ),
+    (
+        "E4112",
+        "Cycle mode keeps no signal history: `'last_value`, `'last_event`, `'stable`, `'quiet`, `'delayed`, `'transaction`, `'active`, `'driving`, an edge test of a signal that is not the process's clock, or `'event` outside the clock's edge test keep the process in the event kernel.",
+    ),
+    (
+        "E4113",
+        "Cycle mode computes two-state values, integers and enumerations: a real or physical (time) value computed at run time, or a variable of such a type, keeps the process in the event kernel. Constant expressions elaboration folds are fine.",
+    ),
+    (
+        "E4114",
+        "Shared variables, methods of protected objects, allocators and access values in expressions keep a process in the event kernel. A process that declares a protected object, a file or an access value (text lines) is behavioural instead, the testbench kind, and has no error under `--cycle-strict`.",
+    ),
+    (
+        "E4115",
+        "Postponed processes, guarded blocks, guarded signals and assignments and `null` waveforms keep a process in the event kernel: cycle mode has no end of a time step and models no guarded signals.",
+    ),
+    (
+        "E4116",
+        "`force` and `release` change a signal from outside its drivers: a process using them stays in the event kernel.",
+    ),
+    (
+        "E4117",
+        "A call cycle mode cannot follow keeps the process in the event kernel: a foreign subprogram, a subprogram whose body is not known, or, called by a combinational process, a subprogram that changes a variable or signal it is not given (a procedure of a clocked process may change the process's own registers). The label names the subprogram and what it does.",
+    ),
+    (
+        "E4118",
+        "Two-state values have no high impedance: a process that uses the value `'Z'` stays in the event kernel.",
+    ),
+    (
+        "E4119",
+        "A combinational process that does not assign a signal element it drives on every path keeps that element's value from one run to the next: a latch, which is state, not combinational logic. The label names the element, and where it can, the statement that leaves it unassigned. Assign every driven element on every path, for example a default assignment at the start of the process. An element the process never assigns at all keeps its initial value and is no latch.",
+    ),
+    (
+        "E4120",
+        "A variable of a combinational process read before it is assigned on some path keeps its value from the previous run of the process: state, not combinational logic. The label names the variable and the read. Assign it before reading it on every path.",
+    ),
+    (
+        "E4121",
+        "A combinational process that reads a signal its sensitivity list does not name is not run by the normal mode when that signal changes, so its result is not a function of what it reads. Cycle mode computes it from every read and would give another result: the process stays in the event kernel. Name every signal it reads, or write `process (all)`.",
+    ),
+    (
+        "E4122",
+        "Combinational logic in which an element depends on itself (through other processes or within one) has no single settled value: a combinational loop. The label prints the loop, element by element and process by process. The processes in it stay in the event kernel.",
+    ),
+    (
+        "E4123",
+        "A clocked process of a shape cycle mode does not take: statements outside the edge test, an edge test inside other statements, an `else` after it, statements before a `wait until` (they run once at initialisation), a clock that is not one element of a signal, a reset branch whose condition reads no signal or reads the clock, a sensitivity list that does not name the clock or every signal of the asynchronous reset, or a `wait until` whose `on` list does not name the clock. A clocked process is `if <edge> then ... end if;`, optionally after an asynchronous reset branch `if <reset> then ... elsif <edge> then` (any condition on signals of the list), or `wait until <edge>;` first.",
+    ),
+    (
+        "E4124",
+        "Cycle mode needs every element a process of the region drives to have that process as its only source: an element another process drives too, a guarded signal or a signal with a resolution function of its own (other than `std_logic`'s) keeps the process in the event kernel.",
+    ),
+    (
+        "E4125",
+        "Clocks come from outside the region. When combinational logic of the region makes one (a gated clock, a copy), that process stays in the event kernel, which computes the clock; when a register of the region makes one (a divider), the processes that use it stay in the event kernel. An asynchronous reset may be made inside the region.",
+    ),
+    (
+        "E4126",
+        "The analysis of cycle mode cannot prove that the process fits: it reads an external name, has a loop whose dependences do not settle, or uses a statement or name the analysis does not follow. The label names the construct.",
     ),
     // every stage
     (

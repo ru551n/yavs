@@ -607,9 +607,43 @@ Cycle mode (E4 and W4)
    * - Code
      - Meaning
    * - _`E4101`
-     - ``yavs run --cycle-strict`` found a process below the top-level design unit that is not behavioural and cannot run cycle-based.
+     - ``yavs run --cycle-strict`` found a process below the top-level design unit that is in the subset cycle mode can run, but needs something cycle mode does not implement yet; the label names it.
    * - _`E4102`
      - ``yavs run --cycle`` cannot be used with an option that observes or changes signals inside the cycle region: a debug session, ``--wave``, ``--cov`` or ``--vhpi``.
+   * - _`E4110`
+     - Cycle mode takes a process with a wait only in one shape: ``wait until <edge>;`` as the first statement, the only wait, a clocked process (``rising_edge(clk)``, ``falling_edge(clk)`` or ``clk'event and clk = '1'``, optionally followed by ``and`` more conditions).
+   * - _`E4111`
+     - A cycle-based process has no time inside a clock cycle: an ``after`` delay (other than zero), ``transport``, a ``reject`` limit or a waveform of several elements keeps it in the event kernel.
+   * - _`E4112`
+     - Cycle mode keeps no signal history: ``'last_value``, ``'last_event``, ``'stable``, ``'quiet``, ``'delayed``, ``'transaction``, ``'active``, ``'driving``, an edge test of a signal that is not the process's clock, or ``'event`` outside the clock's edge test keep the process in the event kernel.
+   * - _`E4113`
+     - Cycle mode computes two-state values, integers and enumerations: a real or physical (time) value computed at run time, or a variable of such a type, keeps the process in the event kernel.
+   * - _`E4114`
+     - Shared variables, methods of protected objects, allocators and access values in expressions keep a process in the event kernel.
+   * - _`E4115`
+     - Postponed processes, guarded blocks, guarded signals and assignments and ``null`` waveforms keep a process in the event kernel: cycle mode has no end of a time step and models no guarded signals.
+   * - _`E4116`
+     - ``force`` and ``release`` change a signal from outside its drivers: a process using them stays in the event kernel.
+   * - _`E4117`
+     - A call cycle mode cannot follow keeps the process in the event kernel: a foreign subprogram, a subprogram whose body is not known, or, called by a combinational process, a subprogram that changes a variable or signal it is not given (a procedure of a clocked process may change the process's own registers).
+   * - _`E4118`
+     - Two-state values have no high impedance: a process that uses the value ``'Z'`` stays in the event kernel.
+   * - _`E4119`
+     - A combinational process that does not assign a signal element it drives on every path keeps that element's value from one run to the next: a latch, which is state, not combinational logic.
+   * - _`E4120`
+     - A variable of a combinational process read before it is assigned on some path keeps its value from the previous run of the process: state, not combinational logic.
+   * - _`E4121`
+     - A combinational process that reads a signal its sensitivity list does not name is not run by the normal mode when that signal changes, so its result is not a function of what it reads.
+   * - _`E4122`
+     - Combinational logic in which an element depends on itself (through other processes or within one) has no single settled value: a combinational loop.
+   * - _`E4123`
+     - A clocked process of a shape cycle mode does not take: statements outside the edge test, an edge test inside other statements, an ``else`` after it, statements before a ``wait until`` (they run once at initialisation), a clock that is not one element of a signal, a reset branch whose condition reads no signal or reads the clock, a sensitivity list that does not name the clock or every signal of the asynchronous reset, or a ``wait until`` whose ``on`` list does not name the clock.
+   * - _`E4124`
+     - Cycle mode needs every element a process of the region drives to have that process as its only source: an element another process drives too, a guarded signal or a signal with a resolution function of its own (other than ``std_logic``'s) keeps the process in the event kernel.
+   * - _`E4125`
+     - Clocks come from outside the region.
+   * - _`E4126`
+     - The analysis of cycle mode cannot prove that the process fits: it reads an external name, has a loop whose dependences do not settle, or uses a statement or name the analysis does not follow.
 
 Internal errors (E9)
 --------------------

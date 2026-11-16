@@ -306,7 +306,10 @@ struct Cx<'a> {
     /// Elements a join of branches lost from the definitely assigned ones, and where.
     lost: Vec<(ESet, Span)>,
     callees: HashMap<DeclId, Callee>,
-    visiting: HashSet<DeclId>,
+    /// The subprograms being summarised, by their depth in that walk, and the smallest depth of
+    /// one of them called again under the current walk (`usize::MAX`: none).
+    visiting: HashMap<DeclId, usize>,
+    partial: usize,
 }
 
 impl<'a> Cx<'a> {
@@ -333,7 +336,8 @@ impl<'a> Cx<'a> {
             enumerating: 0,
             lost: Vec::new(),
             callees: HashMap::new(),
-            visiting: HashSet::new(),
+            visiting: HashMap::new(),
+            partial: usize::MAX,
         }
     }
 }
@@ -2221,13 +2225,25 @@ impl Cx<'_> {
         if let Some(c) = self.callees.get(&d) {
             return c.clone();
         }
-        if !self.visiting.insert(d) {
-            // Recursion: what is known so far (the walk of `d` adds the rest).
+        if let Some(&depth) = self.visiting.get(&d) {
+            // Recursion: what is known so far (the walk of `d` adds the rest); every summary
+            // made under `d` until then is partial.
+            self.partial = self.partial.min(depth);
             return Callee::default();
         }
+        let depth = self.visiting.len();
+        self.visiting.insert(d, depth);
+        let outer = std::mem::replace(&mut self.partial, usize::MAX);
         let c = self.callee_walk(d);
         self.visiting.remove(&d);
-        self.callees.insert(d, c.clone());
+        // Kept for every later call (of any process) only when complete: no subprogram still
+        // being walked above `d` was called under it.
+        if self.partial >= depth {
+            self.callees.insert(d, c.clone());
+            self.partial = outer;
+        } else {
+            self.partial = self.partial.min(outer);
+        }
         c
     }
 

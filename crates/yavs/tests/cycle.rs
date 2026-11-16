@@ -3713,6 +3713,30 @@ fn logic_feeding_a_process_that_counts_its_runs_stays_out() {
     }
 }
 
+/// A pipeline of integers shifted by concatenating an element and a slice of an array of
+/// integers, both orders; stages 1 to 128.
+#[test]
+fn concatenations_of_integer_elements_equal_the_normal_mode() {
+    let dir = tempdir("cycle-intcat");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("intcat{w}.vhd"),
+            &with_width(include_str!("cycle/intcat.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_intcat");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_intcat");
+            assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 1 of 2 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// Memories held in shared variables (A15): single-process RAMs that read before and after they
 /// write, both at the address written and at another on one edge, join with their initial content;
 /// a RAM two processes write and read stays in the event kernel with the reason; against the

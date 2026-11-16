@@ -4979,10 +4979,21 @@ impl Lx<'_> {
                                     ..self.part(v)?
                                 }));
                             }
+                            // An element of an array of integers and such an array: the
+                            // element as its word, checked against the elements' subtype.
+                            (Val::Int(i), Val::Part(p)) if p.int.is_some() => {
+                                let e = p.int.expect("matched");
+                                (self.elem_word(i, e), self.materialise(p))
+                            }
+                            (Val::Part(p), Val::Int(i)) if p.int.is_some() => {
+                                let e = p.int.expect("matched");
+                                (self.materialise(p), self.elem_word(i, e))
+                            }
                             (a, b) => (self.part(a)?, self.part(b)?),
                         };
                         let (ra, rb) = (self.whole(a), self.whole(b));
-                        let t = self.tmp(a.len + b.len);
+                        let mut t = self.tmp(a.len + b.len);
+                        t.int = a.int.or(b.int);
                         self.ops.push(Op::Cat {
                             dst: t.r,
                             hi: ra,

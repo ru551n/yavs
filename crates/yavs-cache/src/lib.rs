@@ -92,6 +92,15 @@ fn needs_sweep(n: usize, added: u64, due: bool, (max_entries, max_bytes): (usize
 const SWEPT: &str = ".swept";
 const SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
+// Sweeps made by this thread: the work counter of the tests below.
+#[cfg(test)]
+thread_local! {
+    static SWEEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A sweep of a directory at its entry limit frees a sixteenth of the limit (at least one).
+const BATCH_DIV: usize = 16;
+
 /// A directory of at most this many entries, each at most a sixteenth of its byte limit, cannot be
 /// over that limit: a put into it needs no pruning.
 const FEW_ENTRIES: usize = 16;
@@ -555,25 +564,31 @@ impl Store {
     /// [`SWEEP_EVERY`] otherwise, not for every put of every process.
     fn room(&self, added: u64) -> bool {
         use std::sync::atomic::Ordering::Relaxed;
+        let marker = self.dir.join(SWEPT);
+        let swept = fs::metadata(&marker).ok();
+        let was_full = swept.as_ref().is_some_and(|m| m.len() > 0);
+        let sweep_due = swept
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.elapsed().ok())
+            .is_none_or(|age| age >= SWEEP_EVERY);
+        // A directory the last sweep found full is not listed or swept again before the next
+        // sweep is due, however many puts come: a run with more entries than the limit asked for
+        // a listing and a stat of every entry on each of them.
+        if was_full && !sweep_due {
+            return false;
+        }
         let n = match self.count.load(Relaxed) {
             UNKNOWN => self.names_ending(".img").len(),
             c => c + 1,
         };
         self.count.store(n, Relaxed);
-        let marker = self.dir.join(SWEPT);
-        let swept = fs::metadata(&marker).ok();
-        let was_full = swept.as_ref().is_some_and(|m| m.len() > 0);
-        let due = (n > FEW_ENTRIES || was_full)
-            && swept
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| t.elapsed().ok())
-                .is_none_or(|age| age >= SWEEP_EVERY);
+        let due = (n > FEW_ENTRIES || was_full) && sweep_due;
         if !needs_sweep(n, added, due, self.limits) {
             return !was_full;
         }
-        let room = self.make_room(added);
+        let (room, left) = self.make_room(added);
         let _ = fs::write(&marker, if room { &b""[..] } else { b"full" });
-        self.count.store(UNKNOWN, Relaxed);
+        self.count.store(left, Relaxed);
         room
     }
 
@@ -593,16 +608,26 @@ impl Store {
     }
 
     /// Remove entries by [`STALE_AFTER`] and [`IN_USE`] until `added` more bytes and one more entry
-    /// fit; whether they do.
-    fn make_room(&self, added: u64) -> bool {
+    /// fit; whether they do, and how many entries are left. A directory at its entry limit is cut
+    /// to a sixteenth below it, so the puts that follow need no sweep of their own: one entry
+    /// freed per sweep made every put of a long run list and stat the whole directory.
+    fn make_room(&self, added: u64) -> (bool, usize) {
+        #[cfg(test)]
+        SWEEPS.with(|c| c.set(c.get() + 1));
         let (max_entries, max_bytes) = self.limits;
         let mut all = self.entries();
         let mut n = all.len();
         let mut bytes: u64 = all.iter().map(|e| e.2).sum();
         let fits = |n: usize, bytes: u64| n < max_entries && bytes + added <= max_bytes;
         if fits(n, bytes) {
-            return true;
+            return (true, n);
         }
+        let batch = if n >= max_entries {
+            (max_entries / BATCH_DIV).max(1)
+        } else {
+            1
+        };
+        let goal = |n: usize, bytes: u64| fits(n + batch - 1, bytes);
         // A time in the future (another clock) counts as just used.
         let unused_for = |t: std::time::SystemTime| t.elapsed().unwrap_or_default();
         all.sort_by_key(|e| e.1);
@@ -611,7 +636,7 @@ impl Store {
         let stale = &all[..recent];
         let finished = all[recent..in_use].iter().rev();
         for (p, _, len) in stale.iter().chain(finished) {
-            if fits(n, bytes) {
+            if goal(n, bytes) {
                 break;
             }
             // An entry that cannot go (Windows: mapped by a run) still takes its room.
@@ -620,7 +645,7 @@ impl Store {
                 bytes -= len;
             }
         }
-        fits(n, bytes)
+        (fits(n, bytes), n)
     }
 
     fn entries(&self) -> Vec<(PathBuf, std::time::SystemTime, u64)> {
@@ -1084,6 +1109,45 @@ mod tests {
         s.put("t", &key("b"), b"x");
         assert!(s.get("t", &key("b")).is_some());
         assert_eq!(fs::metadata(&marker).unwrap().len(), 0);
+    }
+
+    /// A run that stores far more entries than the limit holds (a big suite, or a design of many
+    /// compiled functions) must not list and stat the directory on every put.
+    /// Counted in sweeps, not time. Entries just written are in use, so the first sweep finds the
+    /// directory full and the rest of the run is refused at the cost of one stat each.
+    #[test]
+    fn a_run_far_over_the_limit_sweeps_once() {
+        let d = tempfile::tempdir().unwrap();
+        let s = small(d.path(), (64, MAX_BYTES));
+        SWEEPS.with(|c| c.set(0));
+        for i in 0..1000 {
+            s.put("t", &key(&i.to_string()), b"x");
+        }
+        assert_eq!(s.entries().len(), 64);
+        let sweeps = SWEEPS.with(|c| c.get());
+        assert!(sweeps <= 3, "{sweeps} sweeps for 1000 puts");
+        assert!(s.get("t", &key("0")).is_some(), "the first entries stay");
+    }
+
+    /// Entries that are no longer in use go in a batch, so a long run that outlives them pays one
+    /// sweep per batch and not one per put.
+    #[test]
+    fn a_sweep_at_the_entry_limit_frees_a_batch() {
+        let d = tempfile::tempdir().unwrap();
+        let s = small(d.path(), (256, MAX_BYTES));
+        let minute = std::time::Duration::from_secs(60);
+        for i in 0..256 {
+            s.put("t", &key(&i.to_string()), b"x");
+            age(&s, &key(&i.to_string()), minute);
+        }
+        SWEEPS.with(|c| c.set(0));
+        for i in 256..256 + 4 * (256 / BATCH_DIV) {
+            s.put("t", &key(&i.to_string()), b"x");
+        }
+        let sweeps = SWEEPS.with(|c| c.get());
+        assert!(sweeps <= 6, "{sweeps} sweeps for four batches of puts");
+        assert!(s.entries().len() <= 256);
+        assert!(s.get("t", &key("319")).is_some(), "the new entries are in");
     }
 
     /// Parallel writers at the limit: every entry that is there reads back whole, and each

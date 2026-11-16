@@ -13762,6 +13762,13 @@ code in the compilation cache" and the 512 notes.
 - **Known gap:** about six times over the limit, later runs cost 7 to 8 percent more instructions than the first, so split such a suite into libraries. Measured and explained in "A suite far over the limit" (#1034). The window counts wall time, so what is removed moves with load.
 - **A put looks before it writes**, so a refused entry costs no write, and the `.swept` marker holds "full" until the next look,
   so a full directory is not listed by every put.
+- **At the entry limit too** (#1161, 2026-11-16): `room` swept at `n >= max_entries` on every put, so the
+  marker's "full" did not hold there, and a sweep that freed one entry forgot the count and listed the directory again at
+  the next put. A normal run into a directory holding 16384 recent entries made 24 sweeps, 393313 stats against 16481 for
+  one. Now a full directory is refused at the cost of one stat of the marker until the next look, and a sweep at the entry
+  limit frees a sixteenth of it (at least one) and keeps the count it ends with. The byte limit is unchanged. The same
+  store type serves `obj/` and `units/`, so they have the same limits and the same fix. Tests count sweeps
+  (`a_run_far_over_the_limit_sweeps_once`, `a_sweep_at_the_entry_limit_frees_a_batch`).
 
 
 ## Coverage kinds are opt in (#1020, 2026-11-01)

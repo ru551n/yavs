@@ -1445,7 +1445,7 @@ twice-run wrapper is `textio/file_append_2019`, which appends to a file); the ex
 and 2019; the verification library suite gives 102 pass, 9 fail, 26 skip, as main. Tests: `crates/yavs/tests/cache.rs`
 (`init` entries: protected and heap state grown by elaboration-time calls, the simulation-start path and the time
 resolution key, edit invalidates, reports replayed, a file-opening package not cached, damaged entry, parallel cold
-runs), `state::tests` (block packing). The store keeps 96 entries now (three per design; 2026-11-14: the limits are now 65536 entries and 4 GiB per library directory, and the unit and compiled-code subdirectories have their own, `yavs-cache` `MAX_ENTRIES`, `MAX_BYTES`, #1027).
+runs), `state::tests` (block packing). The store keeps 96 entries now (three per design; 2026-11-14: the limits are now 65536 entries and 4 GiB per library directory, and the unit and compiled-code subdirectories have their own, `yavs-cache` `MAX_ENTRIES`, `MAX_BYTES`, #1027). A directory at its entry limit is swept once and remembered as full until the next look, and a sweep there frees a sixteenth of the limit (#1161).
 
 Compact composite constants (#446, `Fx::konst_comp`): a folded record or array-of-composites constant is
 lowered as runs of repeated bytes (repeated elements, record fields with padding, one-valued logic arrays), and the

@@ -2359,6 +2359,13 @@ impl Lx<'_> {
                 });
                 Ok(())
             }
+            // An element of an array of integers read (a field of a record element of a constant
+            // table chosen at run time).
+            (Val::Int(_), Val::Part(s)) if s.dims.n == 1 && s.int.is_some() => {
+                let s = self.materialise(s);
+                let v = self.int_elem(s);
+                self.assign(dst, v)
+            }
             // An element of an array of integers.
             (Val::Part(d), Val::Int(s)) if d.dims.n == 1 && d.int.is_some() => {
                 let w = self.elem_word(s, d.int.expect("matched"));

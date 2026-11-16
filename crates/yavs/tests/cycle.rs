@@ -3537,6 +3537,30 @@ fn elements_of_elements_at_run_time_indices_equal_the_normal_mode() {
     }
 }
 
+/// A decoder ROM: a constant table of records with enumeration, integer, logic and vector fields
+/// indexed by an enumeration chosen at run time, assigned whole; widths 1 to 128.
+#[test]
+fn a_constant_table_of_records_read_at_run_time_equals_the_normal_mode() {
+    let dir = tempdir("cycle-romrec");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("romrec{w}.vhd"),
+            &with_width(include_str!("cycle/romrec.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_romrec");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_romrec");
+            assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 1 of 2 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// Memories held in shared variables (A15): single-process RAMs that read before and after they
 /// write, both at the address written and at another on one edge, join with their initial content;
 /// a RAM two processes write and read stays in the event kernel with the reason; against the

@@ -1017,6 +1017,28 @@ impl Session {
         self.log.len()
     }
 
+    /// Forget the calls made since `mark` when each is of a pure function with nothing of a
+    /// region (they changed no package state: the live program stays, no rebuild); else
+    /// [`Session::undo`].
+    pub(crate) fn undo_pure(&mut self, db: &Db, mark: usize) -> Result<(), String> {
+        let pure = |c: &Call| {
+            c.fill.is_none()
+                && c.expr.is_none()
+                && matches!(
+                    db.decls[c.func].kind.subprogram().map(|s| &s.kind),
+                    Some(yavs_sem::decl::SubprogramKind::Function { pure: true })
+                )
+        };
+        if !self.dirty && self.pending.is_empty() && self.log[mark..].iter().all(pure) {
+            self.log.truncate(mark);
+            for (_, n) in &mut self.order {
+                *n = (*n).min(mark);
+            }
+            return Ok(());
+        }
+        self.undo(db, mark)
+    }
+
     /// Undo the calls made since `mark`: the package state is rebuilt from the earlier calls.
     pub(crate) fn undo(&mut self, db: &Db, mark: usize) -> Result<(), String> {
         if self.log.len() == mark && !self.dirty && self.pending.is_empty() {

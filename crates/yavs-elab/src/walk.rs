@@ -1640,8 +1640,8 @@ impl Elab<'_> {
         self.m.vals = vals;
         self.m.pkg = pkg;
         // Calls of impure functions made on the way are undone; if that fails, the values are
-        // not kept (the package state may differ).
-        if self.m.session.undo(db, mark).is_err() {
+        // not kept (the package state may differ). Pure calls are only forgotten.
+        if self.m.session.undo_pure(db, mark).is_err() {
             out.clear();
             ranges.clear();
         }
@@ -1698,7 +1698,7 @@ impl Elab<'_> {
         }
         self.m.vals = vals;
         self.m.pkg = pkg;
-        if self.m.session.undo(db, mark).is_err() {
+        if self.m.session.undo_pure(db, mark).is_err() {
             out.clear();
         }
         out

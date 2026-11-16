@@ -5096,6 +5096,9 @@ impl Model {
                 Some(f)
                     if *elem == Elem::Logic
                         && db.decls[*f].name.key().as_str() == "resolved"
+                        // The library's, not a function of the design named so.
+                        && (db.decls[*f].kind.subprogram())
+                            .is_some_and(|sp| sp.mangled.as_str().starts_with("ieee.std_logic_1164."))
                         && crate::eval::is_std_ulogic(db, leaf.ty()) =>
                 {
                     Some(LeafRes::StdLogic)

@@ -1,0 +1,5 @@
+exit	0
+diag	note	1000000	0	:user_resolved_named:_p8	one=0 two=0 vec=0101
+diag	note	1000000	0	:user_resolved_named:_p8	q=0011 o=1
+diag	note	1000000	0	:user_resolved_named:_p8	bus_std=1 bus_vec=10
+diag	note	2000000	0	:user_resolved_named:_p8	q=1001 o=1

@@ -540,6 +540,7 @@ const PASS: &[&str] = &[
     "resolution/user_logic_record",
     "resolution/user_logic_scalar",
     "resolution/user_logic_vector",
+    "resolution/user_resolved_named",
     "resolution/whole_std_logic_field",
     "resolution/guarded_composite_partly_null",
     "resolution/guarded_composite_static_mixed",

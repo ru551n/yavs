@@ -24,6 +24,8 @@ reports and assertions of every process. Cycle mode takes the processes that are
 RTL, decides their order once when the design is elaborated, compiles them together with Cranelift and runs them
 once per clock edge on two-state values (``0`` and ``1``). Together they are the *region*. Every other process,
 usually the testbench, stays in the event simulation and talks to the region through the signals it reads and drives.
+Large combinational processes whose inputs did not change since their last run are not run again, and between clock
+edges only the logic that a changed input reaches runs, so the part of a design that is idle in a clock costs little.
 
 Which processes join is decided by yavs, per process (:ref:`cycle-selection`). You do not mark anything in the
 VHDL.

@@ -1,0 +1,1 @@
+Cycle mode (`yavs run --cycle`) no longer runs combinational logic whose inputs did not change since its last run, and between clock edges runs only the logic a changed input reaches: designs such as processors, where much of the logic is idle in a clock, run faster.

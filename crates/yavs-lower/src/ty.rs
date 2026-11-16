@@ -80,15 +80,7 @@ pub(crate) fn logic_kind(db: &Db, t: TypeId) -> Option<LogicKind> {
     if Some(t) == wk.boolean {
         return Some(LogicKind::Boolean);
     }
-    // ponytail: recognised by name and shape; a `std_ulogic` declared outside ieee is treated
-    // the same, which is harmless since layout is all that changes.
-    let td = &db.types[t];
-    match &td.kind {
-        TypeKind::Enum { lits } if lits.len() == 9 && td.name.key.as_str() == "std_ulogic" => {
-            Some(LogicKind::StdULogic)
-        }
-        _ => None,
-    }
+    db.is_std_ulogic(t).then_some(LogicKind::StdULogic)
 }
 
 fn int_bounds(db: &Db, st: SubtypeId) -> Option<(i64, i64)> {

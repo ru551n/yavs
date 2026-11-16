@@ -403,6 +403,7 @@ const PASS: &[&str] = &[
     "ieee/ieee_textio",
     "ieee/ieee_textio_2019",
     "ieee/ieee_warnings",
+    "ieee/lookalike_names",
     "ieee/math_complex_ops",
     "ieee/math_complex_ops_2019",
     "ieee/math_real_ops",

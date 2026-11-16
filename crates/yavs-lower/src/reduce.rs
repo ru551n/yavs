@@ -14,9 +14,7 @@ const ZERO: u32 = 2;
 const ONE: u32 = 3;
 
 fn is_std_ulogic(db: &Db, st: SubtypeId) -> bool {
-    let td = &db.types[db.base(st)];
-    matches!(&td.kind, TypeKind::Enum { lits } if lits.len() == 9)
-        && td.name.key.as_str() == "std_ulogic"
+    db.is_std_ulogic(db.base(st))
 }
 
 /// The object `e` names, if it is a plain name.

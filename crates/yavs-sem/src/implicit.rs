@@ -658,12 +658,14 @@ impl Db {
     }
 
     /// `ty` is `ieee.std_logic_1164.std_ulogic`.
-    fn is_std_ulogic(&self, ty: TypeId) -> bool {
+    pub fn is_std_ulogic(&self, ty: TypeId) -> bool {
         let t = &self.types[ty];
-        if t.name.key.as_str() != "std_ulogic" {
-            return false;
-        }
-        let scope = self.decls[t.decl].scope;
+        t.name.key.as_str() == "std_ulogic" && self.in_ieee_1164(self.decls[t.decl].scope)
+    }
+
+    /// `scope` belongs to the package `ieee.std_logic_1164` (not a package of the design that
+    /// is named so).
+    pub fn in_ieee_1164(&self, scope: ScopeId) -> bool {
         let Some(owner) = self.scopes[scope].owner else {
             return false;
         };

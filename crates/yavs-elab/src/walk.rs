@@ -3482,10 +3482,7 @@ impl Elab<'_> {
             // The IEEE `not` of `std_ulogic` (the whole type), or the predefined one of BIT
             // or BOOLEAN (bit-plane logic too).
             Elem::Logic if range.low_high() == (0, 8) => {
-                !decl.implicit
-                    && db.scopes[decl.scope]
-                        .owner
-                        .is_some_and(|o| db.decls[o].name.key().as_str() == "std_logic_1164")
+                !decl.implicit && db.in_ieee_1164(decl.scope)
             }
             Elem::Logic if range.low_high() == (0, 1) => {
                 decl.implicit && (Some(*ty) == wk.boolean || Some(*ty) == wk.bit)
@@ -3651,12 +3648,7 @@ impl Elab<'_> {
         } else {
             match range.low_high() {
                 // The IEEE operators of `std_ulogic` (the whole type) and its vectors.
-                (0, 8) => {
-                    !decl.implicit
-                        && db.scopes[decl.scope]
-                            .owner
-                            .is_some_and(|o| db.decls[o].name.key().as_str() == "std_logic_1164")
-                }
+                (0, 8) => !decl.implicit && db.in_ieee_1164(decl.scope),
                 // The predefined ones of BIT and BOOLEAN (bit-plane logic too).
                 (0, 1) => decl.implicit && (Some(ety) == wk.boolean || Some(ety) == wk.bit),
                 _ => false,
@@ -4280,12 +4272,7 @@ impl Elab<'_> {
             implicit
         } else {
             match range.low_high() {
-                (0, 8) => {
-                    !implicit
-                        && self.db.scopes[decl_scope].owner.is_some_and(|o| {
-                            self.db.decls[o].name.key().as_str() == "std_logic_1164"
-                        })
-                }
+                (0, 8) => !implicit && self.db.in_ieee_1164(decl_scope),
                 (0, 1) => implicit && (Some(ety) == wk.boolean || Some(ety) == wk.bit),
                 _ => false,
             }
@@ -4381,9 +4368,7 @@ impl Elab<'_> {
             ..
         } = &db.exprs[c].kind
             && db.decls[*callee].name.key().as_str() == "\"??\""
-            && db.scopes[db.decls[*callee].scope]
-                .owner
-                .is_some_and(|o| db.decls[o].name.key().as_str() == "std_logic_1164")
+            && db.in_ieee_1164(db.decls[*callee].scope)
             && let [
                 Arg {
                     actual: Actual::Expr(x),

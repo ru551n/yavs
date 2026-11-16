@@ -160,6 +160,9 @@ Module-local decisions go in this section and ir.md section 4 or `docs/decisions
   makes their texts only for the error: formatting a path name per driver was a fifth of the
   walk of a design with many instances (#425).
 - The CLI passes `-g` values verbatim; this crate parses them.
+- `std_ulogic` and the operators and edge functions of `std_logic_1164` are told by `Db::is_std_ulogic` and
+  `Db::in_ieee_1164` (library `ieee`), never by a name alone: a design may declare a type or a package of those names
+  (#1163; the lowering's `logic_kind` and gate folding use the same test).
 
 ## 5. How to work here
 

@@ -2011,14 +2011,9 @@ fn is_logic(db: &Db, t: TypeId) -> bool {
 }
 
 pub(crate) fn is_std_ulogic(db: &Db, t: TypeId) -> bool {
-    let td = &db.types[t];
-    // The name first: the declaration is in a page of the cached analysis that a run reads
-    // only for this (#426).
-    if td.name.key.as_str() != "std_ulogic" {
-        return false;
-    }
-    let owner = db.scopes[db.decls[td.decl].scope].owner;
-    owner.is_some_and(|o| db.decls[o].name.key().as_str() == "std_logic_1164")
+    // The name comes first inside: the declaration is in a page of the cached analysis that a
+    // run reads only for this (#426).
+    db.is_std_ulogic(t)
 }
 
 // ---------------------------------------------------------------------------

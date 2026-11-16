@@ -119,8 +119,7 @@ impl Db {
                 if decl.implicit {
                     return call(rising);
                 }
-                let owner = self.scopes[decl.scope].owner?;
-                (self.decls[owner].name.key().as_str() == "std_logic_1164").then(|| call(rising))?
+                self.in_ieee_1164(decl.scope).then(|| call(rising))?
             }
             ("\"and\"", 2) if decl.implicit => {
                 let boolean = Some(self.base(self.exprs[e].subtype)) == self.well_known.boolean;

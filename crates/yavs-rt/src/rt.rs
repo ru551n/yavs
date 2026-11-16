@@ -930,17 +930,41 @@ pub unsafe extern "C" fn yavs_rt_deopt(
     // SAFETY: as in `yavs_rt_step`; `regs` holds `nregs` words.
     let (env, mem) = unsafe { (&mut *(env as *mut Env<'_>), &mut *mem) };
     mem.ndeopt = 1;
+    let mut nf = SPARE_FRAMES
+        .with_borrow_mut(Vec::pop)
+        .unwrap_or_else(|| NativeFrame {
+            func: FuncId(func),
+            pc,
+            regs: Vec::new(),
+            slots: Vec::new(),
+            temp_base,
+            link,
+        });
+    (nf.func, nf.pc, nf.temp_base, nf.link) = (FuncId(func), pc, temp_base, link);
+    nf.regs.clear();
+    nf.regs
+        .extend_from_slice(unsafe { std::slice::from_raw_parts(regs, nregs as usize) });
+    nf.slots.clear();
+    nf.slots.resize(slen as usize, 0);
     let pending = env.pending.get_or_insert_default();
-    pending.push(NativeFrame {
-        func: FuncId(func),
-        pc,
-        regs: unsafe { std::slice::from_raw_parts(regs, nregs as usize) }.to_vec(),
-        slots: vec![0; slen as usize],
-        temp_base,
-        link,
-    });
+    pending.push(nf);
     let last = pending.len() - 1;
     pending[last].regs.as_mut_ptr()
+}
+
+thread_local! {
+    /// The buffers of materialised frames, for the next ones `yavs_rt_deopt` records: a procedure
+    /// on a native frame is materialised at each of its waits.
+    static SPARE_FRAMES: std::cell::RefCell<Vec<NativeFrame>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Keep the buffers of `frames` for `yavs_rt_deopt` (at most `SPARE_MAX` frames).
+fn spare_frames(frames: Vec<NativeFrame>) {
+    const SPARE_MAX: usize = 32;
+    SPARE_FRAMES.with_borrow_mut(|s| {
+        let room = SPARE_MAX.saturating_sub(s.len());
+        s.extend(frames.into_iter().take(room));
+    });
 }
 
 /// The slot buffer of the frame `yavs_rt_deopt` recorded last.
@@ -967,6 +991,7 @@ pub unsafe extern "C" fn yavs_rt_deopt_end(env: *mut c_void, mem: *mut Mem, pc: 
     let r = catch_unwind(AssertUnwindSafe(|| {
         env.host.materialise(&mut mem.fr, pc, &frames)
     }));
+    spare_frames(frames);
     mem.forget();
     mem.temp_seen = mem.fr.temp_len;
     mem.ndeopt = 0;
@@ -3781,9 +3806,11 @@ pub fn call_on(
         let mut frames = env.pending.take().map_or_else(Vec::new, |b| *b);
         frames.reverse();
         mem.ndeopt = 0;
-        match catch_unwind(AssertUnwindSafe(|| {
+        let r = catch_unwind(AssertUnwindSafe(|| {
             env.host.materialise(&mut mem.fr, pc, &frames)
-        })) {
+        }));
+        spare_frames(frames);
+        match r {
             Ok(Stepped::Next) => Called::Pushed,
             Ok(Stepped::Suspend) => Called::Suspend,
             Ok(_) => Called::Fault,

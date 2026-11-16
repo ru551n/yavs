@@ -3809,3 +3809,29 @@ fn calls_elaboration_evaluated_per_process_equal_the_normal_mode() {
         );
     }
 }
+
+/// Out ports of a subtype resolved by a function of the design on an unresolved actual
+/// (`ownres.vhd`): the function runs in both modes, so the actual is the inverse of the register,
+/// also for a function named `resolved` (once taken for the library's); the drivers stay out of
+/// the region (another source).
+#[test]
+fn a_resolution_function_of_the_design_runs_on_out_ports() {
+    let dir = tempdir("cycle-ownres");
+    analyze(&dir, "ownres.vhd", include_str!("cycle/ownres.vhd"));
+    let want = ["q=1110", "q=1100", "q=1000", "q=0000", "q=0001", "q=0011"];
+    for top in ["cycle_ownres_other", "cycle_ownres_named"] {
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, top);
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), top);
+            let got: Vec<&str> = (normal.iter())
+                .map(|l| l.rsplit(": ").next().unwrap_or(""))
+                .collect();
+            assert_eq!(got, want, "{top} {t:?}");
+            assert_eq!(cycle, normal, "{top} {t:?}\n{err}");
+            assert!(
+                err.contains("has a resolution function of its own"),
+                "{top}: {err}"
+            );
+        }
+    }
+}

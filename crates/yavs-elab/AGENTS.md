@@ -140,6 +140,8 @@ Module-local decisions go in this section and ir.md section 4 or `docs/decisions
 
 ## 4. Invariants and pitfalls
 
+- The native `std_logic` resolution of a leaf (`LeafRes::StdLogic`) is for the library's `resolved` alone, told by its
+  mangled name (`ieee.std_logic_1164.`): a function of the design named `resolved` is a `LeafRes::Func` and runs.
 - **Determinism:** elaboration order is the kernel's commit order. Never iterate a `HashMap` to
   create scopes, leaves, drivers or processes.
 - **Fail early:** any error-severity diagnostic means no `Elaborated`; never carry a guessed

@@ -212,6 +212,13 @@ fn numeric_std_subtypes_rule_1() {
             panic!("{name}: resolution function expected");
         };
         assert_eq!(db.decls[f].name.key().as_str(), "resolved");
+        // What elaboration tells the library's resolution by (`LeafRes::StdLogic`).
+        let sp = db.decls[f].kind.subprogram().expect("a function");
+        assert!(
+            sp.mangled.as_str().starts_with("ieee.std_logic_1164."),
+            "{}",
+            sp.mangled
+        );
         let TypeKind::Array { indexes, elem } = &db.types[base].kind else {
             panic!("{name}: array base expected");
         };

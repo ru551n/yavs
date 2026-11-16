@@ -236,7 +236,12 @@ impl Elaborated {
             if self.is_member(pi) {
                 let idle = |_: &mut yavs_kernel::Ctx<'_>| Ok(());
                 let name = self.hier.dotted_in(p.scope, Case::Lrm);
-                b.process(&name, ProcFlags::default(), &[], idle);
+                let pid = b.process(&name, ProcFlags::default(), &[], idle);
+                // Its reports, which the region makes as it (`Ctx::report_as`), name it as the
+                // normal mode does.
+                if p.what.is_some() {
+                    b.process_label(pid, self.proc_label(p));
+                }
                 continue;
             }
             // Drivers of one process on adjacent elements of one kernel signal that one target

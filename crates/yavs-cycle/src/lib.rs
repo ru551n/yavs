@@ -1051,7 +1051,7 @@ fn build(
         })
         .collect();
     let (settle, units): (Vec<codegen::Step>, Vec<u32>) = settle.into_iter().unzip();
-    let code = Arc::new(codegen::compile(
+    let mut code = codegen::compile(
         &settle,
         &units,
         &edge,
@@ -1065,7 +1065,33 @@ fn build(
         err,
         (log, notes),
         &label,
-    )?);
+    )?;
+    if code.skip_check {
+        // The whole blocks of the signals each step's members write.
+        code.settle_outs = (code.settle_units.iter())
+            .map(|us| {
+                let ks = std::cell::RefCell::new(BTreeSet::new());
+                for &u in us {
+                    let b = &sel.members[u as usize].1;
+                    ks.borrow_mut().extend(b.writes.iter().map(|&l| ksig(l)));
+                    let note = |r: Ref| {
+                        if let Ref::Sig(k) = r {
+                            ks.borrow_mut().insert(k);
+                        }
+                        r
+                    };
+                    for op in &b.ops {
+                        op.map(&|r| r, &note, &|x| x);
+                    }
+                }
+                let ks = ks.into_inner();
+                (ks.iter())
+                    .filter_map(|k| cur.get(k).map(|&w| (w, codegen::words(klen(*k)))))
+                    .collect()
+            })
+            .collect();
+    }
+    let code = Arc::new(code);
     let cone = cones(&sel, nets, &code.settle_units);
     let whole = |k: u32| {
         let s = yavs_kernel::SignalId(k);

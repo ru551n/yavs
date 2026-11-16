@@ -53,8 +53,10 @@ pub(crate) struct Code {
     pub(crate) settle_units: Vec<Vec<u32>>,
     /// The words of the region's signals, the first ones of the image (`YAVS_CYCLE_SKIP_CHECK`).
     signal_words: usize,
+    /// With `YAVS_CYCLE_SKIP_CHECK`: per step of the settle, the words its members drive.
+    pub(crate) settle_outs: Vec<Vec<(u32, u32)>>,
     /// `YAVS_CYCLE_SKIP_CHECK=1`: a run a guard would skip runs and must change nothing.
-    skip_check: bool,
+    pub(crate) skip_check: bool,
     /// With `YAVS_CYCLE_STATS`: per guard its runs and skips.
     pub(crate) counts: Option<Vec<[std::sync::atomic::AtomicU64; 2]>>,
     /// The guard whose skipped run changed something (`STALE`).
@@ -163,7 +165,7 @@ impl Code {
                     _ => 1,
                 };
                 if self.skip_check {
-                    self.unmoved(img, &rs[i..i + n])?;
+                    self.unmoved(img, &rs[i..i + n], i)?;
                 }
                 i += n;
                 continue;
@@ -278,10 +280,21 @@ impl Code {
     /// `YAVS_CYCLE_SKIP_CHECK=1`: steps of the settle skipped as outside what the wake's inputs
     /// reach run anyway and must leave every signal word as it was.
     #[cold]
-    fn unmoved(&self, img: &mut [u64], rs: &[Run]) -> Result<(), u32> {
-        let before = img[..self.signal_words].to_vec();
+    fn unmoved(&self, img: &mut [u64], rs: &[Run], at: usize) -> Result<(), u32> {
+        // The words the skipped steps' members drive (all the signals' when not known).
+        let all = [(0, self.signal_words as u32)];
+        let spans: Vec<(u32, u32)> = match self.settle_outs.get(at..at + rs.len()) {
+            Some(o) if !o.is_empty() => o.concat(),
+            _ => all.to_vec(),
+        };
+        let words = |img: &[u64]| -> Vec<u64> {
+            (spans.iter())
+                .flat_map(|&(w, c)| img[w as usize..(w + c) as usize].to_vec())
+                .collect()
+        };
+        let before = words(img);
         self.steps(img, rs, None)?;
-        if img[..self.signal_words] != before[..] {
+        if words(img) != before {
             self.stale
                 .store(usize::MAX, std::sync::atomic::Ordering::Relaxed);
             return Err(STALE);
@@ -1013,6 +1026,7 @@ pub(crate) fn compile<'a>(
         guards,
         settle_units,
         signal_words,
+        settle_outs: Vec::new(),
         skip_check: std::env::var_os("YAVS_CYCLE_SKIP_CHECK").is_some_and(|v| v == "1"),
         counts,
         stale: Default::default(),

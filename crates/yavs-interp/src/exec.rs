@@ -4103,8 +4103,8 @@ impl Machine {
         true
     }
 
-    /// While [`crate::capture_elab_reports`] runs: the statement at the top frame's pc is in a
-    /// source file of the standard library (A23).
+    /// The statement at the top frame's pc is in a source file of the standard library (A23,
+    /// `env::set_library_files`).
     fn in_library(&self, prog: &Program, f: &Func) -> bool {
         let pc = self.frames.last().map_or(0, |fr| fr.pc as usize);
         (f.loc.get(pc))

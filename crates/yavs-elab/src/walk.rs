@@ -529,6 +529,15 @@ pub(crate) fn elaborate(
 ) -> Result<Elaborated, Vec<Diagnostic>> {
     load_bodies(db)?;
     db.bind_package_paths();
+    // The standard library's files: cycle mode drops their notes and warnings of folded calls,
+    // also those a call cache entry of any run kept (A23).
+    let root = yavs_sem::default_stdlib();
+    yavs_interp::set_library_files(
+        (0..db.sources.len())
+            .map(|i| yavs_diag::FileId(i as u32))
+            .filter(|&f| std::path::Path::new(&db.sources.get(f).path).starts_with(&root))
+            .collect(),
+    );
     let pkg_uses = package_externals(db)?;
     let mut e = Elab {
         db,
@@ -1659,14 +1668,6 @@ impl Elab<'_> {
         let mark = self.m.session.mark();
         let mut out = HashMap::new();
         let mut quiet: HashMap<DeclId, bool> = HashMap::new();
-        // The standard library's files: its notes and warnings are dropped (A23).
-        let root = yavs_sem::default_stdlib();
-        let library: std::rc::Rc<std::collections::HashSet<yavs_diag::FileId>> = std::rc::Rc::new(
-            (0..db.sources.len())
-                .map(|i| yavs_diag::FileId(i as u32))
-                .filter(|&f| std::path::Path::new(&db.sources.get(f).path).starts_with(&root))
-                .collect(),
-        );
         let procs: Vec<(ScopeId, Option<ScopeId>, StmtId)> = (self.procs.iter())
             .map(|p| (p.scope, self.m.hier.scope(p.scope).parent, p.stmt))
             .collect();
@@ -1696,9 +1697,8 @@ impl Elab<'_> {
                 {
                     continue;
                 }
-                let (v, reports) = yavs_interp::capture_elab_reports(library.clone(), || {
-                    self.m.eval(db, y, region).ok()
-                });
+                let (v, reports) =
+                    yavs_interp::capture_elab_reports(|| self.m.eval(db, y, region).ok());
                 // A failed call without a report is left to cycle mode's own folding.
                 if v.is_some() || !reports.is_empty() {
                     out.insert((ps, y), RegionCall { val: v, reports });

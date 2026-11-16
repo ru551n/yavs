@@ -3886,7 +3886,8 @@ fn records(out: &str) -> Vec<(String, String)> {
 /// in the event kernel, so its messages, times and the exit status are the normal mode's; a call
 /// whose arguments only the unrolled loop knows joins when its assert holds and stays out when it
 /// fails; a failing call in a branch that never runs is not seen. A constant's report is made
-/// once in both modes.
+/// once in both modes. The library warning is dropped also when a constant's call of the normal
+/// mode made the call cache entry.
 #[test]
 fn reports_of_calls_folded_with_constants_are_made() {
     let dir = tempdir("cycle-foldrep");
@@ -3956,21 +3957,27 @@ fn reports_of_calls_folded_with_constants_are_made() {
         // Failing asserts of notes and warnings: once per process, the same records; a second
         // run with the compilation cache gives the first's output; a library warning of a
         // folded call is dropped (A23), the normal mode prints it.
+        // First the cached library warning: a later cached run of cycle mode (`trunc` false
+        // folds the call too) would make the entry itself.
         for (s, extra) in [
+            ("-gs=warning", "-gtrunc=true --cache"),
             ("-gs=note", ""),
             ("-gs=warning", ""),
             ("-gs=warning", "--cache"),
             ("-gs=warning", "-gtrunc=true"),
         ] {
-            let gens = ["-gg=5", s, extra];
-            let gens: Vec<&str> = gens.into_iter().filter(|g| !g.is_empty()).collect();
+            let gens: Vec<&str> = ["-gg=5", s]
+                .into_iter()
+                .chain(extra.split_whitespace())
+                .collect();
             let (nc, nout, _) = go(&flags(&gens, false));
             let (c, out, err) = go(&flags(&gens, true));
             let lib = "NUMERIC_STD.TO_UNSIGNED: vector truncated";
-            if extra == "-gtrunc=true" {
-                assert_eq!(out.matches(lib).count(), 0, "{t:?}\n{out}");
+            if extra.contains("-gtrunc=true") {
+                assert_eq!(out.matches(lib).count(), 0, "{t:?} {extra}\n{out}");
                 assert!(nout.contains(lib), "{t:?}\n{nout}");
-            } else if !extra.is_empty() {
+            }
+            if extra.contains("--cache") {
                 let again = go(&flags(&gens, true));
                 assert_eq!((again.0, &again.1), (c, &out), "{t:?} warm\n{}", again.2);
             }

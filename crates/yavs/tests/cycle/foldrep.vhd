@@ -85,6 +85,8 @@ architecture rtl of cycle_foldrep_dut is
   end function;
   -- Made once, by the elaboration of the normal mode, in both modes.
   constant k : natural := say(1);
+  -- `pa`'s truncating call when `trunc`: its call cache entry is made outside cycle mode's folds.
+  constant kt : unsigned(7 downto 0) := to_unsigned(300 * boolean'pos(trunc) + g, 8);
   -- An inlined call (a signal argument) folding an asserting call of its constant formal.
   function pack(x : unsigned; w : positive) return unsigned is
     variable r : unsigned(sz_bits(w) - 1 downto 0) := (others => '0');

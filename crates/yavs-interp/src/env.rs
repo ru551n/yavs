@@ -375,28 +375,30 @@ thread_local! {
 /// Run `f` with the reports of elaboration-time calls on this thread kept, neither printed
 /// nor counted: cycle mode evaluates calls apart from the model and reports them itself. Notes and
 /// warnings of the standard library (a native `ieee` subprogram, a statement of one of the
-/// `library` files) are dropped (A23).
-pub fn capture_elab_reports<T>(
-    library: std::rc::Rc<std::collections::HashSet<yavs_diag::FileId>>,
-    f: impl FnOnce() -> T,
-) -> (T, Vec<(u8, String)>) {
+/// [`set_library_files`]) are dropped (A23).
+pub fn capture_elab_reports<T>(f: impl FnOnce() -> T) -> (T, Vec<(u8, String)>) {
     let outer = CAPTURE.with(|c| c.replace(Some(Vec::new())));
-    let lib = LIBRARY.with(|l| l.replace(library));
     let r = f();
-    LIBRARY.with(|l| l.replace(lib));
     let got = CAPTURE.with(|c| c.replace(outer)).unwrap_or_default();
     (r, got)
 }
 
 thread_local! {
-    /// While [`capture_elab_reports`] runs: the standard library's source files.
+    /// The standard library's source files of the design this thread elaborates.
     static LIBRARY: std::cell::RefCell<std::rc::Rc<std::collections::HashSet<yavs_diag::FileId>>> =
         std::cell::RefCell::new(std::rc::Rc::default());
 }
 
-/// While [`capture_elab_reports`] runs: `file` is one of the standard library's.
+/// The standard library's source files of the design this thread elaborates from now on: their
+/// reports are marked as the library's wherever they are kept, so that a call cache entry made
+/// outside [`capture_elab_reports`] is dropped when replayed inside it (A23).
+pub fn set_library_files(files: std::collections::HashSet<yavs_diag::FileId>) {
+    LIBRARY.with(|l| l.replace(std::rc::Rc::new(files)));
+}
+
+/// `file` is one of the standard library's ([`set_library_files`]).
 pub(crate) fn library_file(file: yavs_diag::FileId) -> bool {
-    capturing() && LIBRARY.with(|l| l.borrow().contains(&file))
+    LIBRARY.with(|l| l.borrow().contains(&file))
 }
 
 /// Keep a report when `capture_elab_reports` runs; `false` when it does not.

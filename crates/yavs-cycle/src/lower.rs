@@ -898,6 +898,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         at: db.stmts[p.stmt].span,
         unrolled: 0,
         lits: Vec::new(),
+        bounds: false,
     };
     if let Some(pa) = &p.actual {
         lx.port_actual(pa)?;
@@ -941,6 +942,9 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
 }
 
 struct Lx<'a> {
+    /// A name is being looked at for its index range only (`name_bounds`): a constant may be
+    /// named as if it were a target.
+    bounds: bool,
     db: &'a Db,
     e: &'a Elaborated,
     p: &'a ProcInst,
@@ -1925,7 +1929,9 @@ impl Lx<'_> {
     /// The index range of the array object or value `x` names, without reading it.
     fn name_bounds(&mut self, x: ExprId) -> R<Bounds> {
         let (n, l, k) = (self.ops.len(), self.locs, self.known.clone());
+        let was = std::mem::replace(&mut self.bounds, true);
         let v = self.name(x, true);
+        self.bounds = was;
         self.ops.truncate(n);
         self.locs = self.locs.max(l);
         // The code is dropped: so is what it would have made known.
@@ -2872,7 +2878,9 @@ impl Lx<'_> {
         use yavs_sem::decl::ObjClass;
         // A formal or local of a call being inlined.
         match self.bound(d) {
-            Some(Bind::Const(_)) if target => return Err("an assignment to a constant".into()),
+            Some(Bind::Const(_)) if target && !self.bounds => {
+                return Err("an assignment to a constant".into());
+            }
             Some(Bind::Const(c)) => return self.literal(db.base(o.subtype), &c),
             Some(Bind::Val(v)) => return Ok(v),
             None => {}
@@ -2939,7 +2947,9 @@ impl Lx<'_> {
                 Ok(v)
             }
             ObjClass::SharedVariable => self.shared_var(d),
-            ObjClass::Constant if target => Err("an assignment to a constant".into()),
+            ObjClass::Constant if target && !self.bounds => {
+                Err("an assignment to a constant".into())
+            }
             ObjClass::Constant => {
                 if let Some(c) = self.consts.get(&d).cloned() {
                     let mut v = self.literal(db.base(o.subtype), &c)?;
@@ -3601,6 +3611,11 @@ impl Lx<'_> {
                 // left to the inlined call, which stops the run as the normal mode does.
                 self.call_fits(*callee, args, &v).then_some(v)
             }
+            // A field of a record constant (`registers(i).width` of a generic table).
+            ExprKind::Field { prefix, elem } => match self.fold(*prefix)? {
+                ConstValue::Record(fs) => fs.get(*elem as usize).cloned(),
+                _ => None,
+            },
             // An element of a constant at indices known here (`grid(r, c)` in an unrolled loop).
             ExprKind::Index { prefix, indices } => {
                 let Some(ConstValue::Array(a)) = self.fold(*prefix) else {

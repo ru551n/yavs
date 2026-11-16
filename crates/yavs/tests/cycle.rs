@@ -3585,6 +3585,31 @@ fn aggregates_with_slice_pieces_equal_the_normal_mode() {
     }
 }
 
+/// A register table as a generic array of records: a loop over its range assigns slices whose
+/// lengths are fields of its elements (the table named for its range and read by field); widths
+/// 1 to 128.
+#[test]
+fn a_generic_table_of_records_equals_the_normal_mode() {
+    let dir = tempdir("cycle-regtab");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("regtab{w}.vhd"),
+            &with_width(include_str!("cycle/regtab.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_regtab");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_regtab");
+            assert_eq!(normal.len(), 10, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 1 of 2 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// Memories held in shared variables (A15): single-process RAMs that read before and after they
 /// write, both at the address written and at another on one edge, join with their initial content;
 /// a RAM two processes write and read stays in the event kernel with the reason; against the

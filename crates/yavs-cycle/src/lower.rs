@@ -4438,6 +4438,16 @@ impl Lx<'_> {
     /// A value known during elaboration, of type `t`.
     fn literal(&mut self, t: TypeId, c: &ConstValue) -> R<Val> {
         let db = self.db;
+        // Elements take the index ranges of their subtype, not their literal's (an aggregate of
+        // string literals, a value of a function's `return`).
+        let bounded;
+        let c = if matches!(c, ConstValue::Array(_) | ConstValue::Record(_)) {
+            bounded = crate::check::bounded_type(db, c.clone(), t, &mut |r| self.range_fold(r))
+                .ok_or("a value whose element index ranges are not known here")?;
+            &bounded
+        } else {
+            c
+        };
         match (c, &db.types[t].kind) {
             (ConstValue::Int(v), TypeKind::Integer | TypeKind::UniversalInteger) => {
                 return Ok(Val::Int(self.int_lit(*v)));

@@ -60,6 +60,17 @@ architecture a of cycle_constelem is
   constant box_c : box_t := (n => 1, f => (pat(W, 28), pat(W, 29), pat(W, 30)));
   constant x8_c : b8_t(0 to 1) := (x"9a", x"01");
   constant lit_c : ad_t(2 to 4) := (PAT2, PAT3, PAT1);
+  function elem_bit (t : ad_t; i, b : integer) return std_ulogic is
+  begin
+    return t(i)(b);
+  end function;
+  function sel (e : std_ulogic) return ad_t is
+  begin
+    if e = '1' then
+      return (PAT1, PAT2, PAT3);
+    end if;
+    return (PAT3, PAT2, PAT1);
+  end function;
   signal clk : std_ulogic := '0';
   signal ix : integer range 2 to 4 := 2;
   signal jx : integer range 0 to 1 := 0;
@@ -69,7 +80,7 @@ architecture a of cycle_constelem is
   signal s0 : a0_t(2 to 4) := (others => (others => '0'));
   signal sr : ra_t(2 to 4) := (others => (0, (others => '0')));
   signal s8 : b8_t(0 to 1) := (others => x"00");
-  signal ed : ed_t := (others => '0');
+  signal ed, sa, sf : ed_t := (others => '0');
   signal hi, lo, a_r, a2, cz : std_ulogic := '0';
 begin
   clk <= not clk after 5 ns when now < (6 * W + 12) * 10 ns else clk;
@@ -173,6 +184,17 @@ begin
     end if;
   end process;
 
+  -- Aggregates of string literals: an actual of an unconstrained formal, a function's result.
+  aggs : process (clk)
+  begin
+    if rising_edge(clk) then
+      for b in 3 to W + 2 loop
+        sa(b) <= elem_bit((PAT1, PAT2, PAT3), 1, b);
+        sf(b) <= sel(a_r)(0)(b);
+      end loop;
+    end if;
+  end process;
+
   -- A process constant and a constant of a procedure it calls; slices.
   local : process (clk)
     constant pc_c : au_t(2 to 4) := (PAT1, PAT2, PAT3);
@@ -206,7 +228,7 @@ begin
     end loop;
     report "hi=" & std_ulogic'image(hi) & " lo=" & std_ulogic'image(lo) & " s8=" & to_hstring(s8(0))
       & to_hstring(s8(1)) & " ed=" & to_hstring(ed) & " cz=" & std_ulogic'image(cz) & " a_r="
-      & std_ulogic'image(a_r);
+      & std_ulogic'image(a_r) & " sa=" & to_hstring(sa) & " sf=" & to_hstring(sf);
     wait;
   end process;
 end architecture;

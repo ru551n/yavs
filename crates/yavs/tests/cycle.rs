@@ -1670,8 +1670,9 @@ fn with_pats(src: &str, w: u32) -> String {
 }
 
 /// Bits, slices and elements of constant arrays of vectors: an element has its subtype's index
-/// range, not the `0 to n - 1` of the literal or function result that made it. Read by its
-/// literal's range, a `downto` element came out reversed and a range not starting at 0 failed.
+/// range, not the `0 to n - 1` of the literal or function result that made it (also in an
+/// aggregate given to a formal or returned). Read by its literal's range, a `downto` element came
+/// out reversed and a range not starting at 0 failed.
 #[test]
 fn elements_of_constant_arrays_have_their_subtypes_ranges_at_widths_around_a_word() {
     let dir = tempdir("cycle-constelem");
@@ -1689,7 +1690,7 @@ fn elements_of_constant_arrays_have_their_subtypes_ranges_at_widths_around_a_wor
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             // Every process but the clock and the testbench's `main`.
             assert!(
-                err.contains("cycle mode: 8 of 10 processes run cycle-based"),
+                err.contains("cycle mode: 9 of 11 processes run cycle-based"),
                 "{w}: {err}"
             );
         }

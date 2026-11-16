@@ -154,6 +154,16 @@ pub(crate) fn bounded(
     bounded_in(db, v, db.base(st), &db.subtypes[st].constraint, true, range)
 }
 
+/// `bounded` for a value of type `t` whose own index ranges at the top are kept.
+pub(crate) fn bounded_type(
+    db: &Db,
+    v: ConstValue,
+    t: yavs_sem::TypeId,
+    range: &mut dyn FnMut(&RangeC) -> Option<yavs_elab::Bounds>,
+) -> Option<ConstValue> {
+    bounded_in(db, v, t, &Constraint::None, true, range)
+}
+
 fn bounded_in(
     db: &Db,
     v: ConstValue,

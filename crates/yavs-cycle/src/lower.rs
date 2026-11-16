@@ -877,6 +877,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
     }
     let mut lx = Lx {
         shared: Default::default(),
+        shared_check: Default::default(),
         db,
         e,
         p,
@@ -1000,6 +1001,9 @@ struct Lx<'a> {
     loud: std::cell::RefCell<BTreeSet<ExprId>>,
     /// Constants of elaboration folded as names, shared (`check::Consts`).
     shared: std::cell::RefCell<crate::check::Consts>,
+    /// The same for the checker's folds of calls (`check::const_value`), kept apart so that a
+    /// fold never depends on which of the two folded a constant first.
+    shared_check: std::cell::RefCell<crate::check::Consts>,
     /// `call_fits` is folding a folded call's arguments: their reports are the call's.
     probing: std::cell::Cell<bool>,
 }
@@ -3699,7 +3703,7 @@ impl Lx<'_> {
                     self.e,
                     self.p,
                     known,
-                    &mut self.shared.borrow_mut(),
+                    &mut self.shared_check.borrow_mut(),
                     x,
                 )?;
                 // The checks of the call stay: a value or an argument outside its subtype is

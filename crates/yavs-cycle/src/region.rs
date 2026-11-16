@@ -90,11 +90,10 @@ pub(crate) fn subset(db: &Db, e: &Elaborated) -> Subset {
     let mut fits: BTreeMap<usize, Fit> = BTreeMap::new();
     let mut out: Vec<(usize, Why)> = Vec::new();
     let mut callees = check::Callees::default();
-    let mut consts = check::Consts::default();
     let mut slow: Vec<(u128, usize)> = Vec::new();
     for pi in 0..e.procs.len() {
         let t = std::time::Instant::now();
-        let v = check::check(db, e, pi, &mut callees, &mut consts);
+        let v = check::check(db, e, pi, &mut callees);
         slow.push((t.elapsed().as_micros(), pi));
         match v {
             check::Verdict::Fit(f) => {

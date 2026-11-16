@@ -116,8 +116,9 @@ pub(crate) fn const_value(
 }
 
 /// Constants of elaboration folded as a name of the process's scope gives them (with their
-/// subtype's index ranges at every level, `bounded`), shared: an element or field read is taken
-/// from here instead of copying and rebounding the whole constant at every read.
+/// subtype's index ranges at every level, `bounded`), shared within one process's check or
+/// lowering: an element or field read is taken from here instead of copying and rebounding the
+/// whole constant at every read.
 pub(crate) type Consts = HashMap<(yavs_elab::ScopeId, DeclId, SubtypeId), Option<Rc<ConstValue>>>;
 
 /// The element of constant array `a` at indices `ix`, one per dimension (the elements stored
@@ -252,20 +253,12 @@ pub(crate) fn named(k: &ExprKind) -> bool {
 pub(crate) type Callees = HashMap<DeclId, Callee>;
 
 /// Check process `pi`.
-pub(crate) fn check(
-    db: &Db,
-    e: &Elaborated,
-    pi: usize,
-    callees: &mut Callees,
-    consts: &mut Consts,
-) -> Verdict {
+pub(crate) fn check(db: &Db, e: &Elaborated, pi: usize, callees: &mut Callees) -> Verdict {
     let p = &e.procs[pi];
     let mut cx = Cx::new(db, e, p);
     cx.callees = std::mem::take(callees);
-    cx.consts = std::mem::take(consts);
     let v = cx.process();
     *callees = std::mem::take(&mut cx.callees);
-    *consts = std::mem::take(&mut cx.consts);
     match v {
         Ok(mut f) => {
             f.reads = std::mem::take(&mut cx.reads);

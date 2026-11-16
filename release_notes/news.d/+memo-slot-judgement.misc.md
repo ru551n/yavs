@@ -1,1 +1,0 @@
-The memo of pure function calls now gives up on a function whose early calls rarely repeat whatever the 64th call happens to be, and gives every key two places in its table, so keys that differ only in their last bytes (text) no longer push each other out, and fewer of a function's results are lost to collisions.

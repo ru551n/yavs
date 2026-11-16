@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.20.2 (2026-11-16)
+
+- The one-call-at-a-time compile of libraries that read each other, kept for yavs 0.19.1 and older, is gone: with `-j N`
+  such libraries always compile at once.
+- Needs yavs 0.20.2 or later. All changes: the yavs 0.20.2 release notes.
+
 ## 0.20.1 (2026-11-14)
 
 - Compiling follows the project's dependency graph: the files of one library, standard and flags that are ready at the

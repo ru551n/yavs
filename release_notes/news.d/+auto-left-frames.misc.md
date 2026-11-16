@@ -1,1 +1,0 @@
-Under `--tier=auto`, a function that compiled code keeps stepping out to call is now compiled, and later runs link it from the cache at once; before, some short tests settled at random in a slower state from one run to the next. The run-to-run profile format changed: profiles stored by an earlier version are read as none once.

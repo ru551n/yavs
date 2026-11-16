@@ -1,1 +1,0 @@
-The memo of pure function calls now takes a costly function that few processes call up again later in the run when its first calls did not repeat, so a function whose arguments start repeating only after a while is answered from the memo too.

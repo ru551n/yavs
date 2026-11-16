@@ -2,7 +2,7 @@
 -- enumeration and of logic types, `numeric_std`'s `+` and `-` of a vector and a `std_ulogic`, an
 -- aggregate as an operand of `&`, and a function on an unconstrained vector given the result of
 -- `resize` (whose index range `numeric_std` fixes), `=` and `/=` of records, a slice of a function's
--- result.
+-- result, `'high` of a subtype whose range depends on a generic as a slice bound.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -41,6 +41,7 @@ use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 use work.cycle_idioms_pkg.all;
 entity cycle_idioms_u is
+  generic (G : positive);
   port (clk : in std_ulogic; x : in unsigned(W + 7 downto 0); b : in std_ulogic;
         sel : in natural range 0 to 8; lv : in natural range 2 to 3; wide_sel : in natural;
         ra, rb : in rec_t; neq : out std_ulogic; sw : out std_ulogic_vector(3 downto 0);
@@ -48,12 +49,13 @@ entity cycle_idioms_u is
         p : out unsigned(7 downto 0); s : out unsigned(W + 7 downto 0);
         d : out unsigned(W + 7 downto 0); sg : out signed(W + 7 downto 0);
         y : out std_ulogic_vector(W + 7 downto 0); n : out natural; bp : out natural;
-        op : out op_t; bv : out std_ulogic);
+        op : out op_t; bv : out std_ulogic; hs : out unsigned(G - 1 downto 0));
 end entity;
 architecture a of cycle_idioms_u is
   -- A pipeline of one stage: its shift is a null slice given a null slice.
   constant L : positive := 1;
   signal pipe : std_ulogic_vector(1 to L) := (others => '0');
+  subtype g_t is unsigned(2 * G - 1 downto 0);
 begin
   process (clk)
   begin
@@ -75,6 +77,7 @@ begin
       -- Named aggregates as operands: their own range, 0 to 7, element 0 leftmost.
       ag <= std_ulogic_vector(x(7 downto 0)) & (0 => b, 1 to 3 => x(1), 4 to 7 => '0');
       eqa <= '1' when std_ulogic_vector(x(3 downto 0)) = (0 => '1', 1 to 3 => '0') else '0';
+      hs <= x(g_t'high downto g_t'low + G);
     end if;
   end process;
 end architecture;
@@ -101,11 +104,13 @@ architecture t of cycle_idioms is
   signal p : unsigned(7 downto 0);
   signal n, bp : natural;
   signal op : op_t;
+  signal hs : unsigned(3 downto 0);
 begin
   u : entity work.cycle_idioms_u
+    generic map (G => 4)
     port map (clk => clk, x => x, b => b, sel => sel, lv => lv, wide_sel => wide_sel, ra => ra, rb => rb,
               neq => neq, sw => sw, ag => ag, eqa => eqa, p => p, s => s, d => d, sg => sg, y => y,
-              n => n, bp => bp, op => op, bv => bv);
+              n => n, bp => bp, op => op, bv => bv, hs => hs);
   main : process
     variable r : unsigned(15 downto 0) := x"ACE1";
   begin
@@ -135,7 +140,7 @@ begin
         & " s=" & to_hstring(s) & " d=" & to_hstring(d) & " sg=" & to_hstring(sg)
         & " y=" & to_hstring(y) & " n=" & integer'image(n) & " bp=" & integer'image(bp)
         & " bv=" & std_ulogic'image(bv) & " neq=" & std_ulogic'image(neq) & " sw=" & to_hstring(sw)
-        & " ag=" & to_string(ag) & " eqa=" & std_ulogic'image(eqa);
+        & " ag=" & to_string(ag) & " eqa=" & std_ulogic'image(eqa) & " hs=" & to_hstring(hs);
     end loop;
     wait;
   end process;

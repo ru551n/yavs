@@ -3401,8 +3401,12 @@ impl Lx<'_> {
         }
         // A globally static call elaboration evaluated for this process (outside an inlined
         // call, whose formals the call's arguments may name).
+        // Its checks stay: a value or an argument outside its subtype leaves the call to the
+        // lowering, which stops the run as the normal mode does.
         if self.frames.is_empty()
             && let Some(v) = self.e.region_calls.get(&(self.p.scope, x))
+            && let ExprKind::Call { callee, args, .. } = &db.exprs[x].kind
+            && self.call_fits(*callee, args, v)
         {
             return Some(v.clone());
         }
@@ -3443,13 +3447,16 @@ impl Lx<'_> {
             ExprKind::ImplicitConv { operand } => self.fold(*operand),
             // `x'length` and its friends of an array object whose range is fixed: a formal or
             // local of an inlined call, a signal, a variable of the process.
-            ExprKind::Attr {
-                attr,
-                prefix: AttrPrefix::Expr(p),
-                args,
-            } if args.is_empty()
-                && let ExprKind::Obj(d) = db.exprs[*p].kind
-                && let Some(b) = self.obj_bounds(d) =>
+            ExprKind::Attr { attr, prefix, args }
+                if args.is_empty()
+                    && let Some(b) = match prefix {
+                        AttrPrefix::Expr(p) => match db.exprs[*p].kind {
+                            ExprKind::Obj(d) => self.obj_bounds(d),
+                            _ => None,
+                        },
+                        AttrPrefix::Subtype(st) => self.subtype_fold(*st),
+                        _ => None,
+                    } =>
             {
                 let (lo, hi) = b.low_high();
                 Some(ConstValue::Int(match attr {
@@ -3486,26 +3493,7 @@ impl Lx<'_> {
                 let v = crate::check::const_value(db, self.e, self.p, known, x)?;
                 // The checks of the call stay: a value or an argument outside its subtype is
                 // left to the inlined call, which stops the run as the normal mode does.
-                let sp = db.decls[*callee].kind.subprogram()?;
-                let fits = |st: SubtypeId, v: &ConstValue| {
-                    let (Some((lo, hi)), Some(v)) = (int_bounds(db, st), v.as_int()) else {
-                        return false;
-                    };
-                    (lo..=hi).contains(&v)
-                };
-                if !fits(sp.ret?, &v) {
-                    return None;
-                }
-                for a in args.iter() {
-                    let p = sp.params.get(usize::from(a.formal))?;
-                    let Actual::Expr(ax) = a.actual else {
-                        return None;
-                    };
-                    if !fits(p.subtype, &self.fold(ax)?) {
-                        return None;
-                    }
-                }
-                Some(v)
+                self.call_fits(*callee, args, &v).then_some(v)
             }
             // An element of a constant at indices known here (`grid(r, c)` in an unrolled loop).
             ExprKind::Index { prefix, indices } => {
@@ -3518,6 +3506,61 @@ impl Lx<'_> {
                 crate::check::const_elem(&a, &ix?)
             }
             _ => db.fold_with(x, &mut |c| self.fold(c)).ok().flatten(),
+        }
+    }
+
+    /// Whether value `v` of a call of `callee` and the call's arguments, all known here, lie in
+    /// their subtypes (integers and enumerations; another value only of an unconstrained one).
+    fn call_fits(&self, callee: DeclId, args: &[yavs_sem::hir::Arg], v: &ConstValue) -> bool {
+        let db = self.db;
+        let fits = |st: SubtypeId, v: &ConstValue| match (int_bounds(db, st), v.as_int()) {
+            (Some((lo, hi)), Some(v)) => (lo..=hi).contains(&v),
+            (Some(_), None) => false,
+            (None, _) => matches!(
+                db.subtypes[st].constraint,
+                Constraint::None | Constraint::Array { dims: None, .. }
+            ),
+        };
+        let Some(sp) = db.decls[callee].kind.subprogram() else {
+            return false;
+        };
+        sp.ret.is_some_and(|r| fits(r, v))
+            && args.iter().all(|a| {
+                let Actual::Expr(ax) = a.actual else {
+                    return false;
+                };
+                (sp.params.get(usize::from(a.formal)))
+                    .zip(self.fold(ax))
+                    .is_some_and(|(p, c)| fits(p.subtype, &c))
+            })
+    }
+
+    /// The range of a scalar subtype or the index range of a one-dimensional array subtype when
+    /// it is known here, without lowering anything (a range of generics elaboration evaluated).
+    fn subtype_fold(&self, st: SubtypeId) -> Option<Bounds> {
+        let db = self.db;
+        let r = match &db.subtypes[st].constraint {
+            Constraint::Range(r) => r,
+            Constraint::Array { dims: Some(d), .. } if d.len() == 1 => &d[0],
+            _ => {
+                let (l, dir, r) = db.static_bounds(st)?;
+                return Some(Bounds {
+                    left: l.as_int()?,
+                    dir,
+                    right: r.as_int()?,
+                });
+            }
+        };
+        let RangeC::Explicit { left, dir, right } = r else {
+            return None;
+        };
+        match (self.fold(*left), self.fold(*right)) {
+            (Some(l), Some(r)) => Some(Bounds {
+                left: l.as_int()?,
+                dir: *dir,
+                right: r.as_int()?,
+            }),
+            _ => self.e.range(self.p.scope, *left),
         }
     }
 

@@ -2856,7 +2856,8 @@ impl Lx<'_> {
                     return Ok(v);
                 }
                 match self.fold(x) {
-                    Some(c) => self.literal(db.base(o.subtype), &c),
+                    // Named in the messages of index checks, as the normal mode names it.
+                    Some(c) => Ok(named(self.literal(db.base(o.subtype), &c)?, d)),
                     None => Err(format!(
                         "the constant `{}`, whose value elaboration did not compute",
                         decl.name
@@ -3633,21 +3634,6 @@ impl Lx<'_> {
             } if args.len() == 1 => self.pos_val(*attr == PredefAttr::Pos, *st, args[0]),
             ExprKind::Attr { .. } => {
                 Err("an attribute that is not supported in cycle mode yet".into())
-            }
-            // The place's shape is the aggregate's only when its choices fit it (named choices
-            // give an aggregate its own range, LRM 9.3.3.3, as an operand of `&` has).
-            ExprKind::Aggregate { assocs, bounds } if hint.is_some() => {
-                let known = self.known.clone();
-                let (n, locs) = (self.ops.len(), self.locs);
-                match self.aggregate(x, assocs, bounds, hint) {
-                    Ok(v) => Ok(v),
-                    Err(_) => {
-                        self.ops.truncate(n);
-                        self.locs = self.locs.max(locs);
-                        self.known = known;
-                        self.aggregate(x, assocs, bounds, None)
-                    }
-                }
             }
             ExprKind::Aggregate { assocs, bounds } => self.aggregate(x, assocs, bounds, hint),
             ExprKind::Qualified { to, operand } | ExprKind::Conv { to, operand } => {
@@ -4585,11 +4571,20 @@ impl Lx<'_> {
                 ));
             };
             let a = lx.arg(a)?;
-            // The second operand takes the shape of the first (an aggregate).
+            // The second operand takes the shape of the first (an aggregate), unless it has
+            // named choices and no `others`: an operand is no context, so such an aggregate has
+            // its own range, in the direction of its index subtype (LRM 9.3.3.3).
             let Actual::Expr(bx) = b.actual else {
                 return Err("a call with a default or converted actual".into());
             };
-            let b = lx.expr_h(bx, Some(&a))?;
+            let named = matches!(&lx.db.exprs[bx].kind, ExprKind::Aggregate { assocs, .. }
+                if assocs.iter().any(|a| !a.choices.is_empty())
+                    && !assocs.iter().any(|a| a.choices.iter().any(|c| matches!(c, Choice::Others))));
+            let b = if named {
+                lx.expr(bx)?
+            } else {
+                lx.expr_h(bx, Some(&a))?
+            };
             Ok((a, b))
         };
         match &sp.body {
@@ -5226,6 +5221,15 @@ fn down_to_0(v: Val) -> Val {
             .expect("one deep"),
             ..p
         }),
+        v => v,
+    }
+}
+
+/// `v` as the value of object `d` (index check messages name it).
+fn named(v: Val, d: DeclId) -> Val {
+    match v {
+        Val::Part(p) => Val::Part(Part { obj: Some(d), ..p }),
+        Val::Rec(fs) => Val::Rec(fs.into_iter().map(|f| named(f, d)).collect()),
         v => v,
     }
 }

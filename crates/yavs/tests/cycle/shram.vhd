@@ -69,13 +69,62 @@ end architecture;
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
+-- Other processes that use the RAM where a scan of names alone would not see it: through an alias,
+-- and through a function of the architecture. The RAM's process stays out with them.
+entity cycle_shram_hid is
+  port (clk, clk2, we : in std_ulogic; wa, ra : in unsigned(3 downto 0);
+        wd : in std_ulogic_vector(W - 1 downto 0); rd, pk, fr : out std_ulogic_vector(W - 1 downto 0));
+end entity;
+architecture a of cycle_shram_hid is
+  type mem_t is array (0 to 15) of std_ulogic_vector(W - 1 downto 0);
+  shared variable mem, mem2 : mem_t := (others => (others => '0'));
+  impure function first return std_ulogic_vector is
+  begin
+    return mem2(0);
+  end function;
+begin
+  p_ram : process (clk)
+  begin
+    if rising_edge(clk) then
+      if we = '1' then
+        mem(to_integer(wa)) := wd;
+      end if;
+      rd <= mem(to_integer(ra));
+    end if;
+  end process;
+  p_ram2 : process (clk)
+  begin
+    if rising_edge(clk) then
+      if we = '1' then
+        mem2(to_integer(wa)) := not wd;
+      end if;
+    end if;
+  end process;
+  peek : process (clk2)
+    alias m : mem_t is mem;
+  begin
+    if rising_edge(clk2) then
+      pk <= m(to_integer(ra));
+    end if;
+  end process;
+  via_fn : process (clk2)
+  begin
+    if rising_edge(clk2) then
+      fr <= first;
+    end if;
+  end process;
+end architecture;
+
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
 entity cycle_shram is
 end entity;
 architecture t of cycle_shram is
   signal clk, clk2, we : std_ulogic := '0';
   signal wa, ra : unsigned(3 downto 0) := (others => '0');
   signal wd : std_ulogic_vector(W - 1 downto 0) := (others => '0');
-  signal r_rbw, r_wbr, r_2p : std_ulogic_vector(W - 1 downto 0);
+  signal r_rbw, r_wbr, r_2p, r_h, r_pk, r_fr : std_ulogic_vector(W - 1 downto 0);
 begin
   rbw : entity work.cycle_shram_sp generic map (WBR => false, SEED => 3)
     port map (clk => clk, we => we, wa => wa, ra => ra, wd => wd, rd => r_rbw);
@@ -83,6 +132,9 @@ begin
     port map (clk => clk, we => we, wa => wa, ra => ra, wd => wd, rd => r_wbr);
   tp : entity work.cycle_shram_2p
     port map (clk => clk, clk2 => clk2, we => we, wa => wa, ra => ra, wd => wd, rd => r_2p);
+  hid : entity work.cycle_shram_hid
+    port map (clk => clk, clk2 => clk2, we => we, wa => wa, ra => ra, wd => wd, rd => r_h, pk => r_pk,
+              fr => r_fr);
   main : process
     variable r : unsigned(15 downto 0) := x"ACE1";
   begin
@@ -109,7 +161,8 @@ begin
       clk2 <= '0';
       wait for 4 ns;
       report "k=" & integer'image(k) & " rbw=" & to_hstring(r_rbw) & " wbr=" & to_hstring(r_wbr)
-        & " 2p=" & to_hstring(r_2p);
+        & " 2p=" & to_hstring(r_2p) & " h=" & to_hstring(r_h) & " pk=" & to_hstring(r_pk)
+        & " fr=" & to_hstring(r_fr);
     end loop;
     wait;
   end process;

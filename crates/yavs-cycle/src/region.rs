@@ -1737,21 +1737,18 @@ fn shared_rule(db: &Db, e: &Elaborated, fits: &BTreeMap<usize, Fit>) -> Vec<(usi
             exprs.push(pa.expr);
         }
         deep(db, &[p.stmt], &mut stmts);
+        // The process's own declarations: initial values, constraints, aliases.
+        if let StmtKind::Process { scope, .. } = &db.stmts[p.stmt].kind {
+            decl_exprs(db, *scope, &mut exprs);
+        }
         let mut seen = BTreeSet::new();
         let mut ok = true;
-        while let Some(s) = stmts.pop() {
-            db.stmt_exprs(s, &mut |x, _| exprs.push(x));
-            if let StmtKind::ProcCall(c) | StmtKind::ConcProcCall { call: c, .. } =
-                &db.stmts[s].kind
-            {
-                ok &= follow(db, c.callee, &mut seen, &mut stmts);
-            }
+        let mut later: Vec<ExprId> = Vec::new();
+        loop {
             for x in std::mem::take(&mut exprs) {
                 db.walk_expr(x, &mut |y| match &db.exprs[y].kind {
-                    ExprKind::Obj(d) => {
-                        if let DeclKind::Object(o) = &db.decls[*d].kind
-                            && o.class == ObjClass::SharedVariable
-                        {
+                    ExprKind::Obj(d) => match &db.decls[*d].kind {
+                        DeclKind::Object(o) if o.class == ObjClass::SharedVariable => {
                             let mut sc = Some(p.scope);
                             while let Some(x) = sc {
                                 if e.regions
@@ -1764,13 +1761,29 @@ fn shared_rule(db: &Db, e: &Elaborated, fits: &BTreeMap<usize, Fit>) -> Vec<(usi
                                 sc = e.hier.scope(x).parent;
                             }
                         }
-                    }
+                        // An alias names its target.
+                        DeclKind::Alias(yavs_sem::decl::Alias::Object { target, .. }) => {
+                            later.push(*target)
+                        }
+                        _ => {}
+                    },
                     ExprKind::Call { callee, .. } => {
-                        ok &= follow(db, *callee, &mut seen, &mut stmts);
+                        ok &= follow(db, *callee, &mut seen, &mut stmts, &mut later);
                     }
                     ExprKind::External(_) => ok = false,
                     _ => {}
                 });
+            }
+            exprs.append(&mut later);
+            if let Some(s) = stmts.pop() {
+                db.stmt_exprs(s, &mut |x, _| exprs.push(x));
+                if let StmtKind::ProcCall(c) | StmtKind::ConcProcCall { call: c, .. } =
+                    &db.stmts[s].kind
+                {
+                    ok &= follow(db, c.callee, &mut seen, &mut stmts, &mut exprs);
+                }
+            } else if exprs.is_empty() {
+                break;
             }
         }
         ok
@@ -1833,6 +1846,7 @@ fn follow(
     f: yavs_sem::DeclId,
     seen: &mut BTreeSet<yavs_sem::DeclId>,
     stmts: &mut Vec<StmtId>,
+    exprs: &mut Vec<ExprId>,
 ) -> bool {
     let Some(sp) = db.decls[f].kind.subprogram() else {
         return true;
@@ -1844,14 +1858,37 @@ fn follow(
         return true;
     }
     match &sp.body {
-        yavs_sem::decl::Body::Hir { stmts: body, .. } => {
+        yavs_sem::decl::Body::Hir { scope, stmts: body } => {
             if seen.insert(f) {
                 deep(db, body, stmts);
+                exprs.extend(sp.params.iter().filter_map(|p| p.default));
+                decl_exprs(db, *scope, exprs);
             }
             true
         }
         yavs_sem::decl::Body::Implicit(_) => true,
         _ => false,
+    }
+}
+
+/// What the declarations of region `scope` evaluate: initial values, file names, constraints,
+/// the targets of object aliases.
+fn decl_exprs(db: &Db, scope: yavs_sem::ScopeId, out: &mut Vec<ExprId>) {
+    for &x in &db.scopes[scope].order {
+        match &db.decls[x].kind {
+            yavs_sem::decl::DeclKind::Object(o) => {
+                out.extend(o.default);
+                if let Some((a, b)) = o.file_open {
+                    out.extend(a);
+                    out.push(b);
+                }
+                constraint_exprs(&db.subtypes[o.subtype].constraint, out);
+            }
+            yavs_sem::decl::DeclKind::Alias(yavs_sem::decl::Alias::Object { target, .. }) => {
+                out.push(*target)
+            }
+            _ => {}
+        }
     }
 }
 

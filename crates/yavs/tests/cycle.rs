@@ -830,6 +830,34 @@ begin
   end process;
 end architecture;
 
+entity cycle_tblidx is
+end entity;
+architecture a of cycle_tblidx is
+  type tbl_t is array (0 to 7) of natural;
+  constant TBL : tbl_t := (3, 1, 4, 1, 5, 9, 2, 6);
+  signal clk : bit := '0';
+  signal i : integer range 0 to 15 := 0;
+  signal z : natural := 0;
+begin
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      i <= i + 1;
+      z <= TBL(i);
+    end if;
+  end process;
+  main : process
+  begin
+    for k in 1 to 40 loop
+      clk <= '1';
+      wait for 5 ns;
+      clk <= '0';
+      wait for 5 ns;
+    end loop;
+    wait;
+  end process;
+end architecture;
+
 entity cycle_idx is
 end entity;
 architecture a of cycle_idx is
@@ -902,6 +930,11 @@ fn failed_checks_in_region_code_stop_the_run_as_in_the_normal_mode() {
             "cycle_idx",
             "error[E3009]: index 8 outside of range 7 downto 0 for v",
             "at 80 ns, delta 1, in process cycle_idx.reg",
+        ),
+        (
+            "cycle_tblidx",
+            "error[E3009]: index 8 outside of range 0 to 7 for TBL",
+            "at 80 ns, delta 1, in process cycle_tblidx.reg",
         ),
         (
             "cycle_val",
@@ -3410,11 +3443,20 @@ fn shared_variable_memories_equal_the_normal_mode() {
             let (cycle, err) = run(&dir, &[&flags[..], &["--cycle"]].concat(), "cycle_shram");
             assert_eq!(normal.len(), 40, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
-            // The two single-process RAMs; not the two processes of `tp`, nor `main`.
+            // The two single-process RAMs; not the two processes of `tp`, nor those of `hid`
+            // (an alias, a function), nor `main`.
             assert!(
-                err.contains("cycle mode: 2 of 5 processes run cycle-based"),
+                err.contains("cycle mode: 2 of 9 processes run cycle-based"),
                 "{w}: {err}"
             );
+            for (who, other) in [("mem", "peek"), ("mem2", "via_fn")] {
+                assert!(
+                    err.contains(&format!(
+                        "E4114 the shared variable `{who}` is also used by cycle_shram.hid.{other}"
+                    )),
+                    "{who}: {err}"
+                );
+            }
             assert!(
                 err.contains(
                     "E4114 the shared variable `mem` is also used by cycle_shram.tp.p_read"

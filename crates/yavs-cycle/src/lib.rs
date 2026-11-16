@@ -1403,9 +1403,18 @@ fn cones<'a>(
         })
         .collect();
     let mut reach = own;
+    // Readers come after their writers in the settle, but for loop groups: from the last step
+    // back, a pass or two.
+    let mut order: Vec<usize> = Vec::new();
+    let mut seen = vec![false; n];
+    for &k in &sel.settle {
+        if !std::mem::replace(&mut seen[k], true) {
+            order.push(k);
+        }
+    }
     loop {
         let mut moved = false;
-        for k in (0..n).rev() {
+        for &k in order.iter().rev() {
             for &m in &succ[k] {
                 if m == k {
                     continue;

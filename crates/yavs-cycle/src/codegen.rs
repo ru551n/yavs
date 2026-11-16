@@ -217,19 +217,32 @@ impl Code {
     }
 
     /// Whether guard `g`'s member may be skipped; if not, the inputs that changed are copied for
-    /// the next time. Its flag word: what the last run was (bits 0 and 1) and the span of inputs
-    /// that differed last (from bit 8), compared first.
+    /// the next time. Its flag word: what the last run was (bits 0 and 1: none, without checks,
+    /// with), the span of inputs that differed last (bits 8 to 31, compared first), the runs in a
+    /// row it did not skip (bits 32 to 39) and, after [`GUARD_MISSES`] of them, the runs left
+    /// (bits 40 to 55) of [`GUARD_OFF`] it runs without a compare (an active member costs no
+    /// more than a few instructions a run).
     #[inline]
     fn guard(&self, img: &mut [u64], g: usize, checked: bool) -> bool {
         let gd = &self.guards[g];
         let (flag, n) = (gd.flag as usize, gd.ins.len());
+        let f = img[flag];
+        let off = f >> 40 & 0xffff;
+        if off != 0 {
+            // Runs, and its copy is not valid after (state none).
+            img[flag] = (off - 1) << 40;
+            return false;
+        }
         let need = if checked { 2 } else { 1 };
-        let (state, hint) = (img[flag] & 3, (img[flag] >> 8) as usize);
+        let (state, hint, misses) = (f & 3, (f >> 8 & 0xff_ffff) as usize, f >> 32 & 0xff);
         // Spans compared equal need no copy; from the first that differs on, every one is copied.
         let mut from = 0;
         if state >= need {
             loop {
                 if from == n {
+                    if misses != 0 {
+                        img[flag] = f & !(0xff << 32);
+                    }
                     return true;
                 }
                 let j = wrap(hint + from, n);
@@ -240,6 +253,10 @@ impl Code {
                 }
                 from += 1;
             }
+        }
+        if misses + 1 >= GUARD_MISSES {
+            img[flag] = GUARD_OFF << 40;
+            return false;
         }
         let first = if from < n { wrap(hint + from, n) } else { 0 };
         for i in from..n {
@@ -254,7 +271,7 @@ impl Code {
                 img.copy_within(w..w + c, at);
             }
         }
-        img[flag] = need | (first as u64) << 8;
+        img[flag] = need | (first as u64) << 8 | (misses + 1) << 32;
         false
     }
 
@@ -291,6 +308,10 @@ impl Code {
         Ok(())
     }
 }
+
+/// Runs in a row a guard did not skip before it stops comparing for [`GUARD_OFF`] runs.
+const GUARD_MISSES: u64 = 16;
+const GUARD_OFF: u64 = 256;
 
 /// `i` taken back into `0 .. n` from below `2 * n` (no division).
 #[inline(always)]

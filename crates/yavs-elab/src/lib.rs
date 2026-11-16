@@ -471,6 +471,10 @@ pub struct Elaborated {
     /// With [`ElabConfig::keep_values`]: the constants nothing evaluated during elaboration, by
     /// instance scope (`None`: a package's), evaluated apart from the model.
     pub region_vals: std::collections::HashMap<(Option<ScopeId>, yavs_sem::DeclId), Val>,
+    /// With [`ElabConfig::keep_values`]: the globally static ranges, not locally static, of the
+    /// types and subtypes of each instance's regions (a function of generics), evaluated apart
+    /// from the model, as [`Elaborated::range`] gives them.
+    pub region_ranges: std::collections::HashMap<(ScopeId, yavs_sem::ExprId), Bounds>,
     /// Per leaf: nothing asks for the event history of single elements of this signal, so
     /// the kernel keeps only each block's last event (`lean.rs`). Clear it to keep the history
     /// of every signal; empty means the same.
@@ -583,7 +587,9 @@ impl Elaborated {
     pub fn range(&self, scope: ScopeId, left: yavs_sem::ExprId) -> Option<Bounds> {
         let mut cur = Some(scope);
         while let Some(s) = cur {
-            if let Some(&b) = self.ranges.get(&(s, left)) {
+            if let Some(&b) =
+                (self.ranges.get(&(s, left))).or_else(|| self.region_ranges.get(&(s, left)))
+            {
                 return Some(b);
             }
             cur = self.hier.scope(s).parent;

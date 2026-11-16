@@ -692,7 +692,7 @@ pub(crate) fn elaborate(
     e.m.nets.place(e.cfg.packs, forced.as_ref());
     let lean = crate::lean::leaves(e.db, &e.m.nets);
     let no_codes = crate::keep_codes::leaves(e.db, &e.m.nets);
-    let region_vals = if e.cfg.keep_values {
+    let (region_vals, region_ranges) = if e.cfg.keep_values {
         e.region_values()
     } else {
         Default::default()
@@ -713,6 +713,7 @@ pub(crate) fn elaborate(
         model_vals: e.m.vals,
         pkg_vals: std::mem::take(&mut e.m.pkg),
         region_vals,
+        region_ranges,
         sigs: e.m.sigs,
         regions: e.m.regions,
         var_ports: e.m.var_ports,
@@ -1531,11 +1532,18 @@ impl Elab<'_> {
     /// from the model: afterwards the model and the calls made are as before, so the lowering
     /// and the run see what a plain elaboration leaves (a constant that fails its subtype check
     /// still fails at run time). One that cannot be evaluated has no value.
-    fn region_values(&mut self) -> std::collections::HashMap<(Option<ScopeId>, DeclId), Val> {
+    #[allow(clippy::type_complexity)]
+    fn region_values(
+        &mut self,
+    ) -> (
+        HashMap<(Option<ScopeId>, DeclId), Val>,
+        HashMap<(ScopeId, ExprId), crate::Bounds>,
+    ) {
         let db: &Db = self.db;
         let (vals, pkg) = (self.m.vals.clone(), self.m.pkg.clone());
         let mark = self.m.session.mark();
         let mut out = std::collections::HashMap::new();
+        let mut ranges = HashMap::new();
         // Only what evaluates without an impure call (whose effects on package state would
         // happen twice): a deferred constant by its full declaration.
         let constant = |d: DeclId, deferred: bool| match &db.decls[d].kind {
@@ -1565,6 +1573,23 @@ impl Elab<'_> {
                     {
                         out.insert((Some(s), d), v);
                     }
+                    // The globally static ranges of its types and subtypes that are not
+                    // locally static (a function of generics): the dynamic ones are in
+                    // `Elaborated::ranges` already.
+                    if let DeclKind::Type(_) | DeclKind::Subtype(_) = db.decls[d].kind {
+                        for rc in db.declared_ranges(d) {
+                            if let yavs_sem::types::RangeC::Explicit { left, right, .. } = *rc
+                                && db.dynamic_range(rc).is_none()
+                                && (db.exprs[left].stat < Staticness::Locally
+                                    || db.exprs[right].stat < Staticness::Locally)
+                                && !crate::eval::may_call_impure(db, left)
+                                && !crate::eval::may_call_impure(db, right)
+                                && let Ok(b) = self.m.range(db, rc, Some(s), db.decls[d].span)
+                            {
+                                ranges.insert((s, left), b);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1586,8 +1611,9 @@ impl Elab<'_> {
         // not kept (the package state may differ).
         if self.m.session.undo(db, mark).is_err() {
             out.clear();
+            ranges.clear();
         }
-        out
+        (out, ranges)
     }
 
     /// A 2019 variable port (LRM 6.5.2) denotes its actual's protected object: the shared

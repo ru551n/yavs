@@ -1121,6 +1121,7 @@ impl Elaborated {
             model_vals,
             pkg_vals,
             region_vals,
+            region_ranges,
             sigs,
             regions,
             var_ports,

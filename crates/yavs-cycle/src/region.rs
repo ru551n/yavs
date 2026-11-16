@@ -1484,7 +1484,11 @@ fn run_count_cone(
             continue;
         }
         for &d in drivers.get(&l).into_iter().flatten() {
-            if edge_only(db, e, d) || behavioural.contains(&d) || !procs.insert(d) {
+            if e.procs[d].trigger.is_some()
+                || edge_only(db, e, d)
+                || behavioural.contains(&d)
+                || !procs.insert(d)
+            {
                 continue;
             }
             gone.push((
@@ -1507,10 +1511,10 @@ fn run_count_cone(
     gone
 }
 
-/// Whether process `pi` acts only at clock edges, as a register does: an edge trigger, or a process
-/// with a sensitivity list whose every statement outside an edge test (`if <edge> [and ...]`) is
-/// an `if`, an assert or a report (a RAM on two clocks, a memory checking its size). Its outputs
-/// change in the delta after an edge in both modes.
+/// Whether process `pi` acts only at clock edges, as a register does: an edge trigger without an
+/// asynchronous reset, or a process with a sensitivity list whose every statement outside an
+/// edge test (`if <edge> [and ...]`) is an `if`, an assert or a report (a RAM on two clocks, a
+/// memory checking its size). Its outputs change in the delta after an edge in both modes.
 fn edge_only(db: &Db, e: &Elaborated, pi: usize) -> bool {
     fn edge(db: &Db, c: ExprId) -> bool {
         if db.edge_shape(c).is_some() {
@@ -1540,7 +1544,9 @@ fn edge_only(db: &Db, e: &Elaborated, pi: usize) -> bool {
         })
     }
     let p = &e.procs[pi];
-    p.trigger.is_some()
+    // An asynchronous reset branch is combinational in what it reads (the checker's fit shows
+    // it reads only what its list names; that is not known here).
+    p.trigger.as_ref().is_some_and(|t| t.reset.is_none())
         || p.actual.is_none()
             && matches!(&db.stmts[p.stmt].kind, StmtKind::Process {
                 sensitivity: Sensitivity::List(_),

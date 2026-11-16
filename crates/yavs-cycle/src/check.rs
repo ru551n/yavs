@@ -3120,6 +3120,34 @@ impl Cx<'_> {
             LoopScheme::Forever => {}
         }
         let forever = matches!(scheme, LoopScheme::Forever);
+        // The values the body changes are not known in it: a clocked process walks it once.
+        let mut st = st;
+        if !st.known.is_empty() {
+            let mut stmts = Vec::new();
+            deep(db, body, &mut stmts);
+            for s in stmts {
+                match &db.stmts[s].kind {
+                    StmtKind::VarAssign { target, .. } => {
+                        let mut x = target.expr;
+                        while let ExprKind::Index { prefix, .. }
+                        | ExprKind::Slice { prefix, .. }
+                        | ExprKind::Field { prefix, .. } = &db.exprs[x].kind
+                        {
+                            x = *prefix;
+                        }
+                        db.walk_expr(x, &mut |y| {
+                            if let ExprKind::Obj(d) = &db.exprs[y].kind
+                                && st.known.contains_key(d)
+                            {
+                                Rc::make_mut(&mut st.known).remove(d);
+                            }
+                        });
+                    }
+                    StmtKind::ProcCall(_) => st.known = Rc::default(),
+                    _ => {}
+                }
+            }
+        }
         let entry = st;
         let mut cur = entry.clone();
         let rounds = if self.comb { ROUNDS } else { 1 };

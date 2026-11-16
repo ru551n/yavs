@@ -6,7 +6,8 @@
 -- join; `two` gives `lo` another value on each path, so an element of `v2` keeps a value of the
 -- previous run and the process stays out, and so does `elsy`, whose `elsif` reads `lo` as the
 -- statement found it, not as its first branch leaves it, and `wl`, whose `lo` a `while` loop
--- changes.
+-- changes. `clk_loop` writes element `lo` of a register in a loop of a clocked process (walked
+-- once, so `lo` is not known in it) and joins.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -41,7 +42,7 @@ architecture t of cycle_knownvar is
   signal d : unsigned(W - 1 downto 0) := (others => '0');
   signal atoms : atom_vec_t(0 to 1) := (others => ((others => '0'), "0", '0'));
   signal packed : std_ulogic_vector(2 * (W + 2) - 1 downto 0);
-  signal w4, q4, two_y, el_y, wl_y : std_ulogic_vector(3 downto 0) := (others => '0');
+  signal w4, q4, two_y, el_y, wl_y, dd, cl : std_ulogic_vector(3 downto 0) := (others => '0');
   signal dr_a, dr_b, dr_c, rpk : std_ulogic_vector(W - 1 downto 0) := (others => '0');
   signal rw4, rdr_a, rdr_b, rdr_c, rtwo, rel : std_ulogic_vector(W + 3 downto 0) := (others => '0');
 begin
@@ -138,6 +139,17 @@ begin
     v4(lo) := q4(0);
     wl_y <= v4;
   end process;
+  clk_loop : process (clk)
+    variable lo : natural range 0 to 4 := 0;
+  begin
+    if rising_edge(clk) then
+      lo := 0;
+      for i in 0 to 3 loop
+        cl(lo) <= dd(i) xor q4(i);
+        lo := lo + 1;
+      end loop;
+    end if;
+  end process;
   main : process
     variable r : unsigned(15 downto 0) := x"ACE1";
   begin
@@ -145,6 +157,7 @@ begin
       r := r(14 downto 0) & (r(15) xor r(13) xor r(12) xor r(10));
       d <= d(W - 2 downto 0) & r(0);
       sel <= r(3);
+      dd <= std_ulogic_vector(r(7 downto 4));
       wait for 1 ns;
       clk <= '1';
       wait for 5 ns;
@@ -152,7 +165,7 @@ begin
       wait for 4 ns;
       report "k=" & integer'image(k) & " pk=" & to_hstring(rpk) & " w=" & to_hstring(rw4) &
         " a=" & to_hstring(rdr_a) & " b=" & to_hstring(rdr_b) & " c=" & to_hstring(rdr_c) &
-        " two=" & to_hstring(rtwo) & " el=" & to_hstring(rel);
+        " two=" & to_hstring(rtwo) & " el=" & to_hstring(rel) & " cl=" & to_hstring(cl);
     end loop;
     wait;
   end process;

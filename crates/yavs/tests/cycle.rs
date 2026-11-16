@@ -3955,7 +3955,7 @@ fn reports_of_calls_folded_with_constants_are_made() {
         }
         // Failing asserts of notes and warnings: once per process, the same records; a second
         // run with the compilation cache gives the first's output; a library warning of a
-        // folded call too.
+        // folded call is dropped (A23), the normal mode prints it.
         for (s, extra) in [
             ("-gs=note", ""),
             ("-gs=warning", ""),
@@ -3966,15 +3966,17 @@ fn reports_of_calls_folded_with_constants_are_made() {
             let gens: Vec<&str> = gens.into_iter().filter(|g| !g.is_empty()).collect();
             let (nc, nout, _) = go(&flags(&gens, false));
             let (c, out, err) = go(&flags(&gens, true));
+            let lib = "NUMERIC_STD.TO_UNSIGNED: vector truncated";
             if extra == "-gtrunc=true" {
-                let w = "0fs: NUMERIC_STD.TO_UNSIGNED: vector truncated\n    Process cycle_foldrep.u.pa\n";
-                assert_eq!(out.matches(w).count(), 1, "{t:?}\n{out}");
+                assert_eq!(out.matches(lib).count(), 0, "{t:?}\n{out}");
+                assert!(nout.contains(lib), "{t:?}\n{nout}");
             } else if !extra.is_empty() {
                 let again = go(&flags(&gens, true));
                 assert_eq!((again.0, &again.1), (c, &out), "{t:?} warm\n{}", again.2);
             }
             assert_eq!(c, nc, "{t:?} {s}\n{err}");
             let (n, cy) = (records(&nout), records(&out));
+            let n: Vec<(String, String)> = n.into_iter().filter(|r| !r.0.contains(lib)).collect();
             assert_eq!(sorted(&cy), sorted(&n), "{t:?} {s}\n{nout}\n{out}");
             assert_eq!(sorted(&cy).len(), cy.len(), "{t:?} {s}: made twice\n{out}");
             assert!(

@@ -326,7 +326,7 @@ Reports, assertions and library warnings
 
 A cycle-based process below the top-level unit does not produce ``report`` or ``assert`` messages, at any
 severity, and no cycle-based process gives the library warnings of ``numeric_std`` and the other ``ieee`` packages
-(metavalue and truncation warnings), except those of calls evaluated during elaboration (below). The report counts the statements it drops per process (:ref:`cycle-report`).
+(metavalue and truncation warnings), also not while a call is evaluated during elaboration (below). The report counts the statements it drops per process (:ref:`cycle-report`).
 The processes of the top-level unit, the testbench's, keep their checks (below).
 
 * This includes ``severity failure``. A design that ends its own test from RTL code, with an assertion or a
@@ -369,9 +369,10 @@ the testbench's own end at 1022 ns with status 0.
 * ``--assert-summary`` and ``--exit-severity`` see only the messages that are produced.
 * A call of a pure function whose arguments are all known during elaboration (generics and constants:
   ``log2(DEPTH)``, a check of a register map) is evaluated once, while the design is elaborated, and its value is
-  built into the region. What that call reports is kept: its ``assert`` and ``report`` messages, and the library
-  warnings it gives, are produced once for each process holding the call, at 0 fs, in that process's name, with the
-  normal mode's text. The normal mode produces them each time the statement runs (at every clock edge in a clocked
+  built into the region. What the design's own code in that call reports is kept: its ``assert`` and ``report``
+  messages are produced once for each process holding the call, at 0 fs, in that process's name, with the normal
+  mode's text. The notes and warnings of the ``ieee`` and ``std`` libraries the call gives (a truncating
+  ``to_unsigned``, for example) are dropped, as everywhere else in the region. The normal mode produces them each time the statement runs (at every clock edge in a clocked
   process), so in cycle mode such a message appears once instead of at every call, at 0 fs instead of the time of
   the first call, and also when the run never takes the branch the call is in (one whose condition only the run
   decides). A call that reports with severity ``error`` or ``failure`` keeps its process in the event simulation,

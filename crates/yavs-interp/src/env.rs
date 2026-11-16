@@ -373,12 +373,30 @@ thread_local! {
 }
 
 /// Run `f` with the reports of elaboration-time calls on this thread kept, neither printed
-/// nor counted: cycle mode evaluates calls apart from the model and reports them itself.
-pub fn capture_elab_reports<T>(f: impl FnOnce() -> T) -> (T, Vec<(u8, String)>) {
+/// nor counted: cycle mode evaluates calls apart from the model and reports them itself. Notes and
+/// warnings of the standard library (a native `ieee` subprogram, a statement of one of the
+/// `library` files) are dropped (A23).
+pub fn capture_elab_reports<T>(
+    library: std::collections::HashSet<yavs_diag::FileId>,
+    f: impl FnOnce() -> T,
+) -> (T, Vec<(u8, String)>) {
     let outer = CAPTURE.with(|c| c.replace(Some(Vec::new())));
+    let lib = LIBRARY.with(|l| l.replace(library));
     let r = f();
+    LIBRARY.with(|l| l.replace(lib));
     let got = CAPTURE.with(|c| c.replace(outer)).unwrap_or_default();
     (r, got)
+}
+
+thread_local! {
+    /// While [`capture_elab_reports`] runs: the standard library's source files.
+    static LIBRARY: std::cell::RefCell<std::collections::HashSet<yavs_diag::FileId>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// While [`capture_elab_reports`] runs: `file` is one of the standard library's.
+pub(crate) fn library_file(file: yavs_diag::FileId) -> bool {
+    capturing() && LIBRARY.with(|l| l.borrow().contains(&file))
 }
 
 /// Keep a report when `capture_elab_reports` runs; `false` when it does not.
@@ -396,6 +414,15 @@ fn capturing() -> bool {
     CAPTURE.with(|c| c.borrow().is_some())
 }
 
+/// A report made while no kernel runs, by the standard library when `lib`: a note or warning of
+/// it is dropped while [`capture_elab_reports`] runs (A23), else as [`print_elab`].
+pub(crate) fn print_elab_from(s: Severity, text: &str, lib: bool) {
+    if lib && s <= Severity::Warning && capturing() {
+        return;
+    }
+    print_elab(s, text);
+}
+
 /// The line of a report made while no kernel runs.
 pub(crate) fn print_elab(s: Severity, text: &str) {
     use std::io::Write;
@@ -410,10 +437,14 @@ pub(crate) fn print_elab(s: Severity, text: &str) {
 /// Print and count again the reports a package initialisation made (`SharedState::replay_init_reports`).
 pub(crate) fn replay_elab(reports: &[(u8, String)]) {
     for (s, text) in reports {
-        if !capturing() {
-            ELAB_COUNTS[*s as usize].fetch_add(1, Ordering::Relaxed);
+        let (lib, s) = (s & crate::LIB_REPORT != 0, s & !crate::LIB_REPORT);
+        if lib && sev_of(s) <= Severity::Warning && capturing() {
+            continue;
         }
-        print_elab(sev_of(*s), text);
+        if !capturing() {
+            ELAB_COUNTS[s as usize].fetch_add(1, Ordering::Relaxed);
+        }
+        print_elab(sev_of(s), text);
     }
 }
 

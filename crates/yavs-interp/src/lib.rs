@@ -375,6 +375,10 @@ pub(crate) fn ieee_warnings_off() -> bool {
     IEEE_DIR.get().is_some()
 }
 
+/// The high bit of a report's severity byte in `init_reports` and call traces: made by the
+/// standard library.
+pub(crate) const LIB_REPORT: u8 = 0x80;
+
 impl Default for Limits {
     fn default() -> Limits {
         Limits {

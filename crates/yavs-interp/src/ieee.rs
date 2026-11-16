@@ -307,12 +307,12 @@ pub(crate) fn report(m: &mut Machine, ctx: Cx<'_, '_, '_>, s: Severity, text: &s
             }
         }
         None => {
-            if m.init_report_seen(s, text) || !m.rt.asserts.report_elab(s) {
+            if m.init_report_seen(s, text, true) || !m.rt.asserts.report_elab(s) {
                 return Ok(());
             }
-            crate::env::print_elab(s, text);
+            crate::env::print_elab_from(s, text, true);
             if let Some(r) = m.init_reports.as_mut() {
-                r.push((s as u8, text.to_string()));
+                r.push((s as u8 | crate::LIB_REPORT, text.to_string()));
             }
             if s >= Severity::Failure {
                 return rt_err(format!("report of severity failure: {text}"));

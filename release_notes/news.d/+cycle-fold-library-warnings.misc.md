@@ -1,0 +1,1 @@
+Cycle mode (`yavs run --cycle`) no longer prints the warnings of the `ieee` libraries that a call evaluated while the design is elaborated gives (a truncating `to_unsigned`, for example), as no cycle-based process gives them; the design's own messages of such a call are still made once.

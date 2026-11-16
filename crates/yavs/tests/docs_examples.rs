@@ -476,6 +476,7 @@ fn cycle_mode_page() {
         "rtl_failure.vhd",
         "delta.vhd",
         "metavalue.vhd",
+        "overflow.vhd",
     ];
     e.copy("cycle", &files);
     let mut args = vec!["analyze", "--std=2008", WORK];
@@ -514,6 +515,9 @@ fn cycle_mode_page() {
     let (code, _, err) = e.yavs(&["run", "--cycle", "--wave=x.fst", WORK, "tb_counter"]);
     assert_eq!(code, 2);
     assert!(err.contains("error[E4102]"), "{err}");
+    on_page(page, &err);
+    let (code, _, err) = e.yavs(&["run", "--cycle", WORK, "tb_overflow"]);
+    assert_eq!(code, 1, "{err}");
     on_page(page, &err);
     let (code, _, err) = e.yavs(&["run", "--cycle", "--cycle-strict", WORK, "tb_counter"]);
     assert_eq!(code, 2, "{err}");

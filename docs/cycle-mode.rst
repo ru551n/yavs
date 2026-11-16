@@ -8,7 +8,7 @@ whether your tests can live with it.
 
 .. note::
 
-   Cycle mode is new and opt-in. It is developed on a side branch of the source repository (``Lukas-mode``) and is
+   Cycle mode is new and opt-in. It is developed on a side branch of the source repository and is
    not in any release yet, so you need a build from that branch. The set of designs it accepts is still growing: a
    process it cannot take yet simply stays in the event simulation (see :ref:`cycle-report`), and the list in this
    page is the behaviour of the branch at the time of writing.
@@ -58,8 +58,8 @@ There are three flags of ``yavs run``. They are alternatives; giving two is a us
     yavs run --cycle-strict --work=work:build/work tb_counter     # what does not fit is an error
     yavs run --cycle-report --work=work:build/work tb_counter     # say what would join, run nothing
 
-* ``--cycle`` selects the processes that can join, runs the simulation, and prints one line on standard error
-  before it says how many joined. A second line at the end says how many metavalues were read as ``0``
+* ``--cycle`` selects the processes that can join, prints one line on standard error that says how many joined,
+  and runs the simulation. A second line at the end says how many metavalues were read as ``0``
   (:ref:`cycle-changes`), if there were any. Selection never causes an error.
 * ``--cycle-strict`` is ``--cycle`` for designs that should join completely: a process below the top-level
   design unit that looks like RTL and cannot join is an error (:ref:`cycle-strict`).
@@ -353,8 +353,7 @@ the testbench's own end at 1022 ns with status 0.
 * The gap in this rule is a checker or monitor entity *below* the top-level unit: it looks like the design, so a
   clocked process in it joins the region and its assertions are dropped. Put such checks in a process of the
   top-level unit, or run the test in the normal mode.
-* ``--assert-summary``, ``--exit-severity`` and the ``--stop-severity`` options see only the messages that are
-  produced.
+* ``--assert-summary`` and ``--exit-severity`` see only the messages that are produced.
 
 Delta cycles inside the region are not visible
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -431,14 +430,15 @@ Checks that stay
 
 Integer overflow, subtype range checks and array index checks are still made in cycle-based processes. A failure
 stops the run with the same error and exit status as in the normal mode, with the time and the process, but without
-the source line:
+the source line. ``overflow.vhd`` counts an integer past its largest value:
 
 .. code-block:: text
 
+    cycle mode: 1 of 3 processes run cycle-based, 2 in the event kernel (see --cycle-report)
     error[E3009]: result of 2147483647 + 1 cannot be represented as INTEGER
      |
      = note: LRM 5.2.3.1, 5.2.4.1: a predefined arithmetic operation delivers the correct result
-     = note: at 25 ns, delta 0, in process tb15.process (tb.vhd:7)
+     = note: at 25 ns, delta 0, in process tb_overflow.dut.process (overflow.vhd:8)
 
     error: aborting due to 1 previous error
 
@@ -460,7 +460,7 @@ Strict mode
 
 ``--cycle-strict`` is for a design that should be cycle-based as a whole, for example in CI to notice when a
 change moves a process out of the region. The selection is the same as with ``--cycle``. The difference is that a
-process that is RTL by shape and cannot join is an error, with the code of the reason (E4101, E4111 to E4127), all of
+process that is RTL by shape and cannot join is an error, with the code of the reason (E4101, E4110 to E4127), all of
 them listed, and the run stops with exit status 2 before simulating.
 
 Two groups are exempt and never an error:

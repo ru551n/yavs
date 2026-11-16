@@ -3810,6 +3810,182 @@ fn calls_elaboration_evaluated_per_process_equal_the_normal_mode() {
     }
 }
 
+/// The report records of a run's standard output: severity and message without the time, and
+/// the process line under it.
+fn records(out: &str) -> Vec<(String, String)> {
+    let mut v = Vec::new();
+    let mut lines = out.lines().peekable();
+    while let Some(l) = lines.next() {
+        let Some(rest) = l.strip_prefix("** ") else {
+            continue;
+        };
+        let (sev, msg) = rest.split_once(": ").expect("a report line");
+        let msg = msg.split_once(": ").map_or(msg, |(_, m)| m);
+        let at = match lines.peek() {
+            Some(p) if p.starts_with("    Process") => lines.next().unwrap_or_default(),
+            _ => "",
+        };
+        v.push((format!("{sev}: {msg}"), at.to_string()));
+    }
+    v
+}
+
+/// Asserts and reports of pure functions whose calls fold with constants (A22, `foldrep.vhd`):
+/// one that holds prints nothing; a note or warning (an assert, a report, in a call inside a
+/// call, the same call in two processes, the second from the elaboration's call cache) is made
+/// once per process at 0 fs where the normal mode makes it at every call, with the same text and
+/// process, also from the compilation cache; one of severity error or failure keeps its process
+/// in the event kernel, so its messages, times and the exit status are the normal mode's; a call
+/// whose arguments only the unrolled loop knows joins when its assert holds and stays out when it
+/// fails; a failing call in a branch that never runs is not seen. A constant's report is made
+/// once in both modes.
+#[test]
+fn reports_of_calls_folded_with_constants_are_made() {
+    let dir = tempdir("cycle-foldrep");
+    analyze(&dir, "foldrep.vhd", include_str!("cycle/foldrep.vhd"));
+    let go = |flags: &[&str]| {
+        let mut args = vec!["run", "--work=work:lib"];
+        if !flags.contains(&"--cache") {
+            args.push("--no-cache");
+        }
+        args.extend(flags.iter().filter(|f| **f != "--cache"));
+        args.push("cycle_foldrep");
+        let o = yavs(&dir, &args);
+        let out: String = String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(|l| match l.split_once("fs+") {
+                Some((a, b)) => format!(
+                    "{a}fs{}\n",
+                    b.trim_start_matches(|c: char| c.is_ascii_digit())
+                ),
+                None => format!("{l}\n"),
+            })
+            .collect();
+        let err = String::from_utf8_lossy(&o.stderr).into_owned();
+        (o.status.code(), out, err)
+    };
+    let members = |err: &str, n: u32| {
+        assert!(
+            err.contains(&format!("cycle mode: {n} of 11 processes run cycle-based")),
+            "{n}: {err}"
+        )
+    };
+    let report = |gens: &[&str]| {
+        let mut f = gens.to_vec();
+        f.push("--cycle");
+        with_report(&dir, &f, "cycle_foldrep", String::new())
+    };
+    let sorted = |v: &[(String, String)]| {
+        let mut v = v.to_vec();
+        v.sort();
+        v.dedup();
+        v
+    };
+    let res = |o: &str| {
+        o.lines()
+            .filter(|l| l.contains("a="))
+            .map(String::from)
+            .collect::<Vec<_>>()
+    };
+    for t in tiers() {
+        let flags = |gens: &[&'static str], cycle: bool| {
+            let mut f = [&t[..], gens].concat();
+            if cycle {
+                f.push("--cycle");
+            }
+            f
+        };
+        // Every assert holds: the same output.
+        let normal = go(&flags(&["-gg=4"], false));
+        let (c, out, err) = go(&flags(&["-gg=4"], true));
+        assert_eq!((c, &out), (normal.0, &normal.1), "{t:?}\n{err}");
+        assert_eq!(records(&out).len(), 2, "{out}");
+        members(&err, 9);
+        // The constant's report, on the standard error once in both modes.
+        for e in [&normal.2, &err] {
+            assert_eq!(e.matches("(init): say 1\n").count(), 1, "{t:?}\n{e}");
+        }
+        // Failing asserts of notes and warnings: once per process, the same records; a second
+        // run with the compilation cache gives the first's output.
+        for (s, cache) in [
+            ("-gs=note", ""),
+            ("-gs=warning", ""),
+            ("-gs=warning", "--cache"),
+        ] {
+            let gens = ["-gg=5", s, cache];
+            let gens: Vec<&str> = gens.into_iter().filter(|g| !g.is_empty()).collect();
+            let (nc, nout, _) = go(&flags(&gens, false));
+            let (c, out, err) = go(&flags(&gens, true));
+            if !cache.is_empty() {
+                let again = go(&flags(&gens, true));
+                assert_eq!((again.0, &again.1), (c, &out), "{t:?} warm\n{}", again.2);
+            }
+            assert_eq!(c, nc, "{t:?} {s}\n{err}");
+            let (n, cy) = (records(&nout), records(&out));
+            assert_eq!(sorted(&cy), sorted(&n), "{t:?} {s}\n{nout}\n{out}");
+            assert_eq!(sorted(&cy).len(), cy.len(), "{t:?} {s}: made twice\n{out}");
+            assert!(
+                n.len() > cy.len(),
+                "{t:?} {s}: the normal mode reports at every call"
+            );
+            for (p, n) in [("pa", 5), ("pb", 7), ("pd", 5)] {
+                assert!(
+                    out.contains(&format!(
+                        "0fs: half of odd {n}\n    Process cycle_foldrep.u.{p}\n"
+                    )),
+                    "{t:?} {s} {p}\n{out}"
+                );
+            }
+            assert_eq!(res(&out), res(&nout), "{t:?} {s}");
+            members(&err, 9);
+        }
+        // Error and failure: the processes calling `half` stay out; the normal mode's output.
+        for s in ["-gs=error", "-gs=failure"] {
+            let normal = go(&flags(&["-gg=5", s], false));
+            let (c, out, err) = go(&flags(&["-gg=5", s], true));
+            assert_eq!((c, &out), (normal.0, &normal.1), "{t:?} {s}\n{err}");
+            assert_eq!(c, Some(1), "{out}");
+            members(&err, 6);
+        }
+        // A failing assert in the unrolled loop keeps `pc` out.
+        for s in ["-gs=note", "-gs=warning"] {
+            let normal = go(&flags(&["-gloop_odd=true", s], false));
+            let (c, out, err) = go(&flags(&["-gloop_odd=true", s], true));
+            assert_eq!((c, &out), (normal.0, &normal.1), "{t:?} {s}\n{err}");
+            members(&err, 8);
+        }
+        // The failing call in `pa`'s branch on `dead`: elaboration's failure is not seen while
+        // the branch cannot run (above), and when it runs `pa` stays out.
+        for o in [&normal.1, &normal.2, &out, &err] {
+            assert!(!o.contains("half of odd 1"), "{o}");
+        }
+        let normal = go(&flags(&["-gdead=true"], false));
+        let (c, out, err) = go(&flags(&["-gdead=true"], true));
+        assert_eq!((c, &out), (normal.0, &normal.1), "{t:?}\n{err}");
+        assert!(out.contains("Failure: 5000000fs: half of odd 1"), "{out}");
+        members(&err, 8);
+    }
+    let r = report(&["-gg=5", "-gs=error"]);
+    for (p, f) in [("pa", "half"), ("pb", "outer"), ("pd", "half")] {
+        assert!(
+            row(&r, &format!("cycle_foldrep.u.{p}"))
+                .1
+                .contains(&format!(
+                    "a call of `{f}` that reports with severity error when it is evaluated"
+                )),
+            "{p}: {r}"
+        );
+    }
+    let r = report(&["-gloop_odd=true"]);
+    assert!(
+        row(&r, "cycle_foldrep.u.pc").1.contains(
+            "an assert or report of `half`, called with arguments known during elaboration, \
+             that cycle mode cannot show to hold"
+        ),
+        "{r}"
+    );
+}
+
 /// Out ports of a subtype resolved by a function of the design on an unresolved actual
 /// (`ownres.vhd`): the function runs in both modes, so the actual is the inverse of the register,
 /// also for a function named `resolved` (once taken for the library's); the drivers stay out of

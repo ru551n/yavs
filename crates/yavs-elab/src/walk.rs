@@ -25,7 +25,7 @@ use crate::hier::{
     DriverDecl, ImplicitKind, Leaf, LeafId, LeafRes, ObjId, ObjKind, PortEdge, ProcIdx, ScopeId,
     ScopeKind, Sel, Shape, SigObj, Whole,
 };
-use crate::{ElabConfig, Elaborated, ProcInst, Top, VarObj, codes};
+use crate::{ElabConfig, Elaborated, ProcInst, RegionCall, Top, VarObj, codes};
 
 type R<T> = Result<T, Box<Diagnostic>>;
 
@@ -1648,13 +1648,11 @@ impl Elab<'_> {
         (out, ranges)
     }
 
-    /// With [`ElabConfig::keep_values`]: the globally static calls of pure functions of the design
-    /// in the statements of each process, by the process's scope and the call: cycle mode folds
-    /// them where its own folding cannot run the function (a `while` loop over a string generic).
-    /// Only calls whose functions, and those they call, hold no `assert` or `report` (an
-    /// evaluation here must print nothing), evaluated apart from the model; one that fails has
-    /// no value.
-    fn process_calls(&mut self) -> HashMap<(ScopeId, ExprId), Val> {
+    /// With [`ElabConfig::keep_values`]: the globally static calls of pure functions in the
+    /// statements of each process, by the process's scope and the call: cycle mode folds them
+    /// (a `while` loop over a string generic) and reports what they reported. Evaluated apart
+    /// from the model, their reports kept, not printed; one that fails has no value.
+    fn process_calls(&mut self) -> HashMap<(ScopeId, ExprId), RegionCall> {
         use yavs_sem::hir::ExprKind;
         let db: &Db = self.db;
         let (vals, pkg) = (self.m.vals.clone(), self.m.pkg.clone());
@@ -1685,11 +1683,16 @@ impl Elab<'_> {
                 });
             }
             for (y, f) in calls {
-                if !quiet_function(db, f, &mut quiet, 0) || crate::eval::may_call_impure(db, y) {
+                if !pure_function(db, f, &mut quiet, false, 0)
+                    || crate::eval::may_call_impure(db, y)
+                {
                     continue;
                 }
-                if let Ok(v) = self.m.eval(db, y, region) {
-                    out.insert((ps, y), v);
+                let (v, reports) =
+                    yavs_interp::capture_elab_reports(|| self.m.eval(db, y, region).ok());
+                // A failed call without a report is left to cycle mode's own folding.
+                if v.is_some() || !reports.is_empty() {
+                    out.insert((ps, y), RegionCall { val: v, reports });
                 }
             }
         }
@@ -6448,9 +6451,16 @@ fn length_differs(shape: &Shape, v: &Val) -> Option<(u64, u64)> {
     }
 }
 
-/// Whether pure function `f` of the design, and every function of the design it calls, holds no
-/// `assert` or `report` (`ieee` and `std` count as quiet); `false` for a body the scan cannot see.
-fn quiet_function(db: &Db, f: DeclId, memo: &mut HashMap<DeclId, bool>, depth: u32) -> bool {
+/// Whether `f` is a pure function (`ieee` and `std` count), every function of the design it calls
+/// is one, and, with `quiet`, none of them holds an `assert` or `report`; `false` for a body the
+/// scan cannot see.
+fn pure_function(
+    db: &Db,
+    f: DeclId,
+    memo: &mut HashMap<DeclId, bool>,
+    quiet: bool,
+    depth: u32,
+) -> bool {
     use yavs_sem::decl::{Body, SubprogramKind};
     use yavs_sem::hir::{ExprKind, StmtKind};
     if let Some(&q) = memo.get(&f) {
@@ -6476,10 +6486,12 @@ fn quiet_function(db: &Db, f: DeclId, memo: &mut HashMap<DeclId, bool>, depth: u
     let mut all: Vec<StmtId> = stmts.to_vec();
     let mut ok = true;
     while let Some(s) = all.pop() {
-        if matches!(
-            db.stmts[s].kind,
-            StmtKind::Assert { .. } | StmtKind::Report { .. }
-        ) {
+        if quiet
+            && matches!(
+                db.stmts[s].kind,
+                StmtKind::Assert { .. } | StmtKind::Report { .. }
+            )
+        {
             ok = false;
             break;
         }
@@ -6497,7 +6509,7 @@ fn quiet_function(db: &Db, f: DeclId, memo: &mut HashMap<DeclId, bool>, depth: u
         }
         if !callees
             .into_iter()
-            .all(|c| quiet_function(db, c, memo, depth + 1))
+            .all(|c| pure_function(db, c, memo, quiet, depth + 1))
         {
             ok = false;
             break;

@@ -622,6 +622,9 @@ pub(crate) struct Body {
     /// region code (with `dropped` above 0), and how many are (`Op::Note`).
     pub note_why: Option<String>,
     pub notes: u32,
+    /// The reports elaboration made evaluating the calls this body folds (A22), `(severity,
+    /// text)` in order: made once, as the member, at initialisation.
+    pub reports: Vec<(u8, String)>,
     /// Literals with a metavalue (`'U'`, `'X'`, `'W'`, `'-'`), read as 0.
     pub metas: u32,
     /// Elements of logic variables without an initial value (`'U'`), which start at 0.
@@ -785,6 +788,9 @@ struct Frame {
     from: Span,
     /// Set by a `return` that the rest of the body must not run after.
     flag: Option<Ref>,
+    /// Every argument of this call and of the calls around it is known during elaboration: an
+    /// assert of the body has one outcome, so it must hold (A22).
+    consts: bool,
 }
 
 /// What a formal, a local constant or a local variable of an inlined call is.
@@ -899,6 +905,8 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         unrolled: 0,
         lits: Vec::new(),
         bounds: false,
+        loud: Default::default(),
+        probing: Default::default(),
     };
     if let Some(pa) = &p.actual {
         lx.port_actual(pa)?;
@@ -987,11 +995,20 @@ struct Lx<'a> {
     unrolled: u32,
     /// The codes of the literals with a metavalue (`Part::lit`).
     lits: Vec<Vec<u8>>,
+    /// The calls folded from `Elaborated::region_calls` that reported (`Body::reports`).
+    loud: std::cell::RefCell<BTreeSet<ExprId>>,
+    /// `call_fits` is folding a folded call's arguments: their reports are the call's.
+    probing: std::cell::Cell<bool>,
 }
 
 impl Lx<'_> {
     fn body(self, kind: Kind, clock: Option<Clock>, reset: Option<(LeafId, u32, u8)>) -> Body {
+        let reports = (self.loud.borrow().iter())
+            .filter_map(|&x| self.e.region_calls.get(&(self.p.scope, x)))
+            .flat_map(|c| c.reports.iter().cloned())
+            .collect();
         Body {
+            reports,
             kind,
             clock,
             reset,
@@ -1398,6 +1415,20 @@ impl Lx<'_> {
             StmtKind::Wait { .. } => Err("a wait statement runs in the event kernel".into()),
             // Simulation-only: compiled to nothing, counted for the report (the mode is for speed).
             StmtKind::Assert { .. } | StmtKind::Report { .. } if !self.top => {
+                // In a call of constants the outcome is fixed: one that holds is dropped, any
+                // other would be lost (A22), so the process stays out.
+                if let Some(f) = self.frames.last().filter(|f| f.consts) {
+                    let holds = matches!(&db.stmts[s].kind,
+                        StmtKind::Assert { cond, .. } if self.fold_bool(*cond) == Some(true));
+                    if !holds {
+                        return Err(format!(
+                            "an assert or report of `{}`, called with arguments known during \
+                             elaboration, that cycle mode cannot show to hold",
+                            db.decls[f.callee].name
+                        ));
+                    }
+                    return Ok(());
+                }
                 self.dropped += 1;
                 Ok(())
             }
@@ -3525,11 +3556,26 @@ impl Lx<'_> {
         // Its checks stay: a value or an argument outside its subtype leaves the call to the
         // lowering, which stops the run as the normal mode does.
         if self.frames.is_empty()
-            && let Some(v) = self.e.region_calls.get(&(self.p.scope, x))
+            && let Some(rc) = self.e.region_calls.get(&(self.p.scope, x))
             && let ExprKind::Call { callee, args, .. } = &db.exprs[x].kind
-            && self.call_fits(*callee, args, v)
         {
-            return Some(v.clone());
+            let fits = rc.val.as_ref().filter(|v| self.call_fits(*callee, args, v));
+            if rc.reports.is_empty() {
+                if let Some(v) = fits {
+                    return Some(v.clone());
+                }
+            } else {
+                // Notes and warnings are made once, at initialisation (A22); anything else
+                // keeps the process out (`call`).
+                if self.top || rc.reports.iter().any(|r| r.0 >= 2) {
+                    return None;
+                }
+                let v = fits?;
+                if !self.probing.get() {
+                    self.loud.borrow_mut().insert(x);
+                }
+                return Some(v.clone());
+            }
         }
         match &db.exprs[x].kind {
             ExprKind::Obj(d) => {
@@ -3650,7 +3696,8 @@ impl Lx<'_> {
         let Some(sp) = db.decls[callee].kind.subprogram() else {
             return false;
         };
-        sp.ret.is_some_and(|r| fits(r, v))
+        let was = self.probing.replace(true);
+        let ok = sp.ret.is_some_and(|r| fits(r, v))
             && args.iter().all(|a| {
                 let Actual::Expr(ax) = a.actual else {
                     return false;
@@ -3658,7 +3705,9 @@ impl Lx<'_> {
                 (sp.params.get(usize::from(a.formal)))
                     .zip(self.fold(ax))
                     .is_some_and(|(p, c)| fits(p.subtype, &c))
-            })
+            });
+        self.probing.set(was);
+        ok
     }
 
     /// The range of a scalar subtype or the index range of a one-dimensional array subtype when
@@ -4772,6 +4821,20 @@ impl Lx<'_> {
         let Some(sp) = decl.kind.subprogram() else {
             return Err("a call of something that is not a subprogram".into());
         };
+        // A call elaboration evaluated and `fold` did not take (A22): its reports are made
+        // where the normal mode makes them, by the event kernel.
+        if self.frames.is_empty()
+            && let Some(rc) = self.e.region_calls.get(&(self.p.scope, x))
+            && let Some(&(sev, _)) = rc.reports.iter().max_by_key(|r| r.0)
+        {
+            let name = &decl.name;
+            return Err(if self.top {
+                format!("a call of `{name}` that reports, in a process of the top-level unit")
+            } else {
+                let sev = ["note", "warning", "error", "failure"][usize::from(sev.min(3))];
+                format!("a call of `{name}` that reports with severity {sev} when it is evaluated")
+            });
+        }
         use yavs_ir::ieee::{Cmp as C, Form, Gate as G, Op as I, Shift as S};
         let gate = |g: G| match g {
             G::And => Gate::And,
@@ -5984,6 +6047,22 @@ impl Lx<'_> {
         self.unrolled += size;
         let procedure = sp.kind == SubprogramKind::Procedure;
         let pure = sp.kind == SubprogramKind::Function { pure: true };
+        // Only a pure function: a procedure or impure function may read signals besides.
+        let consts = pure
+            && self.frames.last().is_none_or(|f| f.consts)
+            && sp.params.iter().enumerate().all(|(i, p)| {
+                match args
+                    .iter()
+                    .find(|a| usize::from(a.formal) == i)
+                    .map(|a| &a.actual)
+                {
+                    Some(Actual::Expr(x)) => self.fold(*x).is_some(),
+                    None | Some(Actual::Default) => {
+                        p.default.is_some_and(|d| self.fold(d).is_some())
+                    }
+                    Some(_) => false,
+                }
+            });
         let mut binds = self.formals(callee, sp, args, !pure)?;
         // A body apart from its declaration declares the formals again: the same, by position.
         let again: Vec<DeclId> = (db.scopes[*scope].order.iter().copied())
@@ -6030,6 +6109,7 @@ impl Lx<'_> {
             direct,
             from: self.at,
             flag,
+            consts,
         });
         let saved = std::mem::take(&mut self.pend);
         let r = match self.locals(*scope) {

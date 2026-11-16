@@ -96,7 +96,8 @@ const ROUNDS: usize = 24;
 
 /// The value of expression `x` of process `p` when it folds: constants, `known` (the values of
 /// names the caller knows: loop parameters, formals), and pure functions of them run by the
-/// analysis's evaluator.
+/// analysis's evaluator. A call that reaches an `assert` or `report` does not fold here: the
+/// lowering leaves its reports to elaboration or keeps the process out (A22).
 pub(crate) fn const_value(
     db: &Db,
     e: &Elaborated,
@@ -106,6 +107,7 @@ pub(crate) fn const_value(
 ) -> Option<ConstValue> {
     let mut cx = Cx::new(db, e, p);
     cx.loopv = known;
+    cx.quiet_only = true;
     cx.fold(x)
 }
 
@@ -310,6 +312,8 @@ struct Cx<'a> {
     /// one of them called again under the current walk (`usize::MAX`: none).
     visiting: HashMap<DeclId, usize>,
     partial: usize,
+    /// `const_value`: a pure function run on constants gives up at an `assert` or `report`.
+    quiet_only: bool,
 }
 
 impl<'a> Cx<'a> {
@@ -338,6 +342,7 @@ impl<'a> Cx<'a> {
             callees: HashMap::new(),
             visiting: HashMap::new(),
             partial: usize::MAX,
+            quiet_only: false,
         }
     }
 }
@@ -1488,6 +1493,12 @@ impl Cx<'_> {
             }
         }
         let mut steps = 10_000usize;
+        // The asserts of the `ieee` and `std` bodies are library warnings, which members do
+        // not give (A6): `quiet_only` is for the design's.
+        let quiet = self.quiet_only;
+        self.quiet_only &= !["ieee.", "std."]
+            .iter()
+            .any(|p| sp.mangled.as_str().starts_with(p));
         let r = if ok {
             match self.run_pure(stmts, &mut steps) {
                 Pure::Return(v) => Some(v),
@@ -1496,6 +1507,7 @@ impl Cx<'_> {
         } else {
             None
         };
+        self.quiet_only = quiet;
         self.frames.pop();
         r
     }
@@ -1516,6 +1528,9 @@ impl Cx<'_> {
         for &s in body {
             *steps = or_give_up!(steps.checked_sub(1));
             let flow = match &db.stmts[s].kind {
+                StmtKind::Assert { .. } | StmtKind::Report { .. } if self.quiet_only => {
+                    return Pure::GiveUp;
+                }
                 StmtKind::Null | StmtKind::Assert { .. } | StmtKind::Report { .. } => Pure::Fall,
                 StmtKind::VarAssign {
                     target,

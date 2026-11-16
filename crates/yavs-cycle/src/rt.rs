@@ -186,6 +186,9 @@ pub(crate) struct RegionProc {
     /// holds; and the normal mode's report path for them.
     pub log: (usize, usize),
     pub reporter: crate::Reporter,
+    /// The reports of the calls members fold (A22): member, severity, text; made at
+    /// initialisation.
+    pub reports: Arc<Vec<(usize, u8, String)>>,
     pub metas: Arc<crate::Metas>,
     /// Elements of member variables without an initial value, counted at initialisation.
     pub uninit: u64,
@@ -592,33 +595,46 @@ impl RegionProc {
                 "more notes fired in one run than the region has",
             ));
         }
-        let Some(report) = self.reporter.get().cloned() else {
-            return Err(internal(
-                ctx,
-                "no report path for the asserts of the top-level unit",
-            ));
-        };
-        // A report at the stop severity ends its process's run in the normal mode: the member's
-        // later notes of this run are not made.
-        let mut stopped: Vec<usize> = Vec::new();
+        let mut fired = Vec::with_capacity(n);
         for k in 0..n {
             let site = self.img[at + 1 + k] as usize;
             let Some((Check::Note(nt), _, pi, _)) = self.checks.get(site) else {
                 return Err(internal(ctx, "a note of a site that is no note"));
             };
-            if stopped.contains(pi) {
+            fired.push((*pi, nt.severity, nt.text(&self.img)));
+        }
+        self.report(ctx, fired.into_iter())
+    }
+
+    /// Report `(member, severity, text)` in order, as their members, through the normal mode's
+    /// report path.
+    fn report(
+        &self,
+        ctx: &mut Ctx<'_>,
+        all: impl Iterator<Item = (usize, u8, String)>,
+    ) -> Result<(), SimError> {
+        let Some(report) = self.reporter.get().cloned() else {
+            return Err(ctx.error(ErrorKind::Internal(
+                "cycle mode: no report path for the region's reports".into(),
+            )));
+        };
+        // A report at the stop severity ends its process's run in the normal mode: the member's
+        // later reports of this run are not made.
+        let mut stopped: Vec<usize> = Vec::new();
+        for (pi, s, text) in all {
+            if stopped.contains(&pi) {
                 continue;
             }
-            let sev = match nt.severity {
+            let sev = match s {
                 0 => Severity::Note,
                 1 => Severity::Warning,
                 2 => Severity::Error,
                 _ => Severity::Failure,
             };
-            if let Some(text) = report(ctx, sev, nt.text(&self.img)) {
-                ctx.report_as(ProcId(*pi as u32), sev, text);
+            if let Some(text) = report(ctx, sev, text) {
+                ctx.report_as(ProcId(pi as u32), sev, text);
                 if sev >= ctx.stop_severity() {
-                    stopped.push(*pi);
+                    stopped.push(pi);
                 }
             }
         }
@@ -677,6 +693,10 @@ impl Process for RegionProc {
                 metas += Self::read(ctx, &mut self.img, &mut self.buf, rd)?;
             }
             self.metas.init.fetch_add(metas, Ordering::Relaxed);
+            if !self.reports.is_empty() {
+                let r = self.reports.clone();
+                self.report(ctx, r.iter().map(|(pi, s, t)| (*pi, *s, t.clone())))?;
+            }
             // From the next update on the kernel counts the changes of each input chunk.
             for g in &self.ins {
                 ctx.image_ask(g.spec.clone());

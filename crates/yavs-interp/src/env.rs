@@ -367,9 +367,41 @@ pub fn elaboration_reports(s: Severity) -> u64 {
     ELAB_COUNTS[s as usize].load(Ordering::Relaxed)
 }
 
+thread_local! {
+    /// The reports of elaboration-time calls being captured (`capture_elab_reports`).
+    static CAPTURE: std::cell::RefCell<Option<Vec<(u8, String)>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with the reports of elaboration-time calls on this thread kept, neither printed
+/// nor counted: cycle mode evaluates calls apart from the model and reports them itself.
+pub fn capture_elab_reports<T>(f: impl FnOnce() -> T) -> (T, Vec<(u8, String)>) {
+    let outer = CAPTURE.with(|c| c.replace(Some(Vec::new())));
+    let r = f();
+    let got = CAPTURE.with(|c| c.replace(outer)).unwrap_or_default();
+    (r, got)
+}
+
+/// Keep a report when `capture_elab_reports` runs; `false` when it does not.
+fn captured(s: Severity, text: &str) -> bool {
+    CAPTURE.with(|c| match c.borrow_mut().as_mut() {
+        Some(v) => {
+            v.push((s as u8, text.to_string()));
+            true
+        }
+        None => false,
+    })
+}
+
+fn capturing() -> bool {
+    CAPTURE.with(|c| c.borrow().is_some())
+}
+
 /// The line of a report made while no kernel runs.
 pub(crate) fn print_elab(s: Severity, text: &str) {
     use std::io::Write;
+    if captured(s, text) {
+        return;
+    }
     let name = ["Note", "Warning", "Error", "Failure"][s as usize];
     let mut o = std::io::stderr().lock();
     let _ = writeln!(o, "** {name}: (init): {text}");
@@ -378,7 +410,9 @@ pub(crate) fn print_elab(s: Severity, text: &str) {
 /// Print and count again the reports a package initialisation made (`SharedState::replay_init_reports`).
 pub(crate) fn replay_elab(reports: &[(u8, String)]) {
     for (s, text) in reports {
-        ELAB_COUNTS[*s as usize].fetch_add(1, Ordering::Relaxed);
+        if !capturing() {
+            ELAB_COUNTS[*s as usize].fetch_add(1, Ordering::Relaxed);
+        }
         print_elab(sev_of(*s), text);
     }
 }
@@ -490,7 +524,7 @@ impl Asserts {
     pub(crate) fn report_elab(&self, s: Severity) -> bool {
         let g = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let on = g.base.enabled[s as usize];
-        if on {
+        if on && !capturing() {
             ELAB_COUNTS[s as usize].fetch_add(1, Ordering::Relaxed);
         }
         on

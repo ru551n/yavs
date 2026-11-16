@@ -1257,6 +1257,12 @@ fn build(
             .map(|(c, at, pi)| (c, at, pi, names[&pi].clone()))
             .collect(),
     );
+    // The reports of the calls members fold, by member (A22).
+    let reports: Arc<Vec<(usize, u8, String)>> = Arc::new(
+        (sel.members.iter())
+            .flat_map(|(pi, b)| b.reports.iter().map(|(s, t)| (*pi, *s, t.clone())))
+            .collect(),
+    );
     let sig_bytes: BTreeMap<u32, u32> = cur.keys().map(|&k| (k, bytes(k))).collect();
     let sig_len: BTreeMap<u32, u32> = (cur.keys())
         .map(|&k| (k, nets.signal_len(yavs_kernel::SignalId(k))))
@@ -1337,6 +1343,7 @@ fn build(
             err: err as usize,
             log: (log as usize, notes as usize),
             reporter: reporter.clone(),
+            reports: reports.clone(),
             metas: metas.clone(),
             uninit,
             buf: Vec::new(),

@@ -451,6 +451,14 @@ pub type RegionMake = std::sync::Arc<
         + Sync,
 >;
 
+/// A call cycle mode may fold (`Elaborated::region_calls`): its value, none when it failed, and
+/// the reports it made, `(severity, text)` in order, which were not printed.
+#[derive(Clone, Debug)]
+pub struct RegionCall {
+    pub val: Option<Val>,
+    pub reports: Vec<(u8, String)>,
+}
+
 pub struct Elaborated {
     pub top: Top,
     pub hier: Hierarchy,
@@ -475,9 +483,9 @@ pub struct Elaborated {
     /// types and subtypes of each instance's regions (a function of generics), evaluated apart
     /// from the model, as [`Elaborated::range`] gives them.
     pub region_ranges: std::collections::HashMap<(ScopeId, yavs_sem::ExprId), Bounds>,
-    /// With [`ElabConfig::keep_values`]: the values of the globally static calls of quiet pure
-    /// functions in the statements of each process, by the process's scope and the call.
-    pub region_calls: std::collections::HashMap<(ScopeId, yavs_sem::ExprId), Val>,
+    /// With [`ElabConfig::keep_values`]: the globally static calls of pure functions in the
+    /// statements of each process, by the process's scope and the call: value and reports.
+    pub region_calls: std::collections::HashMap<(ScopeId, yavs_sem::ExprId), RegionCall>,
     /// Per leaf: nothing asks for the event history of single elements of this signal, so
     /// the kernel keeps only each block's last event (`lean.rs`). Clear it to keep the history
     /// of every signal; empty means the same.

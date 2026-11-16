@@ -1,8 +1,8 @@
 -- Sizes from `math_real` (`ceil(log2(real(n)))` in a function of the design, with an assert
 -- that holds), folded where the arguments are known, against the normal mode (`W` replaced by a
 -- width): a shift count in a register, a loop bound and a loop parameter's size in a
--- combinational process (both join); a function returning a vector (`to_size`, whose `log2`
--- asserts) stays in the event kernel.
+-- combinational process, a vector from a function whose `log2` asserts (`to_size`, a pure function
+-- of constants inlined: its assert, as every member's, is not evaluated); all join.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;

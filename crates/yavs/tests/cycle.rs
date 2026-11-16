@@ -3611,7 +3611,8 @@ fn a_generic_table_of_records_equals_the_normal_mode() {
 }
 
 /// Sizes from `math_real` in functions of the design (`natural(ceil(log2(real(n))))`), folded
-/// where the arguments are known: the register using them joins; widths 1 to 128.
+/// where the arguments are known, also a vector result through a function with an assert
+/// (`to_size`): every design process joins; widths 1 to 128.
 #[test]
 fn math_real_sizes_of_constants_fold() {
     let dir = tempdir("cycle-mathreal");
@@ -3627,8 +3628,7 @@ fn math_real_sizes_of_constants_fold() {
             assert_eq!(normal.len(), 10, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
-                err.contains("cycle mode: 2 of 4 processes run cycle-based")
-                    && err.contains("cycle_mathreal.u.size <= ... (mathreal"),
+                err.contains("cycle mode: 3 of 4 processes run cycle-based"),
                 "{w}: {err}"
             );
         }

@@ -1927,6 +1927,20 @@ impl Cx<'_> {
                     self.no_z(x, &c)?;
                     return Ok(Self::empty());
                 }
+                // A pure function of the design given constants reads nothing: what it computes
+                // on the way (a real, a vector result this evaluator does not hold) is the
+                // lowering's to fold, or to refuse.
+                if let Some(sp) = sp
+                    && sp.kind == (SubprogramKind::Function { pure: true })
+                    && matches!(sp.body, Body::Hir { .. })
+                    && args.iter().all(|a| match a.actual {
+                        Actual::Expr(ax) => self.fold(ax).is_some(),
+                        Actual::Default => true,
+                        _ => false,
+                    })
+                {
+                    return Ok(Self::empty());
+                }
                 let s = self.call_deps(*callee, args, st, ex.span)?;
                 Ok(Dv::Flat(Rc::new(s)))
             }

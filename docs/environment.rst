@@ -708,6 +708,11 @@ Compiled tiers: Cranelift
      - ``name=value,...``
      - unset
      - ``run``
+   * - ``YAVS_CYCLE_EXCLUDE``
+     - Developers: a comma-separated list of texts; a process whose name holds one of them stays in the event simulation under ``--cycle`` (to find which member makes a run differ).
+     - ``dcache_slow,icache``
+     - none
+     - ``run``
    * - ``YAVS_CYCLE_GUARD``
      - Developers: ``all`` lets a cycle region (``--cycle``) skip every combinational step whose inputs did not change since its last run, also the small ones it would otherwise always run (for the tests).
      - ``all``

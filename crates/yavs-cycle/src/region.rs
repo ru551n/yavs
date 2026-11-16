@@ -452,6 +452,17 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             ));
             continue;
         }
+        // Developers bisecting a difference: `YAVS_CYCLE_EXCLUDE=a,b` keeps the processes whose
+        // names hold one of those texts out.
+        if let Some(x) = std::env::var("YAVS_CYCLE_EXCLUDE")
+            .ok()
+            .filter(|x| !x.is_empty())
+            && let name = e.proc_name(&e.procs[pi])
+            && x.split(',').any(|t| !t.is_empty() && name.contains(t))
+        {
+            out.push((pi, Why::NotYet("excluded by YAVS_CYCLE_EXCLUDE".into())));
+            continue;
+        }
         match lower::lower(db, e, pi) {
             // The lowering must see the shape the checker proved, clock included.
             Ok(b) if differs(e, &f, &b).is_some() => {
@@ -479,6 +490,12 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         }
     }
     stat(|| format!("select: lowered {} ms", t0.elapsed().as_millis()));
+    // Combinational logic feeding a process outside whose result depends on how often it runs.
+    for (pi, w) in run_count_cone(db, e, &out) {
+        if taken.remove(&pi).is_some() {
+            out.push((pi, Why::NotYet(w)));
+        }
+    }
     // The history processes read (A10), and the sources of implicit signals.
     let mut memo = BTreeMap::new();
     let hist: Vec<Vec<Hist>> = (0..e.procs.len())
@@ -1232,84 +1249,14 @@ fn outside_reads(
         if members.contains(&pi) {
             continue;
         }
-        // Names read, and names waited on.
-        let mut lsps = Vec::new();
-        let mut waits = Vec::new();
-        let mut calls = Vec::new();
-        let mut follow = true;
-        if let Some(pa) = &p.actual {
-            db.reads(pa.expr, &mut waits);
-            follow &= exprs_calls(db, &[pa.expr], &mut calls);
-        } else {
-            match &db.stmts[p.stmt].kind {
-                StmtKind::Process {
-                    sensitivity, body, ..
-                } => {
-                    db.reads_deep(body, &mut lsps);
-                    match sensitivity {
-                        Sensitivity::List(l) => waits.extend(l.iter().cloned()),
-                        Sensitivity::All => waits.extend(lsps.iter().cloned()),
-                        Sensitivity::None => {}
-                    }
-                    let mut stmts = Vec::new();
-                    deep(db, body, &mut stmts);
-                    for s in stmts {
-                        if let StmtKind::Wait { on, until, .. } = &db.stmts[s].kind {
-                            waits.extend(on.iter().cloned());
-                            if on.is_empty()
-                                && let Some(c) = until
-                            {
-                                db.reads(*c, &mut waits);
-                            }
-                        }
-                        follow &= stmt_calls(db, s, &mut calls);
-                    }
-                }
-                _ => {
-                    db.stmt_reads(p.stmt, &mut waits);
-                    follow &= stmt_calls(db, p.stmt, &mut calls);
-                }
-            }
-        }
-        if !follow {
+        let Some((reads, waits)) = proc_reads(db, e, pi, &mut memo) else {
             return (all(), all(), BTreeMap::new());
+        };
+        for &l in &reads {
+            readers.entry(l).or_insert(pi);
         }
-        // A subprogram declared outside a package reads the signals its body names and waits on
-        // those its waits name; a wait on a formal waits on the call's actuals.
-        for (c, args) in &calls {
-            let Some(sum) = callee_sigs(db, *c, 0, &mut memo) else {
-                return (all(), all(), BTreeMap::new());
-            };
-            lsps.extend(sum.reads);
-            waits.extend(sum.waits);
-            if sum.waits_formal {
-                waits.extend(actual_reads(db, args));
-            }
-        }
-        for (l, wait) in lsps
-            .iter()
-            .map(|l| (l, false))
-            .chain(waits.iter().map(|l| (l, true)))
-        {
-            match l.root {
-                ObjRoot::Decl(d) => match e.signal(p.scope, d) {
-                    Some(o) => {
-                        let (a, z) = e.nets.obj(o).leaves;
-                        let leaves = (a.0..z.0).map(LeafId);
-                        if wait {
-                            waited.extend(leaves.clone());
-                        }
-                        for l in leaves.clone() {
-                            readers.entry(l).or_insert(pi);
-                        }
-                        seen.extend(leaves);
-                    }
-                    None => return (all(), all(), BTreeMap::new()),
-                },
-                ObjRoot::External(_) => return (all(), all(), BTreeMap::new()),
-                ObjRoot::ImplicitSignal(_) => {}
-            }
-        }
+        seen.extend(reads);
+        waited.extend(waits);
         if let Some(g) = &p.guard {
             seen.extend(g.iter().map(|x| x.0));
             waited.extend(g.iter().map(|x| x.0));
@@ -1337,6 +1284,159 @@ fn outside_reads(
     seen.extend(other.iter().copied());
     waited.extend(other);
     (seen, waited, readers)
+}
+
+/// The signal leaves process `pi` may read (its names, whole objects, and those of the local
+/// subprograms it calls), and of those the ones it waits on; `None` when the scan cannot follow
+/// it (an external name, a call it cannot see into): it may read every leaf.
+fn proc_reads(
+    db: &Db,
+    e: &Elaborated,
+    pi: usize,
+    memo: &mut BTreeMap<yavs_sem::DeclId, Option<CallSigs>>,
+) -> Option<(BTreeSet<LeafId>, BTreeSet<LeafId>)> {
+    let p = &e.procs[pi];
+    let mut seen = BTreeSet::new();
+    let mut waited = BTreeSet::new();
+    // Names read, and names waited on.
+    let mut lsps = Vec::new();
+    let mut waits = Vec::new();
+    let mut calls = Vec::new();
+    let mut follow = true;
+    if let Some(pa) = &p.actual {
+        db.reads(pa.expr, &mut waits);
+        follow &= exprs_calls(db, &[pa.expr], &mut calls);
+    } else {
+        match &db.stmts[p.stmt].kind {
+            StmtKind::Process {
+                sensitivity, body, ..
+            } => {
+                db.reads_deep(body, &mut lsps);
+                match sensitivity {
+                    Sensitivity::List(l) => waits.extend(l.iter().cloned()),
+                    Sensitivity::All => waits.extend(lsps.iter().cloned()),
+                    Sensitivity::None => {}
+                }
+                let mut stmts = Vec::new();
+                deep(db, body, &mut stmts);
+                for s in stmts {
+                    if let StmtKind::Wait { on, until, .. } = &db.stmts[s].kind {
+                        waits.extend(on.iter().cloned());
+                        if on.is_empty()
+                            && let Some(c) = until
+                        {
+                            db.reads(*c, &mut waits);
+                        }
+                    }
+                    follow &= stmt_calls(db, s, &mut calls);
+                }
+            }
+            _ => {
+                db.stmt_reads(p.stmt, &mut waits);
+                follow &= stmt_calls(db, p.stmt, &mut calls);
+            }
+        }
+    }
+    if !follow {
+        return None;
+    }
+    // A subprogram declared outside a package reads the signals its body names and waits on
+    // those its waits name; a wait on a formal waits on the call's actuals.
+    for (c, args) in &calls {
+        let sum = callee_sigs(db, *c, 0, memo)?;
+        lsps.extend(sum.reads);
+        waits.extend(sum.waits);
+        if sum.waits_formal {
+            waits.extend(actual_reads(db, args));
+        }
+    }
+    for (l, wait) in lsps
+        .iter()
+        .map(|l| (l, false))
+        .chain(waits.iter().map(|l| (l, true)))
+    {
+        match l.root {
+            ObjRoot::Decl(d) => match e.signal(p.scope, d) {
+                Some(o) => {
+                    let (a, z) = e.nets.obj(o).leaves;
+                    let leaves = (a.0..z.0).map(LeafId);
+                    if wait {
+                        waited.extend(leaves.clone());
+                    }
+                    seen.extend(leaves);
+                }
+                None => return None,
+            },
+            ObjRoot::External(_) => return None,
+            ObjRoot::ImplicitSignal(_) => {}
+        }
+    }
+    Some((seen, waited))
+}
+
+/// The combinational processes (members or not) in the fan-in of what a process outside the
+/// subset reads whose result depends on how often it runs: a combinational process with state or
+/// a latch (E4119, E4120), which keeps a value of an earlier run. (An incomplete sensitivity list,
+/// E4121, keeps nothing and is not counted: its runs see the values of the deltas the listed
+/// signals change in.) Back from its reads through every
+/// combinational process driving them, up to registers (edge-triggered processes, whose outputs
+/// come in the delta after the edge in both modes). The region settles such logic in one delta
+/// where the normal mode spreads it over several, so the reader would run another number of
+/// times (Microwatt's `dcache_request` gives `req_nc` the `nc` of its previous run). Each with
+/// the reason; `None` reads (a name the scan cannot follow) reach every leaf.
+fn run_count_cone(db: &Db, e: &Elaborated, out: &[(usize, Why)]) -> Vec<(usize, String)> {
+    let sensitive: Vec<usize> = (out.iter())
+        .filter_map(|(pi, w)| match w {
+            Why::Subset(r) if [crate::codes::LATCH, crate::codes::STATE].contains(&r.code) => {
+                Some(*pi)
+            }
+            _ => None,
+        })
+        .collect();
+    if sensitive.is_empty() {
+        return Vec::new();
+    }
+    let mut drivers: BTreeMap<LeafId, Vec<usize>> = BTreeMap::new();
+    for d in &e.nets.drivers {
+        drivers.entry(d.leaf).or_default().push(d.proc.index());
+    }
+    let every = || (0..e.nets.leaves.len() as u32).map(LeafId);
+    let mut memo = BTreeMap::new();
+    let mut procs: BTreeSet<usize> = sensitive.iter().copied().collect();
+    let mut leaves: BTreeSet<LeafId> = BTreeSet::new();
+    let mut work: Vec<(LeafId, usize)> = Vec::new();
+    for &q in &sensitive {
+        match proc_reads(db, e, q, &mut memo) {
+            Some((r, _)) => work.extend(r.into_iter().map(|l| (l, q))),
+            None => work.extend(every().map(|l| (l, q))),
+        }
+    }
+    let mut gone = Vec::new();
+    while let Some((l, q)) = work.pop() {
+        if !leaves.insert(l) {
+            continue;
+        }
+        for &d in drivers.get(&l).into_iter().flatten() {
+            if e.procs[d].trigger.is_some() || !procs.insert(d) {
+                continue;
+            }
+            gone.push((
+                d,
+                format!(
+                    "it computes, combinationally, {}, in the fan-in of {}, a process outside \
+                     the region whose result depends on how often it runs (it keeps a value of an \
+                     earlier run): the region would wake it at other deltas",
+                    e.leaf_name(l),
+                    e.proc_label(&e.procs[q])
+                ),
+            ));
+            match proc_reads(db, e, d, &mut memo) {
+                Some((r, _)) => work.extend(r.into_iter().map(|x| (x, q))),
+                None => work.extend(every().map(|x| (x, q))),
+            }
+        }
+    }
+    gone
 }
 
 /// The members driving a signal whose history a process outside the region reads, each with

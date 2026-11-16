@@ -82,13 +82,21 @@ pub(crate) struct Loop {
 type Parts = Vec<(LeafId, yavs_kernel::Range)>;
 
 /// What fits, why the rest does not, and the loop groups of what fits.
-type Subset = (BTreeMap<usize, Fit>, Vec<(usize, Why)>, Vec<dep::Group>);
+/// The fits, the others with their reasons, the loop groups, and every process the checker
+/// fitted (shown to keep no value between runs and to name all it reads in its wait set).
+type Subset = (
+    BTreeMap<usize, Fit>,
+    Vec<(usize, Why)>,
+    Vec<dep::Group>,
+    BTreeSet<usize>,
+);
 
 /// The subset verdict of every process: what fits, and why the others do not.
 pub(crate) fn subset(db: &Db, e: &Elaborated) -> Subset {
     let t0 = std::time::Instant::now();
     let mut fits: BTreeMap<usize, Fit> = BTreeMap::new();
     let mut out: Vec<(usize, Why)> = Vec::new();
+    let mut checked = BTreeSet::new();
     let mut callees = check::Callees::default();
     let mut slow: Vec<(u128, usize)> = Vec::new();
     for pi in 0..e.procs.len() {
@@ -98,6 +106,7 @@ pub(crate) fn subset(db: &Db, e: &Elaborated) -> Subset {
         match v {
             check::Verdict::Fit(f) => {
                 fits.insert(pi, f);
+                checked.insert(pi);
             }
             check::Verdict::Behavioural(w) => out.push((pi, Why::Behavioural(w))),
             check::Verdict::Out(r) => out.push((pi, Why::Subset(r))),
@@ -217,7 +226,7 @@ pub(crate) fn subset(db: &Db, e: &Elaborated) -> Subset {
             }
         }
         if made.is_empty() {
-            return (fits, out, a.groups);
+            return (fits, out, a.groups, checked);
         }
         for (pi, r) in made {
             fits.remove(&pi);
@@ -443,7 +452,7 @@ fn stat(what: impl FnOnce() -> String) {
 
 pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
     let t0 = std::time::Instant::now();
-    let (fits, mut out, groups) = subset(db, e);
+    let (fits, mut out, groups, checked) = subset(db, e);
     stat(|| format!("select: subset done {} ms", t0.elapsed().as_millis()));
     let mut nfits = fits.len();
     let forced = !db.facts().forces.is_empty();
@@ -499,7 +508,25 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
     }
     stat(|| format!("select: lowered {} ms", t0.elapsed().as_millis()));
     // Combinational logic feeding a process outside whose result depends on how often it runs.
-    for (pi, w) in run_count_cone(db, e, &out) {
+    let seeds = delta_seeds(db, e, &out, &checked);
+    // Developers (`YAVS_CYCLE_SEEDS=FILE`): the signals those processes drive, one leaf a line,
+    // for a trace of both modes (`YAVS_TRACE`, tools/difftest/seeddiff.py).
+    if let Some(f) = std::env::var_os("YAVS_CYCLE_SEEDS") {
+        let mut names = BTreeSet::new();
+        for &(pi, _) in &seeds {
+            for &d in &e.procs[pi].drivers {
+                names.insert(e.leaf_name(e.nets.drivers[d].leaf));
+            }
+        }
+        let text: String = names.into_iter().map(|n| n + "\n").collect();
+        if let Err(x) = std::fs::write(&f, text) {
+            eprintln!("YAVS_CYCLE_SEEDS: {}: {x}", f.to_string_lossy());
+        }
+    }
+    // Developers (`YAVS_CYCLE_RUNCOUNT=off`): no cone, to show what the rule protects (wrong
+    // results) and what it costs.
+    let off = std::env::var_os("YAVS_CYCLE_RUNCOUNT").is_some_and(|v| v == "off");
+    for (pi, w) in run_count_cone(db, e, &out, if off { &[] } else { &seeds }) {
         if taken.remove(&pi).is_some() {
             out.push((pi, Why::NotYet(w)));
         }
@@ -1379,25 +1406,54 @@ fn proc_reads(
     Some((seen, waited))
 }
 
-/// The combinational processes (members or not) in the fan-in of what a process outside the
-/// subset reads whose result depends on how often it runs: a combinational process with state or
-/// a latch (E4119, E4120), which keeps a value of an earlier run. (An incomplete sensitivity list,
-/// E4121, keeps nothing and is not counted: its runs see the values of the deltas the listed
-/// signals change in.) Back from its reads through every
-/// combinational process driving them, up to registers (edge-triggered processes, whose outputs
-/// come in the delta after the edge in both modes). The region settles such logic in one delta
-/// where the normal mode spreads it over several, so the reader would run another number of
-/// times (Microwatt's `dcache_request` gives `req_nc` the `nc` of its previous run). Each with
-/// the reason; `None` reads (a name the scan cannot follow) reach every leaf.
-fn run_count_cone(db: &Db, e: &Elaborated, out: &[(usize, Why)]) -> Vec<(usize, String)> {
-    let sensitive: Vec<usize> = (out.iter())
-        .filter_map(|(pi, w)| match w {
-            Why::Subset(r) if [crate::codes::LATCH, crate::codes::STATE].contains(&r.code) => {
-                Some(*pi)
-            }
-            _ => None,
+/// The processes outside whose result may depend on the deltas their inputs change in (see
+/// `run_count_cone`), each with why.
+fn delta_seeds(
+    db: &Db,
+    e: &Elaborated,
+    out: &[(usize, Why)],
+    checked: &BTreeSet<usize>,
+) -> Vec<(usize, &'static str)> {
+    (out.iter())
+        .filter_map(|(pi, w)| {
+            let how = match w {
+                _ if checked.contains(pi) || e.procs[*pi].trigger.is_some() => return None,
+                _ if plain_assignment(db, e, *pi) => return None,
+                Why::Behavioural(_) => return None,
+                Why::Subset(r) if [crate::codes::LATCH, crate::codes::STATE].contains(&r.code) => {
+                    "it keeps a value of an earlier run"
+                }
+                // A testbench process sees the region's settled values earlier by contract
+                // ("Delta cycles inside the region are not visible" of the user guide).
+                _ if in_top_unit(e, *pi) => return None,
+                Why::Subset(r) if r.code == crate::codes::SENSITIVITY => {
+                    "it reads a signal its sensitivity list does not name"
+                }
+                _ => "cycle mode could not show that it keeps no value of an earlier run",
+            };
+            Some((*pi, how))
         })
-        .collect();
+        .collect()
+}
+
+/// The combinational processes (members or not) in the fan-in of what a process outside the
+/// region reads whose result may depend on the deltas its inputs change in: every process
+/// without an edge trigger that is not of the testbench kind and that the checker did not fit.
+/// Such a process may keep a value of an earlier run (state, a latch: E4119, E4120), read a
+/// signal its sensitivity list does not name (E4121: it sees that signal as of the delta a
+/// listed one changed in), or be rejected for another reason before the checker could show it
+/// does neither. Back from its reads through every combinational process driving them, up to
+/// registers (edge-triggered processes, whose outputs come in the delta after the edge in both
+/// modes). The region settles such logic in one delta where the normal mode spreads it over
+/// several, so the reader would see other values or run another number of times (Microwatt's
+/// `dcache_request` gives `req_nc` the `nc` of its previous run). Each with the reason; `None`
+/// reads (a name the scan cannot follow) reach every leaf.
+fn run_count_cone(
+    db: &Db,
+    e: &Elaborated,
+    out: &[(usize, Why)],
+    sensitive: &[(usize, &str)],
+) -> Vec<(usize, String)> {
     if sensitive.is_empty() {
         return Vec::new();
     }
@@ -1412,13 +1468,13 @@ fn run_count_cone(db: &Db, e: &Elaborated, out: &[(usize, Why)]) -> Vec<(usize, 
         .collect();
     let every = || (0..e.nets.leaves.len() as u32).map(LeafId);
     let mut memo = BTreeMap::new();
-    let mut procs: BTreeSet<usize> = sensitive.iter().copied().collect();
+    let mut procs: BTreeSet<usize> = sensitive.iter().map(|s| s.0).collect();
     let mut leaves: BTreeSet<LeafId> = BTreeSet::new();
     let mut work: Vec<(LeafId, usize)> = Vec::new();
-    for &q in &sensitive {
+    for (i, &(q, _)) in sensitive.iter().enumerate() {
         match proc_reads(db, e, q, &mut memo) {
-            Some((r, _)) => work.extend(r.into_iter().map(|l| (l, q))),
-            None => work.extend(every().map(|l| (l, q))),
+            Some((r, _)) => work.extend(r.into_iter().map(|l| (l, i))),
+            None => work.extend(every().map(|l| (l, i))),
         }
     }
     let mut gone = Vec::new();
@@ -1434,10 +1490,11 @@ fn run_count_cone(db: &Db, e: &Elaborated, out: &[(usize, Why)]) -> Vec<(usize, 
                 d,
                 format!(
                     "it computes, combinationally, {}, in the fan-in of {}, a process outside \
-                     the region whose result depends on how often it runs (it keeps a value of an \
-                     earlier run): the region would wake it at other deltas",
+                     the region whose result may depend on the deltas its inputs change in ({}): \
+                     the region would change them at other deltas",
                     e.leaf_name(l),
-                    e.proc_label(&e.procs[q])
+                    e.proc_label(&e.procs[sensitive[q].0]),
+                    sensitive[q].1
                 ),
             ));
             match proc_reads(db, e, d, &mut memo) {
@@ -1447,6 +1504,61 @@ fn run_count_cone(db: &Db, e: &Elaborated, out: &[(usize, Why)]) -> Vec<(usize, 
         }
     }
     gone
+}
+
+/// Whether process `pi` is a concurrent signal assignment that keeps no value between runs and
+/// waits on all it reads: not guarded, no `unaffected`, a final `else`, only pure functions
+/// called, no attribute of a signal's history or events, every signal it reads (in the bodies
+/// of the functions too) in its wait set. Such a statement is a function of the values of its
+/// last run, whatever made the checker reject it (a `'Z'`, an `after`).
+fn plain_assignment(db: &Db, e: &Elaborated, pi: usize) -> bool {
+    use yavs_sem::attr::PredefAttr;
+    use yavs_sem::decl::SubprogramKind;
+    use yavs_sem::hir::{Rhs, Waveform};
+    let p = &e.procs[pi];
+    let StmtKind::ConcSignalAssign {
+        guarded: false,
+        rhs,
+        ..
+    } = &db.stmts[p.stmt].kind
+    else {
+        return false;
+    };
+    if p.actual.is_some() {
+        return false;
+    }
+    let complete = match rhs {
+        Rhs::Simple(w) => !matches!(w, Waveform::Unaffected),
+        Rhs::Conditional(alts) => {
+            alts.last().is_some_and(|a| a.1.is_none())
+                && alts.iter().all(|a| !matches!(a.0, Waveform::Unaffected))
+        }
+        Rhs::Selected { alts, .. } => alts.iter().all(|a| !matches!(a.0, Waveform::Unaffected)),
+    };
+    let mut xs = Vec::new();
+    db.stmt_exprs(p.stmt, &mut |x, _| xs.push(x));
+    let mut plain = complete;
+    for x in xs {
+        db.walk_expr(x, &mut |y| match &db.exprs[y].kind {
+            ExprKind::Call { callee, .. } => {
+                plain &= matches!(
+                    db.decls[*callee].kind.subprogram().map(|s| &s.kind),
+                    Some(SubprogramKind::Function { pure: true })
+                )
+            }
+            ExprKind::Attr { attr, .. } => {
+                use PredefAttr::*;
+                plain &=
+                    hist_attr(*attr).is_none() && !matches!(attr, Event | Driving | DrivingValue)
+            }
+            ExprKind::Obj(d) => plain &= !is_implicit(db, *d),
+            ExprKind::External(_) => plain = false,
+            _ => {}
+        });
+    }
+    plain
+        && proc_reads(db, e, pi, &mut BTreeMap::new())
+            .is_some_and(|(seen, waited)| seen.is_subset(&waited))
 }
 
 /// The members driving a signal whose history a process outside the region reads, each with

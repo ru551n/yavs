@@ -1,0 +1,1 @@
+Under `--cycle`, logic feeding a process with an incomplete sensitivity list, or a process that keeps a value of an earlier run but stays out of the region for another reason first (a `'Z'`, say), stays in the event simulation, as it already did for latches and state: such a process saw other values than in the normal mode.

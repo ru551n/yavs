@@ -191,6 +191,14 @@ body. A signal needs one source: one process drives each element of it.
    * - Is a latch, reads a variable before assigning it, has an incomplete sensitivity list, is part of a
        combinational loop
      - E4119, E4120, E4121, E4122.
+   * - Is combinational logic that feeds, back to the registers, a process outside the region whose result
+       may depend on the delta cycles its inputs change in: one that keeps a value of an earlier run, or, below
+       the top-level unit, one with an incomplete sensitivity list or that cycle mode could not show does
+       neither (a process with a ``'Z'`` and a variable, for example). A concurrent assignment with a final
+       ``else`` that stays out for its ``'Z'`` or its ``after`` alone does not count, and a testbench process
+       sees the settled values earlier, as described below
+     - E4101. The region settles such logic in one delta cycle where the normal mode takes several, so that
+       process would see other values or run another number of times.
    * - Shares a signal element with another process, or the signal has a resolution function of its own
      - E4124.
    * - Is clocked in a form that is not one of those above, or uses a clock made inside the region

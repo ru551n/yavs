@@ -24,7 +24,7 @@ MEMBERS = re.compile(r"(\d+) of (\d+) processes")
 # failure, which cycle mode drops (A12, A21): both runs stop at 1369 us, past "Execution completed.".
 # A new member count is a decision, made in the commit that changes it.
 GATE = {
-    "neorv32_dual_full": dict(stop=None, normal=None, cycle=None, members="3827 of 3910"),
+    "neorv32_dual_full": dict(stop=None, normal=None, cycle=None, members="3826 of 3910"),
     "microwatt_coremark_short": dict(stop="1369us", normal=1, cycle=0, members="281 of 418"),
 }
 

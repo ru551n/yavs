@@ -564,7 +564,8 @@ fn the_report_groups_what_stays_out_by_reason_most_common_first() {
     // Every code, the behavioural group and the one not implemented yet.
     assert!(counts.len() > 15, "{report}");
     assert!(counts.windows(2).all(|w| w[0].0 >= w[1].0), "{counts:?}");
-    assert!(counts[0].1.starts_with("E4122 "), "{counts:?}");
+    // First the logic a process with a foreign call may read (`calls_foreign`: every signal).
+    assert!(counts[0].1.starts_with("E4101 "), "{counts:?}");
     assert!(
         report.contains("    behavioural, in the event kernel (6 processes):"),
         "{report}"
@@ -2156,9 +2157,10 @@ fn every_shape_of_the_subset_fits() {
             ),
         "{report}"
     );
-    // Asserts and reports are counted, never a reason to stay out.
+    // Asserts and reports are counted, never a reason to stay out (the other holder computes
+    // logic a process with a foreign call may read: the run-count rule keeps it out).
     assert!(
-        report.contains("2 asserts and reports not evaluated in cycle mode, held by 2 cycle-based"),
+        report.contains("1 assert and reports not evaluated in cycle mode, held by 1 cycle-based"),
         "{report}"
     );
 }
@@ -3729,10 +3731,12 @@ fn attributes_of_elements_chosen_at_run_time_equal_the_normal_mode() {
     }
 }
 
-/// A process outside the region whose result depends on how often it runs (it assigns a
-/// variable's value of its previous run), fed by a register and combinational logic: the logic in
-/// its fan-in stays in the event kernel with the reason, the register joins; against the normal
-/// mode at widths 1 to 128 (with the logic in the region its output differed).
+/// Processes outside the region whose result depends on the deltas their inputs change in (a
+/// variable's value of the previous run; a signal the sensitivity list does not name; state in a
+/// process rejected for a `'Z'` first), fed by a register and combinational logic: the logic in
+/// their fan-in stays in the event kernel with the reason, the register joins, and so does logic
+/// read only by a concurrent assignment rejected for its `'Z'`; against the normal mode at widths
+/// 1 to 128 (with the logic in the region the outputs of all three differed).
 #[test]
 fn logic_feeding_a_process_that_counts_its_runs_stays_out() {
     let dir = tempdir("cycle-runcount");
@@ -3748,12 +3752,25 @@ fn logic_feeding_a_process_that_counts_its_runs_stays_out() {
             assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
-                err.contains("cycle mode: 1 of 5 processes run cycle-based")
+                err.contains("cycle mode: 2 of 11 processes run cycle-based")
                     && err.contains(
                         "it computes, combinationally, cycle_runcount.c2, in the fan-in of \
                          cycle_runcount.stale"
+                    )
+                    && err.contains(
+                        "it computes, combinationally, cycle_runcount.dut.c3, in the fan-in of \
+                         cycle_runcount.dut.list"
+                    )
+                    && err.contains(
+                        "it computes, combinationally, cycle_runcount.dut.e4, in the fan-in of \
+                         cycle_runcount.dut.mask"
                     ),
                 "{w}: {err}"
+            );
+            assert_eq!(
+                row(&err, "cycle_runcount.dut.e3 <= ...").0,
+                "cycle-based:",
+                "{err}"
             );
         }
     }

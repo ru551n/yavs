@@ -713,6 +713,16 @@ Compiled tiers: Cranelift
      - ``dcache_slow,icache``
      - none
      - ``run``
+   * - ``YAVS_CYCLE_RUNCOUNT``
+     - Developers: ``off`` lets the logic feeding a process outside the region whose result may depend on the delta cycles its inputs change in join the region anyway. It can give wrong results; it shows what that rule protects and what it costs.
+     - ``off``
+     - unset
+     - ``run``
+   * - ``YAVS_CYCLE_SEEDS``
+     - Developers: a file to write, under ``--cycle`` or ``--cycle-report``, with the signals driven by the processes outside the region whose result may depend on the delta cycles its inputs change in, one a line, as ``YAVS_TRACE_SIGNALS`` reads them (``tools/difftest/seeddiff.py``).
+     - ``seeds.txt``
+     - unset
+     - ``run``
    * - ``YAVS_CYCLE_GUARD``
      - Developers: ``all`` lets a cycle region (``--cycle``) skip every combinational step whose inputs did not change since its last run, also the small ones it would otherwise always run (for the tests).
      - ``all``

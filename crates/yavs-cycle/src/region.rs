@@ -511,13 +511,20 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         }
         // Leaves with a source no process owns: a constant source, or a port edge or converted
         // port the kernel updates (a member would read its own driving value from the image,
-        // not the resolved one).
+        // not the resolved one). The actual of an `in` port only feeds it: its value is its
+        // drivers', and the kernel reads it from the region's export.
         let mut consts: BTreeSet<LeafId> = e.nets.consts.iter().map(|c| c.0).collect();
         for pe in &e.nets.ports {
-            consts.extend([pe.formal.0, pe.actual.0]);
+            consts.insert(pe.formal.0);
+            if pe.mode != yavs_kernel::PortMode::In {
+                consts.insert(pe.actual.0);
+            }
         }
         for cp in &e.nets.conv_ports {
-            consts.extend(cp.formal.iter().chain(&cp.actual).map(|x| x.0));
+            consts.extend(cp.formal.iter().map(|x| x.0));
+            if cp.mode != yavs_kernel::PortMode::In {
+                consts.extend(cp.actual.iter().map(|x| x.0));
+            }
         }
         // Per leaf, one driving process outside the region.
         let mut outside: BTreeMap<LeafId, usize> = BTreeMap::new();

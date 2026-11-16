@@ -3561,6 +3561,30 @@ fn a_constant_table_of_records_read_at_run_time_equals_the_normal_mode() {
     }
 }
 
+/// Aggregates with slice pieces: with `others`, two pieces and an element, both directions, in a
+/// register; widths 1 to 128.
+#[test]
+fn aggregates_with_slice_pieces_equal_the_normal_mode() {
+    let dir = tempdir("cycle-slicepc");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("slicepc{w}.vhd"),
+            &with_width(include_str!("cycle/slicepc.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_slicepc");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_slicepc");
+            assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 4 of 5 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// Memories held in shared variables (A15): single-process RAMs that read before and after they
 /// write, both at the address written and at another on one edge, join with their initial content;
 /// a RAM two processes write and read stays in the event kernel with the reason; against the

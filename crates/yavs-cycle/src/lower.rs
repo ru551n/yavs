@@ -4087,7 +4087,7 @@ impl Lx<'_> {
         if b.len() as u32 * ew != n || n == 0 {
             return Err("an aggregate of a null or unexpected shape".into());
         }
-        let elem_hint = Val::Part(Part {
+        let elem_part = Part {
             r: Ref::Loc(0),
             lo: 0,
             len: ew,
@@ -4099,16 +4099,52 @@ impl Lx<'_> {
             obj: None,
             lit: None,
             int: None,
-        });
+        };
+        let elem_hint = Val::Part(elem_part);
         let count = b.len() as usize;
         let mut done = vec![false; count];
         // Element positions from the left, with their values.
         let mut put: Vec<(Vec<usize>, Part)> = Vec::new();
+        // Slice pieces (`39 downto 0 => v`): the rightmost position and the value.
+        let mut pieces: Vec<(usize, Part)> = Vec::new();
         for (k, a) in assocs.iter().enumerate() {
             if a.slice_piece {
-                return Err(
-                    "an aggregate with slice pieces is not supported in cycle mode yet".into(),
-                );
+                let [Choice::Range(r)] = &a.choices[..] else {
+                    return Err(
+                        "an aggregate with slice pieces without a range choice is not \
+                                supported in cycle mode yet"
+                            .into(),
+                    );
+                };
+                let (rb, _) = self.static_range(r)?;
+                if rb.is_empty() {
+                    continue;
+                }
+                let (Some(pl), Some(pr)) = (b.pos(rb.left), b.pos(rb.right)) else {
+                    return Err("an aggregate choice outside the range".into());
+                };
+                if rb.dir != b.dir {
+                    return Err("a slice piece in the other direction than its aggregate".into());
+                }
+                let (pl, pr) = (pl as usize, pr as usize);
+                if done[pl..=pr].iter().any(|&d| d) {
+                    return Err("an aggregate with an element given twice".into());
+                }
+                done[pl..=pr].fill(true);
+                let m = (pr - pl + 1) as u32;
+                let hint = Val::Part(Part {
+                    len: m * ew,
+                    full: m * ew,
+                    dims: dims.with_first(rb),
+                    ..elem_part
+                });
+                let v = self.expr_h(a.value, Some(&hint))?;
+                let v = self.part(v)?;
+                if v.len != m * ew || v.int.is_some() != int.is_some() {
+                    return Err("a slice piece of another length".into());
+                }
+                pieces.push((pr, v));
+                continue;
             }
             let mut at: Vec<usize> = Vec::new();
             if a.choices.is_empty() {
@@ -4158,6 +4194,7 @@ impl Lx<'_> {
         (t.dims, t.int) = (dims, int);
         // One value for every element of an array of scalars: spread it.
         if let [(at, v)] = &put[..]
+            && pieces.is_empty()
             && ew == 1
             && at.len() == count
         {
@@ -4184,6 +4221,16 @@ impl Lx<'_> {
                     len: ew,
                 });
             }
+        }
+        for (pr, v) in pieces {
+            let len = v.len;
+            let s = self.whole(v);
+            self.ops.push(Op::Insert {
+                dst: t.r,
+                src: s,
+                lo: (count - 1 - pr) as u32 * ew,
+                len,
+            });
         }
         Ok(Val::Part(t))
     }

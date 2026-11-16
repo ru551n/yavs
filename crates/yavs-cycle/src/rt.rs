@@ -14,6 +14,10 @@ use yavs_kernel::{
 use crate::codegen::{Code, Fun, mask, words};
 use crate::lower::Check;
 
+/// A check of the code: what it says, the source places (the statement, then the calls around
+/// it), the member process and its name.
+pub type Site = (Check, Vec<yavs_diag::Span>, usize, String);
+
 /// A kernel range read into the image: its words `slot`, from element `lo` there, `len`
 /// elements; or, for a byte signal (`bytes` 1, 4 or 8, else 0), `len` integers, one per word,
 /// the last element of the range in word `slot` (the image keeps arrays from the right, the
@@ -175,7 +179,7 @@ pub(crate) struct RegionProc {
     pub waits: Vec<SigRef>,
     pub started: bool,
     /// The checks of the code by site: what they say, and the member process and its name.
-    pub checks: Arc<Vec<(Check, usize, String)>>,
+    pub checks: Arc<Vec<Site>>,
     /// The first of the two words a failed check stores its operands in.
     pub err: usize,
     pub metas: Arc<crate::Metas>,
@@ -467,13 +471,14 @@ impl RegionProc {
             ));
         }
         let (a, b) = (self.img[self.err] as i64, self.img[self.err + 1] as i64);
-        let Some((check, pi, name)) = self.checks.get(site as usize) else {
+        let Some((check, at, pi, name)) = self.checks.get(site as usize) else {
             return ctx.error(ErrorKind::Internal(format!(
                 "cycle mode: check {site} failed, which the region does not have"
             )));
         };
         let mut e = ctx.error(ErrorKind::Runtime(check.message(a, b)));
         e.process = Some((ProcId(*pi as u32), name.clone()));
+        e.at.clone_from(at);
         e
     }
 

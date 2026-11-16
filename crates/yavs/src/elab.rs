@@ -229,8 +229,8 @@ pub struct RunArgs {
     /// processes are not evaluated; a process of the top-level unit that holds one stays in the
     /// event kernel, so the checks of a testbench run as in the normal mode (a checker entity
     /// instantiated below the top joins and loses them). Not with a debug session, `--wave`,
-    /// `--cov` or `--vhpi` (E4102). The strict form is `--cycle-strict`, given instead of this
-    /// option.
+    /// `--cov`, `--vhpi`, `--surfer` or `--activity` (E4102). The strict form is `--cycle-strict`,
+    /// given instead of this option.
     #[arg(long, conflicts_with = "cycle_strict")]
     cycle: bool,
     /// Cycle mode in its strict form, instead of `--cycle`: the same selection, but a process
@@ -555,17 +555,24 @@ impl RunArgs {
         self.cycle || self.cycle_strict || self.cycle_report.is_some()
     }
 
-    /// The option `--cycle` cannot be used with: it observes or changes signals inside the
-    /// region (milestone 1 of cycle mode refuses all of them).
+    /// The option `--cycle` cannot be used with: it records, shows, counts or changes signals
+    /// inside the region. `--surfer` is named before the `--wave` it implies. Left allowed:
+    /// `--profile` (samples the interpreter, so the region's time is one entry of the kernel),
+    /// `--assert-summary` (counts the asserts that run, and the region drops its own),
+    /// `--shuffle`, `--hang-report`, `--time-report`; the `--wave-*` options do nothing alone.
     fn not_with_cycle(&self) -> Option<&'static str> {
         if self.debugged() {
             Some("a debug session")
+        } else if self.surfer.is_some() {
+            Some("`--surfer`")
         } else if self.wave.is_some() {
             Some("`--wave`")
         } else if self.cov.is_some() {
             Some("`--cov`")
         } else if !self.vhpi.is_empty() {
             Some("`--vhpi`")
+        } else if self.activity.is_some() {
+            Some("`--activity`")
         } else {
             None
         }
@@ -1833,25 +1840,23 @@ fn run_design(
     if (a.cycle || a.cycle_strict)
         && let Some(option) = a.not_with_cycle()
     {
+        let flag = if a.cycle_strict {
+            "--cycle-strict"
+        } else {
+            "--cycle"
+        };
         let mut out = Out::new(format, color);
         out.emit(
             &SourceMap::default(),
             &Diagnostic::error(
                 yavs_cycle::codes::NOT_WITH,
-                format!(
-                    "`{}` cannot be used with {option}",
-                    if a.cycle_strict {
-                        "--cycle-strict"
-                    } else {
-                        "--cycle"
-                    }
-                ),
+                format!("`{flag}` cannot be used with {option}"),
             )
             .with_note(
                 "cycle mode keeps the signals inside its region in its own image, which this \
                  option would observe or change",
             )
-            .with_help("run without `--cycle`"),
+            .with_help(format!("run without `{flag}`")),
         );
         return out.finish(2);
     }

@@ -409,40 +409,49 @@ What is refused
 ~~~~~~~~~~~~~~~
 
 The signals inside the region are kept in an image of their own, and nothing can observe or change them there.
-So ``--cycle`` and ``--cycle-strict`` stop with E4102 before simulating when combined with ``--wave``, ``--cov``,
-``--vhpi``, or a debug session (``--dap``, ``--interactive``, ``--do``). The error looks like this:
+So ``--cycle`` and ``--cycle-strict`` stop with E4102 before simulating when combined with ``--wave``, ``--surfer``
+(which records a waveform), ``--cov``, ``--vhpi``, ``--activity`` (which counts the activations and events of every
+process and signal), or a debug session (``--dap``, ``--interactive``, ``--do``). The error names the option and
+nothing is written or run. It looks like this:
 
 .. code-block:: text
 
-    error[E4102]: `--cycle` cannot be used with `--wave`
+    error[E4102]: `--cycle` cannot be used with `--surfer`
      |
      = note: cycle mode keeps the signals inside its region in its own image, which this option would observe or change
      = help: run without `--cycle`
 
     error: aborting due to 1 previous error
 
-Run the design in the normal mode for waveforms, coverage, debugging and VHPI plugins. ``--surfer`` records a waveform too; yavs does not refuse it at
-the moment, but do not combine it with cycle mode either. ``--cycle-report`` does not simulate, so it is not
-refused with ``--wave``.
+Run the design in the normal mode for waveforms, coverage, activity counts, debugging and VHPI plugins.
+``--cycle-report`` does not simulate, so it is not refused with ``--wave``.
+
+Options that do not read the signals of the region stay allowed: ``--profile`` (it samples the interpreter, so the
+region's time shows as the kernel's and only the processes outside the region are listed), ``--assert-summary`` (it
+counts the asserts that run, and cycle-based processes drop theirs), ``--shuffle``, ``--hang-report`` and
+``--time-report``.
 
 Checks that stay
 ~~~~~~~~~~~~~~~~
 
 Integer overflow, subtype range checks and array index checks are still made in cycle-based processes. A failure
-stops the run with the same error and exit status as in the normal mode, with the time and the process, but without
-the source line. ``overflow.vhd`` counts an integer past its largest value:
+stops the run with the same error and exit status as in the normal mode, with the source line, the time and the
+process. A check inside a function or procedure that was inlined also lists the statements it was called from, as the
+normal mode does. ``overflow.vhd`` counts an integer past its largest value:
 
 .. code-block:: text
 
     cycle mode: 1 of 3 processes run cycle-based, 2 in the event kernel (see --cycle-report)
     error[E3009]: result of 2147483647 + 1 cannot be represented as INTEGER
-     |
-     = note: LRM 5.2.3.1, 5.2.4.1: a predefined arithmetic operation delivers the correct result
-     = note: at 25 ns, delta 0, in process tb_overflow.dut.process (overflow.vhd:8)
+      --> overflow.vhd:11:12
+       |
+    11 |       n <= n + 1;  -- overflows at the third edge
+       |            ^^^^^
+       |
+       = note: LRM 5.2.3.1, 5.2.4.1: a predefined arithmetic operation delivers the correct result
+       = note: at 25 ns, delta 0, in process tb_overflow.dut.process (overflow.vhd:8)
 
     error: aborting due to 1 previous error
-
-To get the line, run the design in the normal mode.
 
 Exit status and time
 ~~~~~~~~~~~~~~~~~~~~

@@ -373,21 +373,55 @@ fn cycle_strict_refuses_rtl_that_cannot_join() {
 fn cycle_mode_refuses_the_options_that_see_inside_the_region() {
     let dir = tempdir("cycle-not-with");
     analyze(&dir, "partial.vhd", include_str!("cycle/partial.vhd"));
-    for (opt, name) in [("--wave=x.fst", "--wave"), ("--cov=s", "--cov")] {
+    for (opt, name) in [
+        ("--wave=x.fst", "--wave"),
+        ("--cov=s", "--cov"),
+        ("--vhpi=nothing", "--vhpi"),
+        ("--surfer", "--surfer"),
+        ("--surfer=localhost:1", "--surfer"),
+        ("--wave=x.fst --surfer", "--surfer"),
+        ("--activity", "--activity"),
+        ("--activity=x.json", "--activity"),
+    ] {
         for mode in ["--cycle", "--cycle-strict"] {
-            let o = yavs(
-                &dir,
-                &["run", "--work=work:lib", mode, opt, "cycle_partial"],
-            );
+            let mut args = vec!["run", "--work=work:lib", mode];
+            args.extend(opt.split(' '));
+            args.push("cycle_partial");
+            let o = yavs(&dir, &args);
             let err = String::from_utf8_lossy(&o.stderr);
-            assert_eq!(o.status.code(), Some(2), "{err}");
+            assert_eq!(o.status.code(), Some(2), "{opt}: {err}");
             assert!(
                 err.contains(&format!(
                     "error[E4102]: `{mode}` cannot be used with `{name}`"
-                )),
-                "{err}"
+                )) && err.contains(&format!("run without `{mode}`")),
+                "{opt}: {err}"
             );
+            // Refused before any work: no wave file, no simulation.
+            assert!(!dir.join("cycle_partial.fst").exists() && !dir.join("x.fst").exists());
+            assert!(o.stdout.is_empty(), "{opt}");
         }
+    }
+}
+
+/// What stays allowed with `--cycle`: options that do not read the signals of the region.
+#[test]
+fn cycle_mode_allows_the_options_that_do_not_see_inside_the_region() {
+    let dir = tempdir("cycle-allowed");
+    analyze(&dir, "partial.vhd", include_str!("cycle/partial.vhd"));
+    for opt in [
+        "--profile",
+        "--assert-summary",
+        "--shuffle",
+        "--hang-report",
+        "--time-report",
+    ] {
+        let o = yavs(
+            &dir,
+            &["run", "--work=work:lib", "--cycle", opt, "cycle_partial"],
+        );
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(o.status.success(), "{opt}: {err}");
+        assert!(!err.contains("E4102"), "{opt}: {err}");
     }
 }
 
@@ -829,6 +863,7 @@ fn failed_checks_in_region_code_stop_the_run_as_in_the_normal_mode() {
             "at 80 ns, delta 1, in process cycle_ramidx.reg",
         ),
     ] {
+        let mut shown = Vec::new();
         for mode in [None, Some("--cycle")] {
             let mut args = vec!["run", "--work=work:lib", "--no-cache", "--tier=interp"];
             args.extend(mode);
@@ -840,6 +875,7 @@ fn failed_checks_in_region_code_stop_the_run_as_in_the_normal_mode() {
                 err.contains(msg) && err.contains(note),
                 "{top} {mode:?}: {err}"
             );
+            shown.push(err[err.find("error[").expect("an error")..].to_string());
             if mode.is_some() {
                 assert!(
                     err.contains("cycle mode: 1 of 2 processes run cycle-based"),
@@ -847,6 +883,8 @@ fn failed_checks_in_region_code_stop_the_run_as_in_the_normal_mode() {
                 );
             }
         }
+        // The same diagnostic, with the place of the statement and of the calls around it.
+        assert_eq!(shown[0], shown[1], "{top}");
     }
 }
 
@@ -1022,6 +1060,34 @@ begin
   end process;
 end architecture;
 
+entity cycle_fback is
+end entity;
+architecture a of cycle_fback is
+  signal clk : bit := '0';
+  signal x : integer range 0 to 7 := 0;
+  function nine(v : integer) return integer is
+  begin
+    return v + 9;
+  end function;
+begin
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      x <= nine(x);
+    end if;
+  end process;
+  main : process
+  begin
+    for i in 1 to 4 loop
+      clk <= '1';
+      wait for 5 ns;
+      clk <= '0';
+      wait for 5 ns;
+    end loop;
+    wait;
+  end process;
+end architecture;
+
 entity cycle_fidx is
 end entity;
 architecture a of cycle_fidx is
@@ -1089,6 +1155,12 @@ fn failed_checks_in_inlined_calls_stop_the_run_as_in_the_normal_mode() {
             "error[E3009]: value -1 outside of NATURAL range 0 to 2147483647 for the result of dec",
             "at 0 fs, delta 1, in process cycle_fretc.reg",
         ),
+        // The check of the target, after the call returned: the place is the statement's.
+        (
+            "cycle_fback",
+            "error[E3009]: value 9 outside of INTEGER range 0 to 7 for signal X",
+            "at 0 fs, delta 1, in process cycle_fback.reg",
+        ),
         // A part of an element at the index just before the array.
         (
             "cycle_eslice",
@@ -1096,6 +1168,7 @@ fn failed_checks_in_inlined_calls_stop_the_run_as_in_the_normal_mode() {
             "at 30 ns, delta 1, in process cycle_eslice.reg",
         ),
     ] {
+        let mut shown = Vec::new();
         for mode in [None, Some("--cycle")] {
             let mut args = vec!["run", "--work=work:lib", "--no-cache", "--tier=interp"];
             args.extend(mode);
@@ -1107,6 +1180,7 @@ fn failed_checks_in_inlined_calls_stop_the_run_as_in_the_normal_mode() {
                 err.contains(msg) && err.contains(note),
                 "{top} {mode:?}: {err}"
             );
+            shown.push(err[err.find("error[").expect("an error")..].to_string());
             if mode.is_some() {
                 assert!(
                     err.contains("cycle mode: 1 of 2 processes run cycle-based"),
@@ -1114,6 +1188,8 @@ fn failed_checks_in_inlined_calls_stop_the_run_as_in_the_normal_mode() {
                 );
             }
         }
+        // The same diagnostic, with the place of the statement and of the calls around it.
+        assert_eq!(shown[0], shown[1], "{top}");
     }
 }
 
@@ -2897,4 +2973,107 @@ fn region_code_from_the_cache_gives_the_same_result() {
     }
     let (got, n, hits) = cached(&dir, &[], &["--cycle", "-gW=9"]);
     assert_eq!((&got, hits), (&w9, n));
+}
+
+const SUBSET_CODES: &str = "\
+library ieee;
+use ieee.std_logic_1164.all;
+entity cycle_codes is
+end entity;
+architecture a of cycle_codes is
+  signal clk, en, d, q2, q3, q4, q5, q7, q9, q10 : std_logic := '0';
+  procedure waits(signal s : in std_logic) is
+  begin
+    wait until s = '1';
+  end procedure;
+begin
+  edge_in_clocked : process (clk)
+  begin
+    if rising_edge(clk) then
+      if rising_edge(en) then q2 <= d; end if;
+    end if;
+  end process;
+  edge_in_comb : process (all)
+  begin
+    if rising_edge(en) then q3 <= d; else q3 <= '0'; end if;
+  end process;
+  event_in_clocked : process (clk, en)
+  begin
+    if rising_edge(clk) then
+      if en'event then q4 <= d; end if;
+    end if;
+  end process;
+  event_in_comb : process (all)
+  begin
+    if en'event then q5 <= d; else q5 <= '0'; end if;
+  end process;
+  calls_wait : process
+  begin
+    waits(en);
+    q7 <= d;
+  end process;
+  driving : process (all)
+  begin
+    q9 <= en'driving_value;
+  end process;
+  edge_after_elsif : process (clk, en)
+  begin
+    if rising_edge(clk) then q10 <= d; elsif en'event and en'last_value = '0' then q10 <= '0'; end if;
+  end process;
+end architecture;
+";
+
+/// What the texts of E4110, E4112 and E4123 say matches the codes the checker gives: an edge test
+/// of another signal is E4112 inside a clocked body and E4123 where the shape is not clocked or
+/// has more after the edge; a procedure that waits makes a process behavioural, with no code.
+#[test]
+fn explain_texts_of_the_subset_codes_match_what_the_checker_gives() {
+    let dir = tempdir("cycle-codes");
+    analyze(&dir, "codes.vhd", SUBSET_CODES);
+    let o = yavs(
+        &dir,
+        &["run", "--work=work:lib", "--cycle-report", "cycle_codes"],
+    );
+    let report = String::from_utf8_lossy(&o.stderr);
+    let line = |p: &str| {
+        let row = report
+            .lines()
+            .find(|l| l.contains(&format!("cycle_codes.{p} ")));
+        row.unwrap_or_else(|| panic!("{p}: {report}")).to_string()
+    };
+    for (p, code) in [
+        ("edge_in_clocked", "E4112"),
+        ("event_in_clocked", "E4112"),
+        ("event_in_comb", "E4112"),
+        ("driving", "E4112"),
+        ("edge_in_comb", "E4123"),
+        ("edge_after_elsif", "E4123"),
+    ] {
+        assert!(line(p).contains(&format!("{code} ")), "{p}: {report}");
+    }
+    let wait = report
+        .find("behavioural, in the event kernel")
+        .expect("a group");
+    assert!(
+        report[wait..].contains("cycle_codes.calls_wait "),
+        "{report}"
+    );
+    assert!(!line("calls_wait").contains("E41"), "{report}");
+    let explain = |code: &str| {
+        let o = yavs(&dir, &["--explain", code]);
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    let e4112 = explain("E4112");
+    assert!(
+        e4112.contains("`'driving_value`")
+            && e4112.contains("inside the body of a clocked process")
+            && e4112.contains("is E4123"),
+        "{e4112}"
+    );
+    let e4110 = explain("E4110");
+    assert!(
+        !e4110.contains("a call of a procedure that waits")
+            && e4110.contains("calls a procedure that waits is behavioural"),
+        "{e4110}"
+    );
 }

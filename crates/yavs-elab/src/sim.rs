@@ -307,7 +307,14 @@ impl Elaborated {
         let spans = e
             .trace
             .iter()
-            .filter_map(|&s| prog.and_then(|p| p.stmts.get(s)).map(|i| i.span));
+            .filter_map(|&s| prog.and_then(|p| p.stmts.get(s)).map(|i| i.span))
+            .chain(
+                e.trace
+                    .is_empty()
+                    .then(|| e.at.iter().copied())
+                    .into_iter()
+                    .flatten(),
+            );
         for (k, span) in spans.enumerate() {
             d = if k == 0 {
                 d.with_primary(span, "")

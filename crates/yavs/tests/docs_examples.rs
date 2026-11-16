@@ -512,13 +512,14 @@ fn cycle_mode_page() {
     for code in ["E4127", "E4119", "E4111", "E4121"] {
         assert!(err.contains(&format!("error[{code}]")), "{err}");
     }
-    let (code, _, err) = e.yavs(&["run", "--cycle", "--wave=x.fst", WORK, "tb_counter"]);
+    let (code, _, err) = e.yavs(&["run", "--cycle", "--surfer", WORK, "tb_counter"]);
     assert_eq!(code, 2);
     assert!(err.contains("error[E4102]"), "{err}");
     on_page(page, &err);
     let (code, _, err) = e.yavs(&["run", "--cycle", WORK, "tb_overflow"]);
     assert_eq!(code, 1, "{err}");
-    on_page(page, &err);
+    // The page shows the path relative to where the files are.
+    on_page(page, &err.replace(&format!("{}/", e.0.display()), ""));
     let (code, _, err) = e.yavs(&["run", "--cycle", "--cycle-strict", WORK, "tb_counter"]);
     assert_eq!(code, 2, "{err}");
 }

@@ -512,7 +512,7 @@ fn build(
             .collect(),
     ));
     let mut init: Vec<(u32, u64)> = Vec::new();
-    let mut checks: Vec<(lower::Check, usize)> = Vec::new();
+    let mut checks: Vec<(lower::Check, Vec<yavs_diag::Span>, usize)> = Vec::new();
     let mut uninit = 0u64;
     // Each member's slots and resolution.
     let none = BTreeMap::new();
@@ -536,7 +536,7 @@ fn build(
         deferred.push((ops, pend));
         init.extend(b.init.iter().map(|&(w, v)| (base + w, v)));
         let sites = checks.len() as u32;
-        checks.extend(b.checks.iter().map(|c| (c.clone(), *pi)));
+        checks.extend(b.checks.iter().map(|(c, at)| (c.clone(), at.clone(), *pi)));
         uninit += b.uninit;
         let clocked = b.kind == Kind::Clocked;
         if clocked {
@@ -992,12 +992,12 @@ fn build(
         .collect();
     let outputs = sel.outputs.clone();
     let names: BTreeMap<usize, String> = (checks.iter())
-        .map(|(_, pi)| (*pi, e.hier.proc_label(&e.procs[*pi], yavs_elab::Case::Lrm)))
+        .map(|(_, _, pi)| (*pi, e.hier.proc_label(&e.procs[*pi], yavs_elab::Case::Lrm)))
         .collect();
-    let checks: Arc<Vec<(lower::Check, usize, String)>> = Arc::new(
+    let checks: Arc<Vec<rt::Site>> = Arc::new(
         checks
             .into_iter()
-            .map(|(c, pi)| (c, pi, names[&pi].clone()))
+            .map(|(c, at, pi)| (c, at, pi, names[&pi].clone()))
             .collect(),
     );
     let sig_bytes: BTreeMap<u32, u32> = cur.keys().map(|&k| (k, bytes(k))).collect();

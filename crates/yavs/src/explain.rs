@@ -540,7 +540,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E4102",
-        "`yavs run --cycle` cannot be used with an option that observes or changes signals inside the cycle region: a debug session, `--wave`, `--cov` or `--vhpi`. Cycle mode keeps those signals in an image of its own and updates the kernel only with what processes outside the region read. Run without `--cycle` for these.",
+        "`yavs run --cycle` (or `--cycle-strict`) cannot be used with an option that records, shows, counts or changes signals inside the cycle region: a debug session (`--dap`, `--interactive`, `--do`), `--wave`, `--surfer` (which records a waveform), `--cov`, `--vhpi` or `--activity`. Cycle mode keeps those signals in an image of its own and updates the kernel only with what processes outside the region read. Run without `--cycle` for these. `--profile`, `--assert-summary`, `--shuffle`, `--hang-report` and `--time-report` are allowed: they do not read the signals of the region, but `--profile` shows the region's time as one entry and `--assert-summary` counts only the asserts that run.",
     ),
     (
         "E4103",
@@ -548,7 +548,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E4110",
-        "Cycle mode takes a process with a wait only in one shape: `wait until <edge>;` as the first statement, the only wait, a clocked process (`rising_edge(clk)`, `falling_edge(clk)` or `clk'event and clk = '1'`, optionally followed by `and` more conditions). Any other wait (`wait on a;`, a wait on a level, a call of a procedure that waits) keeps the process in the event kernel. A process that waits for a time, waits forever or waits more than once is behavioural and stays in the event kernel without this code.",
+        "Cycle mode takes a process with a wait only in one shape: `wait until <edge>;` as the first statement, the only wait, a clocked process (`rising_edge(clk)`, `falling_edge(clk)` or `clk'event and clk = '1'`, optionally followed by `and` more conditions). Any other wait (`wait on a;`, a wait on a level) keeps the process in the event kernel. A process that waits for a time, waits forever, waits more than once or calls a procedure that waits is behavioural and stays in the event kernel without this code.",
     ),
     (
         "E4111",
@@ -556,11 +556,11 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E4112",
-        "Cycle mode keeps no signal history: `'last_value`, `'last_event`, `'stable`, `'quiet`, `'delayed`, `'transaction`, `'active`, `'driving`, an edge test of a signal that is not the process's clock, or `'event` outside the clock's edge test keep the process in the event kernel.",
+        "Cycle mode keeps no signal history: `'last_value`, `'last_event`, `'last_active`, `'stable`, `'quiet`, `'delayed`, `'transaction`, `'active`, `'driving`, `'driving_value`, `'event` anywhere but in the process's own edge test, or an edge test (`rising_edge`, `falling_edge`, a `'event` form) of a signal other than the process's clock inside the body of a clocked process or of a subprogram it calls, keep the process in the event kernel. An edge test in a process that is not of the clocked shape, such as a combinational process, or after an `elsif` or `else`, is E4123.",
     ),
     (
         "E4113",
-        "Cycle mode computes two-state values, integers and enumerations: a real or physical (time) value computed at run time, or a variable of such a type, keeps the process in the event kernel. Constant expressions elaboration folds are fine.",
+        "Cycle mode computes two-state values, integers and enumerations: a real or physical (time) value computed at run time, or a signal or variable of such a type, keeps the process in the event kernel. Constant expressions elaboration folds are fine.",
     ),
     (
         "E4114",
@@ -592,7 +592,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E4121",
-        "A combinational process that reads a signal its sensitivity list does not name is not run by the normal mode when that signal changes, so its result is not a function of what it reads. Cycle mode computes it from every read and would give another result: the process stays in the event kernel. Name every signal it reads, or write `process (all)`.",
+        "A combinational process that reads a signal its sensitivity list does not name, or a clocked process whose asynchronous reset branch does, is not run by the normal mode when that signal changes, so its result is not a function of what it reads. Cycle mode computes it from every read and would give another result: the process stays in the event kernel. Name every signal it reads, or write `process (all)`.",
     ),
     (
         "E4122",
@@ -600,7 +600,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E4123",
-        "A clocked process of a shape cycle mode does not take: statements outside the edge test, an edge test inside other statements, an `else` after it, statements before a `wait until` (they run once at initialisation), a clock that is not one element of a signal, a reset branch whose condition reads no signal or reads the clock, a sensitivity list that does not name the clock or every signal of the asynchronous reset, or a `wait until` whose `on` list does not name the clock. A clocked process is `if <edge> then ... end if;`, optionally after an asynchronous reset branch `if <reset> then ... elsif <edge> then` (any condition on signals of the list), or `wait until <edge>;` first.",
+        "A clocked process of a shape cycle mode does not take: statements outside the edge test, an edge test inside other statements, an `else` after it, statements before a `wait until` (they run once at initialisation), a `wait` inside another statement, a clock that is not one element of a signal, a reset branch whose condition reads no signal or reads the clock, a sensitivity list that does not name the clock or every signal of the asynchronous reset, or a `wait until` whose `on` list does not name the clock. A clocked process is `if <edge> then ... end if;`, optionally after an asynchronous reset branch `if <reset> then ... elsif <edge> then` (any condition on signals of the list), or `wait until <edge>;` first.",
     ),
     (
         "E4124",

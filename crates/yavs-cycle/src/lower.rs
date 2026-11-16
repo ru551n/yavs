@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use yavs_diag::Span;
 use yavs_elab::{Bounds, Elaborated, LeafId, ProcInst, Shape};
 use yavs_sem::hir::{
     Actual, AggBounds, AttrPrefix, Choice, ChoiceSet, ExprKind, LoopScheme, PredefAttr, Rhs,
@@ -533,8 +534,10 @@ pub(crate) struct Body {
     pub metas: u32,
     /// Elements of logic variables without an initial value (`'U'`), which start at 0.
     pub uninit: u64,
-    /// The checks of the body, numbered by `site`.
-    pub checks: Vec<Check>,
+    /// The checks of the body, numbered by `site`, each with the source place of the statement
+    /// (an operation for arithmetic) it belongs to, then the statements of the calls it is inlined
+    /// in, innermost first.
+    pub checks: Vec<(Check, Vec<Span>)>,
 }
 
 /// The index ranges of a logic array, the outermost first, nested arrays of logic elements
@@ -683,6 +686,8 @@ struct Frame {
     /// that ends the body.
     ret: Option<Val>,
     direct: bool,
+    /// The statement the call is in.
+    from: Span,
     /// Set by a `return` that the rest of the body must not run after.
     flag: Option<Ref>,
 }
@@ -784,6 +789,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         metas: 0,
         uninit: 0,
         checks: Vec::new(),
+        at: db.stmts[p.stmt].span,
         unrolled: 0,
         lits: Vec::new(),
     };
@@ -852,7 +858,9 @@ struct Lx<'a> {
     dropped: u32,
     metas: u32,
     uninit: u64,
-    checks: Vec<Check>,
+    checks: Vec<(Check, Vec<Span>)>,
+    /// The place new check sites report: the statement being lowered.
+    at: Span,
     unrolled: u32,
     /// The codes of the literals with a metavalue (`Part::lit`).
     lits: Vec<Vec<u8>>,
@@ -1073,7 +1081,9 @@ impl Lx<'_> {
     }
 
     fn site(&mut self, c: Check) -> u32 {
-        self.checks.push(c);
+        let calls = self.frames.iter().rev().map(|f| f.from);
+        self.checks
+            .push((c, std::iter::once(self.at).chain(calls).collect()));
         self.checks.len() as u32 - 1
     }
 
@@ -1156,6 +1166,13 @@ impl Lx<'_> {
     }
 
     fn stmt(&mut self, s: StmtId) -> R<()> {
+        let outer = std::mem::replace(&mut self.at, self.db.stmts[s].span);
+        let r = self.stmt_kind(s);
+        self.at = outer;
+        r
+    }
+
+    fn stmt_kind(&mut self, s: StmtId) -> R<()> {
         let db = self.db;
         match &db.stmts[s].kind {
             StmtKind::Null => Ok(()),
@@ -4430,7 +4447,9 @@ fn part_of(r: Ref, len: u32) -> Part {
 impl Lx<'_> {
     fn int_arith(&mut self, x: ExprId, op: Arith, a: IntV, b: IntV) -> R<IntV> {
         let (lo, hi, ty) = self.result_range(x)?;
+        let stmt = std::mem::replace(&mut self.at, self.db.exprs[x].span);
         let site = self.site(Check::Arith { op, ty });
+        self.at = stmt;
         let t = self.tmp_int(lo, hi);
         self.ops.push(Op::Int {
             op,
@@ -4827,6 +4846,7 @@ impl Lx<'_> {
             ret_st: sp.ret,
             ret: None,
             direct,
+            from: self.at,
             flag,
         });
         let saved = std::mem::take(&mut self.pend);

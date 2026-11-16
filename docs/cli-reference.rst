@@ -499,7 +499,7 @@ Arguments:
 
 .. option:: --cycle
 
-   Cycle mode: the processes that can run cycle-based (clocked and combinational ones in what it supports) run as one region on a static schedule with compiled code; the rest stays in the event kernel. One line on standard error says how many processes joined; ``--cycle-report`` lists them all, with reasons. The asserts and reports of cycle-based processes are not evaluated; a process of the top-level unit that holds one stays in the event kernel, so the checks of a testbench run as in the normal mode (a checker entity instantiated below the top joins and loses them). Not with a debug session, ``--wave``, ``--cov`` or ``--vhpi`` (E4102). The strict form is ``--cycle-strict``, given instead of this option.
+   Cycle mode: the processes that can run cycle-based (clocked and combinational ones in what it supports) run as one region on a static schedule with compiled code; the rest stays in the event kernel. One line on standard error says how many processes joined; ``--cycle-report`` lists them all, with reasons. The asserts and reports of cycle-based processes are not evaluated; a process of the top-level unit that holds one stays in the event kernel, so the checks of a testbench run as in the normal mode (a checker entity instantiated below the top joins and loses them). Not with a debug session, ``--wave``, ``--cov``, ``--vhpi``, ``--surfer`` or ``--activity`` (E4102). The strict form is ``--cycle-strict``, given instead of this option.
 
    Cannot be combined with ``--cycle-strict``.
 

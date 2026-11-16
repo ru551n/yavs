@@ -90,14 +90,22 @@ pub(crate) fn subset(db: &Db, e: &Elaborated) -> Subset {
     let mut fits: BTreeMap<usize, Fit> = BTreeMap::new();
     let mut out: Vec<(usize, Why)> = Vec::new();
     let mut callees = check::Callees::default();
+    let mut slow: Vec<(u128, usize)> = Vec::new();
     for pi in 0..e.procs.len() {
-        match check::check(db, e, pi, &mut callees) {
+        let t = std::time::Instant::now();
+        let v = check::check(db, e, pi, &mut callees);
+        slow.push((t.elapsed().as_micros(), pi));
+        match v {
             check::Verdict::Fit(f) => {
                 fits.insert(pi, f);
             }
             check::Verdict::Behavioural(w) => out.push((pi, Why::Behavioural(w))),
             check::Verdict::Out(r) => out.push((pi, Why::Subset(r))),
         }
+    }
+    slow.sort_unstable_by(|a, b| b.cmp(a));
+    for &(us, pi) in slow.iter().take(8) {
+        stat(|| format!("check {us} us: {}", e.proc_label(&e.procs[pi])));
     }
     // Every element a fitting process drives must have it as its only source.
     let mut drivers: BTreeMap<LeafId, Vec<(usize, u32, u32)>> = BTreeMap::new();

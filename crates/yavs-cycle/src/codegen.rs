@@ -51,6 +51,8 @@ pub(crate) struct Code {
     /// Per step of the settle: the settle's units (`compile`'s `units`) it runs; a step with
     /// none always runs.
     pub(crate) settle_units: Vec<Vec<u32>>,
+    /// The steps with units, as a mark: a mark that holds them all runs the settle unmarked.
+    every: Box<[u64]>,
     /// The words of the region's signals, the first ones of the image (`YAVS_CYCLE_SKIP_CHECK`).
     signal_words: usize,
     /// With `YAVS_CYCLE_SKIP_CHECK`: per step of the settle, the words its members drive.
@@ -59,6 +61,9 @@ pub(crate) struct Code {
     log_count: usize,
     /// `YAVS_CYCLE_SKIP_CHECK=1`: a run a guard would skip runs and must change nothing.
     pub(crate) skip_check: bool,
+    /// `YAVS_CYCLE_SKIP_CHECK=full` (also the reruns of `1`): the words that hold state (signals,
+    /// clocked variables), which a run with every step and no guard must leave as the run did.
+    pub(crate) full_check: Option<Vec<(u32, u32)>>,
     /// With `YAVS_CYCLE_STATS`: per guard its runs and skips.
     pub(crate) counts: Option<Vec<[std::sync::atomic::AtomicU64; 2]>>,
     /// The guard whose skipped run changed something (`STALE`).
@@ -129,8 +134,12 @@ pub(crate) struct Shape {
 pub(crate) const UNSETTLED: u32 = u32::MAX;
 
 /// The site [`Code::run`] gives when a run a guard would have skipped changed a word it drives
-/// (`YAVS_CYCLE_SKIP_CHECK=1`; the guard in [`Code::stale`]).
+/// (`YAVS_CYCLE_SKIP_CHECK=1`; the guard in [`Code::stale`]), or with `full` when the run differed
+/// from one of every step ([`FULL`] in [`Code::stale`]).
 pub(crate) const STALE: u32 = u32::MAX - 1;
+
+/// [`Code::stale`] after `YAVS_CYCLE_SKIP_CHECK=full` saw a difference.
+pub(crate) const FULL: usize = usize::MAX - 1;
 
 /// A pass after a loop group's schedule confirms its fixed point (debug builds, unless
 /// `YAVS_CYCLE_CHECKS=on`; `YAVS_CYCLE_CHECKS=all`).
@@ -143,19 +152,70 @@ pub(crate) fn confirm_on() -> bool {
 }
 
 impl Code {
-    /// Run function `f` on `img`: `Err(site)` when a check failed. With `mark` (the settle only),
-    /// a step with units (`settle_units`) whose bit in `mark` is clear is skipped: what it reads
-    /// did not change since the last settle.
+    /// Run function `f` on `img`: `Err(site)` when a check failed. With `mark`, a step of the
+    /// settle (also the edge's) with units (`settle_units`) whose bit in `mark` is clear is
+    /// skipped: what it reads did not change since the last settle.
     pub(crate) fn run(&self, img: &mut [u64], f: Fun, mark: Option<&[u64]>) -> Result<(), u32> {
         assert!(
             img.len() >= self.words,
             "the image is smaller than the code's words"
         );
-        let mark = mark.filter(|_| f == Fun::Settle);
-        self.steps(img, &self.entries[f as usize], mark)
+        if let Some(state) = &self.full_check
+            && f != Fun::Init
+        {
+            return self.full(img, f, mark, state);
+        }
+        self.run_as(img, f, mark, true)
     }
 
-    fn steps(&self, img: &mut [u64], rs: &[Run], mark: Option<&[u64]>) -> Result<(), u32> {
+    /// The edge runs its own steps, then the settle's.
+    fn run_as(
+        &self,
+        img: &mut [u64],
+        f: Fun,
+        mark: Option<&[u64]>,
+        guards: bool,
+    ) -> Result<(), u32> {
+        let mark = mark.filter(|m| m.iter().zip(&self.every[..]).any(|(m, e)| e & !m != 0));
+        if f == Fun::Edge {
+            self.steps(img, &self.entries[1], None, guards)?;
+        }
+        match f {
+            Fun::Init => self.steps(img, &self.entries[2], None, guards),
+            _ => self.steps(img, &self.entries[0], mark, guards),
+        }
+    }
+
+    /// `YAVS_CYCLE_SKIP_CHECK=full`: `f` with every step and no guard on a copy first; the run
+    /// with the mark and the guards must end the same way and leave the same state.
+    #[cold]
+    fn full(
+        &self,
+        img: &mut [u64],
+        f: Fun,
+        mark: Option<&[u64]>,
+        state: &[(u32, u32)],
+    ) -> Result<(), u32> {
+        let mut whole = img.to_vec();
+        let a = self.run_as(&mut whole, f, None, false);
+        let b = self.run_as(img, f, mark, true);
+        let differs = (state.iter()).any(|&(w, c)| {
+            img[w as usize..(w + c) as usize] != whole[w as usize..(w + c) as usize]
+        });
+        if a != b || (b.is_ok() && differs) {
+            self.stale.store(FULL, std::sync::atomic::Ordering::Relaxed);
+            return Err(STALE);
+        }
+        b
+    }
+
+    fn steps(
+        &self,
+        img: &mut [u64],
+        rs: &[Run],
+        mark: Option<&[u64]>,
+        guards: bool,
+    ) -> Result<(), u32> {
         let mut i = 0;
         while i < rs.len() {
             if let Some(m) = mark
@@ -202,7 +262,7 @@ impl Code {
                         at += c;
                     }
                 }
-                Run::Guard(g, n, checked) => {
+                Run::Guard(g, n, checked) if guards => {
                     let skip = self.guard(img, g, checked);
                     if let Some(c) = &self.counts {
                         c[g][usize::from(skip)].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -214,6 +274,7 @@ impl Code {
                         i += n;
                     }
                 }
+                Run::Guard(..) => {}
             }
             i += 1;
         }
@@ -295,7 +356,7 @@ impl Code {
                 .collect()
         };
         let (before, logged) = (words(img), img[self.log_count]);
-        self.steps(img, rs, None)?;
+        self.steps(img, rs, None, true)?;
         img[self.log_count] = logged;
         if words(img) != before {
             self.stale
@@ -314,7 +375,7 @@ impl Code {
             .flat_map(|&(w, c)| img[w as usize..(w + c) as usize].to_vec())
             .collect();
         let logged = img[self.log_count];
-        self.steps(img, rs, None)?;
+        self.steps(img, rs, None, true)?;
         img[self.log_count] = logged;
         let after: Vec<u64> = (outs.iter())
             .flat_map(|&(w, c)| img[w as usize..(w + c) as usize].to_vec())
@@ -1014,9 +1075,6 @@ pub(crate) fn compile<'a>(
             })
             .collect();
     }
-    // The edge runs the settle after its own pieces.
-    let after = entries[0].clone();
-    entries[1].extend(after);
     if guards.iter().any(|g| {
         let end = |v: &[(u32, u32)]| v.iter().map(|&(w, c)| (w + c) as usize).max().unwrap_or(0);
         let n: u32 = g.ins.iter().map(|x| x.1).sum();
@@ -1028,6 +1086,10 @@ pub(crate) fn compile<'a>(
         return Err("a guard's words do not fit the image".into());
     }
     let counts = stats.then(|| guards.iter().map(|_| Default::default()).collect());
+    let mut every = vec![0u64; settle_units.len().div_ceil(64)];
+    for (i, _) in settle_units.iter().enumerate().filter(|x| !x.1.is_empty()) {
+        every[i / 64] |= 1 << (i % 64);
+    }
     Ok(Code {
         _module: module,
         entries,
@@ -1036,10 +1098,24 @@ pub(crate) fn compile<'a>(
         tables,
         guards,
         settle_units,
+        every: every.into_boxed_slice(),
         signal_words,
         settle_outs: Vec::new(),
         log_count: log.0 as usize,
-        skip_check: std::env::var_os("YAVS_CYCLE_SKIP_CHECK").is_some_and(|v| v == "1"),
+        skip_check: std::env::var_os("YAVS_CYCLE_SKIP_CHECK")
+            .is_some_and(|v| v == "1" || v == "full"),
+        full_check: std::env::var_os("YAVS_CYCLE_SKIP_CHECK")
+            .is_some_and(|v| v == "full")
+            .then(|| {
+                let mut v: Vec<(u32, u32)> = Vec::new();
+                for (w, _) in keep.iter().enumerate().filter(|x| *x.1) {
+                    match v.last_mut() {
+                        Some(x) if x.0 + x.1 == w as u32 => x.1 += 1,
+                        _ => v.push((w as u32, 1)),
+                    }
+                }
+                v
+            }),
         counts,
         stale: Default::default(),
     })

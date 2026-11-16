@@ -95,6 +95,23 @@ impl RamWrite {
 }
 
 impl Out {
+    /// The image holds what was driven last.
+    fn driven(&self, img: &[u64]) -> bool {
+        let (slot, lo, len) = (self.slot as usize, self.range.offset, self.range.len);
+        if self.bytes != 0 {
+            return match &img[slot..][..len as usize] {
+                [v] => *v == self.last,
+                w => *w == self.wide[..],
+            };
+        }
+        if len <= 64 && lo % 64 + len <= 64 {
+            return img[slot + lo as usize / 64] >> (lo % 64) & mask(len) == self.last;
+        }
+        let w = &img[slot..];
+        (0..words(len) as usize)
+            .all(|j| self.wide[j] == word_at(w, lo + 64 * j as u32, len - 64 * j as u32))
+    }
+
     /// The image words its elements are in.
     fn words(&self) -> std::ops::Range<usize> {
         let (slot, lo, len) = (
@@ -118,6 +135,76 @@ pub(crate) struct Span {
     pub words: std::ops::Range<usize>,
     pub sh: usize,
     pub outs: std::ops::Range<usize>,
+}
+
+/// Bit sets, one per cone, class or step.
+pub(crate) type Marks = Vec<Box<[u64]>>;
+
+/// A bit set as its words that are not 0, with their places.
+pub(crate) type Sparse = Box<[(u32, u64)]>;
+
+/// `m |= s`.
+#[inline]
+fn or_into(m: &mut [u64], s: &[(u32, u64)]) {
+    for &(k, w) in s {
+        m[k as usize] |= w;
+    }
+}
+
+/// For each cone of `cones` and each edge class: the spans (bits) holding words the steps of the
+/// cone write (`run_words`, by step), and for a class also what its clocked members write.
+pub(crate) fn span_marks(
+    spans: &[Span],
+    run_words: &[Vec<(u32, u32)>],
+    cones: &[Box<[u64]>],
+    class_cones: &[Box<[u64]>],
+    class_words: &[Vec<(u32, u32)>],
+) -> (Vec<Sparse>, Vec<Sparse>) {
+    let n = spans.len().div_ceil(64);
+    let set = |m: &mut [u64], ws: &[(u32, u32)]| {
+        for &(w, c) in ws {
+            let (w, z) = (w as usize, (w + c) as usize);
+            let mut j = spans.partition_point(|sp| sp.words.end <= w);
+            while j < spans.len() && spans[j].words.start < z {
+                m[j / 64] |= 1 << (j % 64);
+                j += 1;
+            }
+        }
+    };
+    let by_step: Vec<Vec<u64>> = (run_words.iter())
+        .map(|ws| {
+            let mut m = vec![0; n];
+            set(&mut m, ws);
+            m
+        })
+        .collect();
+    let of_cone = |cone: &[u64]| -> Vec<u64> {
+        let mut m = vec![0; n];
+        for (k, &w) in cone.iter().enumerate() {
+            let mut w = w;
+            while w != 0 {
+                let i = 64 * k + w.trailing_zeros() as usize;
+                w &= w - 1;
+                m.iter_mut().zip(&by_step[i]).for_each(|(a, b)| *a |= b);
+            }
+        }
+        m
+    };
+    let sparse = |m: Vec<u64>| -> Sparse {
+        (m.into_iter().enumerate())
+            .filter(|x| x.1 != 0)
+            .map(|(k, w)| (k as u32, w))
+            .collect()
+    };
+    let chunks = cones.iter().map(|c| sparse(of_cone(c))).collect();
+    let classes = (class_cones.iter().zip(class_words))
+        .map(|(c, ws)| {
+            let mut m = of_cone(c);
+            set(&mut m, ws);
+            sparse(m)
+        })
+        .collect();
+    (chunks, classes)
 }
 
 /// Order `outs` by their first word, the memories last, and join the others of adjacent or shared
@@ -202,6 +289,15 @@ pub(crate) struct RegionProc {
     pub cones: Arc<Vec<Box<[u64]>>>,
     pub chunk_cone: Arc<Vec<u32>>,
     pub mark: Vec<u64>,
+    /// Per edge class: the steps of the settle its clocked members' runs can reach (their reset
+    /// branches, and what their writes reach); an edge marks those of the classes that had one.
+    pub class_cones: Arc<Vec<Box<[u64]>>>,
+    /// The spans of outputs the steps run since the last export can have changed (`spans`): those
+    /// of the cones of the chunks read (`chunk_spans`, by cone) and of the classes that had an edge
+    /// (`class_spans`: their cones and what their clocked members write).
+    pub touched: Vec<u64>,
+    pub chunk_spans: Vec<Sparse>,
+    pub class_spans: Vec<Sparse>,
 }
 
 /// Developers (`YAVS_CYCLE_STATS=1`): the region's wakes, the input chunks read in wakes without an
@@ -212,6 +308,37 @@ pub(crate) struct Stats {
     /// Per input chunk: its name, and the wakes without an edge that read it.
     pub chunks: Vec<(String, u64)>,
     pub code: Arc<Code>,
+    /// Per edge class: its name and edges.
+    pub classes: Vec<(String, u64)>,
+    /// Per member: its operations.
+    pub ops: Vec<u64>,
+    /// Over the wakes with an edge and those without: the operations of the settle's members, and
+    /// of those the mark lets run.
+    pub settled: [[u64; 2]; 2],
+}
+
+impl Stats {
+    /// One wake that runs code: the edges of each class, and the members the mark lets run.
+    fn count(&mut self, img: &[u64], clocks: &[(SigRef, u8, usize)], mark: &[u64], edge: bool) {
+        for (c, &(_, _, w)) in self.classes.iter_mut().zip(clocks) {
+            c.1 += img[w];
+        }
+        let units = &self.code.settle_units;
+        let mut all = std::collections::BTreeSet::new();
+        let mut run = std::collections::BTreeSet::new();
+        for (i, us) in units.iter().enumerate() {
+            all.extend(us);
+            if mark[i / 64] >> (i % 64) & 1 == 1 {
+                run.extend(us);
+            }
+        }
+        let ops = |s: &std::collections::BTreeSet<&u32>| -> u64 {
+            s.iter().map(|&&u| self.ops[u as usize]).sum()
+        };
+        let k = usize::from(!edge);
+        self.settled[k][0] += ops(&all);
+        self.settled[k][1] += ops(&run);
+    }
 }
 
 impl Drop for Stats {
@@ -220,6 +347,15 @@ impl Drop for Stats {
             "cycle stats: {} wakes ran code, {} of them at an edge",
             self.wakes, self.edges
         );
+        for (name, n) in &self.classes {
+            eprintln!("cycle stats: edge class {name}: {n} edges");
+        }
+        for (k, what) in ["with an edge", "without an edge"].iter().enumerate() {
+            let [all, run] = self.settled[k];
+            eprintln!(
+                "cycle stats: wakes {what}: settle operations {all}, {run} of them in steps the mark lets run"
+            );
+        }
         let mut c: Vec<&(String, u64)> = self.chunks.iter().filter(|c| c.1 > 0).collect();
         c.sort_by_key(|c| std::cmp::Reverse(c.1));
         for (name, n) in c.iter().take(40) {
@@ -329,11 +465,11 @@ impl RegionProc {
                 metas += Self::read(ctx, &mut self.img, &mut self.buf, &self.chunks[i])?;
                 any = true;
                 now |= self.chunks[i].now;
-                for (m, c) in
-                    (self.mark.iter_mut()).zip(&self.cones[self.chunk_cone[i] as usize][..])
-                {
+                let c = self.chunk_cone[i] as usize;
+                for (m, c) in (self.mark.iter_mut()).zip(&self.cones[c][..]) {
                     *m |= c;
                 }
+                or_into(&mut self.touched, &self.chunk_spans[c]);
                 if self.stats {
                     self.read_now.push(i);
                 }
@@ -364,12 +500,51 @@ impl RegionProc {
         Ok(())
     }
 
+    /// `YAVS_CYCLE_SKIP_CHECK=full`: no output of a span the export skips changed.
+    #[cold]
+    fn untouched(&self, ctx: &Ctx<'_>) -> Result<(), SimError> {
+        // By output: an input may share a word with outputs (another field of a record).
+        for (j, sp) in self.spans.iter().enumerate() {
+            if self.touched[j / 64] >> (j % 64) & 1 != 0 {
+                continue;
+            }
+            if let Some(o) = self.outs[sp.outs.clone()]
+                .iter()
+                .find(|o| !o.driven(&self.img))
+            {
+                return Err(ctx.error(ErrorKind::Internal(format!(
+                    "cycle mode: output {:?} changed, which no step run since the last export writes (YAVS_CYCLE_SKIP_CHECK)",
+                    o.driver
+                ))));
+            }
+        }
+        Ok(())
+    }
+
     /// Drive every output whose value differs from what was driven last (all of them the first
     /// time). Not inlined: profiles show the export apart from the body.
     #[inline(never)]
     fn export(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         let all = !std::mem::replace(&mut self.exported, true);
-        for sp in &self.spans {
+        if all {
+            self.touched.fill(!0);
+        } else if self.code.full_check.is_some() {
+            self.untouched(ctx)?;
+        }
+        // Only the spans a step run since the last export writes, 64 at a time.
+        let (mut j, end) = (0, self.spans.len());
+        while j < end {
+            let w = self.touched[j / 64] >> (j % 64);
+            if w == 0 {
+                j = (j / 64 + 1) * 64;
+                continue;
+            }
+            j += w.trailing_zeros() as usize;
+            if j >= end {
+                break;
+            }
+            let sp = &self.spans[j];
+            j += 1;
             let n = sp.words.len();
             if !all && same(&self.img[sp.words.clone()], &self.shadow[sp.sh..sp.sh + n]) {
                 continue;
@@ -424,6 +599,7 @@ impl RegionProc {
         for f in written {
             self.img[f] = 0;
         }
+        self.touched.fill(0);
         Ok(())
     }
 
@@ -539,13 +715,16 @@ impl RegionProc {
             let g = self.code.stale.load(Ordering::Relaxed);
             let what = match self.code.guards.get(g) {
                 Some(gd) => format!(
-                    "process {} was skipped as its inputs had not changed",
+                    "process {} was skipped as its inputs had not changed, but running it changed what it drives",
                     gd.name
                 ),
-                None => "a step of the settle was skipped as no input it reads had changed".into(),
+                None if g == crate::codegen::FULL => {
+                    "the run with steps skipped ended otherwise than a run of every step".into()
+                }
+                None => "a step of the settle was skipped as no input it reads had changed, but running it changed what it drives".into(),
             };
             return ctx.error(ErrorKind::Internal(format!(
-                "cycle mode: {what}, but running it changed what it drives (YAVS_CYCLE_SKIP_CHECK)"
+                "cycle mode: {what} (YAVS_CYCLE_SKIP_CHECK)"
             )));
         }
         if site == crate::codegen::UNSETTLED {
@@ -739,6 +918,18 @@ impl Process for RegionProc {
         let (any, now) = self.import(ctx)?;
         if edge || now {
             self.pending = false;
+            // Without an edge only the inputs changed: the settle runs what they reach; at an edge
+            // also what the clocked members of the classes that had one may have changed.
+            if edge {
+                for (k, &(_, _, w)) in self.clocks.iter().enumerate() {
+                    if self.img[w] != 0 {
+                        (self.mark.iter_mut())
+                            .zip(&self.class_cones[k][..])
+                            .for_each(|(m, c)| *m |= c);
+                        or_into(&mut self.touched, &self.class_spans[k]);
+                    }
+                }
+            }
             if self.stats
                 && let Some(st) = self.metas.stats.lock().expect("not poisoned").as_mut()
             {
@@ -749,10 +940,10 @@ impl Process for RegionProc {
                 }
                 st.wakes += 1;
                 st.edges += u64::from(edge);
+                st.count(&self.img, &self.clocks, &self.mark, edge);
             }
-            // Without an edge only the inputs changed: the settle runs what they reach.
             if edge {
-                self.run_code(ctx, Fun::Edge)?;
+                self.run_marked(ctx, Fun::Edge, true)?;
             } else {
                 self.run_marked(ctx, Fun::Settle, true)?;
             }

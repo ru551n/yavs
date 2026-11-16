@@ -26,6 +26,9 @@ once per clock edge on two-state values (``0`` and ``1``). Together they are the
 usually the testbench, stays in the event simulation and talks to the region through the signals it reads and drives.
 Large combinational processes whose inputs did not change since their last run are not run again, and between clock
 edges only the logic that a changed input reaches runs, so the part of a design that is idle in a clock costs little.
+At a clock edge only the logic that the registers of that clock and the changed inputs reach runs, and only the
+outputs that logic writes are compared with what was last driven, so in a design with several clocks an edge of one
+clock costs what that clock's part of the design costs.
 
 Which processes join is decided by yavs, per process (:ref:`cycle-selection`). You do not mark anything in the
 VHDL.

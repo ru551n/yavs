@@ -747,12 +747,12 @@ Compiled tiers: Cranelift
      - unset
      - ``run``
    * - ``YAVS_CYCLE_SKIP_CHECK``
-     - ``1``: a cycle region (``--cycle``) runs every process it would skip because the values it reads did not change since its last run, and stops with an internal error if that run changes what the process drives.
-     - ``1``
+     - ``1``: a cycle region (``--cycle``) runs every process it would skip because the values it reads did not change since its last run, and stops with an internal error if that run changes what the process drives. ``full``: also runs each of the region's runs a second time on a copy with no process skipped (at a clock edge every one, not only those the edge's clocks and the changed inputs reach), and stops with an internal error if a signal, a variable or an output differs.
+     - ``1``, ``full``
      - unset
      - ``run``
    * - ``YAVS_CYCLE_STATS``
-     - Developers: prints on standard error, for a cycle region (``--cycle``), each compiled function's operations, Cranelift instructions, machine code bytes, compile time and whether its machine code came from the compilation cache, and how many of its processes would compile to the same code (shapes); after the run, the region's wakes, the inputs read most often in wakes without a clock edge, and how often each skippable process ran and was skipped.
+     - Developers: prints on standard error, for a cycle region (``--cycle``), each compiled function's operations, Cranelift instructions, machine code bytes, compile time and whether its machine code came from the compilation cache, and how many of its processes would compile to the same code (shapes); after the run, the region's wakes, the edges of each clock, the work of the processes the runs at an edge and without one left out, the inputs read most often in wakes without a clock edge, and how often each skippable process ran and was skipped.
      - any value
      - unset
      - ``run``

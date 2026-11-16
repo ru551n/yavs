@@ -21,10 +21,11 @@ fn yavs_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
         .env("YAVS_STD_CACHE", "off")
         // Every import read again and compared: an input the region missed is an error.
         .env("YAVS_CYCLE_IMPORT_CHECK", "1")
-        // Every combinational step behind a guard, and every step a guard skips run anyway and
-        // compared: a skip on inputs that did change is an error.
+        // Every combinational step behind a guard, every step skipped run anyway and compared,
+        // and every run compared with one of every step: a skip on inputs that did change is an
+        // error.
         .env("YAVS_CYCLE_GUARD", "all")
-        .env("YAVS_CYCLE_SKIP_CHECK", "1");
+        .env("YAVS_CYCLE_SKIP_CHECK", "full");
     for &(k, v) in env {
         if v.is_empty() {
             c.env_remove(k);
@@ -3359,7 +3360,9 @@ fn members_skipped_on_unchanged_inputs_give_the_same_result() {
                         .ok()
                 })
                 .unwrap_or_else(|| panic!("no guard counts\n{err}"));
-            assert!(skipped > 100, "{skipped}\n{err}");
+            // Fewer than before the settle at an edge was marked: a step outside the edge's cone
+            // does not reach its guard.
+            assert!(skipped > 0, "{skipped}\n{err}");
         }
     }
     // The failed check of a member whose last run saw what its early run saw (no confirming
@@ -3392,6 +3395,83 @@ fn members_skipped_on_unchanged_inputs_give_the_same_result() {
             );
         }
     }
+}
+
+/// The settle at an edge runs only what the clocked members of the classes that had one, and the
+/// inputs read, reach (`edgecone.vhd`): clocks with logic of their own, logic two clocks share,
+/// edges in one delta, a gated clock, a register that keeps its value, a memory written on one
+/// clock and read into another's logic, resets made by a register of another clock and from
+/// outside. Against the normal mode at widths 1 to 128: with the tests' checks, with every settle
+/// compared with one of every step (`YAVS_CYCLE_SKIP_CHECK=full`), and with neither.
+#[test]
+fn an_edge_settles_only_what_the_classes_that_had_one_reach() {
+    let dir = tempdir("cycle-edgecone");
+    // Every step in a function of its own (behind a guard) and nothing checked, so a step skipped
+    // wrongly gives another result; the tests' checks (every run compared with one of every step);
+    // those with every check of the code; the default guards and functions.
+    let envs: [&[(&str, &str)]; 4] = [
+        &[("YAVS_CYCLE_SKIP_CHECK", "")],
+        &[],
+        &[
+            ("YAVS_CYCLE_SKIP_CHECK", "full"),
+            ("YAVS_CYCLE_CHECKS", "all"),
+        ],
+        &[("YAVS_CYCLE_GUARD", ""), ("YAVS_CYCLE_SKIP_CHECK", "")],
+    ];
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("edgecone{w}.vhd"),
+            &with_width(include_str!("cycle/edgecone.vhd"), w),
+        );
+        // Hand-checked at 4.5 ns, after the first edge of ca: ra counted once, za and sa all ones
+        // (`not ra` of 0, plus yb of 0).
+        let hex = |v: u128| format!("{v:0n$X}", n = (w as usize).div_ceil(4));
+        let ones = if w == 128 { u128::MAX } else { (1 << w) - 1 };
+        let want = format!(" a={} {} {} ", hex(1), hex(ones), hex(ones));
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_edgecone");
+            assert_eq!(normal.len(), 120, "{w} {t:?} {normal:?}");
+            assert!(normal[4].contains(&want), "{want}\n{}", normal[4]);
+            for env in envs {
+                let mut env = env.to_vec();
+                env.push(("YAVS_CYCLE_STATS", "1"));
+                let (cycle, err) = run_vars(
+                    &dir,
+                    &[&t[..], &["--cycle"]].concat(),
+                    "cycle_edgecone",
+                    &env,
+                );
+                assert_eq!(cycle, normal, "width {w} {t:?} {env:?}\n{err}");
+                // Steps were left out at edges (with a step per function).
+                let (all, ran) = edge_settle(&err);
+                let packed = env.contains(&("YAVS_CYCLE_GUARD", ""));
+                assert!(ran < all || packed, "{all} {ran} {env:?}\n{err}");
+                assert!(
+                    err.contains("cycle mode: 22 of 26 processes run cycle-based"),
+                    "{w}: {err}"
+                );
+                for name in [
+                    "pa", "pb", "psa", "psb", "pk", "pkq", "pq", "pg", "pw", "pr", "psy", "ph",
+                    "ph2", "ppa", "ppb",
+                ] {
+                    let (section, _) = row(&err, &format!("cycle_edgecone.{name}"));
+                    assert_eq!(section, "cycle-based:", "{name}\n{err}");
+                }
+            }
+        }
+    }
+}
+
+/// From `YAVS_CYCLE_STATS`: the settle's operations at the wakes with an edge, and those the mark
+/// let run.
+fn edge_settle(err: &str) -> (u64, u64) {
+    let l = (err.lines())
+        .find_map(|l| l.strip_prefix("cycle stats: wakes with an edge: settle operations "))
+        .unwrap_or_else(|| panic!("no settle counts\n{err}"));
+    let (a, b) = l.split_once(", ").expect("two counts");
+    let b = b.split_once(' ').expect("a count").0;
+    (a.parse().expect("a number"), b.parse().expect("a number"))
 }
 
 /// Expression actuals of ports (a logic expression, a record aggregate, an integer and a vector

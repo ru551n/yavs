@@ -527,12 +527,51 @@ fn build(
     let mut settle: Vec<(codegen::Step, u32)> = Vec::new();
     let mut edge: Vec<codegen::Step> = Vec::new();
     let mut init_fn: Vec<codegen::Step> = Vec::new();
+    // Per next-state signal, with several classes: the edge words of the classes whose clocked
+    // members write it. Its copies run after an edge of one of them only (twice when two had one).
+    let named = named_sigs(&sel);
+    let mut writers: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+    for (k, (_, b)) in sel.members.iter().enumerate() {
+        if !several || b.kind != Kind::Clocked {
+            continue;
+        }
+        let words = match b
+            .clock
+            .and_then(|c| sel.clocks.iter().position(|&x| x == c))
+        {
+            Some(c) => vec![edge_words[c]],
+            None => edge_words.clone(),
+        };
+        for s in b
+            .writes
+            .iter()
+            .map(|&l| ksig(l))
+            .chain(named[k][1].iter().copied())
+        {
+            writers.entry(s).or_default().extend(&words);
+        }
+    }
+    let by_class = |k: u32, op: Op| -> Vec<Op> {
+        match writers.get(&k) {
+            Some(ws) => (ws.iter())
+                .map(|&w| Op::If {
+                    cond: Ref::Loc(w),
+                    then: vec![op.clone()],
+                    else_: Vec::new(),
+                })
+                .collect(),
+            None => vec![op],
+        }
+    };
     edge.push(codegen::Step::Ops(
         (next.iter())
-            .map(|(&k, &s)| Op::Copy {
-                dst: Ref::Loc(s),
-                src: Ref::Loc(cur[&k]),
-                len: klen(k),
+            .flat_map(|(&k, &s)| {
+                let copy = Op::Copy {
+                    dst: Ref::Loc(s),
+                    src: Ref::Loc(cur[&k]),
+                    len: klen(k),
+                };
+                by_class(k, copy)
             })
             .collect(),
     ));
@@ -678,6 +717,10 @@ fn build(
             shared.len(),
             leaders.len()
         );
+        let clocked: Vec<usize> = (0..leaders.len())
+            .filter(|&k| leaders[k].2.clocked)
+            .collect();
+        eprintln!("cycle stats: bodies of clocked members: {clocked:?}");
     }
     let call = |k: usize| -> codegen::Step {
         let (shape, bl) = &shared[&k];
@@ -967,8 +1010,14 @@ fn build(
             }));
         }
     }
-    let mut c = commit(&next, &cur, klen);
-    writes.append(&mut c);
+    for (&k, &s) in &next {
+        let copy = Op::Copy {
+            dst: Ref::Loc(cur[&k]),
+            src: Ref::Loc(s),
+            len: klen(k),
+        };
+        writes.extend(by_class(k, copy));
+    }
     edge.push(codegen::Step::Ops(writes));
     let err = n;
     n += 2;
@@ -1092,10 +1141,11 @@ fn build(
             .collect();
     }
     let code = Arc::new(code);
-    let cone = cones(&sel, nets, &code.settle_units);
+    let (cone, class_cones) = cones(&sel, nets, &code.settle_units, &named);
+    let class_cones = Arc::new(class_cones);
     if stats {
-        // The settle steps the writes of each edge class's clocked members reach: an edge runs
-        // the whole settle, so the rest is the most a mark of the edge's cone could skip.
+        // The settle steps each edge class's clocked members reach: an edge runs only those and
+        // the steps its inputs reach.
         let n = code.settle_units.len();
         let ops = |i: usize| -> usize {
             (code.settle_units[i].iter())
@@ -1103,16 +1153,10 @@ fn build(
                 .sum()
         };
         let total: usize = (0..n).map(ops).sum();
-        for c in &sel.clocks {
-            let mut m = vec![0u64; n.div_ceil(64)];
-            for (_, b) in sel.members.iter().filter(|(_, b)| b.clock == Some(*c)) {
-                for &l in &b.writes {
-                    m.iter_mut().zip(cone(l).iter()).for_each(|(a, x)| *a |= x);
-                }
-            }
+        for (c, m) in sel.clocks.iter().zip(class_cones.iter()) {
             let hit: Vec<usize> = (0..n).filter(|i| m[i / 64] >> (i % 64) & 1 == 1).collect();
             eprintln!(
-                "cycle stats: edge class {} {}: its writes reach {} of {n} settle steps, {} of {total} operations",
+                "cycle stats: edge class {} {}: its members reach {} of {n} settle steps, {} of {total} operations",
                 if c.rising { "rising" } else { "falling" },
                 e.leaf_name(c.leaf),
                 hit.len(),
@@ -1309,6 +1353,50 @@ fn build(
             .collect();
         (Arc::new(cones), Arc::new(chunk_cone))
     };
+    // The image words each member writes, of each settle step and of each class's clocked
+    // members: the export compares only the outputs among them that a wake's steps can change.
+    let wrote = |k: usize| -> Vec<(u32, u32)> {
+        let b = &sel.members[k].1;
+        let mut v = leaf_words(&b.writes, None);
+        let listed: BTreeSet<u32> = b.reads.iter().chain(&b.writes).map(|&l| ksig(l)).collect();
+        for k in named[k][1].difference(&listed) {
+            if let Some(&slot) = cur.get(k) {
+                v.push((slot, codegen::words(klen(*k))));
+            }
+        }
+        v
+    };
+    let mut by_member: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
+    let run_words: Arc<Vec<Vec<(u32, u32)>>> = Arc::new(
+        (code.settle_units.iter())
+            .map(|us| {
+                (us.iter())
+                    .flat_map(|&u| {
+                        by_member
+                            .entry(u)
+                            .or_insert_with(|| wrote(u as usize))
+                            .clone()
+                    })
+                    .collect()
+            })
+            .collect(),
+    );
+    let class_words: Arc<Vec<Vec<(u32, u32)>>> = Arc::new(
+        (0..sel.clocks.len())
+            .map(|c| {
+                let mut v = Vec::new();
+                for (k, (_, b)) in sel.members.iter().enumerate() {
+                    let class = b
+                        .clock
+                        .and_then(|x| sel.clocks.iter().position(|&y| y == x));
+                    if b.kind == Kind::Clocked && class.is_none_or(|x| x == c) {
+                        v.extend(wrote(k));
+                    }
+                }
+                v
+            })
+            .collect(),
+    );
     let mark_words = code.settle_units.len().div_ceil(64);
     if stats {
         *metas.stats.lock().expect("not poisoned") = Some(rt::Stats {
@@ -1316,6 +1404,16 @@ fn build(
             edges: 0,
             chunks: chunk_names.iter().map(|n| (n.clone(), 0)).collect(),
             code: code.clone(),
+            classes: (sel.clocks.iter())
+                .map(|c| {
+                    let edge = if c.rising { "rising" } else { "falling" };
+                    (format!("{edge} {}", e.leaf_name(c.leaf)), 0)
+                })
+                .collect(),
+            ops: (sel.members.iter())
+                .map(|(_, b)| b.ops.iter().map(codegen::weight_of).sum::<usize>() as u64)
+                .collect(),
+            settled: [[0; 2]; 2],
         });
     }
     let make: yavs_elab::RegionMake = Arc::new(move |ds: &[RegionDriver]| {
@@ -1344,6 +1442,9 @@ fn build(
         }
         let mut outs: Vec<rt::Out> = outs.into_values().collect();
         let (spans, shadow) = rt::spans(&mut outs);
+        let (chunk_spans, class_spans) =
+            rt::span_marks(&spans, &run_words, &cones, &class_cones, &class_words);
+        let touched = spans.len().div_ceil(64);
         let mut img = vec![0u64; words];
         for &(w, v) in &init {
             img[w as usize] = v;
@@ -1378,6 +1479,10 @@ fn build(
             cones: cones.clone(),
             chunk_cone: chunk_cone.clone(),
             mark: vec![0; mark_words],
+            class_cones: class_cones.clone(),
+            touched: vec![0; touched],
+            chunk_spans,
+            class_spans,
             stats,
         }) as Box<dyn yavs_kernel::Process>)
     });
@@ -1395,37 +1500,27 @@ fn build(
 /// For a leaf the region reads from outside: the steps of the settle (`settle_units`, as a bit
 /// set) a change of it can reach, through the members that read it and, from what they drive, the
 /// members that read that, and so on. Reads and writes of a member are its listed leaves and every
-/// leaf of a signal its operations name without listing one.
+/// leaf of a signal its operations name without listing one. Also per edge class: the steps the
+/// writes of its clocked members reach (a member with no class runs at every edge; a reset branch
+/// reads what it holds on).
 fn cones<'a>(
     sel: &'a region::Selection,
     nets: &'a yavs_elab::NetGraph,
     settle_units: &[Vec<u32>],
-) -> impl Fn(LeafId) -> Box<[u64]> + 'a {
-    let ksig = |l: LeafId| nets.loc[l.index()].signal.0;
+    named: &[[BTreeSet<u32>; 2]],
+) -> (impl Fn(LeafId) -> Box<[u64]> + 'a, rt::Marks) {
+    let ksig = move |l: LeafId| nets.loc[l.index()].signal.0;
     let n = sel.members.len();
     // Every leaf of a signal named but not listed.
-    let leaves = |b: &lower::Body, reads: bool| -> BTreeSet<LeafId> {
+    let leaves = move |k: usize, reads: bool| -> BTreeSet<LeafId> {
+        let b = &sel.members[k].1;
         let listed: BTreeSet<u32> = b.reads.iter().chain(&b.writes).map(|&l| ksig(l)).collect();
-        let named = std::cell::RefCell::new(BTreeSet::new());
-        let note = |r: Ref| {
-            if let Ref::Sig(k) = r {
-                named.borrow_mut().insert(k);
-            }
-            r
-        };
-        for op in &b.ops {
-            if reads {
-                op.map(&note, &|r| r, &|x| x);
-            } else {
-                op.map(&|r| r, &note, &|x| x);
-            }
-        }
         let mut v: BTreeSet<LeafId> = if reads {
             b.reads.clone()
         } else {
             b.writes.clone()
         };
-        for k in named.into_inner().difference(&listed) {
+        for k in named[k][usize::from(!reads)].difference(&listed) {
             let (a, z) = nets.packs[*k as usize];
             v.extend((a.0..z.0).map(LeafId));
         }
@@ -1452,8 +1547,7 @@ fn cones<'a>(
     }
     let io: Vec<(usize, Vec<LeafId>, Vec<LeafId>)> = (order.iter().rev())
         .map(|&k| {
-            let b = &sel.members[k].1;
-            let (r, w) = (leaves(b, true), leaves(b, false));
+            let (r, w) = (leaves(k, true), leaves(k, false));
             (k, r.into_iter().collect(), w.into_iter().collect())
         })
         .collect();
@@ -1479,10 +1573,49 @@ fn cones<'a>(
             break;
         }
     }
-    move |l: LeafId| match leaf.get(&l) {
+    let classes = (0..sel.clocks.len())
+        .map(|c| {
+            let mut v = vec![0; words];
+            for (k, (_, b)) in sel.members.iter().enumerate() {
+                let class = b
+                    .clock
+                    .and_then(|x| sel.clocks.iter().position(|&y| y == x));
+                if b.kind != Kind::Clocked || class.is_some_and(|x| x != c) {
+                    continue;
+                }
+                for l in leaves(k, false) {
+                    if let Some(x) = leaf.get(&l) {
+                        v.iter_mut().zip(x).for_each(|(a, b)| *a |= b);
+                    }
+                }
+            }
+            v.into_boxed_slice()
+        })
+        .collect();
+    let of_leaf = move |l: LeafId| match leaf.get(&l) {
         Some(v) => v.clone().into_boxed_slice(),
         None => vec![0; words].into_boxed_slice(),
-    }
+    };
+    (of_leaf, classes)
+}
+
+/// Per member: the signals its operations read and those they write by name (`Ref::Sig`).
+fn named_sigs(sel: &region::Selection) -> Vec<[BTreeSet<u32>; 2]> {
+    (sel.members.iter())
+        .map(|(_, b)| {
+            let n = std::cell::RefCell::new([BTreeSet::new(), BTreeSet::new()]);
+            let note = |i: usize, r: Ref| {
+                if let Ref::Sig(k) = r {
+                    n.borrow_mut()[i].insert(k);
+                }
+                r
+            };
+            for op in &b.ops {
+                op.map(&|r| note(0, r), &|r| note(1, r), &|x| x);
+            }
+            n.into_inner()
+        })
+        .collect()
 }
 
 /// A guard before its words are placed: its name, the words it reads and those it drives.
@@ -1503,7 +1636,6 @@ const GUARD_GAP: u32 = 4;
 /// The input chunks one kernel image counts the changes of (`rt::InSig`).
 const IMAGE_CHUNKS: usize = 32;
 
-/// The next-state words into the current ones.
 /// A memory write of a clocked member kept back to the commit: the write, from the member's
 /// words that hold its index and value, and the word that says it happened (member slots).
 struct Pending {
@@ -1577,20 +1709,6 @@ fn defer(
         }
     }
     res
-}
-
-fn commit(
-    next: &BTreeMap<u32, u32>,
-    cur: &BTreeMap<u32, u32>,
-    klen: impl Fn(u32) -> u32,
-) -> Vec<Op> {
-    (next.iter())
-        .map(|(&k, &s)| Op::Copy {
-            dst: Ref::Loc(cur[&k]),
-            src: Ref::Loc(s),
-            len: klen(k),
-        })
-        .collect()
 }
 
 /// Developers (`YAVS_CYCLE_STATS=1`): members whose code would be the same but for where their

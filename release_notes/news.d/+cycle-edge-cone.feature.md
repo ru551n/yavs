@@ -1,0 +1,1 @@
+Cycle mode (`yavs run --cycle`) runs at a clock edge only the logic that the registers of that clock and the changed inputs reach: designs with several clocks, where an edge of one clock leaves most of the design idle, run faster.

@@ -697,6 +697,9 @@ enum Val {
     Part(Part),
     Int(IntV),
     Rec(Vec<Val>),
+    /// An array of no elements, of these index ranges (one of them null): nothing to read or
+    /// write; only assigned a null value, indexed, sliced, an operand of `&` or of `resize`.
+    Null(Dims),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1496,7 +1499,7 @@ impl Lx<'_> {
             return Ok(());
         }
         let dst = self.name(target.expr, true)?;
-        if !self.signal_rooted(&dst) {
+        if !self.signal_rooted(&dst) && !all_null(&dst) {
             return Err("a signal assignment to a signal parameter".into());
         }
         let src = self.expr_h(v, Some(&dst))?;
@@ -2184,7 +2187,8 @@ impl Lx<'_> {
         match v {
             Val::Part(p) => matches!(p.r, Ref::Sig(_)),
             Val::Int(i) => matches!(i.r, Ref::Sig(_)),
-            Val::Rec(fs) => fs.first().is_some_and(|f| self.signal_rooted(f)),
+            Val::Rec(fs) => fs.iter().any(|f| self.signal_rooted(f)),
+            Val::Null(_) => false,
         }
     }
 
@@ -2319,6 +2323,7 @@ impl Lx<'_> {
             (Val::Part(_), Val::Part(_)) => {
                 Err("an assignment of a value of another length than its target".into())
             }
+            (Val::Null(_), Val::Null(_)) => Ok(()),
             (Val::Int(d), Val::Int(s)) => {
                 if let Some(l) = d.leaf {
                     self.writes.insert(l);
@@ -2497,6 +2502,7 @@ impl Lx<'_> {
             Val::Part(p) => Ok(self.materialise(p)),
             Val::Int(_) => Err("an integer where a logic value is wanted".into()),
             Val::Rec(_) => Err("a record value as an operand".into()),
+            Val::Null(_) => Err("a null array as an operand".into()),
         }
     }
 
@@ -2530,7 +2536,16 @@ impl Lx<'_> {
                     Ok(i) => Ok(elem_of(b, i).ok_or("an index outside its array's range")?),
                     Err(_) => {
                         let i = self.expr(*i)?;
-                        Err(self.int(i)?.r)
+                        let i = self.int(i)?;
+                        // Of an array of null elements alone no operation checks the index:
+                        // its subtype must keep it inside.
+                        let (lo, hi) = b.low_high();
+                        if all_null(&v) && (i.lo < lo || i.hi > hi) {
+                            return Err("an index chosen at run time of an array of null \
+                                        elements"
+                                .into());
+                        }
+                        Err(i.r)
                     }
                 };
                 let v = if ix.is_err() {
@@ -2560,13 +2575,14 @@ impl Lx<'_> {
                 };
                 let v = self.name(*prefix, target)?;
                 let b = outer(&v).ok_or("a slice of a value with no index range")?;
+                // A null slice, of any direction and bounds (LRM 8.5): nothing of the prefix.
+                if sb.is_empty() {
+                    return null_of(v, sb);
+                }
                 if sb.dir != b.dir {
                     return Err("a slice in the other direction than its array".into());
                 }
                 let n = sb.len() as u32;
-                if n == 0 {
-                    return Err("a null slice".into());
-                }
                 // The slice's rightmost element is its element 0.
                 let lo = elem_of(b, sb.right).ok_or("a slice outside its array's range")?;
                 elem_of(b, sb.left).ok_or("a slice outside its array's range")?;
@@ -2752,6 +2768,7 @@ impl Lx<'_> {
                 .collect::<R<Vec<_>>>()
                 .map(Val::Rec),
             Val::Int(_) => Err("an index or slice of an integer".into()),
+            v @ Val::Null(_) => Ok(v),
         }
     }
 
@@ -2982,6 +2999,7 @@ impl Lx<'_> {
                     .map(|f| self.place_vars(f, has_init))
                     .collect(),
             ),
+            v @ Val::Null(_) => v,
         }
     }
 
@@ -3093,6 +3111,7 @@ impl Lx<'_> {
                 .map(|f| self.place_sig(f, so))
                 .collect::<R<Vec<_>>>()
                 .map(Val::Rec),
+            v @ Val::Null(_) => Ok(v),
         }
     }
 
@@ -3122,7 +3141,7 @@ impl Lx<'_> {
                 self.reads.insert(*l);
                 self.rparts.push((*l, 0, 1));
             }
-            Val::Int(_) => {}
+            Val::Int(_) | Val::Null(_) => {}
             Val::Rec(fs) => fs.iter().for_each(|f| self.note_reads(f)),
         }
     }
@@ -3186,7 +3205,12 @@ impl Lx<'_> {
             Shape::Array { .. } => {
                 let ds = self.logic_dims(shape)?;
                 let n = u64::from(ds.elem_len()) * ds.b[0].len();
-                if n == 0 || n > VEC_MAX {
+                if n == 0 {
+                    // Its leaf, of no elements, still counts.
+                    leaf(0);
+                    return Ok(Val::Null(ds));
+                }
+                if n > VEC_MAX {
                     return Err(format!(
                         "a vector of {n} elements (cycle mode takes 1 to 2**26 for now)"
                     ));
@@ -3244,7 +3268,11 @@ impl Lx<'_> {
         let ds = Dims::wrap(outer, self.logic_dims(shape)?)
             .ok_or_else(|| "an array nested more than four deep".to_string())?;
         let n = u64::from(ds.elem_len()) * ds.b[0].len();
-        if n == 0 || n > VEC_MAX {
+        if n == 0 {
+            leaf(0);
+            return Ok(Val::Null(ds));
+        }
+        if n > VEC_MAX {
             return Err(format!(
                 "a vector of {n} elements (cycle mode takes 1 to 2**26 for now)"
             ));
@@ -3647,6 +3675,12 @@ impl Lx<'_> {
     fn expr_h(&mut self, x: ExprId, hint: Option<&Val>) -> R<Val> {
         let db = self.db;
         let ex = &db.exprs[x];
+        if let Some(h) = hint
+            && all_null(h)
+            && self.const_agg(x)
+        {
+            return Ok(self.fresh_like(h));
+        }
         if let Some(c) = self.fold(x) {
             return self.literal(db.base(ex.subtype), &c);
         }
@@ -3698,6 +3732,21 @@ impl Lx<'_> {
             } => self.call(x, *callee, args),
             _ => Err("an expression that is not supported in cycle mode yet".into()),
         }
+    }
+
+    /// Whether `x` is an aggregate whose element values, nested aggregates' too, elaboration
+    /// knows (nothing in it can fail).
+    fn const_agg(&self, x: ExprId) -> bool {
+        let ExprKind::Aggregate { assocs, .. } = &self.db.exprs[x].kind else {
+            return false;
+        };
+        (assocs.iter()).all(|a| {
+            (a.choices.iter()).all(|c| match c {
+                yavs_sem::hir::Choice::Expr(e) => self.fold(*e).is_some(),
+                yavs_sem::hir::Choice::Range(_) => false,
+                _ => true,
+            }) && (self.fold(a.value).is_some() || self.const_agg(a.value))
+        })
     }
 
     /// `T'pos(a)` (`pos`) or `T'val(a)` of a discrete type: an enumeration's position is its word
@@ -3865,6 +3914,7 @@ impl Lx<'_> {
                 }))
             }
             Val::Rec(_) => Err("a conversion of a record".into()),
+            Val::Null(ds) => self.rebound_null(ds, to),
         }
     }
 
@@ -4303,7 +4353,7 @@ impl Lx<'_> {
     fn logic_lit(&mut self, codes: Vec<u8>, dims: Dims) -> R<Val> {
         let n = codes.len() as u32;
         if n == 0 {
-            return Err("a null literal".into());
+            return Ok(Val::Null(dims));
         }
         let mut val = vec![0u64; words(n) as usize];
         let mut meta = false;
@@ -4773,7 +4823,16 @@ impl Lx<'_> {
                             }));
                         }
                         let (a, b) = two(self)?;
-                        let (a, b) = (self.part(a)?, self.part(b)?);
+                        let (a, b) = match (a, b) {
+                            (a @ Val::Null(_), Val::Null(_)) => return Ok(a),
+                            (Val::Null(_), v) | (v, Val::Null(_)) => {
+                                return Ok(Val::Part(Part {
+                                    dims: Dims::NONE,
+                                    ..self.part(v)?
+                                }));
+                            }
+                            (a, b) => (self.part(a)?, self.part(b)?),
+                        };
                         let (ra, rb) = (self.whole(a), self.whole(b));
                         let t = self.tmp(a.len + b.len);
                         self.ops.push(Op::Cat {
@@ -5122,6 +5181,15 @@ impl Lx<'_> {
                         }
                         let to = to as u32;
                         let a = self.arg(a)?;
+                        if let Val::Null(_) = a {
+                            // `numeric_std`: a null argument gives `to` zeros.
+                            let t = self.tmp(to);
+                            self.ops.push(Op::Lit {
+                                dst: t.r,
+                                val: vec![0; words(to) as usize].into(),
+                            });
+                            return Ok(down_to_0(Val::Part(t)));
+                        }
                         let a = self.part(a)?;
                         if !signed || to >= a.len {
                             return Ok(down_to_0(Val::Part(self.ext(a, to, signed))));
@@ -5239,6 +5307,34 @@ fn outer(v: &Val) -> Option<Bounds> {
         Val::Part(p) => p.dims.first(),
         Val::Rec(fs) => outer(fs.first()?),
         Val::Int(_) => None,
+        Val::Null(ds) => ds.first(),
+    }
+}
+
+/// Whether array value `v` has no elements at all (a record of such fields included).
+fn all_null(v: &Val) -> bool {
+    match v {
+        Val::Null(_) => true,
+        Val::Rec(fs) => fs.iter().all(all_null),
+        _ => false,
+    }
+}
+
+/// The null slice `sb` of array value `v`: each leaf null, of index ranges `sb` and those of its
+/// elements.
+fn null_of(v: Val, sb: Bounds) -> R<Val> {
+    match v {
+        Val::Part(Part { at: Some(_), .. }) => {
+            Err("a null slice of an element chosen at run time".into())
+        }
+        Val::Part(Part { dims, .. }) | Val::Null(dims) if dims.n > 0 => {
+            Ok(Val::Null(dims.with_first(sb)))
+        }
+        Val::Rec(fs) => (fs.into_iter())
+            .map(|f| null_of(f, sb))
+            .collect::<R<Vec<_>>>()
+            .map(Val::Rec),
+        _ => Err("a slice of a value with no index range".into()),
     }
 }
 
@@ -5246,6 +5342,25 @@ fn outer(v: &Val) -> Option<Bounds> {
 fn at_each(v: Val, b: Bounds, f: &mut dyn FnMut(Part) -> Part) -> R<Val> {
     match v {
         Val::Part(p) if p.dims.first() == Some(b) => Ok(Val::Part(f(p))),
+        // A field of no elements of an array of records: the index ranges of what `f` makes of
+        // it (its index check is the other fields'; a value of null leaves alone is the
+        // caller's).
+        Val::Null(ds) if ds.first() == Some(b) => {
+            let p = f(Part {
+                r: Ref::Loc(u32::MAX),
+                lo: 0,
+                len: 0,
+                full: 0,
+                dims: ds,
+                fresh: false,
+                leaf: None,
+                at: None,
+                obj: None,
+                lit: None,
+                int: None,
+            });
+            Ok(Val::Null(p.dims))
+        }
         Val::Rec(fs) => (fs.into_iter())
             .map(|x| at_each(x, b, f))
             .collect::<R<Vec<_>>>()
@@ -5893,7 +6008,23 @@ impl Lx<'_> {
                 Ok(Val::Part(p))
             }
             v @ Val::Rec(_) => Ok(v),
+            Val::Null(ds) => self.rebound_null(ds, st),
         }
+    }
+
+    /// A null array as a value of subtype `st`: of its index ranges, which must be null too.
+    fn rebound_null(&mut self, ds: Dims, st: SubtypeId) -> R<Val> {
+        let db = self.db;
+        let t = db.base(st);
+        let c = &db.subtypes[st].constraint;
+        if !matches!(db.types[t].kind, TypeKind::Array { .. }) || self.open_array(t, c) {
+            return Ok(Val::Null(ds));
+        }
+        let to = self.arr_dims(t, c)?;
+        if to.b[0].len() * u64::from(to.elem_len()) != 0 {
+            return Err("a value of another length than its subtype".into());
+        }
+        Ok(Val::Null(to))
     }
 
     /// `p` as a value of subtype `st`: a constrained array subtype gives it its index ranges
@@ -6037,6 +6168,7 @@ impl Lx<'_> {
                 v: if i.down { i.hi } else { i.lo },
             }),
             Val::Rec(fs) => fs.iter().for_each(|f| self.start(f)),
+            Val::Null(_) => {}
         }
     }
 
@@ -6125,6 +6257,7 @@ impl Lx<'_> {
                 ..*i
             }),
             Val::Rec(fs) => Val::Rec(fs.iter().map(|f| self.fresh_like(f)).collect()),
+            Val::Null(ds) => Val::Null(*ds),
         }
     }
 
@@ -6189,6 +6322,7 @@ fn unfresh(v: Val) -> Val {
         Val::Part(p) => Val::Part(Part { fresh: false, ..p }),
         Val::Int(i) => Val::Int(IntV { fresh: false, ..i }),
         Val::Rec(fs) => Val::Rec(fs.into_iter().map(unfresh).collect()),
+        v @ Val::Null(_) => v,
     }
 }
 

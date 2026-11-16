@@ -3412,6 +3412,35 @@ fn cpu_idioms_equal_the_normal_mode() {
     }
 }
 
+/// Arrays of no elements (a generic of 0): an array of null elements written at a run-time
+/// index and read through `resize`, a record with a null field, null values in `&`, a null
+/// variable and constant join; one indexed by a `natural` stays out; against the normal mode.
+#[test]
+fn null_arrays_equal_the_normal_mode() {
+    let dir = tempdir("cycle-nullvec");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("nullvec{w}.vhd"),
+            &with_width(include_str!("cycle/nullvec.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_nullvec");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_nullvec");
+            assert_eq!(normal.len(), 20, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 6 of 8 processes run cycle-based")
+                    && err.contains(&format!(
+                        "cycle_nullvec.u.wr2 (nullvec{w}.vhd:32)         an index chosen at run \
+                         time of an array of null elements (nullvec{w}.vhd:35)"
+                    )),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// Memories held in shared variables (A15): single-process RAMs that read before and after they
 /// write, both at the address written and at another on one edge, join with their initial content;
 /// a RAM two processes write and read stays in the event kernel with the reason; against the

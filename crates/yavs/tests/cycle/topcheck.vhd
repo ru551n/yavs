@@ -1,8 +1,8 @@
 -- Asserts and reports in processes of the top-level unit (A19), `W` replaced by a width: the
 -- clocked ones are evaluated at the clock edge in region code (a checker failing with severity
 -- error, one passing, one checking in a called procedure, one formatting values of several kinds,
--- a variable changed after its report); the concurrent assert and the combinational report stay
--- in the event kernel. `cycle_topstop` ends on a checker of severity failure.
+-- a variable changed after its report); the concurrent assert, the combinational report and a
+-- checker of a signal the testbench drives stay in the event kernel. `cycle_topstop` ends on a checker of severity failure.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -61,9 +61,17 @@ architecture sim of cycle_topcheck is
   signal wide : std_ulogic_vector(W - 1 downto 0) := (others => '0');
   signal st : st_t := idle;
   signal done : boolean := false;
+  signal flag : std_ulogic;
 begin
   clk <= not clk after 5 ns when not done;
   u : entity work.cycle_topcheck_dut port map (clk => clk, q => q, wide => wide, st => st);
+  -- It checks a signal the testbench drives, 'U' at first: it stays in the event kernel.
+  chk3 : process (clk)
+  begin
+    if rising_edge(clk) then
+      assert not is_x(flag) report "flag unknown" severity note;
+    end if;
+  end process;
   chk : process (clk)
   begin
     if rising_edge(clk) then
@@ -104,7 +112,9 @@ begin
   end process;
   stop : process
   begin
-    wait for 200 ns;
+    wait for 30 ns;
+    flag <= '0';
+    wait for 170 ns;
     done <= true;
     wait;
   end process;

@@ -501,7 +501,11 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
                 outside.entry(d.leaf).or_insert(d.proc.index());
             }
         }
-        for (&pi, (_, b)) in &taken {
+        // Leaves members drive.
+        let inside: BTreeSet<LeafId> = (taken.keys())
+            .flat_map(|&pi| e.procs[pi].drivers.iter().map(|&d| e.nets.drivers[d].leaf))
+            .collect();
+        for (&pi, (f, b)) in &taken {
             let p = &e.procs[pi];
             let src = (p.drivers.iter())
                 .map(|&d| e.nets.drivers[d].leaf)
@@ -530,6 +534,28 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
                          does not split a signal between the region and the kernel yet",
                         e.leaf_name(l),
                         e.proc_label(&e.procs[q])
+                    ),
+                ));
+                continue;
+            }
+            // A checker of the top-level unit evaluated in region code (A19) reads what members
+            // drive only: it sees the values the normal mode's checker would see of them (the
+            // region exports two-state values), never a metavalue of the kernel read as 0.
+            // What the checker counts too: the lowering reads nothing of a value it folds
+            // (`is_x` is false on two-state values).
+            let fit_reads = f.reads.iter().map(|(k, _, _)| LeafId(k as u32));
+            if b.notes > 0
+                && let Some(l) = (b.reads.iter().copied()).chain(fit_reads).find(|&l| {
+                    b.clock.is_none_or(|c| c.leaf != l)
+                        && (outside.contains_key(&l) || !inside.contains(&l) || consts.contains(&l))
+                })
+            {
+                gone.push((
+                    pi,
+                    format!(
+                        "it checks {}, which is not driven by the region alone; its asserts and \
+                         reports run in the event kernel, on the values the kernel has",
+                        e.leaf_name(l)
                     ),
                 ));
                 continue;

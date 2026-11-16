@@ -2809,6 +2809,7 @@ fn asserts_and_reports_of_the_top_level_unit_are_evaluated() {
             "fmt ",
             "n=4 ",
             "Assertion violation.",
+            "flag unknown",
         ] {
             assert!(normal.contains(msg), "{w} {msg}: {normal}");
         }
@@ -2823,7 +2824,7 @@ fn asserts_and_reports_of_the_top_level_unit_are_evaluated() {
                 assert_eq!((c, &out), (code, &normal), "{w} {flags:?}\n{err}");
                 // The design below the top and the clocked checkers.
                 assert!(
-                    err.contains("cycle mode: 7 of 11 processes run cycle-based"),
+                    err.contains("cycle mode: 7 of 12 processes run cycle-based"),
                     "{w} {mode}: {err}"
                 );
                 let (c, out, err) = go(&flags, "cycle_topstop");
@@ -2844,6 +2845,11 @@ fn asserts_and_reports_of_the_top_level_unit_are_evaluated() {
                 "{p}: {report}"
             );
         }
+        assert!(
+            report
+                .contains("it checks cycle_topcheck.flag, which is not driven by the region alone"),
+            "{report}"
+        );
         assert!(
             !report.contains("not evaluated in cycle mode, held by"),
             "{report}"

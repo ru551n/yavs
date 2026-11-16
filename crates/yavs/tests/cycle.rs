@@ -3733,10 +3733,11 @@ fn attributes_of_elements_chosen_at_run_time_equal_the_normal_mode() {
 
 /// Processes outside the region whose result depends on the deltas their inputs change in (a
 /// variable's value of the previous run; a signal the sensitivity list does not name; state in a
-/// process rejected for a `'Z'` first), fed by a register and combinational logic: the logic in
-/// their fan-in stays in the event kernel with the reason, the register joins, and so does logic
-/// read only by a concurrent assignment rejected for its `'Z'`; against the normal mode at widths
-/// 1 to 128 (with the logic in the region the outputs of all three differed).
+/// process rejected for a `'Z'` first, with a sensitivity list or a wait), fed by a register and
+/// combinational logic: the logic in their fan-in stays in the event kernel with the reason, the
+/// register joins, and so does logic read only by a concurrent assignment rejected for its `'Z'`
+/// or by a process that acts at clock edges alone; against the normal mode at widths 1 to 128
+/// (with the logic in the region their outputs differed).
 #[test]
 fn logic_feeding_a_process_that_counts_its_runs_stays_out() {
     let dir = tempdir("cycle-runcount");
@@ -3752,7 +3753,7 @@ fn logic_feeding_a_process_that_counts_its_runs_stays_out() {
             assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
-                err.contains("cycle mode: 2 of 11 processes run cycle-based")
+                err.contains("cycle mode: 3 of 15 processes run cycle-based")
                     && err.contains(
                         "it computes, combinationally, cycle_runcount.c2, in the fan-in of \
                          cycle_runcount.stale"
@@ -3764,14 +3765,17 @@ fn logic_feeding_a_process_that_counts_its_runs_stays_out() {
                     && err.contains(
                         "it computes, combinationally, cycle_runcount.dut.e4, in the fan-in of \
                          cycle_runcount.dut.mask"
+                    )
+                    && err.contains(
+                        "it computes, combinationally, cycle_runcount.dut.c6, in the fan-in of \
+                         cycle_runcount.dut.waiter"
                     ),
                 "{w}: {err}"
             );
-            assert_eq!(
-                row(&err, "cycle_runcount.dut.e3 <= ...").0,
-                "cycle-based:",
-                "{err}"
-            );
+            for m in ["e3", "c7"] {
+                let label = format!("cycle_runcount.dut.{m} <= ...");
+                assert_eq!(row(&err, &label).0, "cycle-based:", "{err}");
+            }
         }
     }
 }

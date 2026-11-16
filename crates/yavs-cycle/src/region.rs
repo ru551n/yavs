@@ -1417,15 +1417,16 @@ fn delta_seeds(
     (out.iter())
         .filter_map(|(pi, w)| {
             let how = match w {
-                _ if checked.contains(pi) || e.procs[*pi].trigger.is_some() => return None,
+                _ if checked.contains(pi) || edge_only(db, e, *pi) => return None,
                 _ if plain_assignment(db, e, *pi) => return None,
                 Why::Behavioural(_) => return None,
                 Why::Subset(r) if [crate::codes::LATCH, crate::codes::STATE].contains(&r.code) => {
                     "it keeps a value of an earlier run"
                 }
                 // A testbench process sees the region's settled values earlier by contract
-                // ("Delta cycles inside the region are not visible" of the user guide).
-                _ if in_top_unit(e, *pi) => return None,
+                // ("Delta cycles inside the region are not visible" of the user guide): one of
+                // the top-level unit, and below it one that drives nothing (a monitor).
+                _ if in_top_unit(e, *pi) || e.procs[*pi].drivers.is_empty() => return None,
                 Why::Subset(r) if r.code == crate::codes::SENSITIVITY => {
                     "it reads a signal its sensitivity list does not name"
                 }
@@ -1483,7 +1484,7 @@ fn run_count_cone(
             continue;
         }
         for &d in drivers.get(&l).into_iter().flatten() {
-            if e.procs[d].trigger.is_some() || behavioural.contains(&d) || !procs.insert(d) {
+            if edge_only(db, e, d) || behavioural.contains(&d) || !procs.insert(d) {
                 continue;
             }
             gone.push((
@@ -1504,6 +1505,48 @@ fn run_count_cone(
         }
     }
     gone
+}
+
+/// Whether process `pi` acts only at clock edges, as a register does: an edge trigger, or a process
+/// with a sensitivity list whose every statement outside an edge test (`if <edge> [and ...]`) is
+/// an `if`, an assert or a report (a RAM on two clocks, a memory checking its size). Its outputs
+/// change in the delta after an edge in both modes.
+fn edge_only(db: &Db, e: &Elaborated, pi: usize) -> bool {
+    fn edge(db: &Db, c: ExprId) -> bool {
+        if db.edge_shape(c).is_some() {
+            return true;
+        }
+        let ExprKind::Call { callee, args, .. } = &db.exprs[c].kind else {
+            return false;
+        };
+        let and = matches!(
+            db.decls[*callee].kind.subprogram().map(|s| &s.body),
+            Some(yavs_sem::decl::Body::Implicit(op)) if op.family == yavs_sem::implicit::Family::And
+        );
+        and && args.iter().any(|a| match a.actual {
+            yavs_sem::hir::Actual::Expr(x) => edge(db, x),
+            _ => false,
+        })
+    }
+    fn outside(db: &Db, body: &[StmtId]) -> bool {
+        body.iter().all(|&s| match &db.stmts[s].kind {
+            StmtKind::If { branches, else_ } => {
+                branches.iter().all(|(c, b)| edge(db, *c) || outside(db, b))
+                    && else_.as_deref().is_none_or(|b| outside(db, b))
+            }
+            // Messages only: a check of a generic (`if SIZE > MAX then assert false`).
+            StmtKind::Null | StmtKind::Assert { .. } | StmtKind::Report { .. } => true,
+            _ => false,
+        })
+    }
+    let p = &e.procs[pi];
+    p.trigger.is_some()
+        || p.actual.is_none()
+            && matches!(&db.stmts[p.stmt].kind, StmtKind::Process {
+                sensitivity: Sensitivity::List(_),
+                body,
+                ..
+            } if outside(db, body))
 }
 
 /// Whether process `pi` is a concurrent signal assignment that keeps no value between runs and

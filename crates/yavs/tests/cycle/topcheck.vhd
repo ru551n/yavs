@@ -139,6 +139,8 @@ begin
     if rising_edge(clk) then
       report "at " & to_string(q);
       assert q /= 5 report "q reached 5" severity failure;
+      -- The failure ends this run of the process: never printed.
+      report "after the failure at " & to_string(q);
     end if;
   end process;
 end architecture;

@@ -598,11 +598,17 @@ impl RegionProc {
                 "no report path for the asserts of the top-level unit",
             ));
         };
+        // A report at the stop severity ends its process's run in the normal mode: the member's
+        // later notes of this run are not made.
+        let mut stopped: Vec<usize> = Vec::new();
         for k in 0..n {
             let site = self.img[at + 1 + k] as usize;
             let Some((Check::Note(nt), _, pi, _)) = self.checks.get(site) else {
                 return Err(internal(ctx, "a note of a site that is no note"));
             };
+            if stopped.contains(pi) {
+                continue;
+            }
             let sev = match nt.severity {
                 0 => Severity::Note,
                 1 => Severity::Warning,
@@ -611,6 +617,9 @@ impl RegionProc {
             };
             if let Some(text) = report(ctx, sev, nt.text(&self.img)) {
                 ctx.report_as(ProcId(*pi as u32), sev, text);
+                if sev >= ctx.stop_severity() {
+                    stopped.push(*pi);
+                }
             }
         }
         Ok(())

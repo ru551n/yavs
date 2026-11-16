@@ -3466,3 +3466,21 @@ fn shared_variable_memories_equal_the_normal_mode() {
         }
     }
 }
+
+/// A `while` loop over a string generic in a function a clocked process tests: elaboration
+/// evaluates the call per process, region code folds it; against the normal mode.
+#[test]
+fn calls_elaboration_evaluated_per_process_equal_the_normal_mode() {
+    let dir = tempdir("cycle-strgen");
+    analyze(&dir, "strgen.vhd", include_str!("cycle/strgen.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_strgen");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_strgen");
+        assert_eq!(normal.len(), 6, "{t:?} {normal:?}");
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 2 of 3 processes run cycle-based"),
+            "{err}"
+        );
+    }
+}

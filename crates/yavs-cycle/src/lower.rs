@@ -3399,6 +3399,13 @@ impl Lx<'_> {
         if let Some(c) = db.exprs[x].value {
             return Some(db.consts[c].clone());
         }
+        // A globally static call elaboration evaluated for this process (outside an inlined
+        // call, whose formals the call's arguments may name).
+        if self.frames.is_empty()
+            && let Some(v) = self.e.region_calls.get(&(self.p.scope, x))
+        {
+            return Some(v.clone());
+        }
         match &db.exprs[x].kind {
             ExprKind::Obj(d) => {
                 if let Some(b) = self.bound(*d) {

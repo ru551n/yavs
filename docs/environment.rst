@@ -530,6 +530,19 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - ``1``
      - unset
      - ``run``
+   * - ``YAVS_TRACE``
+     - Developers: a file to write, with ``YAVS_TRACE_SIGNALS``: at the end of each time step, every listed signal
+       whose value changed, as ``time name value`` (the normal mode and ``--cycle`` compared by
+       ``tools/difftest/seeddiff.py``).
+     - ``normal.trace``
+     - unset
+     - ``run``
+   * - ``YAVS_TRACE_SIGNALS``
+     - Developers: the signals ``YAVS_TRACE`` writes, one name a line as ``YAVS_CYCLE_SEEDS`` writes them
+       (``top.u1.sig``, a record field ``top.r.f``).
+     - ``seeds.txt``
+     - unset
+     - ``run``
 
 Compiled tiers: Cranelift
 ~~~~~~~~~~~~~~~~~~~~~~~~~

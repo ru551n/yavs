@@ -139,6 +139,16 @@ comparison:
 
     YAVS_REALBENCH_CACHE=<cache> python3 -I tools/difftest/cyclebig.py target/release/yavs
 
+`seeddiff.py` is the safety net of the run-count rule, which console equality is too weak for (Microwatt's
+`dcache_request` gave a stale `req_nc` from 0.3 us on, and the console lost one line at the very end). It asks
+`--cycle-report` with `YAVS_CYCLE_SEEDS` for the signals driven by the processes outside the region whose result
+may depend on the delta cycles their inputs change in, runs both modes with `YAVS_TRACE` (each listed signal at
+the end of every time step where it changed), and compares the traces time step by time step. A difference only
+where the normal mode holds a metavalue is counted apart; any other fails (exit status 1). With
+`YAVS_CYCLE_RUNCOUNT=off` it finds the Microwatt divergence at 0.345 us:
+
+    python3 -I tools/difftest/seeddiff.py --bin target/release/yavs --cwd WORLD -- run --work=work:WORLD/work ... top
+
 A recorded command file extends the gate to runs it does not contain, the benches of a test runner.
 `cyclereplay.py` takes recorded `yavs run` command lines (one run per entry, with its working
 directory) and runs each normal and with `--cycle` with one binary (`--bin` or `YAVS_BIN`), each mode in its own

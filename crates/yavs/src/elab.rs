@@ -2810,6 +2810,9 @@ fn observers(
     view: &ViewSlot,
 ) -> Result<Option<(String, yavs_wave::Recorder)>, Box<Diagnostic>> {
     let none = SourceMap::default();
+    if let Some(t) = Trace::from_env(e) {
+        sim.subscribe(Box::new(t));
+    }
     if !a.vhpi.is_empty() {
         if let Some(b) = built.cloned() {
             yavs_vhpi::set_runtime(b);
@@ -2945,6 +2948,86 @@ fn observers(
 
 /// Prints reports and `OUTPUT` text on stdout in the documented format (cli-contract section 5;
 /// tools/difftest parses it).
+/// Developers (`YAVS_TRACE=FILE` with `YAVS_TRACE_SIGNALS=LIST`, one leaf name a line, as
+/// `YAVS_CYCLE_SEEDS` writes them): at the end of each time step, every listed signal whose
+/// value changed since the last line, as `time name value`; tools/difftest/seeddiff.py
+/// compares the trace of the normal mode with that of `--cycle`.
+struct Trace {
+    sigs: Vec<(yavs_kernel::SigRef, String, String)>,
+    out: std::io::BufWriter<std::fs::File>,
+}
+
+impl Trace {
+    fn from_env(e: &yavs_elab::Elaborated) -> Option<Trace> {
+        let path = std::env::var_os("YAVS_TRACE")?;
+        let list = std::env::var_os("YAVS_TRACE_SIGNALS")?;
+        let names = std::fs::read_to_string(&list)
+            .map_err(|x| eprintln!("YAVS_TRACE_SIGNALS: {}: {x}", list.to_string_lossy()))
+            .ok()?;
+        let want: std::collections::HashSet<&str> = names.lines().collect();
+        let sigs: Vec<_> = (0..e.nets.leaves.len() as u32)
+            .map(|l| (l, e.leaf_name(yavs_elab::LeafId(l))))
+            .filter(|(_, n)| want.contains(n.as_str()))
+            .map(|(l, n)| {
+                let l = yavs_elab::LeafId(l);
+                let r = yavs_kernel::Range::new(0, e.nets.leaf(l).ty.len);
+                (e.nets.kref(l, r), n, String::new())
+            })
+            .collect();
+        let found: std::collections::HashSet<&str> = sigs.iter().map(|s| s.1.as_str()).collect();
+        if let Some(miss) = want.iter().find(|n| !found.contains(**n)) {
+            eprintln!(
+                "YAVS_TRACE: {} of {} signals not in this design, such as `{miss}`",
+                want.len() - found.len(),
+                want.len()
+            );
+        }
+        let f = std::fs::File::create(&path)
+            .map_err(|x| eprintln!("YAVS_TRACE: {}: {x}", path.to_string_lossy()))
+            .ok()?;
+        Some(Trace {
+            sigs,
+            out: std::io::BufWriter::new(f),
+        })
+    }
+}
+
+impl yavs_kernel::Observer for Trace {
+    fn wants_phase(&self, p: yavs_kernel::Phase) -> bool {
+        matches!(
+            p,
+            yavs_kernel::Phase::EndOfTimeStep | yavs_kernel::Phase::EndOfSim
+        )
+    }
+
+    fn wants_value_changes(&self) -> bool {
+        false
+    }
+
+    fn phase(&mut self, hook: &mut yavs_kernel::Hook<'_>, p: yavs_kernel::Phase) {
+        use std::io::Write;
+        if p == yavs_kernel::Phase::EndOfSim {
+            let _ = self.out.flush();
+            return;
+        }
+        let t = hook.now().as_fs();
+        let mut wrote = false;
+        for (s, name, last) in &mut self.sigs {
+            let Ok(v) = hook.value(*s) else { continue };
+            let v = v.to_string();
+            if *last != v {
+                let _ = writeln!(self.out, "{t} {name} {v}");
+                *last = v;
+                wrote = true;
+            }
+        }
+        // A run that ends at its stop time exits without dropping the observer.
+        if wrote {
+            let _ = self.out.flush();
+        }
+    }
+}
+
 struct Printer;
 
 impl yavs_kernel::Observer for Printer {

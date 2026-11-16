@@ -878,7 +878,13 @@ pub(crate) fn compile<'a>(
     // Developers: `YAVS_CYCLE_DISASM=1` prints the machine code of each function (compiled, never
     // taken from the cache).
     let disasm = std::env::var_os("YAVS_CYCLE_DISASM").is_some();
-    let store = STORE.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    // More functions than the store holds can never all be in it, so a rerun is no warmer: it
+    // would only write entries that push out other designs', and pay a file per function.
+    let store = STORE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+        .filter(|s| funs.len() <= s.max_entries());
     let mut hits = 0;
     let t0 = std::time::Instant::now();
     let mut ids = Vec::new();

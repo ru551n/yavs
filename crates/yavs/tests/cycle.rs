@@ -3030,6 +3030,48 @@ fn region_code_from_the_cache_gives_the_same_result() {
     assert_eq!((&got, hits), (&w9, n));
 }
 
+/// A region of more functions than the store keeps is not cached: it could never be warm, and
+/// its writes would fill the store with entries of one design (and, before the store looked at a
+/// full directory once and not at every put, a run took minutes). Every process is cut into
+/// functions of one operation, so a few thousand processes are more than the 16384 entries.
+#[test]
+fn a_region_of_more_functions_than_the_cache_holds_is_not_cached() {
+    let dir = tempdir("cycle-many");
+    analyze(&dir, "many.vhd", include_str!("cycle/many.vhd"));
+    let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .current_dir(&dir)
+        .env("YAVS_STD_CACHE", "off")
+        .env("YAVS_CYCLE_STATS", "1")
+        .env("YAVS_CYCLE_CHUNK", "1")
+        .args([
+            "--color",
+            "never",
+            "run",
+            "--work=work:lib",
+            "--tier=interp",
+        ])
+        .args(["--cycle", "cycle_many"])
+        .output()
+        .expect("run yavs");
+    let (out, err) = (
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr),
+    );
+    assert!(o.status.success(), "{out}{err}");
+    assert!(out.contains("link(3)="), "{out}");
+    let n: usize = (err.lines())
+        .find_map(|l| {
+            l.strip_prefix("cycle stats: ")?
+                .split_once(" functions in ")
+        })
+        .map(|t| t.0.parse().expect("functions"))
+        .unwrap_or_else(|| panic!("no total line: {err}"));
+    assert!(n > 16384, "{n} functions");
+    let obj = dir.join("lib").join("yavs-cache").join("cycle");
+    let cached = std::fs::read_dir(&obj).map_or(0, std::iter::Iterator::count);
+    assert_eq!(cached, 0, "entries of a region that cannot fit");
+}
+
 const SUBSET_CODES: &str = "\
 library ieee;
 use ieee.std_logic_1164.all;

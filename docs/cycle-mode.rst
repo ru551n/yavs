@@ -570,7 +570,7 @@ The compiled machine code is kept in the compilation cache of the work library (
 library, :doc:`on-disk`). A later run that makes the same functions links them instead of compiling them. In a test
 suite, the test cases of one design and the same generics therefore compile the region once. An edited file, other
 generics, other options that change the design, or another yavs build make new entries. The size of the store is
-limited, and ``yavs cache clean --work=NAME:PATH`` empties it. ``--no-cache`` makes a run neither read nor write it,
+limited (16384 functions, 512 MiB; a region of more functions than that is not cached at all), and ``yavs cache clean --work=NAME:PATH`` empties it. ``--no-cache`` makes a run neither read nor write it,
 so such a run compiles every time.
 
 When several tests start at once on a cold cache, each of them compiles the region. Run one test of the suite first, or

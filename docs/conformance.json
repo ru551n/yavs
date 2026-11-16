@@ -231,8 +231,8 @@
        8
       ],
       "composite": [
-       170,
-       170
+       180,
+       180
       ],
       "delta": [
        21,
@@ -291,8 +291,8 @@
        10
       ],
       "resolution": [
-       24,
-       24
+       28,
+       28
       ],
       "rtl": [
        5,
@@ -307,8 +307,8 @@
        4
       ],
       "sigassign": [
-       47,
-       47
+       49,
+       49
       ],
       "std93": [
        6,
@@ -336,8 +336,8 @@
        8
       ],
       "composite": [
-       170,
-       170
+       180,
+       180
       ],
       "delta": [
        21,
@@ -396,8 +396,8 @@
        10
       ],
       "resolution": [
-       24,
-       24
+       28,
+       28
       ],
       "rtl": [
        5,
@@ -412,8 +412,8 @@
        4
       ],
       "sigassign": [
-       47,
-       47
+       49,
+       49
       ],
       "std93": [
        6,
@@ -441,8 +441,8 @@
        8
       ],
       "composite": [
-       170,
-       170
+       180,
+       180
       ],
       "delta": [
        21,
@@ -501,8 +501,8 @@
        10
       ],
       "resolution": [
-       24,
-       24
+       28,
+       28
       ],
       "rtl": [
        5,
@@ -517,8 +517,8 @@
        4
       ],
       "sigassign": [
-       47,
-       47
+       49,
+       49
       ],
       "std93": [
        6,
@@ -537,7 +537,7 @@
    }
   },
   "discrepancies": {
-   "cases": 276,
+   "cases": 279,
    "output_tail": "",
    "yavs_matches_expected": true
   },
@@ -625,8 +625,8 @@
   }
  },
  "generated": {
-  "commit": "1476c939e3",
-  "commit_date": "2026-11-14",
+  "commit": "34d2cf70e4",
+  "commit_date": "2026-11-15",
   "version": "0.20.1"
  },
  "local": {
@@ -1348,162 +1348,162 @@
   "corpus_refs": {
    "en_cl_fix-2008": {
     "pass": 149,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 149
    },
    "fletcher-2008": {
     "pass": 101,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 101
    },
    "grlib-1993": {
     "pass": 454,
-    "recorded": "2026-10-23",
+    "recorded": "2026-11-15",
     "total": 454
    },
    "grlib-2008": {
     "pass": 410,
-    "recorded": "2026-10-23",
+    "recorded": "2026-11-15",
     "total": 410
    },
    "hdl-modules-2008": {
     "pass": 86,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 86
    },
    "hdl-modules-2019": {
     "pass": 86,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 86
    },
    "json-for-vhdl-2008": {
     "pass": 149,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 149
    },
    "neorv32-2008": {
     "pass": 67,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 67
    },
    "neotrng-2008": {
     "pass": 2,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 2
    },
    "open-logic-2008": {
     "pass": 386,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 386
    },
    "osvvm-2008": {
     "pass": 174,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 174
    },
    "osvvm-2019": {
     "pass": 174,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 174
    },
    "poc-2008": {
     "pass": 417,
-    "recorded": "2026-11-02",
+    "recorded": "2026-11-15",
     "total": 417
    },
    "satcat5-2008": {
     "pass": 246,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 246
    },
    "surf-2008": {
     "pass": 310,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 318
    },
    "uvvm-2008": {
     "pass": 235,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 235
    },
    "uvvm-2019": {
     "pass": 235,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 235
    },
    "vests-1993": {
     "pass": 1939,
-    "recorded": "2026-10-23",
+    "recorded": "2026-11-15",
     "total": 1939
    },
    "vhdl-compliance-2008": {
     "pass": 171,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 171
    },
    "vhdl-compliance-2019": {
     "pass": 208,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 208
    },
    "vhdl-extras-2008": {
     "pass": 25,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 25
    },
    "vhdl-ideas-2019": {
     "pass": 18,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 19
    },
    "vhdl-interfaces-2019": {
     "pass": 34,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 34
    },
    "vhdl-tool-checks-2008": {
     "pass": 1,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 1
    },
    "vhdl-tool-checks-2019": {
     "pass": 1,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 1
    },
    "vhlib-2008": {
     "pass": 26,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 26
    },
    "vunit-2008": {
     "pass": 143,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 143
    },
    "vunit-2019": {
     "pass": 143,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 143
    },
    "vunit-tests-2008": {
     "pass": 218,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 218
    },
    "vunit-tests-2019": {
     "pass": 218,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 218
    },
    "yavs-lib-2008": {
     "pass": 27,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 27
    },
    "yavs-lib-2019": {
     "pass": 26,
-    "recorded": "2026-10-22",
+    "recorded": "2026-11-15",
     "total": 28
    }
   },
@@ -2374,6 +2374,20 @@
     "decided": "agent (lrm-checks L163)",
     "kind": "LRM clear",
     "lrm": "9.3.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "aggregate-range-impure-scalar",
+    "decided": "agent, 2026-11-15",
+    "kind": "LRM clear",
+    "lrm": "9.3.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "slice-target-bound-once",
+    "decided": "agent, 2026-11-15 (#1157)",
+    "kind": "LRM clear",
+    "lrm": "10.5.2.1, 10.6.2.1",
     "yavs": "OK"
    },
    {
@@ -3291,6 +3305,13 @@
     "decided": "agent, 2026-11-13",
     "kind": "LRM clear",
     "lrm": "9.2.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "variable-assignment-target-order",
+    "decided": "agent, 2026-11-15 (#1156, L187)",
+    "kind": "LRM ambiguity (both are \"first evaluated\", in no order)",
+    "lrm": "10.6.2.1",
     "yavs": "OK"
    },
    {

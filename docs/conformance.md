@@ -1,15 +1,15 @@
 # yavs conformance report
 
-Generated: yavs 0.20.1 at commit `1476c939e3` (2026-11-14) by `tools/conformance/run.py`; do not edit by hand.
+Generated: yavs 0.20.1 at commit `34d2cf70e4` (2026-11-15) by `tools/conformance/run.py`; do not edit by hand.
 
 yavs is checked by running the test suites of VHDL libraries, a VHDL language test suite and real designs on it, and by comparing its output
-with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 15142 of 15245
+with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 15161 of 15264
 tests pass; every failure is tracked as an issue. This is evidence, not a proof of correctness.
 
 | Project or suite | What it is | Passed / total |
 | --- | --- | ---: |
-| Differential testbenches | small testbenches of this repository; output must equal sim1's, at 1 and 4 threads | 731/731 |
-| Known simulator differences | one reproducer per case where simulators disagree | 276/276 |
+| Differential testbenches | small testbenches of this repository; output must equal sim1's, at 1 and 4 threads | 747/747 |
+| Known simulator differences | one reproducer per case where simulators disagree | 279/279 |
 | sim1's regression tests | a reference simulator's own self-checking tests (runnable ones) | 1014/1070 |
 | sim2's regression tests | a reference simulator's own self-checking tests (runnable ones) | 463/504 |
 | VESTs | VHDL-1993 language test suite | 3694/3694 |
@@ -40,7 +40,7 @@ Every testbench of `tests/corpus` runs on yavs and its normalised output is comp
 | --- | --- | --- | --- |
 | access | 8/8 | 8/8 | 8/8 |
 | arith | 8/8 | 8/8 | 8/8 |
-| composite | 170/170 | 170/170 | 170/170 |
+| composite | 180/180 | 180/180 | 180/180 |
 | delta | 21/21 | 21/21 | 21/21 |
 | env | 16/16 | 16/16 | 16/16 |
 | force | 12/12 | 12/12 | 12/12 |
@@ -55,15 +55,15 @@ Every testbench of `tests/corpus` runs on yavs and its normalised output is comp
 | psl | 16/16 | 16/16 | 16/16 |
 | reflect | 14/14 | 14/14 | 14/14 |
 | report | 10/10 | 10/10 | 10/10 |
-| resolution | 24/24 | 24/24 | 24/24 |
+| resolution | 28/28 | 28/28 | 28/28 |
 | rtl | 5/5 | 5/5 | 5/5 |
 | scalar | 24/24 | 24/24 | 24/24 |
 | shared | 4/4 | 4/4 | 4/4 |
-| sigassign | 47/47 | 47/47 | 47/47 |
+| sigassign | 49/49 | 49/49 | 49/49 |
 | std93 | 6/6 | 6/6 | 6/6 |
 | synopsys | 20/20 | 20/20 | 20/20 |
 | textio | 20/20 | 20/20 | 20/20 |
-| total | 731/731 | 731/731 | 731/731 |
+| total | 747/747 | 747/747 | 747/747 |
 
 Failing: none.
 
@@ -85,8 +85,8 @@ Not passing: sim1: 56; sim2: 41 (the classes of each are in `docs/conformance.js
 ### Known simulator differences
 
 [`docs/design/simulator-discrepancies.md`](https://github.com/ru551n/yavs/blob/main/docs/design/simulator-discrepancies.md) lists every case where the references disagree with each other, with the language reference or with yavs:
-276 catalogued behaviours, each with a reproducer under `tests/discrepancies/<case>/`. CI runs every reproducer on yavs and fails when yavs's output
-differs from the recorded one (matches). Kinds: LRM clear 181, LRM ambiguity 81, reference bug 9, other 4, library availability 1.
+279 catalogued behaviours, each with a reproducer under `tests/discrepancies/<case>/`. CI runs every reproducer on yavs and fails when yavs's output
+differs from the recorded one (matches). Kinds: LRM clear 183, LRM ambiguity 82, reference bug 9, other 4, library availability 1.
 
 Policy (`docs/plan.md`): where the language reference is clear, yavs follows it even against all references; where it is unclear yavs is permissive
 and follows the majority of the references that run the construct. The verdicts of each reference are in the catalogue; the table gives the clause, the kind,
@@ -220,6 +220,8 @@ and yavs's verdict.
 | [`unaffected-variable`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/unaffected-variable) | 10.5.2.1 (2019) | LRM clear | 08: REJECT / 19: OK |
 | [`use-clause-constant-vs-literal`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/use-clause-constant-vs-literal) | 12.4 | LRM clear | REJECT |
 | [`aggregate-range-impure-composite`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/aggregate-range-impure-composite) | 9.3.3 | LRM clear | OK |
+| [`aggregate-range-impure-scalar`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/aggregate-range-impure-scalar) | 9.3.3 | LRM clear | OK |
+| [`slice-target-bound-once`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/slice-target-bound-once) | 10.5.2.1, 10.6.2.1 | LRM clear | OK |
 | [`nonstatic-port-actual-name`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/nonstatic-port-actual-name) | 6.5.6.3 | other | OK |
 | [`null-record-signal`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/null-record-signal) | 10.5.2.2, 6.4.2.3 | LRM clear | OK |
 | [`variable-port`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/variable-port) | 6.5.2, 6.5.7.1 (2019), LCS-2016-047 | LRM clear | OK |
@@ -351,6 +353,7 @@ and yavs's verdict.
 | [`guard-attribute-function-prefix`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/guard-attribute-function-prefix) | 14.7.4 | LRM clear | OK |
 | [`guard-held-transaction`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/guard-held-transaction) | 11.6, 14.7.4 | LRM clear | OK |
 | [`null-array-order`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/null-array-order) | 9.2.3 | LRM clear | OK |
+| [`variable-assignment-target-order`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/variable-assignment-target-order) | 10.6.2.1 | LRM ambiguity | OK |
 | [`package-instance-path-name`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/package-instance-path-name) | 16.2.5 | LRM clear | OK |
 | [`generic-package-own-name`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/generic-package-own-name) | 16.2.5, 4.9 | LRM ambiguity | OK |
 | [`package-name-as-prefix`](https://github.com/ru551n/yavs/tree/main/tests/discrepancies/package-name-as-prefix) | 16.2.5 | LRM clear | OK |

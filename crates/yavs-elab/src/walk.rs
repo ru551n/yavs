@@ -1558,6 +1558,19 @@ impl Elab<'_> {
             }
             _ => false,
         };
+        // A shared variable that is not of a protected type: its initial value (cycle mode runs a
+        // memory held in one as a variable of the process that alone uses it).
+        let shared = |d: DeclId| match &db.decls[d].kind {
+            DeclKind::Object(o) if o.class == ObjClass::SharedVariable => {
+                !matches!(
+                    db.types[db.base(o.subtype)].kind,
+                    TypeKind::Protected { .. }
+                ) && o
+                    .default
+                    .is_some_and(|x| !crate::eval::may_call_impure(db, x))
+            }
+            _ => false,
+        };
         let mut regions: Vec<(ScopeId, Vec<yavs_sem::ScopeId>)> = self
             .m
             .regions
@@ -1570,6 +1583,13 @@ impl Elab<'_> {
                 for &d in &db.scopes[r].order {
                     if constant(d, false)
                         && let Ok(v) = self.m.value_of(db, d, Some(s), db.decls[d].span)
+                    {
+                        out.insert((Some(s), d), v);
+                    }
+                    if shared(d)
+                        && let DeclKind::Object(o) = &db.decls[d].kind
+                        && let Some(init) = o.default
+                        && let Ok(v) = self.m.eval(db, init, Some(s))
                     {
                         out.insert((Some(s), d), v);
                     }

@@ -148,11 +148,15 @@ YAVS_CYCLE_FLAGS=enable_incremental_compilation_cache_checks=true YAVS_BIN=... p
   record, in the two-process style) and `handshake.vhd` (a request and acknowledge handshake between clocks of 10 ns and 7 ns) are run by
   `cyclegate.py` only, not by `cargo test`: each has a monitor that stays outside the region and prints the registers at every
   rising edge and 1 ns after it, so a one-clock difference is a difference of the console.
-- The gate has no large design: with realbench worlds prepared, `tools/difftest/cyclebig.py <yavs>` runs
-  NEORV32 dual_full in both modes and compares exit status, console and the CPU's instruction traces (a
-  minute). NEORV32's normal mode prints about 80 000 library metavalue warnings and configuration notes, all
-  from member processes; `--cycle` prints none of them by design, and no UART text in either mode (its
-  built-in program does not print).
+- The gate has no large design: `tools/difftest/cyclebig.py <yavs>` (realbench worlds prepared) runs NEORV32
+  dual_full and Microwatt CoreMark short in both modes and compares exit status, console, the files written (the
+  CPU's instruction traces) and the region's member count with the one its `GATE` table holds (about a minute: 6 s
+  NEORV32, 56 s Microwatt, 2026-11-16). It is required before every push that changes membership (user decision
+  A22), and a missing world fails it. Microwatt runs to 1369 us in both modes, past "Execution completed.": the
+  normal mode ends there with its RTL's `end of test` failure (exit 1), which cycle mode drops (A12, exit 0). A new
+  member count is updated in `GATE` in the commit that changes it, with the reason. NEORV32's normal mode prints
+  about 80 000 library metavalue warnings and configuration notes, all from member processes; `--cycle` prints
+  none of them by design, and no UART text in either mode (its built-in program does not print).
 
 - `E4102` (`yavs` `RunArgs::not_with_cycle`) refuses what records, shows, counts or changes region signals: a debug
   session, `--wave`, `--surfer` (named before the `--wave` it implies), `--cov`, `--vhpi`, `--activity`. Allowed

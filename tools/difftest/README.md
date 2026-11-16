@@ -121,16 +121,21 @@ takes from the cache again and stops when the code differs:
 
     YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclegate.py [--warm]
 
-The gate has no large design. `cyclebig.py` is its optional companion: it runs realbench worlds (made by
+The gate has no large design. `cyclebig.py` is its companion for the big ones, required before every push that
+changes which processes join the region: it runs realbench worlds (made by
 `tools/realbench/run.py --prepare` under `YAVS_REALBENCH_CACHE`, named `<test>-<label>`, `--label` default `yavs`)
-normal and `--cycle` with one binary for the test's own stop time, each mode in a copy of the world, and compares
-exit status, the console (standard output without report records) and every text file the run wrote in its
-working directory (on NEORV32 the CPU's instruction traces and the UART logs). A `?` in the normal mode's file
-matches any character (a metavalue digit, read as 0 in cycle mode). Reports are counted, not compared: NEORV32
-prints about 80 000 library metavalue warnings and configuration notes from processes that join the region, and
-cycle mode evaluates none of them. A run that compared nothing (no member, or no output) fails. Default test
-`neorv32_dual_full` (under a minute per mode); `--tests microwatt_coremark_short` is opt-in (minutes). A test without
-a world is skipped with the command that makes it. `--selftest` checks the comparison:
+normal and `--cycle` with one binary to one stop time (the table `GATE` in the script), each mode in a copy of the
+world, and compares exit status, the console (standard output without report records) and every text file the run
+wrote in its working directory (on NEORV32 the CPU's instruction traces and the UART logs). A `?` in the normal
+mode's file matches any character (a metavalue digit, read as 0 in cycle mode). Reports are counted, not compared:
+NEORV32 prints about 80 000 library metavalue warnings and configuration notes from processes that join the region,
+and cycle mode evaluates none of them. The region's member count must be the one `GATE` holds, and the normal
+console must hold the test's `expect` lines. A run that compared nothing (no member, or no output) fails, and so
+does a test without a world (the command that makes it is printed). Default tests `neorv32_dual_full` and
+`microwatt_coremark_short`, both to completion in about a minute (6 s and 56 s on 2026-11-16): Microwatt runs to
+1369 us in both modes, past "Execution completed."; the normal mode ends with its RTL's `end of test` failure (exit
+status 1), which cycle mode drops by decision (exit status 0), and `GATE` expects each. `--selftest` checks the
+comparison:
 
     YAVS_REALBENCH_CACHE=<cache> python3 -I tools/difftest/cyclebig.py target/release/yavs
 

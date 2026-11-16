@@ -94,6 +94,10 @@ temporary is not zeroed".
 
 The work the run-to-run profile stores (`run_work`) adds what the looks charged to a pool's workers to the kernel thread's instructions, so how a pooled batch is split among the threads under load no longer moves the warm gate or the verdicts; a worker's spin between batches is not counted. At `--threads=1` the value is the kernel thread's as before. decisions.md "`--tier=auto`: the work of a run counts all its simulation threads".
 
+### `--tier=auto`: a cheap subprogram that compiled code calls is not held (2026-11-16)
+
+A later run that waits for its compiles no longer holds a subprogram that compiled code calls when its compile costs a sixty-fourth of the rest of the run or less (`WAIT_BIG`, `Worker::called_by_code`; `YAVS_AUTO_WAIT_BIG=0` restores the old rule). Before, which cheap library subprograms (`decode`, `new_vector`, `resize`, the logger's checks) the first long run of a world happened to compile decided its settled cost for good: the same `com` cell settled between 96 k and 158 k instructions a message in sixteen fresh worlds (mean 124 k), now between 102 and 118 k (mean 109 k); the request-reply cell 267 k to 216 k, with the spread between worlds gone. decisions.md "`--tier=auto`: a cheap subprogram that compiled code calls is not held".
+
 ### `--tier=auto`: held time counts the last runs (2026-11-15)
 
 A later run counts the time the earlier runs saw a function held (`unrepaid`, the profile's `held` lines) for its last `EARLY_RUNS` held runs only (`HELD_WINDOW`): summed over every run it compiled `uvvm_axistream_vvc`'s `p_main` late in every world for nothing after. decisions.md "`--tier=auto`: held time counts the last runs".

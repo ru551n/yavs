@@ -1,0 +1,1 @@
+Under `--tier=auto`, a later run of a testbench that uses the verification library's message passing or AXI-stream components no longer stays slow in the cache worlds where the first long run happened to leave cheap library subprograms interpreted.

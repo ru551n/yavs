@@ -719,3 +719,65 @@ fn a_candidate_short_of_its_price_compiles_once_the_runs_together_repay_it() {
         "the second run adds the first one's time"
     );
 }
+
+/// A later run that waits for its compiles holds a function its seen time would not repay, but not
+/// a subprogram that compiled code calls whose compile costs a sixty-fourth of the rest of the run
+/// or less (`WAIT_BIG`): what it costs interpreted is a host call in every call of compiled code,
+/// which its seen time does not show, and compiling it costs little if it never repays.
+#[test]
+fn a_cheap_subprogram_called_by_compiled_code_is_not_held_for_its_seen_time() {
+    let mut pb = ProgramBuilder::new();
+    let (f, g) = (
+        pb.declare("f", yavs_ir::FuncKind::Procedure, None),
+        pb.declare("g", yavs_ir::FuncKind::Procedure, None),
+    );
+    for (id, callee) in [(f, Some(g)), (g, None)] {
+        let mut fb = pb.define(id);
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let keep = fb.slot(8, 8);
+        let at = fb.addr(yavs_ir::AddrSpace::Frame, keep);
+        fb.emit(Inst::Store {
+            addr: at,
+            src: at,
+            w: yavs_ir::Width::B8,
+        });
+        if let Some(callee) = callee {
+            let args = fb.regs(&[]);
+            fb.emit(Inst::Call {
+                func: callee,
+                args,
+                dst: None,
+            });
+        }
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+    }
+    let mut w = worker_of(pb.finish().unwrap());
+    w.stops = true;
+    w.wait_gain = super::WAIT_GAIN;
+    // (Seen for nothing, as a callee of compiled code is.)
+    w.total = 1_000_000;
+    let price = w.body_price(g);
+    assert!(price > 0);
+    let rest = |w: &mut super::Worker, us: u64| w.earlier.base = Some(us + w.sim_us);
+    rest(&mut w, price * 64);
+    assert!(w.unrepaid_by(g, false), "no compiled code calls it yet");
+    w.nat[f.0 as usize].1 = true;
+    assert!(w.nset(f).contains(&g), "f calls g");
+    assert!(w.entered_from_code(g), "its caller has native-frame code");
+    assert!(w.called_by_code(g));
+    assert!(!w.unrepaid_by(g, false), "a sixty-fourth of the rest");
+    rest(&mut w, price * 64 - 1);
+    assert!(
+        w.unrepaid_by(g, false),
+        "dearer than a sixty-fourth of the rest"
+    );
+    // (A caller is no subprogram called by code: the one nothing calls is held as before.)
+    rest(&mut w, price * 64);
+    assert!(
+        w.unrepaid_by(f, false),
+        "a process or subprogram nothing compiled calls"
+    );
+    w.wait_big = 0.0;
+    assert!(w.unrepaid_by(g, false), "the knob off holds every body");
+}

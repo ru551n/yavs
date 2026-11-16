@@ -17120,3 +17120,58 @@ the next run".
 - **Not done**: a compile whose tree hit the cache anywhere is still charged as a link of its root (`hit`), though its
   callees may have compiled (the larger share of compiles over three times their model: 261 compiles, 2.9 s against
   0.3 s modelled); it is accounting after the compile, not the price a decision reads.
+
+## `--tier=auto`: a cheap subprogram that compiled code calls is not held (yavs-rt `auto.rs` `WAIT_BIG`, `Worker::called_by_code`, perf/vops2, 2026-11-16)
+
+Amends the rest rule (`unrepaid`) of "`--tier-compile=wait`: compiles priced as measured, a budget, the hottest per price
+first, and what the rest of the run repays" (user ruling, 2026-11-09). The widening of what that rule holds is a decision of
+2026-11-16, taken on the numbers below. `YAVS_AUTO_WAIT_BIG` was tried under the earlier ruling (the "Measured against the
+ruling" bullet there: bodies dearer than a quarter or a sixteenth of the rest, with the deadline rule) and `neorv32_dual_full`
+lost at runs 5 and 6; here the rule is scoped to subprograms and measured to run 12 without a deadline. It does not depend on
+the parked retune package.
+
+- **Finding** (agent). Two fresh worlds of the same VUnit `com` cell (`tb_ops c_sr`, a send and a receive per message) settled
+  at 98 to 150 k instructions a message over 16 worlds (sd 17 k; clift 98 k), the request-reply cell (`c_rr`) at 203 to 307 k
+  (sd 26 k), the blocking AXI-stream cell at 1378 to 1472 k. The cause is one decision the world keeps. The first long run
+  of a world (no profile yet, so `unrepaid` holds nothing) compiles what the count asked for before it ends; which cheap
+  subprograms those are depends on where the looks fall (`decode`, `new_vector`, `resize`, `reallocate_*`, `unsafe_pop`,
+  `is_full`, the logger's `is_visible` and `get_log_level_filter`: 18 to 26 functions). Every later run holds the ones it did
+  not compile: `unrepaid` credits a function with its own seen time (a call of compiled code to an interpreted callee is a
+  host call, and the callee's time is not seen), `time[k]` is 0, and any price is above 0. They are never compiled and
+  never cached, so the world keeps the decision for good. With `YAVS_AUTO_WAIT_GAIN=0` the slow worlds reach the fast ones'
+  14.1 to 13.5 G (from 15.8 to 16.8 G) in one or two runs; `YAVS_AUTO_GATE=0` does nothing.
+- **Decision** (2026-11-16). `unrepaid` does not hold a subprogram that compiled code calls
+  (`entered_from_code`) when its compile costs a sixty-fourth of the rest of the run the profile predicts, or less
+  (`WAIT_BIG`, was 0 = every body; `YAVS_AUTO_WAIT_BIG` unchanged, 0 restores the old rule). The first run and
+  `--tier-compile=background` are unchanged (neither holds); processes keep the old rule.
+- **Tried.** The ratio alone, for every function (`wait_big` 64 on all): `neorv32_dual_full` 1.018 to 1.022 over 12 to 16
+  worlds against an A/A of 1.003 (30 to 40 more compiles a run, the cheap processes `amo_reg`, `csr_alu`, `divider_core`,
+  each 5 to 8 ms, seen 0): the loss is in processes, hence the restriction to subprograms called by compiled code. 16 is as
+  good as 64 on the com cells and 256 is not (123 k, sd 12 k). Subprograms only, without the caller test: the same as with
+  it (216.9 k and 107.4 k against 216.8 k and 108.5 k). A profile shared by every command line of one program (hot and made
+  lists, a sibling entry): nothing, a new short test of a warm world costs the same (8.5 and 8.9 G for the blocking AXI cell at
+  2000 transfers).
+- **Measured** (agent, bench builds, all-thread user instructions, 16 fresh worlds x 5 passes per cell, the long slope of
+  the settled passes 2 to 4, every world prepared by the binary measured, base against the change; k instructions an
+  operation, mean (sd) [min to max]): `c_sr` (send and receive, 1 in
+  flight) base 124.4 (17.8) [95.9 to 158.1], change 109.1 (4.7) [101.6 to 117.7]; `c_rr` (request and reply) 267.4 (25.6) [205.6 to
+  297.2] against 216.3 (2.5) [206.6 to 217.7]; the same with 16 in flight: `c_sr` 106.5 (14.3) against 90.4 (5.7), `c_rr` 215.0 (32.6)
+  against 185.5 (4.9); AXI-stream blocking 1 pair 1420.9 (41.8) against 1381.7 (3.6); not moved (within the spread): queue push and pop
+  119.4 against 119.0, 8 pairs non-blocking 12 110 against 12 101, 8 pairs with 20 percent stalls 11 258 against 11 262, 8 pairs
+  `check_axi_stream` 13 024 (231) against 13 145 (252; 1.009), which a rerun with an A/A (16 fresh worlds, base, a byte copy of base, the change, each world prepared by its binary) puts inside the band: base 13 022 (sd 202), byte copy 13 107 (115; 1.007 of base), change 12 946 (249; 0.994 of base). First pass of a world (no profile) and short
+  runs: level (c_sr 245.5 against 241.9, c_rr 308.3 against 310.6, ax 1803.5 against 1807.4). sim1 for reference, same host: 90.5, 182.0 and
+  1648.4; clift 98.4 for `c_sr`. Realbench (all-thread instructions, worlds prepared by the binary measured, base, a byte copy of base
+  (A/A) and the change interleaved on claimed cores; geomeans of the per-test sums, A/A in brackets): 14 short or VUnit tests x 16 worlds x 5
+  runs 1.001 (1.000), the other 26 tests x 6 worlds x 4 runs 1.001 (1.001), `osvvm_axis_random`, `uvvm_func_cov`, `uvvm_util_rand` x 48
+  worlds x 2 runs 1.002 (1.001), `neorv32_dual_full`, `osvvm_axi4_random`, `uvvm_axistream_vvc`, `uvvm_sb_slv` x 32 worlds x 4 runs
+  0.999 / 1.005 / 0.999 / 0.999 (A/A 0.999 / 1.003 / 0.997 / 0.994); outputs and exit statuses equal in every run. A run 1 cannot differ: with
+  no profile `unrepaid` holds nothing, so the code path is the same (`osvvm_axis_random` run 1 1.015 against 1.001 is the bimodal first
+  run). A longer series (8 worlds x 12 runs, `neorv32_dual_full`, `osvvm_axi4_random`, `uvvm_axistream_vvc`): sums of 12 runs 0.993, 1.008,
+  0.982 (A/A 0.993, 1.011, 0.999); no loss at runs 10 to 12. Whole GRLIB (to 1060.5 us) and Microwatt CoreMark runs, interpreted and
+  `--tier=auto`: stdout, stderr and exit status equal to the base.
+- **Tests.** `policy_tests.rs` `a_cheap_subprogram_called_by_compiled_code_is_not_held_for_its_seen_time` (fails with the old
+  default: the sixty-fourth of the rest is held); `tests/tier_compile.rs` `a_later_run_compiles_only_what_its_rest_repays`
+  sets `YAVS_AUTO_WAIT_BIG=0` (it holds every function with a gain of almost nothing).
+- **Not done.** The first pass in a world (the first long run, 250 k a message for `c_sr`, 2.2 times the settled): it
+  compiles at random what the count asks for after `WAIT_LONG`; nothing here changes it.
+

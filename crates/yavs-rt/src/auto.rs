@@ -1351,6 +1351,16 @@ fn held_window(us: u64, runs: u32) -> u64 {
         us / runs * HELD_WINDOW
     }
 }
+/// `Worker::unrepaid` holds a subprogram that compiled code calls (`called_by_code`) only when its
+/// compile costs more than this part of the rest of the run (the inverse part: 64 is a sixty-fourth).
+/// Such a body costs little if it never repays, and what it costs interpreted is a host call in
+/// every call of compiled code, which its seen time does not show. Held for good by that time, the
+/// small subprograms on the per-message path of the verification library's `com` (`decode`,
+/// `new_vector`, `resize`, the logger's checks) stayed interpreted in a world whose first long run
+/// had not compiled them, and the settled run cost up to 1.4 times the other worlds'. Not for
+/// processes: the cheap ones of `neorv32_dual_full` compiled for nothing, 2 percent of its runs.
+/// (docs/decisions.md "`--tier=auto`: a cheap subprogram that compiled code calls is not held").
+const WAIT_BIG: f64 = 64.0;
 /// `Worker::unrepaid` judges a held function with the callees that wait only for it
 /// (`Worker::unlocked`): `uvvm_axistream_vvc`'s command executor seen 0.2 percent of its price by
 /// itself frees about a second of callees a run.
@@ -1657,8 +1667,9 @@ struct Worker {
     wait_held_runs: u32,
     /// An overdue function (`overdue`) needs no room in the budget (`YAVS_AUTO_WAIT_HELD_FREE`).
     wait_held_free: bool,
-    /// `unrepaid` holds only a body that costs more than this part of the rest of the run
-    /// (`YAVS_AUTO_WAIT_BIG`, the inverse part; 0: every body).
+    /// `unrepaid` holds a subprogram that compiled code calls (`called_by_code`) only if its body
+    /// costs more than this part of the rest of the run (`YAVS_AUTO_WAIT_BIG`, the inverse part; 0:
+    /// every body). Processes are held as before.
     wait_big: f64,
     trace: Option<Trace>,
 }
@@ -1932,7 +1943,7 @@ impl Worker {
             wait_order: WAIT_ORDER,
             wait_held_runs: WAIT_HELD_RUNS,
             wait_held_free: WAIT_HELD_FREE,
-            wait_big: 0.0,
+            wait_big: WAIT_BIG,
             wait_payback: WAIT_PAYBACK,
             wait_long_floor: WAIT_LONG_FLOOR,
             trace: std::env::var_os("YAVS_AUTO_TRACE").map(|_| Trace {
@@ -2023,6 +2034,15 @@ impl Worker {
         self.unrepaid_by(id, self.wait_subtree)
     }
 
+    /// Whether `id` is a subprogram that compiled code calls (`entered_from_code`): what it costs
+    /// interpreted is a host call in every call, which the looks' seen time of it does not hold.
+    fn called_by_code(&self, id: FuncId) -> bool {
+        self.prog
+            .func(id)
+            .is_some_and(|f| f.kind != FuncKind::Process)
+            && self.entered_from_code(id)
+    }
+
     /// `unrepaid`, and when `subtree` judged again with the callees `id` unlocks (`unlocked`): held
     /// only if neither repays, so the credit never holds what its own time repays.
     fn unrepaid_by(&self, id: FuncId, subtree: bool) -> bool {
@@ -2041,7 +2061,10 @@ impl Worker {
         let before = carried as f64 * self.sim_us.max(1) as f64 / self.total.max(1) as f64;
         let held = |(us, price): (u64, u64)| {
             // (A body that takes a small part of the rest of the run is not held: only a dear one is.)
-            if self.wait_big > 0.0 && (price as f64) * self.wait_big <= rest {
+            if self.wait_big > 0.0
+                && (price as f64) * self.wait_big <= rest
+                && self.called_by_code(id)
+            {
                 return false;
             }
             let share = us as f64 / self.total.max(1) as f64;

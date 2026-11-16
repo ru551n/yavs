@@ -204,6 +204,7 @@ fn a_later_run_compiles_only_what_its_rest_repays() {
     assert!(first.status.success(), "{first:?}");
     let second = yavs(&dir, &cached)
         .env("YAVS_AUTO_WAIT_GAIN", "0.000000001")
+        .env("YAVS_AUTO_WAIT_BIG", "0")
         .env("YAVS_AUTO_PRICE", "model")
         .output()
         .expect("run yavs");

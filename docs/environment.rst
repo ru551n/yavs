@@ -370,9 +370,9 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - ``1``
      - ``run``
    * - ``YAVS_AUTO_WAIT_BIG``
-     - With ``--tier-compile=wait``: when above 0, the rule of ``YAVS_AUTO_WAIT_GAIN`` holds back only a function whose compile costs more than the rest of the run divided by this number.
+     - With ``--tier-compile=wait``: when above 0, the rule of ``YAVS_AUTO_WAIT_GAIN`` holds back a subprogram that compiled code calls only if its compile costs more than the rest of the run divided by this number; ``0`` holds back every function it judges not to repay (processes always).
      - a number
-     - ``0``
+     - ``64``
      - ``run``
    * - ``YAVS_AUTO_WAIT_ORDER``
      - With ``--tier-compile=wait``: ``1`` compiles the functions the count rule asks for by the time seen in them per compile time, ``0`` in the order asked.

@@ -103,13 +103,22 @@ pub(crate) fn const_value(
     e: &Elaborated,
     p: &ProcInst,
     known: HashMap<DeclId, ConstValue>,
+    consts: &mut Consts,
     x: ExprId,
 ) -> Option<ConstValue> {
     let mut cx = Cx::new(db, e, p);
     cx.loopv = known;
     cx.quiet_only = true;
-    cx.fold(x)
+    cx.consts = std::mem::take(consts);
+    let v = cx.fold(x);
+    *consts = std::mem::take(&mut cx.consts);
+    v
 }
+
+/// Constants of elaboration folded as a name of the process's scope gives them (with their
+/// subtype's index ranges at every level, `bounded`), shared: an element or field read is taken
+/// from here instead of copying and rebounding the whole constant at every read.
+pub(crate) type Consts = HashMap<(yavs_elab::ScopeId, DeclId, SubtypeId), Option<Rc<ConstValue>>>;
 
 /// The element of constant array `a` at indices `ix`, one per dimension (the elements stored
 /// row by row, the last index fastest); `None` outside the bounds.
@@ -243,12 +252,20 @@ pub(crate) fn named(k: &ExprKind) -> bool {
 pub(crate) type Callees = HashMap<DeclId, Callee>;
 
 /// Check process `pi`.
-pub(crate) fn check(db: &Db, e: &Elaborated, pi: usize, callees: &mut Callees) -> Verdict {
+pub(crate) fn check(
+    db: &Db,
+    e: &Elaborated,
+    pi: usize,
+    callees: &mut Callees,
+    consts: &mut Consts,
+) -> Verdict {
     let p = &e.procs[pi];
     let mut cx = Cx::new(db, e, p);
     cx.callees = std::mem::take(callees);
+    cx.consts = std::mem::take(consts);
     let v = cx.process();
     *callees = std::mem::take(&mut cx.callees);
+    *consts = std::mem::take(&mut cx.consts);
     match v {
         Ok(mut f) => {
             f.reads = std::mem::take(&mut cx.reads);
@@ -406,6 +423,7 @@ struct Cx<'a> {
     /// Elements a join of branches lost from the definitely assigned ones, and where.
     lost: Vec<(ESet, Span)>,
     callees: HashMap<DeclId, Callee>,
+    consts: Consts,
     /// The subprograms being summarised, by their depth in that walk, and the smallest depth of
     /// one of them called again under the current walk (`usize::MAX`: none).
     visiting: HashMap<DeclId, usize>,
@@ -440,6 +458,7 @@ impl<'a> Cx<'a> {
             enumerating: 0,
             lost: Vec::new(),
             callees: HashMap::new(),
+            consts: HashMap::new(),
             visiting: HashMap::new(),
             partial: usize::MAX,
             quiet_only: false,
@@ -1437,6 +1456,27 @@ impl Cx<'_> {
         Some(v)
     }
 
+    /// `fold(x)`, shared through `consts` when `x` names a constant elaboration gave a value.
+    fn fold_shared(&mut self, x: ExprId) -> Option<Rc<ConstValue>> {
+        let db = self.db;
+        if let ExprKind::Obj(d) = db.exprs[x].kind
+            && db.value(x).is_none()
+            && !self.frames.last().is_some_and(|f| f.contains_key(&d))
+            && !self.opaque.contains(&d)
+            && !self.loopv.contains_key(&d)
+            && self.e.value(self.p.scope, d).is_some()
+        {
+            let key = (self.p.scope, d, db.exprs[x].subtype);
+            if let Some(v) = self.consts.get(&key) {
+                return v.clone();
+            }
+            let v = self.fold(x).map(Rc::new);
+            self.consts.insert(key, v.clone());
+            return v;
+        }
+        self.fold(x).map(Rc::new)
+    }
+
     fn fold_raw(&mut self, x: ExprId) -> Option<ConstValue> {
         let (db, e) = (self.db, self.e);
         if let Some(v) = db.value(x) {
@@ -1543,15 +1583,19 @@ impl Cx<'_> {
             }
             // An element or field of a constant (`table(i)`, `grid(r, c)`, `cfg.width`).
             ExprKind::Index { prefix, indices } => {
-                if let Some(ConstValue::Array(a)) = self.fold(*prefix) {
+                if let Some(p) = self.fold_shared(*prefix)
+                    && let ConstValue::Array(a) = &*p
+                {
                     let ix: Option<Vec<i64>> = (indices.iter())
                         .map(|&i| self.fold(i).and_then(|c| c.as_int()))
                         .collect();
-                    return const_elem(&a, &ix?);
+                    return const_elem(a, &ix?);
                 }
             }
             ExprKind::Field { prefix, elem } => {
-                if let Some(ConstValue::Record(fs)) = self.fold(*prefix) {
+                if let Some(p) = self.fold_shared(*prefix)
+                    && let ConstValue::Record(fs) = &*p
+                {
                     return fs.get(*elem as usize).cloned();
                 }
             }

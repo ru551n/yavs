@@ -876,6 +876,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         return Err("a postponed process cannot run cycle-based".into());
     }
     let mut lx = Lx {
+        shared: Default::default(),
         db,
         e,
         p,
@@ -997,6 +998,8 @@ struct Lx<'a> {
     lits: Vec<Vec<u8>>,
     /// The calls folded from `Elaborated::region_calls` that reported (`Body::reports`).
     loud: std::cell::RefCell<BTreeSet<ExprId>>,
+    /// Constants of elaboration folded as names, shared (`check::Consts`).
+    shared: std::cell::RefCell<crate::check::Consts>,
     /// `call_fits` is folding a folded call's arguments: their reports are the call's.
     probing: std::cell::Cell<bool>,
 }
@@ -3558,6 +3561,28 @@ impl Lx<'_> {
         Some(v)
     }
 
+    /// `fold(x)`, shared through `shared` when `x` names a constant of elaboration (not a
+    /// formal, a local or a variable of the process).
+    fn fold_shared(&self, x: ExprId) -> Option<std::rc::Rc<ConstValue>> {
+        let db = self.db;
+        if let ExprKind::Obj(d) = db.exprs[x].kind
+            && db.exprs[x].value.is_none()
+            && self.bound(d).is_none()
+            && !self.consts.contains_key(&d)
+            && matches!(&db.decls[d].kind, yavs_sem::decl::DeclKind::Object(o)
+                if o.class == yavs_sem::decl::ObjClass::Constant)
+        {
+            let key = (self.p.scope, d, db.exprs[x].subtype);
+            if let Some(v) = self.shared.borrow().get(&key) {
+                return v.clone();
+            }
+            let v = self.fold(x).map(std::rc::Rc::new);
+            self.shared.borrow_mut().insert(key, v.clone());
+            return v;
+        }
+        self.fold(x).map(std::rc::Rc::new)
+    }
+
     fn fold_raw(&self, x: ExprId) -> Option<ConstValue> {
         let db = self.db;
         if let Some(c) = db.exprs[x].value {
@@ -3669,25 +3694,33 @@ impl Lx<'_> {
                         }
                     }
                 }
-                let v = crate::check::const_value(db, self.e, self.p, known, x)?;
+                let v = crate::check::const_value(
+                    db,
+                    self.e,
+                    self.p,
+                    known,
+                    &mut self.shared.borrow_mut(),
+                    x,
+                )?;
                 // The checks of the call stay: a value or an argument outside its subtype is
                 // left to the inlined call, which stops the run as the normal mode does.
                 self.call_fits(*callee, args, &v)
             }
             // A field of a record constant (`registers(i).width` of a generic table).
-            ExprKind::Field { prefix, elem } => match self.fold(*prefix)? {
+            ExprKind::Field { prefix, elem } => match &*self.fold_shared(*prefix)? {
                 ConstValue::Record(fs) => fs.get(*elem as usize).cloned(),
                 _ => None,
             },
             // An element of a constant at indices known here (`grid(r, c)` in an unrolled loop).
             ExprKind::Index { prefix, indices } => {
-                let Some(ConstValue::Array(a)) = self.fold(*prefix) else {
+                let p = self.fold_shared(*prefix)?;
+                let ConstValue::Array(a) = &*p else {
                     return None;
                 };
                 let ix: Option<Vec<i64>> = (indices.iter())
                     .map(|&i| self.fold(i).and_then(|c| c.as_int()))
                     .collect();
-                crate::check::const_elem(&a, &ix?)
+                crate::check::const_elem(a, &ix?)
             }
             _ => db.fold_with(x, &mut |c| self.fold(c)).ok().flatten(),
         }

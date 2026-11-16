@@ -53,6 +53,7 @@ CYCLE_TESTS = {
     "reclit.vhd": [("cycle_reclit", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
     "reset.vhd": [("cycle_reset", "", None), ("cycle_reset", "-gCOMB=true", None)],
     "shapes.vhd": [("cycle_shapes", "", None)],
+    "skip.vhd": [("cycle_skip", "", None)],
     "ram.vhd": [("cycle_ram", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
     "slices.vhd": [("cycle_slices", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
 }

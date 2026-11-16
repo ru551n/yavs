@@ -187,9 +187,9 @@ pub(crate) fn subset(db: &Db, e: &Elaborated) -> Subset {
             }
         }
         // A loop element by element in the combinational logic.
-        stat(&format!("subset round: {} ms", t0.elapsed().as_millis()));
-        let a = analyse(db, e, &fits);
-        stat(&format!("subset analyse: {} ms", t0.elapsed().as_millis()));
+        stat(|| format!("subset round: {} ms", t0.elapsed().as_millis()));
+        let a = analyse(db, e, fits.iter().map(|(pi, f)| (*pi, f)));
+        stat(|| format!("subset analyse: {} ms", t0.elapsed().as_millis()));
         for (ps, path) in &a.cycles {
             for &q in ps {
                 if !made.iter().any(|m| m.0 == q) {
@@ -318,12 +318,16 @@ fn differs(e: &Elaborated, f: &Fit, b: &Body) -> Option<String> {
 }
 
 /// The dependence analysis of the fitting processes.
-fn analyse(db: &Db, e: &Elaborated, fits: &BTreeMap<usize, Fit>) -> dep::Analysis {
+fn analyse<'f>(
+    db: &Db,
+    e: &Elaborated,
+    fits: impl Iterator<Item = (usize, &'f Fit)>,
+) -> dep::Analysis {
     let _ = db;
     let n = e.procs.len();
-    let mut procs: Vec<(usize, Vec<dep::Out>)> = (fits.iter())
+    let mut procs: Vec<(usize, Vec<dep::Out>)> = fits
         .filter(|(_, f)| !f.outs.is_empty() || f.form == Form::Comb)
-        .map(|(pi, f)| (*pi, f.outs.clone()))
+        .map(|(pi, f)| (pi, f.outs.clone()))
         .collect();
     // Port edges the kernel updates are copies in the same delta: an `in` formal depends on its
     // actual, an `out` actual on its formal (a conversion: on all of the other side). They are
@@ -418,19 +422,17 @@ fn analyse(db: &Db, e: &Elaborated, fits: &BTreeMap<usize, Fit>) -> dep::Analysi
 }
 
 /// Developers (`YAVS_CYCLE_STATS`): a line of the selection's timing.
-fn stat(what: &str) {
-    if std::env::var_os("YAVS_CYCLE_STATS").is_some() {
-        eprintln!("cycle stats: {what}");
+fn stat(what: impl FnOnce() -> String) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ON.get_or_init(|| std::env::var_os("YAVS_CYCLE_STATS").is_some()) {
+        eprintln!("cycle stats: {}", what());
     }
 }
 
 pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
     let t0 = std::time::Instant::now();
     let (fits, mut out, groups) = subset(db, e);
-    stat(&format!(
-        "select: subset done {} ms",
-        t0.elapsed().as_millis()
-    ));
+    stat(|| format!("select: subset done {} ms", t0.elapsed().as_millis()));
     let mut nfits = fits.len();
     let forced = !db.facts().forces.is_empty();
     let mut taken: BTreeMap<usize, (Fit, Body)> = BTreeMap::new();
@@ -472,7 +474,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             Err(w) => out.push((pi, Why::NotYet(w))),
         }
     }
-    stat(&format!("select: lowered {} ms", t0.elapsed().as_millis()));
+    stat(|| format!("select: lowered {} ms", t0.elapsed().as_millis()));
     // The history processes read (A10), and the sources of implicit signals.
     let mut memo = BTreeMap::new();
     let hist: Vec<Vec<Hist>> = (0..e.procs.len())
@@ -485,10 +487,10 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         }
         implicit.extend(l.implicit_more.iter().map(|x| x.0));
     }
-    stat(&format!("select: history {} ms", t0.elapsed().as_millis()));
+    stat(|| format!("select: history {} ms", t0.elapsed().as_millis()));
     // Leave out what the set as a whole does not allow yet, until nothing changes.
     loop {
-        stat(&format!("select: round at {} ms", t0.elapsed().as_millis()));
+        stat(|| format!("select: round at {} ms", t0.elapsed().as_millis()));
         let mut gone: Vec<(usize, String)> = Vec::new();
         // A signal whose history a process outside reads keeps its drivers out: the region
         // keeps no history of what it drives (outside the subset).
@@ -589,21 +591,18 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
                 ));
             }
         }
-        stat(&format!("select: sources {} ms", t0.elapsed().as_millis()));
+        stat(|| format!("select: sources {} ms", t0.elapsed().as_millis()));
         if gone.is_empty() {
             gone = ram_rule(db, e, &taken);
         }
-        stat(&format!("select: ram {} ms", t0.elapsed().as_millis()));
+        stat(|| format!("select: ram {} ms", t0.elapsed().as_millis()));
         if gone.is_empty() {
             gone = cross_delta(db, e, &taken);
         }
-        stat(&format!("select: cross {} ms", t0.elapsed().as_millis()));
+        stat(|| format!("select: cross {} ms", t0.elapsed().as_millis()));
         if gone.is_empty() {
             // The order and the loop groups of what is left: a group runs as a loop of passes.
-            let fits: BTreeMap<usize, Fit> = (taken.iter())
-                .map(|(pi, (f, _))| (*pi, f.clone()))
-                .collect();
-            let a = analyse(db, e, &fits);
+            let a = analyse(db, e, taken.iter().map(|(pi, (f, _))| (*pi, f)));
             let mut members = Vec::new();
             let order: Vec<usize> = a
                 .order
@@ -684,9 +683,9 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             // Reset branches the order does not list (they assign nothing): any place.
             settle.extend(resets.into_values());
             out.sort_by_key(|o| o.0);
-            stat(&format!("select: order {} ms", t0.elapsed().as_millis()));
+            stat(|| format!("select: order {} ms", t0.elapsed().as_millis()));
             let mut sel = boundary(db, e, members, out, &reset_reads);
-            stat(&format!("select: boundary {} ms", t0.elapsed().as_millis()));
+            stat(|| format!("select: boundary {} ms", t0.elapsed().as_millis()));
             sel.settle = settle;
             sel.loops = loops;
             sel.groups = groups;

@@ -59,6 +59,7 @@ jobs:
           tools/conformance/run.py --check --no-sandbox --core 1 \
             --yavs target/release/yavs --out "$RUNNER_TEMP/conformance"
       - uses: astral-sh/setup-uv@v6
+        if: ${{ !cancelled() }}
       - name: cocotb's own regression over VHPI (tools/cocotb)
         # also after a stale report, so that its artifact has everything the refresh of the report needs
         if: ${{ !cancelled() }}

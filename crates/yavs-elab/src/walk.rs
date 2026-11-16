@@ -697,6 +697,11 @@ pub(crate) fn elaborate(
     } else {
         Default::default()
     };
+    let region_calls = if e.cfg.keep_values {
+        e.process_calls()
+    } else {
+        Default::default()
+    };
     e.m.calls.flush();
     Ok(Elaborated {
         lean,
@@ -714,6 +719,7 @@ pub(crate) fn elaborate(
         pkg_vals: std::mem::take(&mut e.m.pkg),
         region_vals,
         region_ranges,
+        region_calls,
         sigs: e.m.sigs,
         regions: e.m.regions,
         var_ports: e.m.var_ports,
@@ -1634,6 +1640,59 @@ impl Elab<'_> {
             ranges.clear();
         }
         (out, ranges)
+    }
+
+    /// With [`ElabConfig::keep_values`]: the globally static calls of pure functions of the design
+    /// in the statements of each process, by the process's scope and the call: cycle mode folds
+    /// them where its own folding cannot run the function (a `while` loop over a string generic).
+    /// Only calls whose functions, and those they call, hold no `assert` or `report` (an
+    /// evaluation here must print nothing), evaluated apart from the model; one that fails has
+    /// no value.
+    fn process_calls(&mut self) -> HashMap<(ScopeId, ExprId), Val> {
+        use yavs_sem::hir::ExprKind;
+        let db: &Db = self.db;
+        let (vals, pkg) = (self.m.vals.clone(), self.m.pkg.clone());
+        let mark = self.m.session.mark();
+        let mut out = HashMap::new();
+        let mut quiet: HashMap<DeclId, bool> = HashMap::new();
+        let procs: Vec<(ScopeId, Option<ScopeId>, StmtId)> = (self.procs.iter())
+            .map(|p| (p.scope, self.m.hier.scope(p.scope).parent, p.stmt))
+            .collect();
+        for (ps, region, stmt) in procs {
+            let mut stmts = vec![stmt];
+            let mut calls = Vec::new();
+            while let Some(s) = stmts.pop() {
+                stmts.extend(db.stmt_children(s));
+                db.stmt_exprs(s, &mut |x, _| {
+                    db.walk_expr(x, &mut |y| {
+                        if let ExprKind::Call {
+                            callee,
+                            method_of: None,
+                            ..
+                        } = &db.exprs[y].kind
+                            && db.exprs[y].stat == Staticness::Globally
+                            && db.exprs[y].value.is_none()
+                        {
+                            calls.push((y, *callee));
+                        }
+                    })
+                });
+            }
+            for (y, f) in calls {
+                if !quiet_function(db, f, &mut quiet, 0) || crate::eval::may_call_impure(db, y) {
+                    continue;
+                }
+                if let Ok(v) = self.m.eval(db, y, region) {
+                    out.insert((ps, y), v);
+                }
+            }
+        }
+        self.m.vals = vals;
+        self.m.pkg = pkg;
+        if self.m.session.undo(db, mark).is_err() {
+            out.clear();
+        }
+        out
     }
 
     /// A 2019 variable port (LRM 6.5.2) denotes its actual's protected object: the shared
@@ -6378,4 +6437,63 @@ fn length_differs(shape: &Shape, v: &Val) -> Option<(u64, u64)> {
             .find_map(|((_, f), x)| length_differs(f, x)),
         _ => None,
     }
+}
+
+/// Whether pure function `f` of the design, and every function of the design it calls, holds no
+/// `assert` or `report` (`ieee` and `std` count as quiet); `false` for a body the scan cannot see.
+fn quiet_function(db: &Db, f: DeclId, memo: &mut HashMap<DeclId, bool>, depth: u32) -> bool {
+    use yavs_sem::decl::{Body, SubprogramKind};
+    use yavs_sem::hir::{ExprKind, StmtKind};
+    if let Some(&q) = memo.get(&f) {
+        return q;
+    }
+    let Some(sp) = db.decls[f].kind.subprogram() else {
+        return false;
+    };
+    if ["ieee.", "std."]
+        .iter()
+        .any(|p| sp.mangled.as_str().starts_with(p))
+    {
+        return true;
+    }
+    let Body::Hir { stmts, .. } = &sp.body else {
+        return matches!(sp.body, Body::Implicit(_));
+    };
+    if sp.kind != (SubprogramKind::Function { pure: true }) || depth > 16 {
+        return false;
+    }
+    // A recursion counts as quiet while it is scanned.
+    memo.insert(f, true);
+    let mut all: Vec<StmtId> = stmts.to_vec();
+    let mut ok = true;
+    while let Some(s) = all.pop() {
+        if matches!(
+            db.stmts[s].kind,
+            StmtKind::Assert { .. } | StmtKind::Report { .. }
+        ) {
+            ok = false;
+            break;
+        }
+        all.extend(db.stmt_children(s));
+        let mut callees = Vec::new();
+        db.stmt_exprs(s, &mut |x, _| {
+            db.walk_expr(x, &mut |y| {
+                if let ExprKind::Call { callee, .. } = &db.exprs[y].kind {
+                    callees.push(*callee);
+                }
+            })
+        });
+        if let StmtKind::ProcCall(c) = &db.stmts[s].kind {
+            callees.push(c.callee);
+        }
+        if !callees
+            .into_iter()
+            .all(|c| quiet_function(db, c, memo, depth + 1))
+        {
+            ok = false;
+            break;
+        }
+    }
+    memo.insert(f, ok);
+    ok
 }

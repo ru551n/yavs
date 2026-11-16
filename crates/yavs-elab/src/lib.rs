@@ -475,6 +475,9 @@ pub struct Elaborated {
     /// types and subtypes of each instance's regions (a function of generics), evaluated apart
     /// from the model, as [`Elaborated::range`] gives them.
     pub region_ranges: std::collections::HashMap<(ScopeId, yavs_sem::ExprId), Bounds>,
+    /// With [`ElabConfig::keep_values`]: the values of the globally static calls of quiet pure
+    /// functions in the statements of each process, by the process's scope and the call.
+    pub region_calls: std::collections::HashMap<(ScopeId, yavs_sem::ExprId), Val>,
     /// Per leaf: nothing asks for the event history of single elements of this signal, so
     /// the kernel keeps only each block's last event (`lean.rs`). Clear it to keep the history
     /// of every signal; empty means the same.

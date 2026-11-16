@@ -1661,10 +1661,12 @@ impl Elab<'_> {
         let mut quiet: HashMap<DeclId, bool> = HashMap::new();
         // The standard library's files: its notes and warnings are dropped (A23).
         let root = yavs_sem::default_stdlib();
-        let library: std::collections::HashSet<yavs_diag::FileId> = (0..db.sources.len())
-            .map(|i| yavs_diag::FileId(i as u32))
-            .filter(|&f| std::path::Path::new(&db.sources.get(f).path).starts_with(&root))
-            .collect();
+        let library: std::rc::Rc<std::collections::HashSet<yavs_diag::FileId>> = std::rc::Rc::new(
+            (0..db.sources.len())
+                .map(|i| yavs_diag::FileId(i as u32))
+                .filter(|&f| std::path::Path::new(&db.sources.get(f).path).starts_with(&root))
+                .collect(),
+        );
         let procs: Vec<(ScopeId, Option<ScopeId>, StmtId)> = (self.procs.iter())
             .map(|p| (p.scope, self.m.hier.scope(p.scope).parent, p.stmt))
             .collect();

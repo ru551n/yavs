@@ -377,7 +377,7 @@ thread_local! {
 /// warnings of the standard library (a native `ieee` subprogram, a statement of one of the
 /// `library` files) are dropped (A23).
 pub fn capture_elab_reports<T>(
-    library: std::collections::HashSet<yavs_diag::FileId>,
+    library: std::rc::Rc<std::collections::HashSet<yavs_diag::FileId>>,
     f: impl FnOnce() -> T,
 ) -> (T, Vec<(u8, String)>) {
     let outer = CAPTURE.with(|c| c.replace(Some(Vec::new())));
@@ -390,8 +390,8 @@ pub fn capture_elab_reports<T>(
 
 thread_local! {
     /// While [`capture_elab_reports`] runs: the standard library's source files.
-    static LIBRARY: std::cell::RefCell<std::collections::HashSet<yavs_diag::FileId>> =
-        std::cell::RefCell::new(std::collections::HashSet::new());
+    static LIBRARY: std::cell::RefCell<std::rc::Rc<std::collections::HashSet<yavs_diag::FileId>>> =
+        std::cell::RefCell::new(std::rc::Rc::default());
 }
 
 /// While [`capture_elab_reports`] runs: `file` is one of the standard library's.

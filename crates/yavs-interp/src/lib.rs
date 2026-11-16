@@ -207,6 +207,29 @@ pub(crate) struct ProcRoots {
 pub(crate) static SERIAL_EXECS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static SHARED_PUBLISHES: AtomicU64 = AtomicU64::new(0);
 
+/// Calls of natives that are not pure (files, the environment, clocks) and of foreign code made
+/// while [`watch_outside`] is on: cycle mode does not keep its analysis of a design whose
+/// elaboration read anything outside the sources.
+static OUTSIDE_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static OUTSIDE: AtomicU64 = AtomicU64::new(0);
+
+/// Count calls that read outside the sources from now on (`on`), or stop counting.
+pub fn watch_outside(on: bool) {
+    OUTSIDE_ON.store(on, Ordering::Relaxed);
+}
+
+/// The calls counted by [`watch_outside`] so far.
+pub fn outside_calls() -> u64 {
+    OUTSIDE.load(Ordering::Relaxed)
+}
+
+#[inline]
+pub(crate) fn note_outside(pure: impl FnOnce() -> bool) {
+    if OUTSIDE_ON.load(Ordering::Relaxed) && !pure() {
+        OUTSIDE.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// `(serial_execs, shared_publishes)`, see [`SERIAL_EXECS`].
 pub fn serial_stats() -> (u64, u64) {
     (
@@ -3608,6 +3631,7 @@ pub fn call_native(
             .natives
             .get(native)
             .ok_or_else(|| exec::ice(format!("no native {native}")))?;
+        note_outside(|| native::pure(&n.symbol));
         let Some(fun) = m.rt.natives.get(native.0 as usize).copied().flatten() else {
             return Err(Fault::Runtime(format!(
                 "native subprogram `{}` is not implemented in yavs yet",

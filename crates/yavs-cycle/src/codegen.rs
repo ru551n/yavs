@@ -719,6 +719,11 @@ pub(crate) fn compile<'a>(
         .map_err(|e| e.to_string())?
         .finish(settings::Flags::new(flags))
         .map_err(|e| e.to_string())?;
+    // The region's code whole from the cache (`store`): no function body is built.
+    let isa_id = (isa.isa_flags().iter())
+        .fold(format!("{} {}", isa.triple(), isa.flags()), |a, v| {
+            format!("{a} {v}")
+        });
     let jb = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
     let mut module = JITModule::new(jb);
     let ptr = module.target_config().pointer_type();
@@ -949,7 +954,12 @@ pub(crate) fn compile<'a>(
     let mut hits = 0;
     let t0 = std::time::Instant::now();
     let mut ids = Vec::new();
-    for (sym, ops, checked, shape) in &funs {
+    let (blob, check) = crate::store::code_get(&isa_id);
+    let blob = blob.filter(|b| b.len() == funs.len());
+    let take = blob.as_ref().filter(|_| !check && !disasm);
+    // What this compile made, for the cache (none when a function needs relocations).
+    let mut made: Option<crate::store::Blob> = Some(Vec::new());
+    for (k, (sym, ops, checked, shape)) in funs.iter().enumerate() {
         let t = std::time::Instant::now();
         let sym = format!("cycle_{sym}_{name}");
         let mut sig = module.make_signature();
@@ -961,6 +971,15 @@ pub(crate) fn compile<'a>(
         let id = module
             .declare_function(&sym, Linkage::Local, &sig)
             .map_err(|e| e.to_string())?;
+        if let Some(b) = take {
+            let (align, bytes) = &b[k];
+            module
+                .define_function_bytes(id, *align, bytes, &[])
+                .map_err(|e| format!("{e:?}"))?;
+            hits += 1;
+            ids.push((id, sym, bytes.len() as u32));
+            continue;
+        }
         let mut ctx = module.make_context();
         ctx.func.signature = sig;
         let mut fbc = FunctionBuilderContext::new();
@@ -1029,6 +1048,13 @@ pub(crate) fn compile<'a>(
             store.as_ref().filter(|_| !disasm),
         )?;
         hits += usize::from(hit);
+        if let (Some(m), Some(c)) = (made.as_mut(), ctx.compiled_code()) {
+            if c.buffer.relocs().is_empty() {
+                m.push((u64::from(c.buffer.min_alignment), c.code_buffer().to_vec()));
+            } else {
+                made = None;
+            }
+        }
         if disasm && let Some(text) = ctx.compiled_code().and_then(|c| c.vcode.as_ref()) {
             eprintln!("{sym}:\n{text}");
         }
@@ -1044,6 +1070,20 @@ pub(crate) fn compile<'a>(
         ids.push((id, sym, bytes));
     }
     module.finalize_definitions().map_err(|e| e.to_string())?;
+    if take.is_none()
+        && let Some(m) = made
+    {
+        match &blob {
+            Some(b) if check && *b != m => {
+                return Err(
+                    "YAVS_CYCLE_CACHE_CHECK: the region's code in the cache differs from a new compile"
+                        .into(),
+                );
+            }
+            Some(_) => {}
+            None => crate::store::code_put(&isa_id, &m),
+        }
+    }
     if stats {
         eprintln!(
             "cycle stats: {} functions in {} ms, {hits} from the cache",

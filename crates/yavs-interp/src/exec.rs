@@ -5893,6 +5893,7 @@ impl Machine {
                 yavs_ir::native_shown(&n.symbol)
             );
         };
+        crate::note_outside(|| crate::native::pure(&n.symbol));
         if (self.pkg_init.is_some() || self.init_reports.is_some())
             && self.tainted.is_none()
             && !crate::native::pure(&n.symbol)

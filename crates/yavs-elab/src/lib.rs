@@ -29,7 +29,7 @@ mod tests;
 
 pub use callcache::stats as call_cache_stats;
 pub use collapse::source_steps as elab_source_steps;
-pub use eval::{Class, ConvFn, Enc, Model, ScopeVals, Side, Val, elem_of};
+pub use eval::{Class, ConvFn, Enc, Model, ScopeVals, Side, Val, elem_of, watch};
 pub use hier::{
     Bounds, Case, DriverDecl, Hierarchy, ImplicitKind, Leaf, LeafId, LeafLoc, LeafRes, NetGraph,
     ObjId, ObjKind, PortEdge, ProcIdx, Scope, ScopeId, ScopeKind, Sel, Shape, SigObj,
@@ -154,6 +154,35 @@ pub struct ElabConfig {
     /// packages that a plain elaboration leaves until something needs it (cycle mode lowers code
     /// that reads them); one that cannot be evaluated has no value. Off by default.
     pub keep_values: bool,
+    /// With `keep_values`: asked after the walk, with the top-level generics it read
+    /// ([`GenericReads::walk`]); `true` leaves the value passes out (cycle mode has its analysis
+    /// from its cache, so nothing reads their values).
+    pub values: Option<ValuesHook>,
+}
+
+/// See [`ElabConfig::values`].
+#[derive(Clone)]
+pub struct ValuesHook(pub std::sync::Arc<dyn Fn(&Db, &GenericReads) -> bool + Send + Sync>);
+
+impl std::fmt::Debug for ValuesHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ValuesHook")
+    }
+}
+
+/// With [`ElabConfig::keep_values`]: which generics of the top-level entity elaboration read
+/// (`eval::watch`), as bits of their order in `decls`.
+#[derive(Clone, Debug, Default)]
+pub struct GenericReads {
+    pub decls: Vec<yavs_sem::DeclId>,
+    /// Read by the walk.
+    pub walk: u64,
+    /// Read by the walk and the value passes.
+    pub values: u64,
+    /// The value passes were left out ([`ElabConfig::values`]).
+    pub skipped: bool,
+    /// The value passes printed a report.
+    pub reported: bool,
 }
 
 impl Default for ElabConfig {
@@ -163,6 +192,7 @@ impl Default for ElabConfig {
             collapse_ports: true,
             packs: true,
             keep_values: false,
+            values: None,
         }
     }
 }
@@ -486,6 +516,8 @@ pub struct Elaborated {
     /// With [`ElabConfig::keep_values`]: the globally static calls of pure functions in the
     /// statements of each process, by the process's scope and the call: value and reports.
     pub region_calls: std::collections::HashMap<(ScopeId, yavs_sem::ExprId), RegionCall>,
+    /// With [`ElabConfig::keep_values`]: the top-level generics elaboration read.
+    pub generic_reads: GenericReads,
     /// Per leaf: nothing asks for the event history of single elements of this signal, so
     /// the kernel keeps only each block's last event (`lean.rs`). Clear it to keep the history
     /// of every signal; empty means the same.

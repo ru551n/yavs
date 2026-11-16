@@ -3057,8 +3057,10 @@ fn region_code_from_the_cache_gives_the_same_result() {
         (std::fs::read_dir(&obj).into_iter().flatten().flatten())
             .map(|e| e.path())
             .filter(|p| {
-                p.file_name()
-                    .is_some_and(|n| n.to_string_lossy().starts_with("cycle-"))
+                p.file_name().is_some_and(|n| {
+                    let n = n.to_string_lossy();
+                    n.starts_with("cycle-") || n.starts_with("cyc3")
+                })
             })
             .collect()
     };
@@ -3144,6 +3146,168 @@ fn region_code_from_the_cache_gives_the_same_result() {
     assert_eq!((&got, hits), (&w9, n));
 }
 
+/// A cycle run of `acache` with the caches of the work library on and `YAVS_CYCLE_STATS`: the
+/// testbench's line, what the analysis cache did (its stats line) and the stats line of the
+/// region's functions.
+fn acached(dir: &Path, env: &[(&str, &str)], flags: &[&str]) -> (String, String, String) {
+    let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .current_dir(dir)
+        .env("YAVS_STD_CACHE", "off")
+        .env("YAVS_CYCLE_STATS", "1")
+        .envs(env.iter().copied())
+        .args([
+            "--color",
+            "never",
+            "run",
+            "--work=work:lib",
+            "--tier=interp",
+        ])
+        .args(flags)
+        .arg("acache")
+        .output()
+        .expect("run yavs");
+    let (out, err) = (
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr),
+    );
+    assert!(o.status.success(), "{env:?} {flags:?}: {out}{err}");
+    let line = |text: &str, what: &str| {
+        (text.lines())
+            .find(|l| l.contains(what))
+            .map_or(String::new(), |l| l.to_string())
+    };
+    (
+        line(&out, "cnt="),
+        line(&err, "cycle stats: analysis"),
+        line(&err, " functions in "),
+    )
+}
+
+/// The analysis cache: a second run takes the selection (and the region's code) from the cache
+/// and prints the same; a generic nothing reads before the run (`TAG`) hits, one the walk, the
+/// value passes or the selection reads misses, and so do an edited dependency, another
+/// environment and another build; damaged entries are misses; `--no-cache` writes nothing; two
+/// runs racing on an empty cache; `YAVS_CYCLE_CACHE_CHECK=1` makes it again and compares.
+#[test]
+fn the_analysis_from_the_cache_gives_the_same_result() {
+    let dir = tempdir("cycle-acache");
+    analyze(&dir, "acache.vhd", include_str!("cycle/acache.vhd"));
+    let normal = |flags: &[&str]| {
+        let (out, _, rc) = run_env(&dir, &[], flags, "acache");
+        assert_eq!(rc, 0, "{out}");
+        out.lines()
+            .find(|l| l.contains("cnt="))
+            .expect("report")
+            .to_string()
+    };
+    let store = dir.join("lib").join("yavs-cache").join("cycle");
+    let entries = || -> Vec<std::path::PathBuf> {
+        (std::fs::read_dir(&store).into_iter().flatten().flatten())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("cyc3"))
+            })
+            .collect()
+    };
+    let (stored, hit) = ("analysis stored", "analysis from the cache");
+    let want = normal(&["--tier=interp"]);
+    assert!(want.ends_with("x cnt=60 a=60 b=80"), "{want}");
+
+    let (got, a, _) = acached(&dir, &[], &["--cycle", "--no-cache"]);
+    assert_eq!((got.as_str(), a.as_str()), (want.as_str(), ""));
+    assert!(entries().is_empty(), "--no-cache wrote {:?}", entries());
+
+    let (got, a, _) = acached(&dir, &[], &["--cycle"]);
+    assert_eq!(got, want);
+    assert!(
+        a.contains(stored) && a.contains("generics W, L, F, K"),
+        "{a}"
+    );
+    assert!(!a.contains("TAG"), "{a}");
+    let (got, a, f) = acached(&dir, &[], &["--cycle"]);
+    assert_eq!(got, want);
+    assert!(a.contains(hit), "a warm run: {a}");
+    assert!(f.contains("from the cache"), "{f}");
+    let check = [("YAVS_CYCLE_CACHE_CHECK", "1")];
+    let (got, a, _) = acached(&dir, &check, &["--cycle"]);
+    assert_eq!(got, want);
+    assert!(a.contains("checked: the same"), "{a}");
+
+    // Read by nothing before the run: the same analysis.
+    let (got, a, _) = acached(&dir, &[], &["--cycle", "-gTAG=y"]);
+    assert_eq!(got, normal(&["--tier=interp", "-gTAG=y"]));
+    assert!(a.contains(hit), "TAG: {a}");
+
+    // Read by the walk (W, L), the value passes or the selection (F, K), another environment, another
+    // build: made again, right, then from the cache.
+    let excl = [("YAVS_CYCLE_EXCLUDE", "nothing_has_this_name")];
+    let salt = [("YAVS_CACHE_SALT", "another build")];
+    for (what, env, flags) in [
+        ("W", &[][..], &["-gW=9"][..]),
+        ("L", &[][..], &["-gL=abc"][..]),
+        ("F", &[][..], &["-gF=5"][..]),
+        ("K", &[][..], &["-gK=7"][..]),
+        ("environment", &excl[..], &[][..]),
+        ("build", &salt[..], &[][..]),
+    ] {
+        let want = normal(&[&["--tier=interp"][..], flags].concat());
+        let flags = [&["--cycle"][..], flags].concat();
+        let (got, a, _) = acached(&dir, env, &flags);
+        assert_eq!(got, want, "{what}");
+        assert!(a.contains(stored), "{what}: {a}");
+        let (got, a, _) = acached(&dir, env, &flags);
+        assert_eq!(got, want, "{what}, warm");
+        assert!(a.contains(hit), "{what}, warm: {a}");
+    }
+
+    // An edited dependency.
+    analyze(
+        &dir,
+        "acache.vhd",
+        &include_str!("cycle/acache.vhd").replace("c <= c + 1 + N;", "c <= c + 2 + N;"),
+    );
+    let edited = normal(&["--tier=interp"]);
+    assert_ne!(edited, want);
+    let (got, a, _) = acached(&dir, &[], &["--cycle"]);
+    assert_eq!(got, edited, "an edited dependency");
+    assert!(a.contains(stored), "an edited dependency: {a}");
+
+    // Damaged entries: cut short, then garbage. Each is a miss and made again.
+    for damage in [0, 1] {
+        for p in entries() {
+            let bytes = std::fs::read(&p).expect("entry");
+            let bad = if damage == 0 {
+                bytes[..bytes.len() / 2].to_vec()
+            } else {
+                vec![0x5a; bytes.len()]
+            };
+            std::fs::write(&p, bad).expect("damage");
+        }
+        let (got, a, _) = acached(&dir, &[], &["--cycle"]);
+        assert_eq!(got, edited, "damage {damage}");
+        assert!(!a.contains(hit), "damage {damage}: {a}");
+    }
+
+    // Two runs at once on an empty cache, as a test runner's parallel jobs do.
+    for p in entries() {
+        std::fs::remove_file(p).expect("remove entry");
+    }
+    let w9 = normal(&["--tier=interp", "-gW=9"]);
+    let racers: Vec<_> = (0..2)
+        .map(|_| {
+            let d = dir.to_path_buf();
+            std::thread::spawn(move || acached(&d, &[], &["--cycle", "-gW=9"]).0)
+        })
+        .collect();
+    for r in racers {
+        assert_eq!(r.join().expect("racer"), w9);
+    }
+    let (got, a, _) = acached(&dir, &[], &["--cycle", "-gW=9"]);
+    assert_eq!(got, w9);
+    assert!(a.contains(hit), "after the race: {a}");
+}
+
 /// A region of more functions than the store keeps is not cached: it could never be warm, and
 /// its writes would fill the store with entries of one design (and, before the store looked at a
 /// full directory once and not at every put, a run took minutes). Every process is cut into
@@ -3182,7 +3346,10 @@ fn a_region_of_more_functions_than_the_cache_holds_is_not_cached() {
         .unwrap_or_else(|| panic!("no total line: {err}"));
     assert!(n > 16384, "{n} functions");
     let obj = dir.join("lib").join("yavs-cache").join("cycle");
-    let cached = std::fs::read_dir(&obj).map_or(0, std::iter::Iterator::count);
+    // The function entries; the analysis and the region's code as a whole are one entry each.
+    let cached = (std::fs::read_dir(&obj).into_iter().flatten().flatten())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("cycle-"))
+        .count();
     assert_eq!(cached, 0, "entries of a region that cannot fit");
 }
 

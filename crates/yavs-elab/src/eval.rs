@@ -30,9 +30,72 @@ pub type Val = yavs_sem::stat::ConstValue;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ScopeVals(Vec<(DeclId, Val)>);
 
+/// Reads of the top-level generics' values, for cycle mode's analysis cache: which of them
+/// elaboration and the region analysis read (`watch`). Every read of a value goes through
+/// [`ScopeVals`], so its accessors note them.
+pub mod watch {
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
+    use yavs_sem::Id as _;
+
+    /// At most this many generics are watched; a top level with more reads all of them.
+    pub const MAX: usize = 64;
+    static ON: AtomicBool = AtomicBool::new(false);
+    static N: AtomicU32 = AtomicU32::new(0);
+    static IDS: [AtomicU32; MAX] = [const { AtomicU32::new(u32::MAX) }; MAX];
+    static READ: AtomicU64 = AtomicU64::new(0);
+
+    /// Watch these declarations from now on, nothing read yet.
+    pub fn start(ds: &[yavs_sem::DeclId]) {
+        for (i, d) in ds.iter().take(MAX).enumerate() {
+            IDS[i].store(d.index() as u32, Relaxed);
+        }
+        N.store(ds.len().min(MAX) as u32, Relaxed);
+        READ.store(if ds.len() > MAX { u64::MAX } else { 0 }, Relaxed);
+        ON.store(true, Relaxed);
+    }
+
+    /// Stop watching; the reads so far stay.
+    pub fn stop() {
+        ON.store(false, Relaxed);
+    }
+
+    /// Watch again, nothing read.
+    pub fn resume() {
+        READ.store(0, Relaxed);
+        ON.store(true, Relaxed);
+    }
+
+    /// The watched declarations read since `start` or `resume`, as bits of their order.
+    pub fn reads() -> u64 {
+        READ.load(Relaxed)
+    }
+
+    #[inline]
+    pub(crate) fn note(d: yavs_sem::DeclId) {
+        if ON.load(Relaxed) {
+            let n = N.load(Relaxed) as usize;
+            if let Some(i) = IDS[..n]
+                .iter()
+                .position(|x| x.load(Relaxed) == d.index() as u32)
+            {
+                READ.fetch_or(1 << i, Relaxed);
+            }
+        }
+    }
+
+    /// Every watched declaration counts as read (an iteration over values).
+    #[inline]
+    pub(crate) fn all() {
+        if ON.load(Relaxed) {
+            READ.store(u64::MAX, Relaxed);
+        }
+    }
+}
+
 impl ScopeVals {
     pub fn get(&self, d: &DeclId) -> Option<&Val> {
         let i = self.0.binary_search_by_key(d, |e| e.0).ok()?;
+        watch::note(*d);
         Some(&self.0[i].1)
     }
 
@@ -59,10 +122,12 @@ impl ScopeVals {
     }
 
     pub fn values(&self) -> impl Iterator<Item = &Val> {
+        watch::all();
         self.0.iter().map(|e| &e.1)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&DeclId, &Val)> {
+        watch::all();
         self.0.iter().map(|e| (&e.0, &e.1))
     }
 

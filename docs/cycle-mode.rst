@@ -593,16 +593,22 @@ The other codes are in :doc:`error-codes`, and ``yavs --explain E4119`` prints t
 Start-up cost and the cache
 ---------------------------
 
-yavs selects and analyses the region at the start of every run, and Cranelift compiles its functions the first
-time. The time that takes grows with the size of the region, not with the length of the simulation: for a short test
-of a large design it can be longer than the time the faster simulation saves.
+The first run of a design selects and analyses the region, and Cranelift compiles its functions. The time that takes
+grows with the size of the region, not with the length of the simulation: for a short test of a large design it can be
+longer than the time the faster simulation saves.
 
-The compiled machine code is kept in the compilation cache of the work library (``yavs-cache/cycle`` next to the
-library, :doc:`on-disk`). A later run that makes the same functions links them instead of compiling them. In a test
-suite, the test cases of one design and the same generics therefore compile the region once. An edited file, other
-generics, other options that change the design, or another yavs build make new entries. The size of the store is
-limited (16384 functions, 512 MiB; a region of more functions than that is not cached at all), and ``yavs cache clean --work=NAME:PATH`` empties it. ``--no-cache`` makes a run neither read nor write it,
-so such a run compiles every time.
+Both are kept in the compilation cache of the work library (``yavs-cache/cycle`` next to the library,
+:doc:`on-disk`): the analysis (which processes run cycle-based, and their code before it is compiled) and the
+compiled machine code. A later run of the same design takes the analysis from the cache and links the code, so its
+start-up is about that of a run without ``--cycle``. In a test suite the test cases of one design therefore analyse
+and compile the region once: a top-level generic counts only when the elaboration or the analysis reads its value, so
+a test runner's configuration string, which only the testbench reads while it runs, does not keep two test cases
+apart. An edited file, a generic that is read with another value, other options or ``YAVS_`` environment variables,
+or another yavs build make new entries. A design whose elaboration reads a file, an environment variable, the clock or
+foreign code keeps no analysis in the cache (its functions are still cached one by one). The size of the store is
+limited (16384 entries, 512 MiB; a region of more functions than that keeps its code as a whole only), and
+``yavs cache clean --work=NAME:PATH`` empties it. ``--no-cache`` makes a run neither read nor write it, so such a run
+analyses and compiles every time.
 
 When several tests start at once on a cold cache, each of them compiles the region. Run one test of the suite first, or
 keep ``yavs-cache`` between CI runs (:doc:`ci`), so that the others find the code.

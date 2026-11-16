@@ -694,6 +694,7 @@ fn elaborate(
     compile_all: bool,
     collapse_ports: bool,
     keep_values: bool,
+    values: Option<yavs_elab::ValuesHook>,
     format: MessageFormat,
     color: bool,
     encoding: yavs_syntax::Encoding,
@@ -824,6 +825,7 @@ fn elaborate(
             // Hidden test aid: `YAVS_PACKS=off` gives every leaf a kernel signal of its own.
             packs: std::env::var("YAVS_PACKS").map_or(true, |v| v != "off"),
             keep_values,
+            values,
             ..yavs_elab::ElabConfig::default()
         };
         yavs_elab::elaborate(&mut db, t, &c.generics, &cfg)
@@ -1131,6 +1133,7 @@ pub fn elab(
         false,
         true,
         false,
+        None,
         format,
         color,
         encoding,
@@ -1526,13 +1529,39 @@ fn prepare(
     };
     // A debugger or VHPI plugin may force or deposit any port: those runs keep ports apart.
     let collapse = !a.debugged() && a.vhpi.is_empty();
+    let compile_all = a.tier() == TierArg::Clift;
+    // Cycle mode's analysis is kept in the work library's cycle store, keyed by what it depends
+    // on: these options, besides the analysis, the generics it reads and the environment.
+    let values = a.cycle_on().then(|| {
+        let c = &a.common;
+        let work = c.work.split_once(':').map_or("", |(_, d)| d);
+        // Not the library paths: the analysis key names every file of the closure and its library.
+        let part = format!(
+            "{}|{}|{}|{:?}|{}|{:?}|{:?}|{:?}|{:?}",
+            c.top,
+            collapse && !c.no_collapse_ports,
+            compile_all,
+            lowering,
+            a.resolution as u8,
+            a.ieee_warnings.map(|w| w as u8),
+            c.load,
+            a.plusargs,
+            a.source_map,
+        );
+        yavs_cycle::analysis_cache(
+            (!c.no_cache && !work.is_empty()).then(|| std::path::Path::new(work)),
+            part.into_bytes(),
+            c.generics.clone(),
+        )
+    });
     let (mut out, db, e) = elaborate(
         &a.common,
         lowering,
-        a.tier() == TierArg::Clift,
+        compile_all,
         collapse,
         // Cycle mode lowers code that reads constants a plain run evaluates only when needed.
         a.cycle_on(),
+        values.flatten(),
         format,
         color,
         encoding,

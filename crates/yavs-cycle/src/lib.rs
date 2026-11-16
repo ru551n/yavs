@@ -8,6 +8,7 @@ mod dep;
 mod lower;
 mod region;
 mod rt;
+mod store;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -21,6 +22,7 @@ use yavs_sem::Db;
 
 pub use codegen::set_cache;
 use lower::{Kind, Op, Ref};
+pub use store::analysis_cache;
 
 /// Codes of cycle mode. Under `--cycle-strict` every reason a process below the top-level unit
 /// stays out is an error with its code; under `--cycle` the report gives the same codes.
@@ -177,7 +179,7 @@ fn at(db: &Db, span: yavs_diag::Span) -> String {
 /// reason, all of them listed. Under [`Mode::Report`] only the report is made, nothing is
 /// compiled.
 pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>> {
-    let sel = region::select(db, e);
+    let sel = store::select(db, e).map_err(|d| vec![d])?;
     let label = |pi: usize| e.hier.proc_label(&e.procs[pi], yavs_elab::Case::Lrm);
     if mode == Mode::Strict {
         let errs: Vec<Diagnostic> = (sel.out.iter())

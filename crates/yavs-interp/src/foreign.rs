@@ -891,6 +891,7 @@ impl Machine {
             .foreign
             .get(id)
             .ok_or_else(|| ice(format!("no foreign subprogram {id}")))?;
+        crate::note_outside(|| false);
         self.tainted
             .get_or_insert_with(|| format!("it calls the foreign subprogram `{}`", x.name));
         let rt = self.rt.clone();

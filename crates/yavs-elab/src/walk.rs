@@ -572,6 +572,14 @@ pub(crate) fn elaborate(
         UnitHir::Entity { ports, .. } => ports.len(),
         _ => 0,
     };
+    // Cycle mode's analysis cache keys only the top-level generics something reads.
+    let top_generics: Vec<DeclId> = match &e.db.units[top.entity].hir {
+        UnitHir::Entity { generics, .. } if cfg.keep_values => generics.to_vec(),
+        _ => Vec::new(),
+    };
+    if cfg.keep_values {
+        crate::watch::start(&top_generics);
+    }
     let gens = (0..n_gen).map(|_| A::Default).collect();
     let ports = (0..n_port).map(|_| A::Open).collect();
     let r = e.instance(
@@ -707,16 +715,35 @@ pub(crate) fn elaborate(
     e.m.nets.place(e.cfg.packs, forced.as_ref());
     let lean = crate::lean::leaves(e.db, &e.m.nets);
     let no_codes = crate::keep_codes::leaves(e.db, &e.m.nets);
-    let (region_vals, region_ranges) = if e.cfg.keep_values {
+    let mut reads = crate::GenericReads {
+        walk: crate::watch::reads(),
+        decls: top_generics,
+        ..Default::default()
+    };
+    reads.skipped =
+        e.cfg.keep_values && (e.cfg.values.as_ref()).is_some_and(|h| (h.0)(e.db, &reads));
+    let values = e.cfg.keep_values && !reads.skipped;
+    let printed = || {
+        use yavs_kernel::Severity as S;
+        [S::Note, S::Warning, S::Error, S::Failure]
+            .map(yavs_interp::elaboration_reports)
+            .iter()
+            .sum::<u64>()
+    };
+    let before = printed();
+    let (region_vals, region_ranges) = if values {
         e.region_values()
     } else {
         Default::default()
     };
-    let region_calls = if e.cfg.keep_values {
+    let region_calls = if values {
         e.process_calls()
     } else {
         Default::default()
     };
+    reads.values = crate::watch::reads();
+    reads.reported = printed() != before;
+    crate::watch::stop();
     e.m.calls.flush();
     Ok(Elaborated {
         lean,
@@ -735,6 +762,7 @@ pub(crate) fn elaborate(
         region_vals,
         region_ranges,
         region_calls,
+        generic_reads: reads,
         sigs: e.m.sigs,
         regions: e.m.regions,
         var_ports: e.m.var_ports,

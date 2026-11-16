@@ -16,6 +16,7 @@ use crate::dep::{self, VAR};
 use crate::lower::{self, Body, Clock, Kind, Op, Ref};
 
 /// Why a process stays in the event kernel.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) enum Why {
     /// Outside the subset.
     Subset(Reason),
@@ -26,6 +27,7 @@ pub(crate) enum Why {
 }
 
 /// The region: members (clocked first, then combinational in dependency order) and the boundary.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Selection {
     pub members: Vec<(usize, Body)>,
     /// The steps of the settle, as indices into `members`: the combinational members and the
@@ -63,7 +65,7 @@ pub(crate) struct Selection {
 /// Why a change of an input is settled at once: the exported output (and a process outside that
 /// reads it, if one is known) or the member process (its index) with a check its combinational
 /// path reaches.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Reach {
     Output(LeafId, Option<usize>),
     Check(usize),
@@ -71,6 +73,7 @@ pub(crate) enum Reach {
 
 /// A loop group of the settle: its steps, each member run at the pass levels of what it drives
 /// (`dep::Group::runs`), its last run the one on settled values.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Loop {
     pub at: std::ops::Range<usize>,
     /// Its members, and the passes of all of them in order that the runs replace (the report).

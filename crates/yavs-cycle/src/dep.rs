@@ -133,6 +133,7 @@ pub(crate) struct Out {
 }
 
 /// A loop group: processes that read, through each other or themselves, what they drive.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Group {
     /// In the order a pass runs them.
     pub procs: Vec<usize>,

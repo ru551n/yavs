@@ -621,7 +621,7 @@ Cycle mode (E4 and W4)
    * - _`E4113`
      - Cycle mode computes two-state values, integers and enumerations: a real or physical (time) value computed at run time, or a signal or variable of such a type, keeps the process in the event kernel.
    * - _`E4114`
-     - Shared variables, methods of protected objects, allocators and access values in expressions keep a process in the event kernel.
+     - Shared variables used other than by the clock-edge body of one clocked process, methods of protected objects, allocators and access values in expressions keep a process in the event kernel.
    * - _`E4115`
      - Postponed processes, guarded blocks, guarded signals and assignments and ``null`` waveforms keep a process in the event kernel: cycle mode has no end of a time step and models no guarded signals.
    * - _`E4116`

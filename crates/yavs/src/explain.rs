@@ -564,7 +564,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E4114",
-        "Shared variables, methods of protected objects, allocators and access values in expressions keep a process in the event kernel. A process that declares a protected object, a file or an access value (text lines) is behavioural instead, the testbench kind, and has no error under `--cycle-strict`.",
+        "Shared variables used other than by the clock-edge body of one clocked process, methods of protected objects, allocators and access values in expressions keep a process in the event kernel. A memory in a shared variable (not of a protected type) that one clocked process alone reads and writes, in its clock-edge body and not in a subprogram, runs cycle-based as a variable of that process; when another process uses it too, the order the two run in on a common edge decides the normal mode's result, and both stay out. A process that declares a protected object, a file or an access value (text lines) is behavioural instead, the testbench kind, and has no error under `--cycle-strict`.",
     ),
     (
         "E4115",

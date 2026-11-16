@@ -1159,6 +1159,12 @@ impl Cx<'_> {
                             }
                         },
                         (ObjClass::Variable, _) => Root::Var(*d),
+                        // A memory held in a shared variable, in the clock-edge body of a
+                        // clocked process: a state variable of it (A15), when no other
+                        // process uses it (`region::shared_rule`).
+                        (ObjClass::SharedVariable, _) if !self.comb && self.clock.is_some() => {
+                            Root::Var(*d)
+                        }
                         (ObjClass::SharedVariable, _) => {
                             return out(
                                 codes::TESTBENCH,

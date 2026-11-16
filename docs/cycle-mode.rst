@@ -156,7 +156,8 @@ signal they read (or ``all``), every signal and variable they assign assigned on
 and no combinational loop. Concurrent simple, conditional and selected assignments join in the same way.
 
 **What they may contain.** Logic and bit types, booleans, integers, enumerations, records, arrays and memories
-(arrays of more than a few thousand elements, written at run-time indices), ``numeric_std`` and
+(arrays of more than a few thousand elements, written at run-time indices, or held in a shared variable that one
+clocked process alone uses), ``numeric_std`` and
 ``std_logic_1164`` operators, ``case``, ``if``, ``for`` loops whose bounds are known when the design is elaborated
 (constants and generics), generics, ``generate`` statements, and calls of functions and procedures that have a
 body. A signal needs one source: one process drives each element of it.

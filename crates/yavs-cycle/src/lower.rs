@@ -184,6 +184,15 @@ impl Check {
                 hi,
                 down,
                 what,
+            } if what.is_empty() => {
+                format!("value {a} outside of {ty} range {}", range(*lo, *hi, *down))
+            }
+            Check::Range {
+                ty,
+                lo,
+                hi,
+                down,
+                what,
             } => format!(
                 "value {a} outside of {ty} range {} for {what}",
                 range(*lo, *hi, *down)
@@ -1304,9 +1313,20 @@ impl Lx<'_> {
         Ok(())
     }
 
+    /// Statement `s`; a reason it cannot be lowered names the line of the innermost statement.
     fn stmt(&mut self, s: StmtId) -> R<()> {
         let outer = std::mem::replace(&mut self.at, self.db.stmts[s].span);
-        let r = self.stmt_kind(s);
+        let r = self.stmt_kind(s).map_err(|w| {
+            if w.ends_with(')') && w.contains(".vhd") {
+                return w;
+            }
+            let span = self.db.stmts[s].span;
+            let f = self.db.sources.get(span.file);
+            let file = std::path::Path::new(&f.path)
+                .file_name()
+                .map_or(f.path.clone(), |n| n.to_string_lossy().into_owned());
+            format!("{w} ({file}:{})", f.line_col(span.start).0)
+        });
         self.at = outer;
         r
     }
@@ -1404,6 +1424,9 @@ impl Lx<'_> {
     }
 
     fn var_assign(&mut self, target: &Target, v: ExprId) -> R<()> {
+        if self.null_slice(target.expr) && self.null_slice(v) {
+            return Ok(());
+        }
         let dst = self.name(target.expr, true)?;
         if self.signal_rooted(&dst) {
             return Err("an assignment target that is not a variable".into());
@@ -1467,6 +1490,11 @@ impl Lx<'_> {
         let (Some(v), None) = (el.value, el.after) else {
             return Err("a delayed assignment (`after`) needs time inside a cycle".into());
         };
+        // A null slice given a null slice (`p(2 to n) <= p(1 to n - 1)` with n = 1): nothing to
+        // assign.
+        if self.null_slice(target.expr) && self.null_slice(v) {
+            return Ok(());
+        }
         let dst = self.name(target.expr, true)?;
         if !self.signal_rooted(&dst) {
             return Err("a signal assignment to a signal parameter".into());
@@ -2553,6 +2581,13 @@ impl Lx<'_> {
                     p
                 })
             }
+            // The prefix of an index or slice that is a value, not a name (`f(x)(7 downto 0)`):
+            // read only.
+            ExprKind::Call { .. } | ExprKind::Qualified { .. } | ExprKind::Conv { .. }
+                if !target =>
+            {
+                self.expr(x)
+            }
             _ => Err("a name that is not supported in cycle mode yet".into()),
         }
     }
@@ -2630,6 +2665,19 @@ impl Lx<'_> {
         // Its index range is the bounds' at run time: no index or slice of it is taken.
         p.dims = Dims::NONE;
         Ok(Val::Part(p))
+    }
+
+    /// Whether `x` is a slice with a null range known during elaboration.
+    fn null_slice(&mut self, x: ExprId) -> bool {
+        let ExprKind::Slice { range, .. } = &self.db.exprs[x].kind else {
+            return false;
+        };
+        let (n, l, k) = (self.ops.len(), self.locs, self.known.clone());
+        let r = self.static_range(range);
+        self.ops.truncate(n);
+        self.locs = self.locs.max(l);
+        self.known = k;
+        matches!(r, Ok((b, _)) if b.is_empty())
     }
 
     /// The integer value of `x` in trial `t` (the length of a slice chosen at run time): every
@@ -2795,6 +2843,7 @@ impl Lx<'_> {
                 }
                 Ok(v)
             }
+            ObjClass::SharedVariable => self.shared_var(d),
             ObjClass::Constant if target => Err("an assignment to a constant".into()),
             ObjClass::Constant => {
                 if let Some(c) = self.consts.get(&d).cloned() {
@@ -2819,6 +2868,75 @@ impl Lx<'_> {
                 decl.name
             )),
         }
+    }
+
+    /// A shared variable of an architecture or block (not of a protected type) that this process
+    /// alone uses (`region::shared_rule`): a variable of the process, kept from one edge to the
+    /// next, read and written in place in program order, starting from the value elaboration gave
+    /// it (`ElabConfig::keep_values`). Named in a subprogram it stays out.
+    fn shared_var(&mut self, d: DeclId) -> R<Val> {
+        if let Some(v) = self.vars.get(&d) {
+            return Ok(v.clone());
+        }
+        let (db, e) = (self.db, self.e);
+        let decl = &db.decls[d];
+        if !self.frames.is_empty() {
+            return Err(format!(
+                "the shared variable `{}` in a subprogram",
+                decl.name
+            ));
+        }
+        let yavs_sem::decl::DeclKind::Object(o) = &decl.kind else {
+            return Err("a shared variable that is not an object".into());
+        };
+        if matches!(
+            db.types[db.base(o.subtype)].kind,
+            TypeKind::Protected { .. }
+        ) {
+            return Err("a shared variable of a protected type".into());
+        }
+        // The elaborated region that declares it, from the process outwards.
+        let mut s = Some(self.p.scope);
+        let region = loop {
+            let Some(x) = s else {
+                return Err(format!(
+                    "the shared variable `{}`, which is not of an architecture or block around \
+                     the process",
+                    decl.name
+                ));
+            };
+            if e.regions.get(&x).is_some_and(|r| r.contains(&decl.scope)) {
+                break x;
+            }
+            s = e.hier.scope(x).parent;
+        };
+        let shape = (e.var_shapes.get(&(Some(region), d))).ok_or_else(|| {
+            format!(
+                "the shared variable `{}`, whose shape elaboration did not compute",
+                decl.name
+            )
+        })?;
+        let init = (e.region_vals.get(&(Some(region), d)))
+            .ok_or_else(|| {
+                format!(
+                    "the shared variable `{}`, whose initial value elaboration did not compute",
+                    decl.name
+                )
+            })?
+            .clone();
+        let v = self
+            .tree(shape, d, &mut |_| Ref::Loc(u32::MAX))
+            .map_err(|w| format!("{w} (shared variable `{}`)", decl.name))?;
+        let v = self.place_vars(v, true);
+        self.vars.insert(d, v.clone());
+        let known = std::mem::take(&mut self.known);
+        let made = self.capture(|lx| {
+            let s = lx.literal(db.base(o.subtype), &init)?;
+            lx.assign(&v, s)
+        });
+        self.known = known;
+        self.init_ops.extend(made?);
+        Ok(v)
     }
 
     /// Give a variable's leaves their slots: a logic leaf starts at 0 (its `'U'`, counted, unless
@@ -3508,8 +3626,28 @@ impl Lx<'_> {
                 let v = self.static_int(x)?;
                 Ok(Val::Int(self.int_lit(v)))
             }
+            ExprKind::Attr {
+                attr: attr @ (PredefAttr::Pos | PredefAttr::Val),
+                prefix: AttrPrefix::Subtype(st),
+                args,
+            } if args.len() == 1 => self.pos_val(*attr == PredefAttr::Pos, *st, args[0]),
             ExprKind::Attr { .. } => {
                 Err("an attribute that is not supported in cycle mode yet".into())
+            }
+            // The place's shape is the aggregate's only when its choices fit it (named choices
+            // give an aggregate its own range, LRM 9.3.3.3, as an operand of `&` has).
+            ExprKind::Aggregate { assocs, bounds } if hint.is_some() => {
+                let known = self.known.clone();
+                let (n, locs) = (self.ops.len(), self.locs);
+                match self.aggregate(x, assocs, bounds, hint) {
+                    Ok(v) => Ok(v),
+                    Err(_) => {
+                        self.ops.truncate(n);
+                        self.locs = self.locs.max(locs);
+                        self.known = known;
+                        self.aggregate(x, assocs, bounds, None)
+                    }
+                }
             }
             ExprKind::Aggregate { assocs, bounds } => self.aggregate(x, assocs, bounds, hint),
             ExprKind::Qualified { to, operand } | ExprKind::Conv { to, operand } => {
@@ -3523,6 +3661,122 @@ impl Lx<'_> {
                 ..
             } => self.call(x, *callee, args),
             _ => Err("an expression that is not supported in cycle mode yet".into()),
+        }
+    }
+
+    /// `T'pos(a)` (`pos`) or `T'val(a)` of a discrete type: an enumeration's position is its word
+    /// (a logic value's 0 or 1 is the position of `'0'` or `'1'`), an integer is itself. `'val`
+    /// checks the position against the subtype; of a logic type it takes only `'0'` and `'1'`.
+    fn pos_val(&mut self, pos: bool, st: SubtypeId, a: ExprId) -> R<Val> {
+        let db = self.db;
+        let t = db.base(st);
+        let logic = yavs_elab::elem_of(db, t) == yavs_kernel::Elem::Logic;
+        let lits = match &db.types[t].kind {
+            TypeKind::Enum { lits } => Some(lits.len() as i64),
+            TypeKind::Integer => None,
+            _ => return Err("'pos or 'val of a type that is not discrete".into()),
+        };
+        // The position of `'0'` in a logic type: 0 in BIT and BOOLEAN, 2 in STD_ULOGIC.
+        let zero = match lits {
+            Some(9) if logic => 2,
+            Some(2) if logic => 0,
+            Some(_) if logic => return Err("'pos or 'val of a logic type of another form".into()),
+            _ => 0,
+        };
+        let v = self.expr(a)?;
+        if pos {
+            return match v {
+                Val::Int(i) => Ok(Val::Int(IntV {
+                    place: None,
+                    leaf: None,
+                    ..i
+                })),
+                Val::Part(p) if logic && p.len == 1 => {
+                    let c = self.whole(p);
+                    let (one, z) = (self.int_lit(zero + 1), self.int_lit(zero));
+                    let out = self.tmp_int(zero, zero + 1);
+                    self.ops.push(Op::Select {
+                        dst: out.r,
+                        c,
+                        a: one.r,
+                        b: z.r,
+                        len: 64,
+                    });
+                    Ok(Val::Int(out))
+                }
+                _ => Err("'pos of a value of another form".into()),
+            };
+        }
+        let i = self.int(v)?;
+        match lits {
+            // An integer type: the value, checked against the subtype.
+            None => {
+                let (lo, hi) =
+                    int_bounds(db, st).ok_or("'val of an integer type without bounds")?;
+                if i.lo < lo || i.hi > hi {
+                    let site = self.site(Check::Range {
+                        ty: subtype_name(db, st),
+                        lo,
+                        hi,
+                        down: false,
+                        what: String::new(),
+                    });
+                    self.ops.push(Op::Range {
+                        a: i.r,
+                        lo,
+                        hi,
+                        site,
+                    });
+                }
+                Ok(Val::Int(IntV {
+                    lo: i.lo.max(lo),
+                    hi: i.hi.min(hi),
+                    place: None,
+                    leaf: None,
+                    ..i
+                }))
+            }
+            Some(_) if logic => {
+                if i.lo < zero || i.hi > zero + 1 {
+                    return Err("'val of a logic type at a position that may be a metavalue".into());
+                }
+                let one = self.int_lit(zero + 1);
+                let t = self.tmp(1);
+                self.ops.push(Op::IntCmp {
+                    op: Cmp::Eq,
+                    dst: t.r,
+                    a: i.r,
+                    b: one.r,
+                });
+                Ok(Val::Part(t))
+            }
+            // An enumeration: the position, checked against the subtype's (`value 3 outside of
+            // E_T range 0 to 2`, the normal mode's text).
+            Some(_) => {
+                let (lo, hi) = int_bounds(db, st).ok_or("'val of an enumeration without bounds")?;
+                if i.lo < lo || i.hi > hi {
+                    let site = self.site(Check::Range {
+                        ty: subtype_name(db, st),
+                        lo,
+                        hi,
+                        down: false,
+                        what: String::new(),
+                    });
+                    self.ops.push(Op::Range {
+                        a: i.r,
+                        lo,
+                        hi,
+                        site,
+                    });
+                }
+                Ok(Val::Int(IntV {
+                    lo: i.lo.max(lo),
+                    hi: i.hi.min(hi),
+                    place: None,
+                    leaf: None,
+                    ..i
+                }))
+            }
         }
     }
 
@@ -4486,6 +4740,36 @@ impl Lx<'_> {
                         });
                         Ok(Val::Part(t))
                     }
+                    // Records: equal when every element is (LRM 9.2.3).
+                    Family::Eq | Family::Neq
+                        if matches!(db.types[ty].kind, TypeKind::Record { .. }) =>
+                    {
+                        let (a, b) = two(self)?;
+                        let mut pairs = Vec::new();
+                        flatten(&a, b, &mut pairs)?;
+                        let mut all: Option<Val> = None;
+                        for (x, y) in pairs {
+                            let e = match (x, y) {
+                                (Val::Int(x), Val::Int(y)) => {
+                                    Val::Part(part_of(self.int_cmp(Cmp::Eq, x, y), 1))
+                                }
+                                (x, y) => self.vec_eq(x, y, false, false)?,
+                            };
+                            all = Some(match all {
+                                None => e,
+                                Some(p) => self.gate(Gate::And, p, e)?,
+                            });
+                        }
+                        let all = match all {
+                            Some(v) => v,
+                            None => Val::Part(self.bool_lit(true)),
+                        };
+                        if fam == Family::Neq {
+                            self.not(all)
+                        } else {
+                            Ok(all)
+                        }
+                    }
                     Family::Eq | Family::Neq | Family::MEq | Family::MNeq => {
                         let (a, b) = two(self)?;
                         let ne = matches!(fam, Family::Neq | Family::MNeq);
@@ -4551,6 +4835,34 @@ impl Lx<'_> {
                             let v = one(self)?;
                             self.not(v)
                         }
+                        // `numeric_std`'s `+` and `-` of a vector and a `std_ulogic`: the scalar
+                        // as element 0 of a vector of zeros as long as the other (its body).
+                        (true, None, 2)
+                            if matches!(decl.name.key().as_str(), "\"+\"" | "\"-\"") =>
+                        {
+                            let sub = decl.name.key().as_str() == "\"-\"";
+                            let (a, b) = (one(self)?, {
+                                let [_, b] = args else { unreachable!() };
+                                self.arg(b)?
+                            });
+                            let (a, b) = (self.part(a)?, self.part(b)?);
+                            let n = a.len.max(b.len);
+                            if a.len.min(b.len) != 1 || n < 1 || a.lit.is_some() || b.lit.is_some()
+                            {
+                                return not_yet();
+                            }
+                            let (a, b) = (self.ext(a, n, false), self.ext(b, n, false));
+                            let (ra, rb) = (self.whole(a), self.whole(b));
+                            let t = self.tmp(n);
+                            self.ops.push(Op::Add {
+                                dst: t.r,
+                                a: ra,
+                                b: rb,
+                                len: n,
+                                sub,
+                            });
+                            Ok(down_to_0(Val::Part(t)))
+                        }
                         _ => not_yet(),
                     };
                 };
@@ -4609,7 +4921,7 @@ impl Lx<'_> {
                             len: n,
                             sub,
                         });
-                        Ok(Val::Part(t))
+                        Ok(down_to_0(Val::Part(t)))
                     }
                     I::Mul { signed, form } => {
                         // The result has the lengths of both: twice the vector's with an integer.
@@ -4748,7 +5060,7 @@ impl Lx<'_> {
                         if op == I::ToUnsigned {
                             self.natural(a);
                         }
-                        Ok(Val::Part(self.int_vec(a, n as u32)))
+                        Ok(down_to_0(Val::Part(self.int_vec(a, n as u32))))
                     }
                     I::Resize { signed } => {
                         let [a, n] = args else {
@@ -4767,7 +5079,7 @@ impl Lx<'_> {
                         let a = self.arg(a)?;
                         let a = self.part(a)?;
                         if !signed || to >= a.len {
-                            return Ok(no_dims(Val::Part(self.ext(a, to, signed))));
+                            return Ok(down_to_0(Val::Part(self.ext(a, to, signed))));
                         }
                         // A signed value cut: its sign element and the rightmost `to - 1`.
                         let ra = self.whole(a);
@@ -4793,7 +5105,7 @@ impl Lx<'_> {
                             lo: to - 1,
                             len: 1,
                         });
-                        Ok(Val::Part(t))
+                        Ok(down_to_0(Val::Part(t)))
                     }
                     I::Shift(s) | I::ShiftFn(s) => {
                         let [a, n] = args else {
@@ -4898,6 +5210,26 @@ fn at_each(v: Val, b: Bounds, f: &mut dyn FnMut(Part) -> Part) -> R<Val> {
 }
 
 /// `v` without index ranges: a function result whose range is not its argument's.
+/// A `numeric_std` result of `n` elements, whose index range the package fixes as
+/// `n - 1 downto 0` (`resize`, `to_unsigned`, `to_signed`).
+fn down_to_0(v: Val) -> Val {
+    match v {
+        Val::Part(p) => Val::Part(Part {
+            dims: Dims::wrap(
+                Bounds {
+                    left: i64::from(p.len) - 1,
+                    dir: Direction::Downto,
+                    right: 0,
+                },
+                Dims::NONE,
+            )
+            .expect("one deep"),
+            ..p
+        }),
+        v => v,
+    }
+}
+
 fn no_dims(v: Val) -> Val {
     match v {
         Val::Part(p) => Val::Part(Part {

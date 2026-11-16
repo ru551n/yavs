@@ -143,6 +143,10 @@ pub(crate) fn subset(db: &Db, e: &Elaborated) -> Subset {
         fits.remove(&pi);
         out.push((pi, Why::Subset(r)));
     }
+    for (pi, r) in shared_rule(db, e, &fits) {
+        fits.remove(&pi);
+        out.push((pi, Why::Subset(r)));
+    }
     loop {
         // Clocks come from outside the region. Made by combinational logic (a gate, a copy),
         // the maker stays out and the kernel computes the clock; made by a register (a
@@ -1715,6 +1719,140 @@ fn expr_history(
         }
     }
     out
+}
+
+/// A shared variable of a design unit's region a fitting process names (A15) joins with it only
+/// when no other process uses that variable: two processes writing and reading one on the same
+/// edge give, in the normal mode, the result of the order they run in. Every other process is
+/// scanned, with the subprograms it calls (a call the scan cannot follow counts as a use).
+fn shared_rule(db: &Db, e: &Elaborated, fits: &BTreeMap<usize, Fit>) -> Vec<(usize, Reason)> {
+    use yavs_sem::decl::{DeclKind, ObjClass};
+    // The shared variables a process names directly, by declaring region; false when it calls
+    // something the scan cannot follow.
+    let names = |pi: usize, out: &mut BTreeSet<(yavs_elab::ScopeId, yavs_sem::DeclId)>| -> bool {
+        let p = &e.procs[pi];
+        let mut stmts = Vec::new();
+        let mut exprs: Vec<ExprId> = Vec::new();
+        if let Some(pa) = &p.actual {
+            exprs.push(pa.expr);
+        }
+        deep(db, &[p.stmt], &mut stmts);
+        let mut seen = BTreeSet::new();
+        let mut ok = true;
+        while let Some(s) = stmts.pop() {
+            db.stmt_exprs(s, &mut |x, _| exprs.push(x));
+            if let StmtKind::ProcCall(c) | StmtKind::ConcProcCall { call: c, .. } =
+                &db.stmts[s].kind
+            {
+                ok &= follow(db, c.callee, &mut seen, &mut stmts);
+            }
+            for x in std::mem::take(&mut exprs) {
+                db.walk_expr(x, &mut |y| match &db.exprs[y].kind {
+                    ExprKind::Obj(d) => {
+                        if let DeclKind::Object(o) = &db.decls[*d].kind
+                            && o.class == ObjClass::SharedVariable
+                        {
+                            let mut sc = Some(p.scope);
+                            while let Some(x) = sc {
+                                if e.regions
+                                    .get(&x)
+                                    .is_some_and(|r| r.contains(&db.decls[*d].scope))
+                                {
+                                    out.insert((x, *d));
+                                    break;
+                                }
+                                sc = e.hier.scope(x).parent;
+                            }
+                        }
+                    }
+                    ExprKind::Call { callee, .. } => {
+                        ok &= follow(db, *callee, &mut seen, &mut stmts);
+                    }
+                    ExprKind::External(_) => ok = false,
+                    _ => {}
+                });
+            }
+        }
+        ok
+    };
+    let mut mine: BTreeMap<usize, BTreeSet<(yavs_elab::ScopeId, yavs_sem::DeclId)>> =
+        BTreeMap::new();
+    for &pi in fits.keys() {
+        let mut v = BTreeSet::new();
+        names(pi, &mut v);
+        if !v.is_empty() {
+            mine.insert(pi, v);
+        }
+    }
+    if mine.is_empty() {
+        return Vec::new();
+    }
+    let mut users: BTreeMap<(yavs_elab::ScopeId, yavs_sem::DeclId), Vec<usize>> = BTreeMap::new();
+    let mut blind: Option<usize> = None;
+    for pi in 0..e.procs.len() {
+        let mut v = BTreeSet::new();
+        if !names(pi, &mut v) && !mine.contains_key(&pi) {
+            blind.get_or_insert(pi);
+        }
+        for k in v {
+            users.entry(k).or_default().push(pi);
+        }
+    }
+    let span = |pi: usize| db.stmts[e.procs[pi].stmt].span;
+    let mut gone = Vec::new();
+    for (&pi, vars) in &mine {
+        for k in vars {
+            let other = (users[k].iter().copied())
+                .find(|&q| q != pi)
+                .or(blind.filter(|&q| q != pi));
+            if let Some(q) = other {
+                gone.push((
+                    pi,
+                    Reason {
+                        code: crate::codes::TESTBENCH,
+                        span: span(pi),
+                        text: format!(
+                            "the shared variable `{}` is also used by {}: written and read on one \
+                             edge, the normal mode's result would depend on the order the two run in",
+                            db.decls[k.1].name,
+                            e.proc_label(&e.procs[q])
+                        ),
+                    },
+                ));
+                break;
+            }
+        }
+    }
+    gone
+}
+
+/// Add the statements of subprogram `f` to `stmts` once (a body of the design); false for one the
+/// scan cannot follow (no body here). `ieee` and `std` bodies use no shared variable of the design.
+fn follow(
+    db: &Db,
+    f: yavs_sem::DeclId,
+    seen: &mut BTreeSet<yavs_sem::DeclId>,
+    stmts: &mut Vec<StmtId>,
+) -> bool {
+    let Some(sp) = db.decls[f].kind.subprogram() else {
+        return true;
+    };
+    if ["ieee.", "std."]
+        .iter()
+        .any(|p| sp.mangled.as_str().starts_with(p))
+    {
+        return true;
+    }
+    match &sp.body {
+        yavs_sem::decl::Body::Hir { stmts: body, .. } => {
+            if seen.insert(f) {
+                deep(db, body, stmts);
+            }
+            true
+        }
+        yavs_sem::decl::Body::Implicit(_) => true,
+        _ => false,
+    }
 }
 
 fn deep(db: &Db, body: &[StmtId], out: &mut Vec<StmtId>) {

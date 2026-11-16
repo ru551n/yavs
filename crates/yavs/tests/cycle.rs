@@ -803,6 +803,33 @@ begin
   end process;
 end architecture;
 
+entity cycle_val is
+end entity;
+architecture a of cycle_val is
+  type e_t is (aa, bb, cc, dd, ee);
+  signal clk : bit := '0';
+  signal x : integer range 0 to 9 := 0;
+  signal y : e_t := aa;
+begin
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      x <= (x + 1) mod 10;
+      y <= e_t'val(x);
+    end if;
+  end process;
+  main : process
+  begin
+    for i in 1 to 40 loop
+      clk <= '1';
+      wait for 5 ns;
+      clk <= '0';
+      wait for 5 ns;
+    end loop;
+    wait;
+  end process;
+end architecture;
+
 entity cycle_idx is
 end entity;
 architecture a of cycle_idx is
@@ -875,6 +902,11 @@ fn failed_checks_in_region_code_stop_the_run_as_in_the_normal_mode() {
             "cycle_idx",
             "error[E3009]: index 8 outside of range 7 downto 0 for v",
             "at 80 ns, delta 1, in process cycle_idx.reg",
+        ),
+        (
+            "cycle_val",
+            "error[E3009]: value 5 outside of E_T range 0 to 4",
+            "at 50 ns, delta 1, in process cycle_val.reg",
         ),
         // A memory: the write waits for the commit, its index check fails there.
         (
@@ -3320,4 +3352,75 @@ fn a_memory_over_a_million_elements_equals_the_normal_mode() {
         err.contains("cycle mode: 1 of 2 processes run cycle-based"),
         "{err}"
     );
+}
+
+/// CPU idioms: `'pos` and `'val` of an enumeration and of logic types, `+` and `-` of a vector and
+/// a `std_ulogic`, an aggregate as an operand of `&`, a function on an unconstrained vector given
+/// the result of `resize`; against the normal mode.
+#[test]
+fn cpu_idioms_equal_the_normal_mode() {
+    let dir = tempdir("cycle-idioms");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("idioms{w}.vhd"),
+            &with_width(include_str!("cycle/idioms.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_idioms");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_idioms");
+            assert_eq!(normal.len(), 30, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 1 of 2 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
+/// Memories held in shared variables (A15): single-process RAMs that read before and after they
+/// write, both at the address written and at another on one edge, join with their initial content;
+/// a RAM two processes write and read stays in the event kernel with the reason; against the
+/// normal mode at widths 1 to 128.
+#[test]
+fn shared_variable_memories_equal_the_normal_mode() {
+    let dir = tempdir("cycle-shram");
+    for w in [1, 63, 64, 65, 128] {
+        let file = format!("shram{w}.vhd");
+        std::fs::write(
+            dir.join(&file),
+            with_width(include_str!("cycle/shram.vhd"), w),
+        )
+        .expect("write design");
+        let o = yavs(
+            &dir,
+            &[
+                "analyze",
+                "--std=2008",
+                "--relaxed",
+                "--work=work:lib",
+                &file,
+            ],
+        );
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        for t in tiers() {
+            let flags = [&t[..], &["--relaxed"]].concat();
+            let (normal, _) = run(&dir, &flags, "cycle_shram");
+            let (cycle, err) = run(&dir, &[&flags[..], &["--cycle"]].concat(), "cycle_shram");
+            assert_eq!(normal.len(), 40, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            // The two single-process RAMs; not the two processes of `tp`, nor `main`.
+            assert!(
+                err.contains("cycle mode: 2 of 5 processes run cycle-based"),
+                "{w}: {err}"
+            );
+            assert!(
+                err.contains(
+                    "E4114 the shared variable `mem` is also used by cycle_shram.tp.p_read"
+                ),
+                "{err}"
+            );
+        }
+    }
 }

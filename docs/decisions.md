@@ -17175,3 +17175,25 @@ the parked retune package.
 - **Not done.** The first pass in a world (the first long run, 250 k a message for `c_sr`, 2.2 times the settled): it
   compiles at random what the count asks for after `WAIT_LONG`; nothing here changes it.
 
+## The shared heap sits in the shared state (yavs-interp `SharedData::heap`, perf/interpops, 2026-11-16, agent)
+
+- **Decision.** `SharedData::heap` is `Option<Heap>`, held in place (was `Option<Box<Heap>>`). `SharedState` stays one
+  box, so lending the state to a serial process still moves one pointer.
+- **Why.** Every access to the state of a protected object reads that heap: the dereference, the load and store of
+  its fields, the descriptor of a vector it holds. Through the second box each access paid one more dependent load and
+  a null test, in `mem_fast`, `load`, `store`, `deref`, `dim_of` and the copies.
+- **Measured** (exact instructions, `tools/stepcount --ops` on a VUnit queue cell, bench builds on 6539198e4): the
+  ops that reach the shared heap one instruction fewer each (`LoadDerefImm`, `AffP`, `IndexLoad`, `PosIndexLoad`,
+  `LoadOff`), the same on a second build with an unrelated edit applied to both sides. The 26 bench designs: none
+  more beyond the byte-copy A/A (`report_heavy` +0.1 percent), `textio_heavy` -2.3 percent, `file_io` -1.5 to -2, `access_heavy` -0.6, the two protected-type designs -0.4,
+  both loops (`--tier=interp`, and `--tier=auto` with nothing compiled); VUnit queue, com, integer_array and AXI-stream
+  cells -0.2 to -0.4 percent per operation.
+- **Measured and not taken** (same session): a `Ret` that goes on at the op after the call saved with the caller
+  instead of looking the caller's pc up (`entry!`): `Ret` 123 to 117 instructions, but the op after a call op is not
+  always the op the next pc maps to, so the debug assertion that checked it failed in the unit and corpus tests (the
+  saved op was past the looked-up one in every case seen; not traced further, most likely a call followed by an
+  unconditional `Br` the predecoder skips, whose target the caller's next pc maps to); it would need a per-op flag set
+  after the passes. The
+  frame work of `Ret` in an out-of-line method: its code then stays the same under unrelated edits of the loop (inline it
+  moved by up to 14 instructions), at 13 instructions a return. A boxed interpreter error type (`R<u64>` in two words):
+  single designs -3 to +9 percent through the op loop's register allocation (`calls` +8 to +9 percent on two builds).

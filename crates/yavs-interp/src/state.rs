@@ -245,7 +245,7 @@ impl SharedState {
         if let Some(why) = &self.tainted {
             return Err(why.clone());
         }
-        let heap = self.heap.as_deref().filter(|h| h.is_plain(heap::SHARED));
+        let heap = self.heap.as_ref().filter(|h| h.is_plain(heap::SHARED));
         let plain = !self.started
             && self.procs.is_empty()
             && data.iter().all(|d| d.sigs.is_empty() && d.cov_base == 0);
@@ -301,7 +301,7 @@ pub fn restore_state_prefix(
     let mut area = i.vars.0;
     area.resize(total, 0);
     let mut st = SharedState::new(area);
-    st.heap = Some(Box::new(i.heap));
+    st.heap = Some(i.heap);
     st.init_reports = i.reports;
     Some((data, st))
 }

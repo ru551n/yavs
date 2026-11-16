@@ -2625,7 +2625,7 @@ impl Machine {
     #[inline(always)]
     fn recycle_shared(&mut self) {
         if let Some(sh) = self.sh.as_mut()
-            && sh.heap.as_deref().is_some_and(Heap::has_quarantine)
+            && sh.heap.as_ref().is_some_and(Heap::has_quarantine)
         {
             Self::recycle_shared_slow(sh);
         }
@@ -2655,7 +2655,7 @@ impl Machine {
         let shared_due = self
             .sh
             .as_ref()
-            .and_then(|sh| sh.heap.as_deref())
+            .and_then(|sh| sh.heap.as_ref())
             .is_some_and(Heap::reclaim_due);
         if !(self.heap.reclaim_due() || shared_due) {
             return;
@@ -4160,9 +4160,7 @@ impl Machine {
     pub(crate) fn alloc_heap(&mut self, shared: bool) -> R<&mut Heap> {
         if shared || self.frames.last().is_some_and(|f| f.shared_alloc) {
             let sh = self.shared_mut()?;
-            Ok(&mut **sh
-                .heap
-                .get_or_insert_with(|| Box::new(Heap::new(heap::SHARED))))
+            Ok(sh.heap.get_or_insert_with(|| Heap::new(heap::SHARED)))
         } else {
             Ok(&mut self.heap)
         }
@@ -4173,10 +4171,8 @@ impl Machine {
             heap::PRIVATE => Ok((&mut self.heap, HEAP)),
             heap::SHARED => {
                 let sh = self.shared_mut()?;
-                let h = sh
-                    .heap
-                    .get_or_insert_with(|| Box::new(Heap::new(heap::SHARED)));
-                Ok((&mut **h, SHARED_HEAP))
+                let h = sh.heap.get_or_insert_with(|| Heap::new(heap::SHARED));
+                Ok((h, SHARED_HEAP))
             }
             t => Err(ice_f!("access value with heap tag {t}")),
         }
@@ -4836,7 +4832,7 @@ impl Machine {
             let h = if dsp == HEAP {
                 Some(heap)
             } else {
-                sh.as_mut().and_then(|s| s.heap.as_deref_mut())
+                sh.as_mut().and_then(|s| s.heap.as_mut())
             };
             return match h.and_then(|h| h.data_pair(didx, sidx)) {
                 Some((out, src)) if soff + sn <= src.len() => match out.get_mut(doff..doff + dn) {
@@ -5067,7 +5063,7 @@ impl Machine {
             heap::SHARED => self
                 .sh
                 .as_ref()
-                .and_then(|s| s.heap.as_deref())
+                .and_then(|s| s.heap.as_ref())
                 .map(|hp| (hp, SHARED_HEAP)),
             _ => None,
         };
@@ -5847,7 +5843,7 @@ impl Machine {
         let shared = if self.hot {
             None
         } else {
-            self.sh.as_ref().and_then(|sh| sh.heap.as_deref())
+            self.sh.as_ref().and_then(|sh| sh.heap.as_ref())
         };
         (tf.shared_epoch, tf.heap_log[1]) = match shared {
             Some(h) => (h.epoch(), h.log().as_ptr()),
@@ -10211,7 +10207,7 @@ impl Machine {
     /// Whether `reclaim` would collect or recycle a heap now (`reclaim_pending` and more).
     fn reclaim_work(&self) -> bool {
         let t = self.rt.limits.gc_threshold;
-        let shared = self.sh.as_ref().and_then(|sh| sh.heap.as_deref());
+        let shared = self.sh.as_ref().and_then(|sh| sh.heap.as_ref());
         self.heap.gc_due(t)
             || self.heap.reclaim_due()
             || shared.is_some_and(|h| h.gc_due(t) || h.reclaim_due())
@@ -10225,7 +10221,7 @@ impl Machine {
         if self.hot {
             return self.heap.gc_due(t) || self.heap.reclaim_due();
         }
-        let shared = self.sh.as_ref().and_then(|sh| sh.heap.as_deref());
+        let shared = self.sh.as_ref().and_then(|sh| sh.heap.as_ref());
         let started = self.sh.as_ref().is_none_or(|sh| sh.started);
         started && (self.heap.gc_due(t) || shared.is_some_and(|h| h.gc_due(t)))
             || self.heap.reclaim_due()

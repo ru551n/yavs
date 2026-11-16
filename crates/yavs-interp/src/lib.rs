@@ -173,8 +173,9 @@ impl std::ops::DerefMut for SharedState {
 pub struct SharedData {
     /// Addressed by `AddrSpace::Shared`; `Program::shared_roots` is its root map.
     pub vars: Vec<u8>,
-    /// Boxed: a process that never allocates in it carries only the pointer.
-    pub(crate) heap: Option<Box<Heap>>,
+    /// In place, not boxed: every access to protected-object state goes through it (the state
+    /// itself is boxed, so a process lending it still moves one pointer).
+    pub(crate) heap: Option<Heap>,
     /// The shared-heap roots of every serial process that ran, as of its last suspension
     /// (`None`: one could not be located).
     pub(crate) procs: Vec<Option<ProcRoots>>,
@@ -226,7 +227,7 @@ impl SharedState {
     pub fn new(vars: Vec<u8>) -> SharedState {
         SharedState(Box::new(SharedData {
             vars,
-            heap: Some(Box::new(Heap::new(heap::SHARED))),
+            heap: Some(Heap::new(heap::SHARED)),
             procs: Vec::new(),
             started: false,
             tainted: None,

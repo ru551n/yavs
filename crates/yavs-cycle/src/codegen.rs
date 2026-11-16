@@ -55,6 +55,8 @@ pub(crate) struct Code {
     signal_words: usize,
     /// With `YAVS_CYCLE_SKIP_CHECK`: per step of the settle, the words its members drive.
     pub(crate) settle_outs: Vec<Vec<(u32, u32)>>,
+    /// The count word of the log of notes (`compile`'s `log`): a run of the skip check logs none.
+    log_count: usize,
     /// `YAVS_CYCLE_SKIP_CHECK=1`: a run a guard would skip runs and must change nothing.
     pub(crate) skip_check: bool,
     /// With `YAVS_CYCLE_STATS`: per guard its runs and skips.
@@ -292,8 +294,9 @@ impl Code {
                 .flat_map(|&(w, c)| img[w as usize..(w + c) as usize].to_vec())
                 .collect()
         };
-        let before = words(img);
+        let (before, logged) = (words(img), img[self.log_count]);
         self.steps(img, rs, None)?;
+        img[self.log_count] = logged;
         if words(img) != before {
             self.stale
                 .store(usize::MAX, std::sync::atomic::Ordering::Relaxed);
@@ -310,7 +313,9 @@ impl Code {
         let before: Vec<u64> = (outs.iter())
             .flat_map(|&(w, c)| img[w as usize..(w + c) as usize].to_vec())
             .collect();
+        let logged = img[self.log_count];
         self.steps(img, rs, None)?;
+        img[self.log_count] = logged;
         let after: Vec<u64> = (outs.iter())
             .flat_map(|&(w, c)| img[w as usize..(w + c) as usize].to_vec())
             .collect();
@@ -1027,6 +1032,7 @@ pub(crate) fn compile<'a>(
         settle_units,
         signal_words,
         settle_outs: Vec::new(),
+        log_count: log.0 as usize,
         skip_check: std::env::var_os("YAVS_CYCLE_SKIP_CHECK").is_some_and(|v| v == "1"),
         counts,
         stale: Default::default(),

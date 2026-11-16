@@ -3494,6 +3494,49 @@ fn actuals_of_converted_in_ports_driven_by_members_equal_the_normal_mode() {
     }
 }
 
+/// Elements of elements, both chosen at run time, assigned: vectors of both directions, a slice of
+/// each element, a field of an array of records, a variable; an inner and an outer index out of
+/// range fail with the normal mode's error; widths 1 to 128.
+#[test]
+fn elements_of_elements_at_run_time_indices_equal_the_normal_mode() {
+    let dir = tempdir("cycle-index2");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("index2{w}.vhd"),
+            &with_width(include_str!("cycle/index2.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_index2");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_index2");
+            assert_eq!(normal.len(), 16, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 1 of 2 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+        for (bad, msg) in [
+            ("1", format!("outside of range {} downto 0 for m", w - 1)),
+            ("2", "index 7 outside of range 0 to 5 for m".to_string()),
+        ] {
+            let mut shown = Vec::new();
+            for mode in [None, Some("--cycle")] {
+                let mut args = vec!["run", "--work=work:lib", "--no-cache", "--tier=interp"];
+                args.extend(mode);
+                let g = format!("-gBAD={bad}");
+                args.extend(["cycle_index2", g.as_str()]);
+                let o = yavs(&dir, &args);
+                let err = String::from_utf8_lossy(&o.stderr).to_string();
+                assert_eq!(o.status.code(), Some(1), "{w} {bad} {mode:?}: {err}");
+                assert!(err.contains(&msg), "{w} {bad} {mode:?}: {err}");
+                shown.push(err[err.find("error[").expect("an error")..].to_string());
+            }
+            assert_eq!(shown[0], shown[1], "{w} {bad}");
+        }
+    }
+}
+
 /// Memories held in shared variables (A15): single-process RAMs that read before and after they
 /// write, both at the address written and at another on one edge, join with their initial content;
 /// a RAM two processes write and read stays in the event kernel with the reason; against the

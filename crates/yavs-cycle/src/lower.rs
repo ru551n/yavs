@@ -2548,6 +2548,13 @@ impl Lx<'_> {
                         Err(i.r)
                     }
                 };
+                // An element of an element, both chosen at run time, assigned (`a(i)(j) <=`).
+                if target
+                    && let (Err(rj), Val::Part(p)) = (ix, &v)
+                    && p.at.is_some()
+                {
+                    return self.index_twice(*p, rj, b);
+                }
                 let v = if ix.is_err() {
                     self.no_at(v, target)?
                 } else {
@@ -2606,6 +2613,70 @@ impl Lx<'_> {
             }
             _ => Err("a name that is not supported in cycle mode yet".into()),
         }
+    }
+
+    /// Element `j` (of index range `b2`) of part `p` of an element chosen at run time, as one
+    /// element at an index of its own over the array's elements of `p`'s element width: element
+    /// positions `p1` of the outer array (`k` such elements in each of its elements) and `p2` of
+    /// `p` give `p1 * k + p2 + k - len(p)` from the left. Both indices checked first, in order.
+    fn index_twice(&mut self, mut p: Part, j: Ref, b2: Bounds) -> R<Val> {
+        let (i, b1, s1, off) = p.at.expect("chosen at run time");
+        let ew = p.dims.elem_len();
+        if ew == 0 || s1 % ew != 0 || !matches!(p.r, Ref::Sig(_) | Ref::Loc(_)) {
+            return Err("an index or slice of an element chosen at run time".into());
+        }
+        let k = i64::from(s1 / ew);
+        let mut pos = Vec::new();
+        for (x, b) in [(i, b1), (j, b2)] {
+            let (lo, hi) = b.low_high();
+            let site = self.index_site(&p, b);
+            self.ops.push(Op::Range { a: x, lo, hi, site });
+            // The position from the left.
+            let l = self.int_lit(b.left).r;
+            let (a, z) = match b.dir {
+                Direction::To => (x, l),
+                Direction::Downto => (l, x),
+            };
+            pos.push(self.int_step(Arith::Sub, a, z));
+        }
+        let kk = self.int_lit(k).r;
+        let t = self.int_step(Arith::Mul, pos[0], kk);
+        let t = self.int_step(Arith::Add, t, pos[1]);
+        let skew = self.int_lit(k - b2.len() as i64).r;
+        let idx = self.int_step(Arith::Add, t, skew);
+        let n = b1.len() as i64 * k;
+        p.at = Some((
+            idx,
+            Bounds {
+                left: 0,
+                dir: Direction::To,
+                right: n - 1,
+            },
+            ew,
+            off,
+        ));
+        p.len = ew;
+        p.dims = p.dims.rest();
+        Ok(Val::Part(p))
+    }
+
+    /// `a op b` on integer words whose result cannot overflow (positions of checked indices).
+    fn int_step(&mut self, op: Arith, a: Ref, b: Ref) -> Ref {
+        let site = self.site(Check::Arith {
+            op,
+            ty: "INTEGER".into(),
+        });
+        let t = self.tmp_int(i64::MIN, i64::MAX);
+        self.ops.push(Op::Int {
+            op,
+            dst: t.r,
+            a,
+            b,
+            lo: i64::MIN,
+            hi: i64::MAX,
+            site,
+        });
+        t.r
     }
 
     /// A slice with bounds chosen at run time and a length known during elaboration (`a(i + 7

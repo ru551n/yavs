@@ -3832,7 +3832,9 @@ fn records(out: &str) -> Vec<(String, String)> {
 
 /// Asserts and reports of pure functions whose calls fold with constants (A22, `foldrep.vhd`):
 /// one that holds prints nothing; a note or warning (an assert, a report, in a call inside a
-/// call, the same call in two processes, the second from the elaboration's call cache) is made
+/// call, the same call in two processes, the second from the elaboration's call cache, a library
+/// warning; a constrained vector result, a width check with a message constant, one in an inlined
+/// call and one only elaboration's value folds, all holding, join) is made
 /// once per process at 0 fs where the normal mode makes it at every call, with the same text and
 /// process, also from the compilation cache; one of severity error or failure keeps its process
 /// in the event kernel, so its messages, times and the exit status are the normal mode's; a call
@@ -3906,17 +3908,22 @@ fn reports_of_calls_folded_with_constants_are_made() {
             assert_eq!(e.matches("(init): say 1\n").count(), 1, "{t:?}\n{e}");
         }
         // Failing asserts of notes and warnings: once per process, the same records; a second
-        // run with the compilation cache gives the first's output.
-        for (s, cache) in [
+        // run with the compilation cache gives the first's output; a library warning of a
+        // folded call too.
+        for (s, extra) in [
             ("-gs=note", ""),
             ("-gs=warning", ""),
             ("-gs=warning", "--cache"),
+            ("-gs=warning", "-gtrunc=true"),
         ] {
-            let gens = ["-gg=5", s, cache];
+            let gens = ["-gg=5", s, extra];
             let gens: Vec<&str> = gens.into_iter().filter(|g| !g.is_empty()).collect();
             let (nc, nout, _) = go(&flags(&gens, false));
             let (c, out, err) = go(&flags(&gens, true));
-            if !cache.is_empty() {
+            if extra == "-gtrunc=true" {
+                let w = "0fs: NUMERIC_STD.TO_UNSIGNED: vector truncated\n    Process cycle_foldrep.u.pa\n";
+                assert_eq!(out.matches(w).count(), 1, "{t:?}\n{out}");
+            } else if !extra.is_empty() {
                 let again = go(&flags(&gens, true));
                 assert_eq!((again.0, &again.1), (c, &out), "{t:?} warm\n{}", again.2);
             }

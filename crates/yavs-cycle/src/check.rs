@@ -314,6 +314,8 @@ struct Cx<'a> {
     partial: usize,
     /// `const_value`: a pure function run on constants gives up at an `assert` or `report`.
     quiet_only: bool,
+    /// Constants of the pure functions being run whose values did not fold.
+    opaque: std::collections::HashSet<DeclId>,
 }
 
 impl<'a> Cx<'a> {
@@ -343,6 +345,7 @@ impl<'a> Cx<'a> {
             visiting: HashMap::new(),
             partial: usize::MAX,
             quiet_only: false,
+            opaque: Default::default(),
         }
     }
 }
@@ -1329,6 +1332,9 @@ impl Cx<'_> {
                 if let Some(v) = self.frames.last().and_then(|f| f.get(d)) {
                     return Some(v.clone());
                 }
+                if self.opaque.contains(d) {
+                    return None;
+                }
                 if let Some(v) = self.loopv.get(d) {
                     return Some(v.clone());
                 }
@@ -1476,8 +1482,10 @@ impl Cx<'_> {
             frame.insert(d, v);
         }
         self.frames.push(frame);
-        // Declarations of the body with initial values, in order.
-        let mut ok = true;
+        // Declarations of the body with initial values, in order. A constant that does not fold
+        // (a message string) is unknown: a read of it gives up (`opaque`).
+        let ok = true;
+        let mut hidden = Vec::new();
         for &d in &db.scopes[*scope].order {
             if let DeclKind::Object(o) = &db.decls[d].kind
                 && matches!(o.class, ObjClass::Constant | ObjClass::Variable)
@@ -1487,8 +1495,10 @@ impl Cx<'_> {
                     Some(v) => {
                         self.frames.last_mut().expect("pushed").insert(d, v);
                     }
-                    None if o.class == ObjClass::Variable => {}
-                    None => ok = false,
+                    None if o.class == ObjClass::Constant && self.opaque.insert(d) => {
+                        hidden.push(d);
+                    }
+                    None => {}
                 }
             }
         }
@@ -1508,6 +1518,9 @@ impl Cx<'_> {
             None
         };
         self.quiet_only = quiet;
+        for d in hidden {
+            self.opaque.remove(&d);
+        }
         self.frames.pop();
         r
     }
@@ -1528,9 +1541,14 @@ impl Cx<'_> {
         for &s in body {
             *steps = or_give_up!(steps.checked_sub(1));
             let flow = match &db.stmts[s].kind {
-                StmtKind::Assert { .. } | StmtKind::Report { .. } if self.quiet_only => {
-                    return Pure::GiveUp;
+                // An assert shown to hold says nothing; any other, or a report, would.
+                StmtKind::Assert { cond, .. } if self.quiet_only => {
+                    if self.static_bool(*cond) != Some(true) {
+                        return Pure::GiveUp;
+                    }
+                    Pure::Fall
                 }
+                StmtKind::Report { .. } if self.quiet_only => return Pure::GiveUp,
                 StmtKind::Null | StmtKind::Assert { .. } | StmtKind::Report { .. } => Pure::Fall,
                 StmtKind::VarAssign {
                     target,

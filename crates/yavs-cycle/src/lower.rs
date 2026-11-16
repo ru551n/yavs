@@ -3559,10 +3559,10 @@ impl Lx<'_> {
             && let Some(rc) = self.e.region_calls.get(&(self.p.scope, x))
             && let ExprKind::Call { callee, args, .. } = &db.exprs[x].kind
         {
-            let fits = rc.val.as_ref().filter(|v| self.call_fits(*callee, args, v));
+            let fits = (rc.val.as_ref()).and_then(|v| self.call_fits(*callee, args, v));
             if rc.reports.is_empty() {
                 if let Some(v) = fits {
-                    return Some(v.clone());
+                    return Some(v);
                 }
             } else {
                 // Notes and warnings are made once, at initialisation (A22); anything else
@@ -3574,7 +3574,7 @@ impl Lx<'_> {
                 if !self.probing.get() {
                     self.loud.borrow_mut().insert(x);
                 }
-                return Some(v.clone());
+                return Some(v);
             }
         }
         match &db.exprs[x].kind {
@@ -3660,7 +3660,7 @@ impl Lx<'_> {
                 let v = crate::check::const_value(db, self.e, self.p, known, x)?;
                 // The checks of the call stay: a value or an argument outside its subtype is
                 // left to the inlined call, which stops the run as the normal mode does.
-                self.call_fits(*callee, args, &v).then_some(v)
+                self.call_fits(*callee, args, &v)
             }
             // A field of a record constant (`registers(i).width` of a generic table).
             ExprKind::Field { prefix, elem } => match self.fold(*prefix)? {
@@ -3681,33 +3681,50 @@ impl Lx<'_> {
         }
     }
 
-    /// Whether value `v` of a call of `callee` and the call's arguments, all known here, lie in
-    /// their subtypes (integers and enumerations; another value only of an unconstrained one).
-    fn call_fits(&self, callee: DeclId, args: &[yavs_sem::hir::Arg], v: &ConstValue) -> bool {
+    /// Value `v` of a call of `callee` as its result subtype gives it, when it and the call's
+    /// arguments, all known here, lie in their subtypes (integers and enumerations; an array of
+    /// one dimension of the subtype's length, taking its index range).
+    fn call_fits(
+        &self,
+        callee: DeclId,
+        args: &[yavs_sem::hir::Arg],
+        v: &ConstValue,
+    ) -> Option<ConstValue> {
         let db = self.db;
-        let fits = |st: SubtypeId, v: &ConstValue| match (int_bounds(db, st), v.as_int()) {
-            (Some((lo, hi)), Some(v)) => (lo..=hi).contains(&v),
-            (Some(_), None) => false,
+        let fits = |st: SubtypeId, v: &ConstValue| match (int_bounds(db, st), v) {
+            (Some((lo, hi)), v) => v
+                .as_int()
+                .filter(|v| (lo..=hi).contains(v))
+                .map(|_| v.clone()),
+            (None, ConstValue::Array(a)) if a.bounds.len() == 1 => {
+                match &db.subtypes[st].constraint {
+                    Constraint::None | Constraint::Array { dims: None, .. } => Some(v.clone()),
+                    Constraint::Array { dims: Some(_), .. } => {
+                        let b = self.subtype_fold(st)?;
+                        a.with_bounds(&[(b.left, b.dir, b.right)])
+                            .map(ConstValue::Array)
+                    }
+                    _ => None,
+                }
+            }
             (None, _) => matches!(
                 db.subtypes[st].constraint,
                 Constraint::None | Constraint::Array { dims: None, .. }
-            ),
+            )
+            .then(|| v.clone()),
         };
-        let Some(sp) = db.decls[callee].kind.subprogram() else {
-            return false;
-        };
+        let sp = db.decls[callee].kind.subprogram()?;
         let was = self.probing.replace(true);
-        let ok = sp.ret.is_some_and(|r| fits(r, v))
-            && args.iter().all(|a| {
-                let Actual::Expr(ax) = a.actual else {
-                    return false;
-                };
-                (sp.params.get(usize::from(a.formal)))
-                    .zip(self.fold(ax))
-                    .is_some_and(|(p, c)| fits(p.subtype, &c))
-            });
+        let ok = args.iter().all(|a| {
+            let Actual::Expr(ax) = a.actual else {
+                return false;
+            };
+            (sp.params.get(usize::from(a.formal)))
+                .zip(self.fold(ax))
+                .is_some_and(|(p, c)| fits(p.subtype, &c).is_some())
+        });
         self.probing.set(was);
-        ok
+        fits(sp.ret?, v).filter(|_| ok)
     }
 
     /// The range of a scalar subtype or the index range of a one-dimensional array subtype when

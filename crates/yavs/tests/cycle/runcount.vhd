@@ -6,7 +6,8 @@
 -- fan-in stays in the event kernel, the registers join, and so does `e3`, read only by a
 -- concurrent assignment rejected for its `'Z'`, and `c7`, read only by `two_edges`, which acts
 -- at clock edges alone, and `c9`, behind such a process in the fan-in of `stale2`. `c8`, read
--- by the asynchronous reset branch of `resets` without its list naming it, stays out.
+-- by the asynchronous reset branch of `resets` without its list naming it, stays out, and so does
+-- the logic of two latches written as feedback (`li`, a loop of elements; `li2`, with a `'Z'`).
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -14,12 +15,13 @@ entity cycle_runcount_dut is
   port (
     clk : in std_ulogic;
     q : in unsigned(W - 1 downto 0);
-    y2, y3, y6, y7, y8, y10, t : out unsigned(W - 1 downto 0);
+    y2, y3, y6, y7, y8, y10, li, li2, t : out unsigned(W - 1 downto 0);
     zz, zz2 : out std_logic
   );
 end entity;
 architecture rtl of cycle_runcount_dut is
   signal c3, e4, e3, c6, c7, m7, c8, c9, m9, y9 : unsigned(W - 1 downto 0) := (others => '0');
+  signal c11, c12, c13, c14 : unsigned(W - 1 downto 0) := (others => '0');
 begin
   c3 <= not q;
   list : process (q)
@@ -78,6 +80,12 @@ begin
     y10 <= v;
     v := y9 xor q;
   end process;
+  c11 <= q - 1;
+  c12 <= c11 + rotate_left(q, 3);
+  li <= c11 when c12(0) = '1' else li;
+  c13 <= rotate_right(q, 1) xor q;
+  c14 <= c13 + rotate_left(q, 3);
+  li2 <= c13 when c14(0) = '1' else li2 when q(0) = '1' else (others => 'Z');
   e3 <= rotate_right(q, 1);
   t <= e3 when q(0) = '1' else (others => 'Z');
 end architecture;
@@ -91,7 +99,8 @@ architecture t of cycle_runcount is
   signal clk : std_ulogic := '0';
   signal zz, zz2 : std_logic := '0';
   signal d, q, c, c2, y, s : unsigned(W - 1 downto 0) := (others => '0');
-  signal y2, s2, y3, s3, y6, s6, y7, y8, y10, t : unsigned(W - 1 downto 0) := (others => '0');
+  signal y2, s2, y3, s3, y6, s6, y7, y8, y10, li, li2, t : unsigned(W - 1 downto 0) :=
+    (others => '0');
 begin
   reg : process (clk)
   begin
@@ -112,8 +121,8 @@ begin
     v := q xor c2;
   end process;
   dut : entity work.cycle_runcount_dut port map (
-    clk => clk, q => q, y2 => y2, y3 => y3, y6 => y6, y7 => y7, y8 => y8, y10 => y10, t => t,
-    zz => zz, zz2 => zz2
+    clk => clk, q => q, y2 => y2, y3 => y3, y6 => y6, y7 => y7, y8 => y8, y10 => y10, li => li,
+    li2 => li2, t => t, zz => zz, zz2 => zz2
   );
   main : process
     variable r : unsigned(15 downto 0) := x"ACE1";
@@ -131,7 +140,8 @@ begin
       wait for 4 ns;
       report "k=" & integer'image(k) & " y=" & to_hstring(y) & " s=" & to_hstring(s) &
         " s2=" & to_hstring(s2) & " s3=" & to_hstring(s3) & " s6=" & to_hstring(s6) & " y7=" & to_hstring(y7) &
-        " y8=" & to_hstring(early) & " y10=" & to_hstring(y10) & " t=" & to_hstring(t);
+        " y8=" & to_hstring(early) & " y10=" & to_hstring(y10) & " li=" & to_hstring(li) &
+        " li2=" & to_hstring(li2) & " t=" & to_hstring(t);
     end loop;
     wait;
   end process;

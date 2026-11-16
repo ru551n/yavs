@@ -3737,8 +3737,9 @@ fn attributes_of_elements_chosen_at_run_time_equal_the_normal_mode() {
 /// combinational logic: the logic in their fan-in stays in the event kernel with the reason, the
 /// register joins, and so does logic read only by a concurrent assignment rejected for its `'Z'`
 /// or by a process that acts at clock edges alone, or behind one; logic read by an asynchronous
-/// reset branch that its list does not name stays out; against the normal mode at widths 1 to
-/// 128 (with the logic in the region their outputs differed).
+/// reset branch that its list does not name, or by a latch written as feedback, stays out;
+/// against the normal mode at widths 1 to 128 (with the logic in the region their outputs
+/// differed).
 #[test]
 fn logic_feeding_a_process_that_counts_its_runs_stays_out() {
     let dir = tempdir("cycle-runcount");
@@ -3754,7 +3755,7 @@ fn logic_feeding_a_process_that_counts_its_runs_stays_out() {
             assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
-                err.contains("cycle mode: 4 of 20 processes run cycle-based")
+                err.contains("cycle mode: 4 of 26 processes run cycle-based")
                     && err.contains(
                         "it computes, combinationally, cycle_runcount.c2, in the fan-in of \
                          cycle_runcount.stale"
@@ -3774,6 +3775,14 @@ fn logic_feeding_a_process_that_counts_its_runs_stays_out() {
                     && err.contains(
                         "it computes, combinationally, cycle_runcount.dut.c8, in the fan-in of \
                          cycle_runcount.dut.resets"
+                    )
+                    && err.contains(
+                        "it computes, combinationally, cycle_runcount.dut.c12, in the fan-in of \
+                         cycle_runcount.dut.li <= ..."
+                    )
+                    && err.contains(
+                        "it computes, combinationally, cycle_runcount.dut.c14, in the fan-in of \
+                         cycle_runcount.dut.li2 <= ..."
                     ),
                 "{w}: {err}"
             );

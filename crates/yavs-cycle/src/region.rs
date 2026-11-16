@@ -1417,6 +1417,11 @@ fn delta_seeds(
     (out.iter())
         .filter_map(|(pi, w)| {
             let how = match w {
+                // A loop of elements (a latch written as feedback, `l <= d when en else l`)
+                // keeps a value too, even when its processes fit one by one.
+                Why::Subset(r) if r.code == crate::codes::LOOP => {
+                    "it is in a combinational loop, which keeps a value of an earlier run"
+                }
                 _ if checked.contains(pi) || edge_only(db, e, *pi) => return None,
                 _ if plain_assignment(db, e, *pi) => return None,
                 Why::Behavioural(_) => return None,
@@ -1605,9 +1610,13 @@ fn plain_assignment(db: &Db, e: &Elaborated, pi: usize) -> bool {
             _ => {}
         });
     }
+    let drives: BTreeSet<LeafId> = (p.drivers.iter())
+        .map(|&d| e.nets.drivers[d].leaf)
+        .collect();
+    // It reads none of what it drives: `l <= d when en = '1' else l` is a latch.
     plain
         && proc_reads(db, e, pi, &mut BTreeMap::new())
-            .is_some_and(|(seen, waited)| seen.is_subset(&waited))
+            .is_some_and(|(seen, waited)| seen.is_subset(&waited) && seen.is_disjoint(&drives))
 }
 
 /// The members driving a signal whose history a process outside the region reads, each with

@@ -194,10 +194,11 @@ body. A signal needs one source: one process drives each element of it.
      - E4119, E4120, E4121, E4122.
    * - Is combinational logic that feeds, back to the registers (processes that act at clock edges alone), a
        process outside the region whose result may depend on the delta cycles its inputs change in: one that
-       keeps a value of an earlier run, or, below the top-level unit, a process that drives a signal and has an
-       incomplete sensitivity list or that cycle mode could not show keeps no value (a process with a ``'Z'``
-       and a variable, for example). A concurrent assignment with a final ``else`` that stays out for its
-       ``'Z'`` or its ``after`` alone does not count, nor does a process that acts at clock edges alone.
+       keeps a value of an earlier run (a combinational loop included, such as ``l <= d when en = '1' else
+       l;``), or, below the top-level unit, a process that drives a signal and has an incomplete sensitivity
+       list or that cycle mode could not show keeps no value (a process with a ``'Z'`` and a variable, for
+       example). A concurrent assignment with a final ``else`` that reads nothing it drives and stays out for
+       its ``'Z'`` or its ``after`` alone does not count, nor does a process that acts at clock edges alone.
        Testbench code (the top-level unit, and a monitor that drives no signal) sees the settled values
        earlier, as described below
      - E4101. The region settles such logic in one delta cycle where the normal mode takes several, so that

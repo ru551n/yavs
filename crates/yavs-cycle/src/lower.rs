@@ -2599,6 +2599,9 @@ impl Lx<'_> {
                 let b = outer(&v).ok_or("a slice of a value with no index range")?;
                 // A null slice, of any direction and bounds (LRM 8.5): nothing of the prefix.
                 if sb.is_empty() {
+                    // Of an element chosen at run time, read: the element first, which checks
+                    // its index.
+                    let v = if target { v } else { self.no_at(v, false)? };
                     return null_of(v, sb);
                 }
                 if sb.dir != b.dir {

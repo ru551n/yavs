@@ -1,7 +1,8 @@
 -- Arrays of no elements against the normal mode (`W` replaced by a width; generic `G` is 0): an
 -- array of null elements written at an index chosen at run time and read through `resize`, a
 -- record with a null field in the two-process style, a null field in `&`, a null variable with an
--- initial value, a null constant, a null slice of a wider input; one indexed by a `natural`, which no
+-- initial value, a null constant, a null slice of a wider input and of a field of a record element
+-- chosen at run time; one indexed by a `natural`, which no
 -- operation would check, stays in the event kernel.
 library ieee;
 use ieee.std_logic_1164.all;
@@ -21,11 +22,18 @@ architecture a of cycle_nullvec_u is
   end record;
   signal r, r_next : r_t := ((others => '0'), (others => '0'));
   constant NUL : std_ulogic_vector(G - 1 downto 0) := (others => '0');
+  type idrec_t is record
+    id : std_ulogic_vector(3 downto 0);
+    v : std_ulogic;
+  end record;
+  type idrecs_t is array (0 to 3) of idrec_t;
+  signal recs : idrecs_t := (others => ((others => '0'), '0'));
 begin
   wr : process (clk)
   begin
     if rising_edge(clk) then
       ids(wp) <= unsigned(x(G - 1 downto 0));
+      ids(rp) <= unsigned(recs(wp).id(G - 1 downto 0));
       id <= resize(ids(rp), 8) + unsigned(x(7 downto 0));
     end if;
   end process;

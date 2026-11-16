@@ -3432,8 +3432,8 @@ fn null_arrays_equal_the_normal_mode() {
             assert!(
                 err.contains("cycle mode: 6 of 8 processes run cycle-based")
                     && err.contains(&format!(
-                        "cycle_nullvec.u.wr2 (nullvec{w}.vhd:32)         an index chosen at run \
-                         time of an array of null elements (nullvec{w}.vhd:35)"
+                        "cycle_nullvec.u.wr2 (nullvec{w}.vhd:40)         an index chosen at run \
+                         time of an array of null elements (nullvec{w}.vhd:43)"
                     )),
                 "{w}: {err}"
             );

@@ -1093,6 +1093,33 @@ fn build(
     }
     let code = Arc::new(code);
     let cone = cones(&sel, nets, &code.settle_units);
+    if stats {
+        // The settle steps the writes of each edge class's clocked members reach: an edge runs
+        // the whole settle, so the rest is the most a mark of the edge's cone could skip.
+        let n = code.settle_units.len();
+        let ops = |i: usize| -> usize {
+            (code.settle_units[i].iter())
+                .map(|&u| sel.members[u as usize].1.ops.len())
+                .sum()
+        };
+        let total: usize = (0..n).map(ops).sum();
+        for c in &sel.clocks {
+            let mut m = vec![0u64; n.div_ceil(64)];
+            for (_, b) in sel.members.iter().filter(|(_, b)| b.clock == Some(*c)) {
+                for &l in &b.writes {
+                    m.iter_mut().zip(cone(l).iter()).for_each(|(a, x)| *a |= x);
+                }
+            }
+            let hit: Vec<usize> = (0..n).filter(|i| m[i / 64] >> (i % 64) & 1 == 1).collect();
+            eprintln!(
+                "cycle stats: edge class {} {}: its writes reach {} of {n} settle steps, {} of {total} operations",
+                if c.rising { "rising" } else { "falling" },
+                e.leaf_name(c.leaf),
+                hit.len(),
+                hit.iter().map(|&i| ops(i)).sum::<usize>(),
+            );
+        }
+    }
     let whole = |k: u32| {
         let s = yavs_kernel::SignalId(k);
         s.slice(0, nets.signal_len(s))

@@ -35,6 +35,8 @@ def steps(path):
         for line in f:
             t, name, v = line.rstrip("\n").split(" ", 2)
             t = int(t)
+            if name == "-":
+                continue
             if t != t0 and cur:
                 yield t0, cur
                 cur = {}
@@ -44,14 +46,25 @@ def steps(path):
         yield t0, cur
 
 
-def compare(n_path, c_path, show):
-    """Counts of (equal steps, two-state, differing) and the first `show` differences."""
+def end_time(path):
+    """The time the run of a trace ended (its `- end` line), else that of its last line."""
+    t = 0
+    with open(path, errors="replace") as f:
+        for line in f:
+            t = int(line.split(" ", 1)[0])
+    return t
+
+
+def compare(n_path, c_path, show, until=None):
+    """Counts of (two-state, differing) and the first `show` differences, for steps before `until`."""
     vn, vc, shown = {}, {}, []
     two = diff = 0
     a, b = steps(n_path), steps(c_path)
     x, y = next(a, None), next(b, None)
     while x or y:
         t = min(s[0] for s in (x, y) if s)
+        if until is not None and t >= until:
+            break
         changed = set()
         if x and x[0] == t:
             vn.update(x[1]); changed |= x[1].keys(); x = next(a, None)
@@ -111,7 +124,13 @@ def main():
             rcs[mode] = subprocess.run([o.bin, *args[:1], *extra, *args[1:]], cwd=o.cwd, env=env,
                                        stdout=fo, stderr=fe).returncode
     print(f"seeddiff: exit status normal {rcs['normal']}, cycle {rcs['cycle']}")
-    two, diff, shown = compare(out / "normal.trace", out / "cycle.trace", o.show)
+    # A run that ended early (Microwatt's RTL failure, which cycle mode drops) is compared up to the
+    # time step it ended in, which it may not have finished.
+    until = None
+    if rcs["normal"] != rcs["cycle"]:
+        until = min(end_time(out / f"{m}.trace") for m in ("normal", "cycle"))
+        print(f"seeddiff: the exit statuses differ: compared before {until} fs")
+    two, diff, shown = compare(out / "normal.trace", out / "cycle.trace", o.show, until)
     print(f"seeddiff: {diff} differing values, {two} metavalues read two-state")
     for s in shown:
         print("  " + s)

@@ -3007,6 +3007,7 @@ impl yavs_kernel::Observer for Trace {
     fn phase(&mut self, hook: &mut yavs_kernel::Hook<'_>, p: yavs_kernel::Phase) {
         use std::io::Write;
         if p == yavs_kernel::Phase::EndOfSim {
+            let _ = writeln!(self.out, "{} - end", hook.now().as_fs());
             let _ = self.out.flush();
             return;
         }

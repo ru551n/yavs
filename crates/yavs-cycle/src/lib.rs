@@ -447,6 +447,7 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
             .with_note("this is a bug in yavs"),
         ]
     })?;
+    store::built().map_err(|d| vec![d])?;
     Ok(Plan {
         report,
         summary,

@@ -19,8 +19,17 @@ const KIND: &str = "cyc3";
 const INDEX: &str = "cyc3i";
 /// Of the payload's encoding: changed with any type of `Selection`.
 const FORMAT: &str = "1";
-/// Environment variables that change nothing the analysis gives.
-const ENV_SKIP: &[&str] = &["YAVS_CYCLE_CACHE_CHECK", "YAVS_STD_CACHE", "YAVS_LOG"];
+/// Environment variables that change nothing the analysis gives (the test runner's token server
+/// differs per invocation; the others print or count).
+const ENV_SKIP: &[&str] = &[
+    "YAVS_CYCLE_CACHE_CHECK",
+    "YAVS_CYCLE_STATS",
+    "YAVS_STD_CACHE",
+    "YAVS_LOG",
+    "YAVS_TOKENS",
+    "YAVS_CONSOLE_HOOK",
+    "YAVS_COUNTERS",
+];
 
 /// `check::Reason` as stored: its code, a `&'static str`, as text.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -230,6 +239,10 @@ fn look(db: &Db, reads: &GenericReads) -> bool {
         });
         return false;
     }
+    // The selection writes the file of `YAVS_CYCLE_SEEDS` (developers): a hit would not.
+    if std::env::var_os("YAVS_CYCLE_SEEDS").is_some() {
+        return false;
+    }
     let Some(b) = base(db, s) else {
         return false;
     };
@@ -250,6 +263,8 @@ fn look(db: &Db, reads: &GenericReads) -> bool {
 /// The selection of `e`: from the cache when the hook found it, else made (and stored).
 pub(crate) fn select(db: &Db, e: &Elaborated) -> Result<Selection, Diagnostic> {
     let found = FOUND.lock().unwrap_or_else(PoisonError::into_inner).take();
+    // From here on nothing elaborates: natives need no test.
+    yavs_interp::watch_outside(false);
     *CODE.lock().unwrap_or_else(PoisonError::into_inner) = None;
     let code = |k: &Key| {
         let setup = SETUP.lock().unwrap_or_else(PoisonError::into_inner);
@@ -263,6 +278,14 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Result<Selection, Diagnostic> {
             Some(Found::Hit(sel, _, _, k2)) => {
                 stat(|| "analysis from the cache".into());
                 code(&k2);
+                if SETUP
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .as_ref()
+                    .is_some_and(|s| s.check)
+                {
+                    watch::resume();
+                }
                 Ok(*sel)
             }
             _ => Err(ice(
@@ -273,7 +296,18 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Result<Selection, Diagnostic> {
     watch::resume();
     let sel = region::select(db, e);
     let read = watch::reads();
-    watch::stop();
+    // `YAVS_CYCLE_CACHE_CHECK`: the region's code is kept under this key, so building the region
+    // must read no generic either (`built`).
+    if (SETUP
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref())
+    .is_some_and(|s| s.check)
+    {
+        watch::resume();
+    } else {
+        watch::stop();
+    }
     let reads = &e.generic_reads;
     let extra = (reads.values | read) & !reads.walk;
     let setup = SETUP.lock().unwrap_or_else(PoisonError::into_inner);
@@ -323,4 +357,25 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Result<Selection, Diagnostic> {
 fn ice(m: &str) -> Diagnostic {
     Diagnostic::error("E9999", format!("cycle mode's analysis cache: {m}"))
         .with_note("this is a bug in yavs")
+}
+
+/// After the region is built: under `YAVS_CYCLE_CACHE_CHECK` an error when the build read a
+/// top-level generic, which the key of the region's code would not hold.
+pub(crate) fn built() -> Result<(), Diagnostic> {
+    let check = (SETUP
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref())
+    .is_some_and(|s| s.check);
+    if !check {
+        return Ok(());
+    }
+    let read = watch::reads();
+    watch::stop();
+    if read != 0 {
+        return Err(ice(
+            "YAVS_CYCLE_CACHE_CHECK: building the region read a top-level generic",
+        ));
+    }
+    Ok(())
 }

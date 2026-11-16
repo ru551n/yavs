@@ -3308,6 +3308,46 @@ fn the_analysis_from_the_cache_gives_the_same_result() {
     assert!(a.contains(hit), "after the race: {a}");
 }
 
+/// An elaboration that reads a file (a constant from an impure function of `textio`) keeps no
+/// analysis in the cache: the file is not in the key, and a run after it changed follows it.
+#[test]
+fn an_elaboration_that_reads_a_file_keeps_no_analysis() {
+    let dir = tempdir("cycle-acfile");
+    analyze(&dir, "acfile.vhd", include_str!("cycle/acfile.vhd"));
+    let run = |step: &str| {
+        std::fs::write(dir.join("acfile.txt"), format!("{step}\n")).expect("write");
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .current_dir(&dir)
+            .env("YAVS_STD_CACHE", "off")
+            .env("YAVS_CYCLE_STATS", "1")
+            .args([
+                "--color",
+                "never",
+                "run",
+                "--work=work:lib",
+                "--tier=interp",
+            ])
+            .args(["--cycle", "acfile"])
+            .output()
+            .expect("run yavs");
+        let (out, err) = (
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        );
+        assert!(o.status.success(), "{out}{err}");
+        assert!(err.contains("run cycle-based"), "{err}");
+        assert!(err.contains("analysis not cached"), "{err}");
+        assert!(!err.contains("analysis from the cache"), "{err}");
+        out.lines()
+            .find(|l| l.contains("a="))
+            .expect("report")
+            .to_string()
+    };
+    assert!(run("3").ends_with("a=30"));
+    assert!(run("3").ends_with("a=30"));
+    assert!(run("5").ends_with("a=50"));
+}
+
 /// A region of more functions than the store keeps is not cached: it could never be warm, and
 /// its writes would fill the store with entries of one design (and, before the store looked at a
 /// full directory once and not at every put, a run took minutes). Every process is cut into

@@ -4935,12 +4935,15 @@ impl Lx<'_> {
                         return self.short_circuit(g, args);
                     }
                     let (a, b) = two(self)?;
-                    return self.gate(g, a, b);
+                    // The left operand's index range (LRM 9.2.2).
+                    let r = outer(&a);
+                    return self.gate(g, a, b).map(|v| with_range(v, r));
                 }
                 match fam {
                     Family::Not => {
                         let v = one(self)?;
-                        self.not(v)
+                        let r = outer(&v);
+                        self.not(v).map(|v| with_range(v, r))
                     }
                     Family::Cat => {
                         // A null operand (`"" & x`): the other one, as an array.
@@ -5073,11 +5076,11 @@ impl Lx<'_> {
                     return match (numeric, g, args.len()) {
                         (true, Some(g), 2) => {
                             let (a, b) = two(self)?;
-                            self.gate(g, a, b)
+                            self.gate(g, a, b).map(down_to_0)
                         }
                         (true, None, 1) if decl.name.key().as_str() == "\"not\"" => {
                             let v = one(self)?;
-                            self.not(v)
+                            self.not(v).map(down_to_0)
                         }
                         // `numeric_std`'s `+` and `-` of a vector and a `std_ulogic`: the scalar
                         // as element 0 of a vector of zeros as long as the other (its body).
@@ -5111,9 +5114,18 @@ impl Lx<'_> {
                     };
                 };
                 match op {
-                    I::Gate(g) | I::VecGate(g) | I::NumGate(g) => {
+                    // `std_logic_1164`'s vectors are `1 to n`, `numeric_std`'s `n - 1 downto 0`.
+                    I::Gate(g) => {
                         let (a, b) = two(self)?;
                         self.gate(gate(g), a, b)
+                    }
+                    I::VecGate(g) => {
+                        let (a, b) = two(self)?;
+                        self.gate(gate(g), a, b).map(one_to_n)
+                    }
+                    I::NumGate(g) => {
+                        let (a, b) = two(self)?;
+                        self.gate(gate(g), a, b).map(down_to_0)
                     }
                     I::VecScalarGate { g, left } => {
                         let (a, b) = two(self)?;
@@ -5129,9 +5141,17 @@ impl Lx<'_> {
                         });
                         self.gate(gate(g), Val::Part(v), Val::Part(t))
                     }
-                    I::Not | I::VecNot | I::NumNot => {
+                    I::Not => {
                         let v = one(self)?;
                         self.not(v)
+                    }
+                    I::VecNot => {
+                        let v = one(self)?;
+                        self.not(v).map(one_to_n)
+                    }
+                    I::NumNot => {
+                        let v = one(self)?;
+                        self.not(v).map(down_to_0)
                     }
                     I::Reduce(g) => {
                         let a = {
@@ -5507,6 +5527,30 @@ fn at_each(v: Val, b: Bounds, f: &mut dyn FnMut(Part) -> Part) -> R<Val> {
             .map(Val::Rec),
         _ => Err("an index or slice of a value with no index range".into()),
     }
+}
+
+/// Logic vector `v` with index range `r` when it has one.
+fn with_range(v: Val, r: Option<Bounds>) -> Val {
+    match (v, r) {
+        (Val::Part(p), Some(b)) if u64::from(p.len) == b.len() => Val::Part(Part {
+            dims: Dims::wrap(b, Dims::NONE).expect("one deep"),
+            ..p
+        }),
+        (v, _) => v,
+    }
+}
+
+/// A `std_logic_1164` result of `n` elements, whose index range the package fixes as `1 to n`.
+fn one_to_n(v: Val) -> Val {
+    let r = match &v {
+        Val::Part(p) => Some(Bounds {
+            left: 1,
+            dir: Direction::To,
+            right: i64::from(p.len),
+        }),
+        _ => None,
+    };
+    with_range(v, r)
 }
 
 /// `v` without index ranges: a function result whose range is not its argument's.

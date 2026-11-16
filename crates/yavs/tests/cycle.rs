@@ -3610,6 +3610,31 @@ fn a_generic_table_of_records_equals_the_normal_mode() {
     }
 }
 
+/// Sizes from `math_real` in functions of the design (`natural(ceil(log2(real(n))))`), folded
+/// where the arguments are known: the register using them joins; widths 1 to 128.
+#[test]
+fn math_real_sizes_of_constants_fold() {
+    let dir = tempdir("cycle-mathreal");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("mathreal{w}.vhd"),
+            &with_width(include_str!("cycle/mathreal.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_mathreal");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_mathreal");
+            assert_eq!(normal.len(), 10, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 2 of 4 processes run cycle-based")
+                    && err.contains("cycle_mathreal.u.size <= ... (mathreal"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// Memories held in shared variables (A15): single-process RAMs that read before and after they
 /// write, both at the address written and at another on one edge, join with their initial content;
 /// a RAM two processes write and read stays in the event kernel with the reason; against the

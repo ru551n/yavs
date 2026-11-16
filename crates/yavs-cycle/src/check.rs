@@ -1374,6 +1374,31 @@ impl Cx<'_> {
                     _ => lo,
                 }));
             }
+            // `math_real`'s `log2`, `ceil` and `floor` of a constant (`ceil(log2(real(n)))`), where
+            // the native computes them as `f64` does: a positive argument below `2**31`.
+            ExprKind::Call { callee, args, .. }
+                if let [a] = &args[..]
+                    && let Actual::Expr(ax) = a.actual
+                    && let Some(m) = (db.decls[*callee].kind.subprogram())
+                        .and_then(|sp| yavs_ir::ieee::native_symbol(sp.mangled.as_str()))
+                        .as_deref()
+                        .and_then(yavs_ir::ieee::symbol_key)
+                        .and_then(yavs_ir::ieee::parse) =>
+            {
+                use yavs_ir::ieee::{Math, Op};
+                let Some(ConstValue::Real(r)) = self.fold(ax) else {
+                    return None;
+                };
+                if !(r > 0.0 && r < 2147483648.0) {
+                    return None;
+                }
+                return Some(ConstValue::Real(match m {
+                    Op::Math(Math::Log2) => r.log2(),
+                    Op::Math(Math::Ceil) => r.ceil(),
+                    Op::Math(Math::Floor) => r.floor(),
+                    _ => return None,
+                }));
+            }
             // A pure function of constants (`is_write_mode(regs(i).mode)`, `log2ceil(n)`).
             ExprKind::Call {
                 callee,
@@ -1895,6 +1920,12 @@ impl Cx<'_> {
                         }
                         _ => Dv::Flat(Rc::new(flat)),
                     });
+                }
+                // A pure function of constants is a constant, whatever its body computes on
+                // the way (`natural(ceil(log2(real(n))))`).
+                if let Some(c) = self.fold(x) {
+                    self.no_z(x, &c)?;
+                    return Ok(Self::empty());
                 }
                 let s = self.call_deps(*callee, args, st, ex.span)?;
                 Ok(Dv::Flat(Rc::new(s)))

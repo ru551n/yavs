@@ -17197,3 +17197,23 @@ the parked retune package.
   frame work of `Ret` in an out-of-line method: its code then stays the same under unrelated edits of the loop (inline it
   moved by up to 14 instructions), at 13 instructions a return. A boxed interpreter error type (`R<u64>` in two words):
   single designs -3 to +9 percent through the op loop's register allocation (`calls` +8 to +9 percent on two builds).
+
+## Materialised native frames: buffers reused, registers copied without a branch (yavs-rt `yavs_rt_deopt`, yavs-interp `Host::push_native`, 2026-11-16, agent)
+
+- **Decision.** The buffers of materialised native frames go to a per-thread pool (`SPARE_FRAMES`, at most 32 frames,
+  filled after `materialise` in `yavs_rt_deopt_end` and `call_on`), which `yavs_rt_deopt` takes from before it
+  allocates. `Host::push_native` copies a frame's registers as a select per register over the preloaded flags and the
+  registers, both cut to the same length, then the rest in one move; the lengths are checked before, as they were.
+- **Why.** A recorded frame cost two allocations (its registers and its slots), and the copy tested each register's
+  preloaded flag through a bounds-checked lookup with a branch, about ten instructions a register (a frame of a VUnit
+  `send` has about 220). Both are paid at every materialisation, which grows with every function that runs on native
+  frames.
+- **Measured** (bench builds, each change on its own against main and a byte copy of main). The 26 bench designs,
+  exact instructions in `--tier=interp` and in the loop `--tier=auto` interprets in: level (geomeans 1.0000 and 0.9998
+  to 1.0001; `textio_heavy` in the second loop reads either of two values 0.5 percent apart on identical binaries), the
+  same with an unrelated edit applied to both sides. `--tier=clift` VUnit com, queue and AXI-stream cells: level
+  (within 0.1 percent per operation). `--tier=auto` fresh worlds (8, four passes, `c_sr` and blocking AXI): level.
+  Realbench (40 tests, 16 fresh worlds prepared by each binary, 4 runs, all-thread instructions; byte-copy A/A run 1,
+  run 2, steady, sum 1.0006, 1.0008, 0.9984, 0.9997): the pool 0.9998, 0.9998, 0.9985, 0.9992, the copy 1.0005, 1.0001,
+  0.9991, 0.9999. Main materialises frames only at steps, failing instructions and limits, so neither shows there; they
+  are for native frames that are left often, as a procedure that waits on a native frame would be.

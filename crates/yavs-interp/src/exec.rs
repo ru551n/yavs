@@ -12241,11 +12241,14 @@ impl Host<'_, '_, '_> {
             }
             // A register defined once by a constant or an address is preloaded (`Pre`): the
             // interpreter never executes its definition, compiled code may not have yet.
-            for (k, (d, &v)) in regs.iter_mut().zip(&nf.regs).enumerate() {
-                if !pre.preloaded.get(k).copied().unwrap_or(false) {
-                    *d = v;
-                }
+            // (Branch-free over equal lengths: a frame of 200 registers is materialised at every
+            // wait of a procedure on a native frame.)
+            let n = pre.preloaded.len().min(regs.len());
+            let (head, tail) = regs.split_at_mut(n);
+            for ((d, &v), &p) in head.iter_mut().zip(&nf.regs[..n]).zip(&pre.preloaded[..n]) {
+                *d = if p { *d } else { v };
             }
+            tail.copy_from_slice(&nf.regs[n..]);
             match m.fslots_mut(idx) {
                 Some(s) if s.len() == nf.slots.len() => s.copy_from_slice(&nf.slots),
                 _ => {

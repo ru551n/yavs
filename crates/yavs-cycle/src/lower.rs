@@ -843,15 +843,17 @@ const NOTE_COMB: &str = "an assert or report that runs outside a clock edge";
 const META_CMP: &str = "a comparison with a metavalue literal (`'U'`, `'X'`, `'-'`, ...), which two-state \
                         values never equal";
 
+/// Most elements of a logic value: 2**26 (a megaword), so element offsets stay far inside `u32`
+/// (a run-time index scales them by an element's width in `i64`). A memory that large is not
+/// copied or exported per wake (`region::ram_rule`, `rt::RamWrite`).
+const VEC_MAX: u64 = 1 << 26;
+
 /// Most statement instances an unrolled loop makes per process.
 const UNROLL_MAX: u32 = 1 << 16;
 
 /// Lower process `pi` if its shape and every construct of its body are in the subset.
 pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
     let p = &e.procs[pi];
-    if p.actual.is_some() {
-        return Err("a port expression actual is not supported in cycle mode yet".into());
-    }
     if p.postponed {
         return Err("a postponed process cannot run cycle-based".into());
     }
@@ -885,6 +887,10 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         unrolled: 0,
         lits: Vec::new(),
     };
+    if let Some(pa) = &p.actual {
+        lx.port_actual(pa)?;
+        return Ok(lx.body(Kind::Comb, None, None));
+    }
     match &db.stmts[p.stmt].kind {
         StmtKind::Process {
             sensitivity, body, ..
@@ -1136,6 +1142,33 @@ impl Lx<'_> {
         }
         self.signal_rhs(target, rhs)?;
         Ok(self.body(Kind::Comb, None, None))
+    }
+
+    /// The equivalent process `formal <= expr` of a port's expression actual (LRM 6.5.6.3): the
+    /// whole formal, of the instance, takes the expression's value, evaluated in the
+    /// instantiating region.
+    fn port_actual(&mut self, pa: &yavs_elab::PortActual) -> R<()> {
+        let nets = &self.e.nets;
+        let &d0 = (self.p.drivers.first()).ok_or("a port expression actual that drives nothing")?;
+        let so = nets.obj(nets.leaf(nets.drivers[d0].leaf).obj);
+        if so.decl != pa.port || so.shape != pa.shape {
+            return Err(
+                "an expression actual of part of a port is not supported in cycle mode yet".into(),
+            );
+        }
+        let mut next = so.leaves.0.0;
+        let v = self
+            .tree(&so.shape, so.decl, &mut |_| {
+                next += 1;
+                Ref::Loc(next - 1)
+            })
+            .map_err(|w| format!("{w} (port `{}`)", so.name.text))?;
+        if next != so.leaves.1.0 {
+            return Err("a port whose leaves are not one per field".into());
+        }
+        let dst = self.place_sig(v, so)?;
+        let src = self.expr_h(pa.expr, Some(&dst))?;
+        self.assign(&dst, src)
     }
 
     fn loc(&mut self, words: u32) -> Ref {
@@ -1804,14 +1837,20 @@ impl Lx<'_> {
     /// A range known during elaboration (`a to b`, `x'range`), and its type.
     fn static_range(&mut self, r: &RangeC) -> R<(Bounds, Option<TypeId>)> {
         match r {
-            RangeC::Explicit { left, dir, right } => Ok((
-                Bounds {
-                    left: self.static_int(*left)?,
-                    dir: *dir,
-                    right: self.static_int(*right)?,
-                },
-                Some(self.db.base(self.db.exprs[*left].subtype)),
-            )),
+            RangeC::Explicit { left, dir, right } => {
+                let b = match (self.static_int(*left), self.static_int(*right)) {
+                    (Ok(l), Ok(r)) => Bounds {
+                        left: l,
+                        dir: *dir,
+                        right: r,
+                    },
+                    // The range of a type or subtype declared in a design unit, which
+                    // elaboration evaluated once per instance (LRM 14.4.2.1): a function of
+                    // generics, say, that folding does not run.
+                    (Err(w), _) | (_, Err(w)) => self.e.range(self.p.scope, *left).ok_or(w)?,
+                };
+                Ok((b, Some(self.db.base(self.db.exprs[*left].subtype))))
+            }
             RangeC::Attr {
                 prefix: AttrPrefix::Expr(x),
                 reverse,
@@ -2887,6 +2926,34 @@ impl Lx<'_> {
                 let l = leaf_of(i.r)?;
                 let leaf = nets.leaf(l);
                 let at = nets.loc[l.index()];
+                // A scalar port collapsed onto one element of an array of integers: that element,
+                // a word of the array's (from the right, as `Val::Part` above).
+                if let Some(r) = so.part((l.0 - so.leaves.0.0) as usize)
+                    && r.len == 1
+                    && matches!(leaf.ty.elem, yavs_kernel::Elem::Bytes(1 | 4 | 8))
+                    && at.base == 0
+                    && nets.signal_len(at.signal) == leaf.ty.len
+                    && leaf.implicit.is_none()
+                {
+                    return Ok(Val::Part(Part {
+                        r: Ref::Sig(at.signal.0),
+                        lo: 64 * (leaf.ty.len - r.offset - 1),
+                        len: 64,
+                        full: 64 * leaf.ty.len,
+                        dims: Dims::wrap(WORD, Dims::NONE).expect("one deep"),
+                        fresh: false,
+                        leaf: Some(l),
+                        at: None,
+                        obj: None,
+                        lit: None,
+                        int: Some(IntElem {
+                            lo: i.lo,
+                            hi: i.hi,
+                            down: i.down,
+                            place: i.place,
+                        }),
+                    }));
+                }
                 if leaf.ty.len != 1
                     || !so.parts.is_empty()
                     || !matches!(leaf.ty.elem, yavs_kernel::Elem::Bytes(1 | 4 | 8))
@@ -3000,9 +3067,9 @@ impl Lx<'_> {
             Shape::Array { .. } => {
                 let ds = self.logic_dims(shape)?;
                 let n = u64::from(ds.elem_len()) * ds.b[0].len();
-                if n == 0 || n > 1 << 20 {
+                if n == 0 || n > VEC_MAX {
                     return Err(format!(
-                        "a vector of {n} elements (cycle mode takes 1 to 2**20 for now)"
+                        "a vector of {n} elements (cycle mode takes 1 to 2**26 for now)"
                     ));
                 }
                 let n = n as u32;
@@ -3058,9 +3125,9 @@ impl Lx<'_> {
         let ds = Dims::wrap(outer, self.logic_dims(shape)?)
             .ok_or_else(|| "an array nested more than four deep".to_string())?;
         let n = u64::from(ds.elem_len()) * ds.b[0].len();
-        if n == 0 || n > 1 << 20 {
+        if n == 0 || n > VEC_MAX {
             return Err(format!(
-                "a vector of {n} elements (cycle mode takes 1 to 2**20 for now)"
+                "a vector of {n} elements (cycle mode takes 1 to 2**26 for now)"
             ));
         }
         let n = n as u32;
@@ -3314,6 +3381,16 @@ impl Lx<'_> {
                 }
                 Some(v)
             }
+            // An element of a constant at indices known here (`grid(r, c)` in an unrolled loop).
+            ExprKind::Index { prefix, indices } => {
+                let Some(ConstValue::Array(a)) = self.fold(*prefix) else {
+                    return None;
+                };
+                let ix: Option<Vec<i64>> = (indices.iter())
+                    .map(|&i| self.fold(i).and_then(|c| c.as_int()))
+                    .collect();
+                crate::check::const_elem(&a, &ix?)
+            }
             _ => db.fold_with(x, &mut |c| self.fold(c)).ok().flatten(),
         }
     }
@@ -3553,9 +3630,30 @@ impl Lx<'_> {
             Some(Val::Part(p)) if p.dims.n > 0 => (p.len, p.dims),
             _ => {
                 let st = db.exprs[x].subtype;
-                let b = self.subtype_bounds(st)?;
-                let TypeKind::Array { elem, .. } = &db.types[db.base(st)].kind else {
+                let TypeKind::Array { elem, indexes } = &db.types[db.base(st)].kind else {
                     return Err("an array aggregate of something that is not an array".into());
+                };
+                let b = match (self.subtype_bounds(st), bounds, &indexes[..]) {
+                    (Ok(b), ..) => b,
+                    // Named association: the range of the choices, in the direction of the index
+                    // subtype (LRM 9.3.3.3).
+                    (Err(w), AggBounds::Named { .. }, [ix]) => {
+                        let dir = self.subtype_bounds(*ix)?.dir;
+                        let (lo, hi) = self.choice_span(assocs)?.ok_or(w)?;
+                        match dir {
+                            Direction::To => Bounds {
+                                left: lo,
+                                dir,
+                                right: hi,
+                            },
+                            Direction::Downto => Bounds {
+                                left: hi,
+                                dir,
+                                right: lo,
+                            },
+                        }
+                    }
+                    (Err(w), ..) => return Err(w),
                 };
                 if yavs_elab::elem_of(db, db.base(*elem)) != yavs_kernel::Elem::Logic {
                     return Err(
@@ -3670,6 +3768,29 @@ impl Lx<'_> {
             }
         }
         Ok(Val::Part(t))
+    }
+
+    /// The lowest and highest choice of a named array aggregate, all known during elaboration;
+    /// `None` with `others`.
+    fn choice_span(&mut self, assocs: &[yavs_sem::hir::AggAssoc]) -> R<Option<(i64, i64)>> {
+        let mut span: Option<(i64, i64)> = None;
+        for a in assocs {
+            for c in a.choices.iter() {
+                let (lo, hi) = match c {
+                    Choice::Expr(i) => {
+                        let i = self.static_int(*i)?;
+                        (i, i)
+                    }
+                    Choice::Range(r) => self.static_range(r)?.0.low_high(),
+                    _ => return Ok(None),
+                };
+                if lo > hi {
+                    continue;
+                }
+                span = Some(span.map_or((lo, hi), |(a, b)| (a.min(lo), b.max(hi))));
+            }
+        }
+        Ok(span)
     }
 
     fn logic_array(&self, st: SubtypeId) -> bool {
@@ -4619,7 +4740,7 @@ impl Lx<'_> {
                         let n = self.static_int(nx).map_err(|_| {
                             "a vector size that is not known during elaboration".to_string()
                         })?;
-                        if n <= 0 || n > 1 << 20 {
+                        if n <= 0 || n > VEC_MAX as i64 {
                             return Err("a null or very large vector size".into());
                         }
                         let a = self.arg(a)?;
@@ -4639,7 +4760,7 @@ impl Lx<'_> {
                         let to = self.static_int(nx).map_err(|_| {
                             "a vector size that is not known during elaboration".to_string()
                         })?;
-                        if to <= 0 || to > 1 << 20 {
+                        if to <= 0 || to > VEC_MAX as i64 {
                             return Err("a null or very large vector size".into());
                         }
                         let to = to as u32;
@@ -5486,9 +5607,9 @@ impl Lx<'_> {
             TypeKind::Array { .. } => {
                 let ds = self.arr_dims(t, &db.subtypes[st].constraint)?;
                 let n = ds.b[0].len() * u64::from(ds.elem_len());
-                if n == 0 || n > 1 << 20 {
+                if n == 0 || n > VEC_MAX {
                     return Err(format!(
-                        "a vector of {n} elements (cycle mode takes 1 to 2**20 for now)"
+                        "a vector of {n} elements (cycle mode takes 1 to 2**26 for now)"
                     ));
                 }
                 let mut p = self.tmp(n as u32);

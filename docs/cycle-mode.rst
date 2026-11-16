@@ -171,7 +171,9 @@ body. A signal needs one source: one process drives each element of it.
    * - Waits for a time, ``wait;``, has several waits, calls a procedure that waits, uses files or text
        input and output, access values or protected objects
      - *Behavioural*: the testbench kind of process. Not an error in any mode.
-   * - Is in the top-level unit and holds an ``assert`` or ``report``
+   * - Is in the top-level unit and holds an ``assert`` or ``report`` that cycle mode cannot evaluate in the
+       region: outside the clock edge of a clocked process (a combinational process, a concurrent assert), with a
+       message of another form, or reading a signal the testbench drives
      - Behavioural, so that the checks of a testbench run (:ref:`cycle-changes`).
    * - Uses ``after``, ``transport`` or ``reject``
      - E4111: no time inside a clock cycle. This includes the usual ``clk <= not clk after 5 ns;``, which is
@@ -227,6 +229,7 @@ a small design with a testbench and four things cycle mode does not take:
         behavioural, in the event kernel (1 process):
           tb_left_out.main (left_out.vhd:67)          it waits for a time
       cycle-based processes give no warnings of the ieee libraries (numeric_std metavalue and compare warnings)
+      asserts and reports of processes of the top-level unit are evaluated: at the clock edge in region code, else the process stays in the event kernel
       subset: 1 of 7 processes fit, 0 loop groups among them
       boundary: 1 signal leaves exported (0 nothing outside waits on), 1 inputs, 0 wake the region
       cycle-based, 1 process:
@@ -238,7 +241,8 @@ a small design with a testbench and four things cycle mode does not take:
   concurrent assignment is shown as ``name <= ...``. A delayed clock like ``clk <= not clk after ...`` is on
   almost every list and is expected. *Behavioural* processes are the ones that are testbench by nature.
 * If cycle-based processes hold ``assert`` or ``report`` statements, a line counts them per process: they are not
-  evaluated (:ref:`cycle-changes`). The following line is fixed text about library warnings.
+  evaluated (:ref:`cycle-changes`). The following two lines are fixed text: library warnings, and the asserts of
+  the top-level unit, which are evaluated.
 * ``subset`` counts the processes that fit the rules. Fewer processes join than fit when one with a rarer
   problem is missing something the lowering needs (those are the E4101 rows). A *loop group* is a set of
   processes that depend on each other in a circle without forming a combinational loop; the region evaluates
@@ -317,9 +321,10 @@ because the ``'X'`` on ``a`` read as ``0``, and the library's warning about it i
 Reports, assertions and library warnings
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A cycle-based process does not produce ``report`` or ``assert`` messages, at any severity, and the library
-warnings of ``numeric_std`` and the other ``ieee`` packages (metavalue and truncation warnings) do not appear
-either. The report counts the statements it drops per process (:ref:`cycle-report`).
+A cycle-based process below the top-level unit does not produce ``report`` or ``assert`` messages, at any
+severity, and no cycle-based process gives the library warnings of ``numeric_std`` and the other ``ieee`` packages
+(metavalue and truncation warnings). The report counts the statements it drops per process (:ref:`cycle-report`).
+The processes of the top-level unit, the testbench's, keep their checks (below).
 
 * This includes ``severity failure``. A design that ends its own test from RTL code, with an assertion or a
   ``report ... severity failure`` that the testbench does not check, does not end it in cycle mode: the run goes on,
@@ -348,8 +353,13 @@ In the normal mode the first block is the output and the exit status is 1, at 27
 the testbench's own end at 1022 ns with status 0.
 
 * Messages of processes that stay in the event simulation are produced as before, so a testbench that checks results
-  keeps working. The processes of the *top-level* unit that hold an ``assert`` or ``report`` stay in the event
-  simulation for this reason, even when they are clocked RTL-like checkers; the testbench's checks are never dropped.
+  keeps working. A clocked checker of the *top-level* unit that reads only signals of the region (the design's
+  outputs) runs cycle-based and evaluates its ``assert`` and ``report`` statements at the clock edge, with the
+  normal mode's message text, severity, time and process name, and the same effect on the run and on the exit
+  status. Its message may use string literals, ``&``, ``'image`` and ``to_string`` of integers, enumerations,
+  ``std_ulogic`` and ``boolean`` values, and ``to_string``, ``to_hstring`` and ``to_ostring`` of vectors. Any other
+  top-level process with an ``assert`` or ``report`` stays in the event simulation; the testbench's checks are never
+  dropped. Within one delta cycle, the messages of the region come after those of the event simulation.
 * The gap in this rule is a checker or monitor entity *below* the top-level unit: it looks like the design, so a
   clocked process in it joins the region and its assertions are dropped. Put such checks in a process of the
   top-level unit, or run the test in the normal mode.

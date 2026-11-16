@@ -3112,3 +3112,70 @@ fn explain_texts_of_the_subset_codes_match_what_the_checker_gives() {
         "{e4110}"
     );
 }
+
+/// The range of a subtype of an architecture that elaboration evaluates per instance (a function
+/// that folding does not run) as a slice range and a loop range, in instances of 1, W and W + 4
+/// elements, against the normal mode.
+#[test]
+fn ranges_elaboration_evaluated_per_instance_equal_the_normal_mode() {
+    let dir = tempdir("cycle-subrange");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("subrange{w}.vhd"),
+            &with_width(include_str!("cycle/subrange.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_subrange");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_subrange");
+            assert_eq!(normal.len(), 24, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            // Every process but the testbench's `main`.
+            assert!(
+                err.contains("cycle mode: 6 of 7 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
+/// Expression actuals of ports (a logic expression, a record aggregate, an integer and a vector
+/// expression) and array aggregates without a context (a range choice of a subtype, choices
+/// against the direction of the index subtype), against the normal mode.
+#[test]
+fn port_expression_actuals_and_aggregates_without_context_equal_the_normal_mode() {
+    let dir = tempdir("cycle-portact");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("portact{w}.vhd"),
+            &with_width(include_str!("cycle/portact.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_portact");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_portact");
+            assert_eq!(normal.len(), 30, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            // Every process but the testbench's `main`: the units, their eight actuals, the tracker.
+            assert!(
+                err.contains("cycle mode: 14 of 15 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
+/// A memory of more than 2**20 elements, written and read at run-time indices, in the region.
+#[test]
+fn a_memory_over_a_million_elements_equals_the_normal_mode() {
+    let dir = tempdir("cycle-bigram");
+    analyze(&dir, "bigram.vhd", include_str!("cycle/bigram.vhd"));
+    let (normal, _) = run(&dir, &[], "cycle_bigram");
+    let (cycle, err) = run(&dir, &["--cycle"], "cycle_bigram");
+    assert_eq!(normal.len(), 40, "{normal:?}");
+    assert_eq!(cycle, normal, "{err}");
+    assert!(
+        err.contains("cycle mode: 1 of 2 processes run cycle-based"),
+        "{err}"
+    );
+}

@@ -109,6 +109,35 @@ pub(crate) fn const_value(
     cx.fold(x)
 }
 
+/// The element of constant array `a` at indices `ix`, one per dimension (the elements stored
+/// row by row, the last index fastest); `None` outside the bounds.
+pub(crate) fn const_elem(a: &yavs_sem::stat::ArrayConst, ix: &[i64]) -> Option<ConstValue> {
+    if ix.len() != a.bounds.len() {
+        return None;
+    }
+    let mut p: u64 = 0;
+    for (&i, &(l, d, r)) in ix.iter().zip(&a.bounds[..]) {
+        let (k, n) = match d {
+            Direction::To if i >= l && i <= r => (i - l, r - l + 1),
+            Direction::Downto if i <= l && i >= r => (l - i, l - r + 1),
+            _ => return None,
+        };
+        p = p
+            .checked_mul(u64::try_from(n).ok()?)?
+            .checked_add(u64::try_from(k).ok()?)?;
+    }
+    match &a.elems {
+        Elems::Bytes(b) => b.get(p as usize).map(|&v| ConstValue::Enum(u32::from(v))),
+        Elems::Runs(runs) => {
+            let mut at = 0u64;
+            runs.iter().find_map(|(n, v)| {
+                at += n;
+                (p < at).then(|| v.clone())
+            })
+        }
+    }
+}
+
 /// Check process `pi`.
 pub(crate) fn check(db: &Db, e: &Elaborated, pi: usize) -> Verdict {
     let p = &e.procs[pi];
@@ -1344,31 +1373,13 @@ impl Cx<'_> {
             {
                 return self.call_value(*callee, args);
             }
-            // An element or field of a constant (`table(i)`, `cfg.width`).
-            ExprKind::Index { prefix, indices } if indices.len() == 1 => {
-                let i = indices[0];
-                if let (Some(ConstValue::Array(a)), Some(i)) =
-                    (self.fold(*prefix), self.fold(i).and_then(|c| c.as_int()))
-                    && let [(l, d, r)] = &a.bounds[..]
-                {
-                    let p = match d {
-                        Direction::To if i >= *l && i <= *r => i - l,
-                        Direction::Downto if i <= *l && i >= *r => l - i,
-                        _ => return None,
-                    };
-                    let p = u64::try_from(p).ok()?;
-                    return match &a.elems {
-                        Elems::Bytes(b) => {
-                            b.get(p as usize).map(|&v| ConstValue::Enum(u32::from(v)))
-                        }
-                        Elems::Runs(runs) => {
-                            let mut at = 0u64;
-                            runs.iter().find_map(|(n, v)| {
-                                at += n;
-                                (p < at).then(|| v.clone())
-                            })
-                        }
-                    };
+            // An element or field of a constant (`table(i)`, `grid(r, c)`, `cfg.width`).
+            ExprKind::Index { prefix, indices } => {
+                if let Some(ConstValue::Array(a)) = self.fold(*prefix) {
+                    let ix: Option<Vec<i64>> = (indices.iter())
+                        .map(|&i| self.fold(i).and_then(|c| c.as_int()))
+                        .collect();
+                    return const_elem(&a, &ix?);
                 }
             }
             ExprKind::Field { prefix, elem } => {

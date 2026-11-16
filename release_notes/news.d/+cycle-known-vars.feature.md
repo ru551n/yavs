@@ -1,0 +1,1 @@
+Under `--cycle`, combinational processes that slice or index by variables whose values are known on every path (`lo := hi + 1; v(hi downto lo) := ...`), or that pick a branch by a call of a pure function of generics, join the region instead of being taken for state or a latch, and so does the logic feeding them.

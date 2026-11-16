@@ -144,8 +144,9 @@ comparison:
 `--cycle-report` with `YAVS_CYCLE_SEEDS` for the signals driven by the processes outside the region whose result
 may depend on the delta cycles their inputs change in, runs both modes with `YAVS_TRACE` (each listed signal at
 the end of every time step where it changed), and compares the traces time step by time step. A difference only
-where the normal mode holds a metavalue is counted apart; any other fails (exit status 1). With
-`YAVS_CYCLE_RUNCOUNT=off` it finds the Microwatt divergence at 0.345 us:
+where the normal mode holds a metavalue is counted apart; any other fails (exit status 1). `--seeds LIST` traces the list of another binary
+(the one before a change that lets processes join). With `YAVS_CYCLE_RUNCOUNT=off` it finds the Microwatt
+divergence at 0.345 us:
 
     python3 -I tools/difftest/seeddiff.py --bin target/release/yavs --cwd WORLD -- run --work=work:WORLD/work ... top
 

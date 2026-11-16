@@ -159,7 +159,8 @@ and no combinational loop. Concurrent simple, conditional and selected assignmen
 (arrays of more than a few thousand elements, written at run-time indices, or held in a shared variable that one
 clocked process alone uses), ``numeric_std`` and
 ``std_logic_1164`` operators, ``case``, ``if``, ``for`` loops whose bounds are known when the design is elaborated
-(constants and generics), generics, ``generate`` statements, and calls of functions and procedures that have a
+(constants and generics), slices and indices bounded by variables whose values are known on every path
+(``lo := hi + 1; v(hi downto lo) := ...``), conditions on calls of the design's pure functions of generics, generics, ``generate`` statements, and calls of functions and procedures that have a
 body. A signal needs one source: one process drives each element of it.
 
 **What stays in the event simulation**, and the code the report gives it (every code has its own entry in

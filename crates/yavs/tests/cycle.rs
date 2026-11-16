@@ -2033,8 +2033,8 @@ fn subset_reasons_are_reported_with_their_code_and_position() {
         // The static compare of an enumeration parameter keeps the edge from `e2`.
         ("enum_loop", "E4122", "enum_loop"),
         ("from_e1", "E4122", "from_e1"),
-        // A function the evaluation gives up on, a loop past the budget: no pruning.
-        ("give_up", "E4119", "if half_known(3)"),
+        // A loop past the budget: no pruning. (`give_up`'s function, which the checker's own
+        // evaluation gives up on, is evaluated by elaboration: its branch is pruned.)
         ("long_loop", "E4119", "if i = 99999"),
         ("transport_delay", "E4111", "<= transport"),
         ("reject_limit", "E4111", "<= reject"),
@@ -2151,7 +2151,7 @@ fn every_shape_of_the_subset_fits() {
     );
     // `levels` reads its own levels: no loop of elements, three ordered passes (or a split).
     assert!(
-        report.contains("subset: 27 of 81 processes fit, 1 loop group among them")
+        report.contains("subset: 28 of 81 processes fit, 1 loop group among them")
             && report.contains(
                 "loop group of 1 process: 3 passes, or 3 pieces after a split: sub_tb.dut.levels"
             ),
@@ -3775,6 +3775,37 @@ fn logic_feeding_a_process_that_counts_its_runs_stays_out() {
             for m in ["e3", "c7"] {
                 let label = format!("cycle_runcount.dut.{m} <= ...");
                 assert_eq!(row(&err, &label).0, "cycle-based:", "{err}");
+            }
+        }
+    }
+}
+
+/// Slices bounded by variables of known values (fields packed by `lo` and `hi`, an element
+/// written at `lo` in a loop of known iterations) and a branch chosen by a function elaboration
+/// evaluates join the region; a variable given another value on each path, or read by an
+/// `elsif` after a branch changed it, leaves an element stale and its process out; against the
+/// normal mode at widths 1 to 128.
+#[test]
+fn slices_bounded_by_known_variables_join() {
+    let dir = tempdir("cycle-knownvar");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("knownvar{w}.vhd"),
+            &with_width(include_str!("cycle/knownvar.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_knownvar");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_knownvar");
+            assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 4 of 8 processes run cycle-based"),
+                "{w}: {err}"
+            );
+            for p in ["two", "elsy", "wl"] {
+                let (_, r) = row(&err, &format!("cycle_knownvar.{p}"));
+                assert!(r.contains("  E4120 "), "{r}");
             }
         }
     }

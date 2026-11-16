@@ -5,7 +5,7 @@ latches, incomplete sensitivity lists, or a process the checker could not show f
 the run-count rule). Console equality is too weak for those: Microwatt's `dcache_request` gave a stale
 `req_nc` from 10.3 us on, and the console lost one line at the very end.
 
-  seeddiff.py --bin YAVS --cwd DIR [--out DIR] [--show N] -- <yavs run arguments without --cycle>
+  seeddiff.py --bin YAVS --cwd DIR [--out DIR] [--show N] [--seeds LIST] -- <yavs run arguments without --cycle>
 
 Steps: `--cycle-report` with YAVS_CYCLE_SEEDS writes the leaf names; both modes run with YAVS_TRACE (one
 line `time name value` per change at the end of a time step); the traces are compared time step by time
@@ -95,6 +95,8 @@ def main():
     ap.add_argument("--cwd", default=".")
     ap.add_argument("--out", help="keep the list and traces here (default: a temporary directory)")
     ap.add_argument("--show", type=int, default=10)
+    ap.add_argument("--seeds", help="trace the signals of this list (YAVS_CYCLE_SEEDS of another binary, say "
+                    "the one before a change that lets processes join) instead of asking this one")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("args", nargs=argparse.REMAINDER)
     o = ap.parse_args()
@@ -108,11 +110,14 @@ def main():
     out = Path(o.out or tempfile.mkdtemp(prefix="seeddiff-")).resolve()
     out.mkdir(parents=True, exist_ok=True)
     lst = out / "seeds.txt"
-    env = dict(os.environ, YAVS_CYCLE_SEEDS=str(lst))
-    r = subprocess.run([o.bin, *args[:1], "--cycle-report", *args[1:]], cwd=o.cwd, env=env,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-    if not lst.exists():
-        sys.exit(f"seeddiff: --cycle-report wrote no list (exit {r.returncode}): {r.stderr[-2000:]}")
+    if o.seeds:
+        lst.write_text(Path(o.seeds).read_text())
+    else:
+        env = dict(os.environ, YAVS_CYCLE_SEEDS=str(lst))
+        r = subprocess.run([o.bin, *args[:1], "--cycle-report", *args[1:]], cwd=o.cwd, env=env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        if not lst.exists():
+            sys.exit(f"seeddiff: --cycle-report wrote no list (exit {r.returncode}): {r.stderr[-2000:]}")
     names = lst.read_text().split()
     print(f"seeddiff: {len(names)} signals driven by seed processes")
     if not names:

@@ -472,7 +472,8 @@ begin
     end if;
   end process;
 
-  -- A function the evaluation gives up on decides nothing: the branch stays live.
+  -- A function the checker's evaluation gives up on (an uninitialised variable) is evaluated by
+  -- elaboration: its value prunes the branch.
   give_up : process (a)
   begin
     if half_known(3) then

@@ -328,6 +328,9 @@ struct St {
     def: ESet,
     /// What reaching here depends on (conditions of enclosing statements and earlier exits).
     ctl: Rc<ESet>,
+    /// The values of the process's own scalar variables assigned a value that folds, on every
+    /// path to here (`Cx::vtrack`).
+    known: Rc<HashMap<DeclId, ConstValue>>,
 }
 
 /// Where control goes after a statement list.
@@ -395,6 +398,12 @@ struct Cx<'a> {
     part_obj: HashMap<ObjId, ObjId>,
     /// Values of loop parameters being enumerated.
     loopv: HashMap<DeclId, ConstValue>,
+    /// The scalar variables of the process that only its own plain assignments write (no
+    /// procedure is given one, no subprogram of the process may write one), and the values of
+    /// those known before the statement being analysed (`St::known`): `lo := hi + 1` with `hi`
+    /// known makes `v(hi downto lo)` a slice of known bounds.
+    vtrack: HashSet<DeclId>,
+    vknown: Rc<HashMap<DeclId, ConstValue>>,
     /// Parameters and variables of pure functions being run on constants.
     frames: Vec<HashMap<DeclId, ConstValue>>,
     /// Variable elements the process may write.
@@ -439,6 +448,8 @@ impl<'a> Cx<'a> {
             var_obj: HashMap::new(),
             part_obj: HashMap::new(),
             loopv: HashMap::new(),
+            vtrack: HashSet::new(),
+            vknown: Rc::default(),
             frames: Vec::new(),
             var_any: ESet::default(),
             undef_reads: Vec::new(),
@@ -512,6 +523,7 @@ impl Cx<'_> {
                 }
                 self.decls(*scope)?;
                 self.uses_files(body)?;
+                self.vtrack = tracked_vars(db, *scope, body);
                 self.process_body(sensitivity, body)
             }
             StmtKind::ConcSignalAssign {
@@ -1475,6 +1487,16 @@ impl Cx<'_> {
         if let Some(v) = db.value(x) {
             return Some(v.clone());
         }
+        // A globally static call of a pure function elaboration evaluated for this process
+        // without a report (a `while` loop over a string generic): its scalar value. The lowering
+        // folds it too, or evaluates the call itself with its checks.
+        if self.frames.is_empty()
+            && let Some(rc) = e.region_calls.get(&(self.p.scope, x))
+            && rc.reports.is_empty()
+            && let Some(v @ (ConstValue::Int(_) | ConstValue::Enum(_))) = &rc.val
+        {
+            return Some(v.clone());
+        }
         match &db.exprs[x].kind {
             ExprKind::Obj(d) => {
                 if let Some(v) = self.frames.last().and_then(|f| f.get(d)) {
@@ -1484,6 +1506,11 @@ impl Cx<'_> {
                     return None;
                 }
                 if let Some(v) = self.loopv.get(d) {
+                    return Some(v.clone());
+                }
+                if self.frames.is_empty()
+                    && let Some(v) = self.vknown.get(d)
+                {
                     return Some(v.clone());
                 }
                 if let Some(v) = e.value(self.p.scope, *d) {
@@ -1981,6 +2008,11 @@ impl Cx<'_> {
 
     /// What expression `x` depends on.
     fn expr(&mut self, x: ExprId, st: &St) -> R<Dv> {
+        // Folds below read the variables known at this point (a branch walked before may have
+        // left others).
+        if !Rc::ptr_eq(&self.vknown, &st.known) {
+            self.vknown = st.known.clone();
+        }
         let db = self.db;
         let ex = &db.exprs[x];
         if let Some(c) = ex.value {
@@ -2737,6 +2769,46 @@ impl Cx<'_> {
 
     // -- statements ---------------------------------------------------------------------------
 
+    /// After an assignment to `target`: the value of a tracked variable when `rhs` folds (with
+    /// the values known before the statement), else forgotten; any tracked variable a target of
+    /// another form names is forgotten.
+    fn track(&mut self, st: &mut St, target: ExprId, rhs: Option<ExprId>) {
+        let db = self.db;
+        if let ExprKind::Obj(d) = &db.exprs[target].kind {
+            if !self.vtrack.contains(d) {
+                return;
+            }
+            let v = rhs
+                .and_then(|x| self.fold(x))
+                .filter(|v| matches!(v, ConstValue::Int(_) | ConstValue::Enum(_)));
+            let known = Rc::make_mut(&mut st.known);
+            match v {
+                Some(v) => known.insert(*d, v),
+                None => known.remove(d),
+            };
+            return;
+        }
+        // The object an indexed, sliced or selected target writes; every name of an aggregate.
+        let mut x = target;
+        while let ExprKind::Index { prefix, .. }
+        | ExprKind::Slice { prefix, .. }
+        | ExprKind::Field { prefix, .. } = &db.exprs[x].kind
+        {
+            x = *prefix;
+        }
+        let mut names = Vec::new();
+        db.walk_expr(x, &mut |y| {
+            if let ExprKind::Obj(d) = &db.exprs[y].kind {
+                names.push(*d);
+            }
+        });
+        for d in names {
+            if st.known.contains_key(&d) {
+                Rc::make_mut(&mut st.known).remove(&d);
+            }
+        }
+    }
+
     fn stmts(&mut self, body: &[StmtId], st: St) -> R<Flow> {
         let mut flow = Flow::fall(st);
         for &s in body {
@@ -2752,6 +2824,7 @@ impl Cx<'_> {
     }
 
     fn stmt(&mut self, s: StmtId, mut st: St) -> R<Flow> {
+        self.vknown = st.known.clone();
         if self.enumerating > 0 {
             if self.budget == 0 {
                 return Err(Stop::Budget);
@@ -2777,9 +2850,11 @@ impl Cx<'_> {
                 Rhs::Simple(v) => {
                     let d = self.expr(*v, &st)?;
                     self.assign(&mut st, target.expr, d)?;
+                    self.track(&mut st, target.expr, Some(*v));
                     Ok(Flow::fall(st))
                 }
                 Rhs::Conditional(alts) => {
+                    self.track(&mut st, target.expr, None);
                     let conds: Vec<Option<ExprId>> = alts.iter().map(|a| a.1).collect();
                     self.cond_assign(st, &conds, span, &mut |cx, st, i| {
                         let d = cx.expr(alts[i].0, st)?;
@@ -2787,6 +2862,7 @@ impl Cx<'_> {
                     })
                 }
                 Rhs::Selected { expr, alts, .. } => {
+                    self.track(&mut st, target.expr, None);
                     self.sel_assign(st, *expr, alts.len(), span, &mut |cx, st, i| {
                         let d = cx.expr(alts[i].0, st)?;
                         cx.assign(st, target.expr, d)
@@ -2848,7 +2924,9 @@ impl Cx<'_> {
                         format!("it calls `{}`, which may wait", db.decls[c.callee].name),
                     );
                 }
-                let st = self.proc_call(st, c.callee, &c.args, span)?;
+                let mut st = self.proc_call(st, c.callee, &c.args, span)?;
+                // A procedure may write what it is given, also through a name it was given.
+                st.known = Rc::default();
                 Ok(Flow::fall(st))
             }
             StmtKind::Force { .. } | StmtKind::Release { .. } => out(
@@ -2881,7 +2959,9 @@ impl Cx<'_> {
         let mut flows = Vec::new();
         let mut covered = false;
         for (c, body) in branches {
-            // A condition elaboration knows (a generic) picks its branch statically.
+            // A condition elaboration knows (a generic) picks its branch statically; the
+            // variables known are those before the statement, not those of a branch before.
+            self.vknown = st.known.clone();
             match self.static_bool(*c) {
                 Some(false) => continue,
                 Some(true) => covered = true,
@@ -3082,7 +3162,7 @@ impl Cx<'_> {
             let next = self
                 .join_all(back, span)
                 .expect("the entry state is one of them");
-            if next.vals == cur.vals && next.ctl == cur.ctl {
+            if next.vals == cur.vals && next.ctl == cur.ctl && next.known == cur.known {
                 break;
             }
             if round + 1 == rounds && self.comb {
@@ -3582,11 +3662,108 @@ fn join(a: St, b: St) -> St {
         c.union(&b.ctl);
         Rc::new(c)
     };
+    let known = if a.known == b.known {
+        a.known
+    } else {
+        Rc::new(
+            (a.known.iter())
+                .filter(|(k, v)| b.known.get(k) == Some(v))
+                .map(|(k, v)| (*k, v.clone()))
+                .collect(),
+        )
+    };
     St {
         vals,
         def: a.def.intersect(&b.def),
         ctl,
+        known,
     }
+}
+
+/// The scalar variables of the process (declared in its `scope`) that only plain assignments of
+/// its `body` write: none when the process declares a subprogram (which may write them) or
+/// assigns through an alias; one given to a procedure is left out.
+fn tracked_vars(db: &Db, scope: yavs_sem::ScopeId, body: &[StmtId]) -> HashSet<DeclId> {
+    // An alias or a subprogram of the process may write a variable by another name.
+    if (db.scopes[scope].order.iter()).any(|&d| {
+        matches!(db.decls[d].kind, DeclKind::Alias(_)) || db.decls[d].kind.subprogram().is_some()
+    }) {
+        return HashSet::new();
+    }
+    let mut stmts = Vec::new();
+    deep(db, body, &mut stmts);
+    let mut vars = HashSet::new();
+    let mut given = HashSet::new();
+    for &s in &stmts {
+        let mut xs = Vec::new();
+        db.stmt_exprs(s, &mut |x, _| xs.push(x));
+        for x in xs {
+            let mut nested = false;
+            db.walk_expr(x, &mut |y| {
+                if let ExprKind::Call { callee, args, .. } = &db.exprs[y].kind {
+                    nested |= db.decls[*callee].scope == scope;
+                    // A function with an `out` or `inout` formal (2019) writes its actual.
+                    let writes = (db.decls[*callee].kind.subprogram())
+                        .is_some_and(|sp| sp.params.iter().any(|p| p.mode != Mode::In));
+                    if writes {
+                        for a in args.iter() {
+                            for x in actual_exprs(&a.actual) {
+                                db.walk_expr(x, &mut |z| {
+                                    if let ExprKind::Obj(d) = &db.exprs[z].kind {
+                                        given.insert(*d);
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+            });
+            if nested {
+                return HashSet::new();
+            }
+        }
+        match &db.stmts[s].kind {
+            StmtKind::VarAssign { target, .. } => match &db.exprs[target.expr].kind {
+                ExprKind::Obj(d) => match &db.decls[*d].kind {
+                    DeclKind::Object(o)
+                        if o.class == ObjClass::Variable && db.decls[*d].scope == scope =>
+                    {
+                        vars.insert(*d);
+                    }
+                    DeclKind::Alias(_) => return HashSet::new(),
+                    _ => {}
+                },
+                _ => {
+                    let mut aliased = false;
+                    db.walk_expr(target.expr, &mut |y| {
+                        if let ExprKind::Obj(d) = &db.exprs[y].kind {
+                            aliased |= matches!(db.decls[*d].kind, DeclKind::Alias(_));
+                        }
+                    });
+                    if aliased {
+                        return HashSet::new();
+                    }
+                }
+            },
+            StmtKind::ProcCall(c) => {
+                if db.decls[c.callee].scope == scope {
+                    return HashSet::new();
+                }
+                for a in c.args.iter() {
+                    for x in actual_exprs(&a.actual) {
+                        db.walk_expr(x, &mut |y| {
+                            if let ExprKind::Obj(d) = &db.exprs[y].kind {
+                                given.insert(*d);
+                            }
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    vars.retain(|d| !given.contains(d));
+    vars
 }
 
 /// Every statement of a list and of the lists inside it.

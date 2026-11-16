@@ -48,7 +48,7 @@ as ``--name=value``.
        cycle-based``, shown with ``-v`` for a passing test) or ``"strict"`` (the same, but a clocked or combinational process below the top-level unit that does
        not fit is an error that lists them all). Set it per library, testbench, test or configuration. Cycle-based
        processes drop their ``report`` and ``assert`` statements and library warnings, read metavalues as ``'0'`` and
-       have no waves; the rest is in the :doc:`cli-reference` (``--cycle``). A test that also has coverage,
+       have no waves; what it changes is in :doc:`cycle-mode`, and the flags are in the :doc:`cli-reference` (``--cycle``). A test that also has coverage,
        ``--yavs-debug``, ``--yavs-interactive`` or ``--yavs-surfer`` fails before yavs starts, naming both. Not passed
        to ``elab``. To see what would join, set ``yavs.sim_flags`` to ``["--cycle-report"]`` for one test with ``yavs.cycle`` ``"off"``: yavs prints the report and does not simulate, so that test fails.
    * - ``yavs.cov_embed_sources``

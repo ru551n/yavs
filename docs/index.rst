@@ -89,6 +89,7 @@ the :doc:`release_notes`.
    debugger-tutorial
    coverage
    running-faster
+   cycle-mode
    threads
    troubleshooting
 

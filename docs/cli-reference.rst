@@ -919,3 +919,4 @@ See also
 * :doc:`vunit-yavs`: the options of the VUnit package.
 * :doc:`environment`: environment variables.
 * :doc:`error-codes`: every diagnostic code.
+* :doc:`cycle-mode`: what ``--cycle``, ``--cycle-strict`` and ``--cycle-report`` change.

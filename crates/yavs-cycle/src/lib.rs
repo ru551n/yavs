@@ -1379,32 +1379,10 @@ fn cones<'a>(
             own[u as usize][i / 64] |= 1 << (i % 64);
         }
     }
-    let in_settle: Vec<bool> = own.iter().map(|w| w.iter().any(|&x| x != 0)).collect();
-    let mut readers: BTreeMap<LeafId, Vec<usize>> = BTreeMap::new();
-    for k in (0..n).filter(|&k| in_settle[k]) {
-        for l in leaves(&sel.members[k].1, true) {
-            readers.entry(l).or_default().push(k);
-        }
-    }
-    // What each member's steps reach: its own and those of the readers of what it drives, to a
-    // fixed point (loop groups go round).
-    let succ: Vec<Vec<usize>> = (0..n)
-        .map(|k| {
-            let mut v: Vec<usize> = if in_settle[k] {
-                (leaves(&sel.members[k].1, false).iter())
-                    .flat_map(|l| readers.get(l).into_iter().flatten().copied())
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            v.sort_unstable();
-            v.dedup();
-            v
-        })
-        .collect();
-    let mut reach = own;
-    // Readers come after their writers in the settle, but for loop groups: from the last step
-    // back, a pass or two.
+    // Readers come after their writers in the settle, but in loop groups: from the last member
+    // back, a member reaches its own steps and what the leaves it drives reach; a leaf reaches
+    // what its readers reach. To a fixed point (loop groups go round), linear in the reads and
+    // writes per pass.
     let mut order: Vec<usize> = Vec::new();
     let mut seen = vec![false; n];
     for &k in &sel.settle {
@@ -1412,33 +1390,38 @@ fn cones<'a>(
             order.push(k);
         }
     }
+    let io: Vec<(usize, Vec<LeafId>, Vec<LeafId>)> = (order.iter().rev())
+        .map(|&k| {
+            let b = &sel.members[k].1;
+            let (r, w) = (leaves(b, true), leaves(b, false));
+            (k, r.into_iter().collect(), w.into_iter().collect())
+        })
+        .collect();
+    let mut leaf: std::collections::HashMap<LeafId, Vec<u64>> = Default::default();
     loop {
         let mut moved = false;
-        for &k in order.iter().rev() {
-            for &m in &succ[k] {
-                if m == k {
-                    continue;
+        for (k, r, w) in &io {
+            let mut v = own[*k].clone();
+            for l in w {
+                if let Some(x) = leaf.get(l) {
+                    v.iter_mut().zip(x).for_each(|(a, b)| *a |= b);
                 }
-                let theirs = std::mem::take(&mut reach[m]);
-                for (x, y) in reach[k].iter_mut().zip(&theirs) {
-                    moved |= *x | y != *x;
-                    *x |= y;
+            }
+            for l in r {
+                let x = leaf.entry(*l).or_insert_with(|| vec![0; words]);
+                for (a, b) in x.iter_mut().zip(&v) {
+                    moved |= *a | b != *a;
+                    *a |= b;
                 }
-                reach[m] = theirs;
             }
         }
         if !moved {
             break;
         }
     }
-    move |l: LeafId| {
-        let mut v = vec![0u64; words];
-        for &k in readers.get(&l).into_iter().flatten() {
-            for (x, y) in v.iter_mut().zip(&reach[k]) {
-                *x |= y;
-            }
-        }
-        v.into_boxed_slice()
+    move |l: LeafId| match leaf.get(&l) {
+        Some(v) => v.clone().into_boxed_slice(),
+        None => vec![0; words].into_boxed_slice(),
     }
 }
 

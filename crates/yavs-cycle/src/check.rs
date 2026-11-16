@@ -138,11 +138,18 @@ pub(crate) fn const_elem(a: &yavs_sem::stat::ArrayConst, ix: &[i64]) -> Option<C
     }
 }
 
+/// What the subprograms of a design do as far as a process cares, kept from one process's check
+/// to the next.
+pub(crate) type Callees = HashMap<DeclId, Callee>;
+
 /// Check process `pi`.
-pub(crate) fn check(db: &Db, e: &Elaborated, pi: usize) -> Verdict {
+pub(crate) fn check(db: &Db, e: &Elaborated, pi: usize, callees: &mut Callees) -> Verdict {
     let p = &e.procs[pi];
     let mut cx = Cx::new(db, e, p);
-    match cx.process() {
+    cx.callees = std::mem::take(callees);
+    let v = cx.process();
+    *callees = std::mem::take(&mut cx.callees);
+    match v {
         Ok(mut f) => {
             f.reads = std::mem::take(&mut cx.reads);
             // The clock is read too (its edge test adds no dependence).
@@ -182,7 +189,7 @@ fn scalar(v: &ConstValue) -> bool {
 
 /// What a call does, as far as a process cares (memoised per subprogram).
 #[derive(Clone, Default)]
-struct Callee {
+pub(crate) struct Callee {
     /// A procedure that may wait.
     waits: bool,
     /// It uses files, text input and output or access values.

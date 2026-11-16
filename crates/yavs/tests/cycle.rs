@@ -3659,6 +3659,30 @@ fn ranges_of_logical_operator_results_equal_the_normal_mode() {
     }
 }
 
+/// Attributes of an element of a memory chosen at run time (`mem(r)'low`), as slice bounds in an
+/// unrolled loop and in arithmetic; widths 1 to 128.
+#[test]
+fn attributes_of_elements_chosen_at_run_time_equal_the_normal_mode() {
+    let dir = tempdir("cycle-elemattr");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("elemattr{w}.vhd"),
+            &with_width(include_str!("cycle/elemattr.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_elemattr");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_elemattr");
+            assert_eq!(normal.len(), 10, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 1 of 2 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// A process outside the region whose result depends on how often it runs (it assigns a
 /// variable's value of its previous run), fed by a register and combinational logic: the logic in
 /// its fan-in stays in the event kernel with the reason, the register joins; against the normal

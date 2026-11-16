@@ -1937,9 +1937,11 @@ impl Lx<'_> {
         // The code is dropped: so is what it would have made known.
         self.known = k;
         match v? {
-            Val::Part(Part { at: Some(_), .. }) => {
-                Err("an attribute of an element chosen at run time".into())
-            }
+            // An element chosen at run time has its element type's index range (`mem(i)'low`);
+            // a slice chosen at run time has none here.
+            Val::Part(Part {
+                at: Some(_), dims, ..
+            }) if dims.n == 0 => Err("an attribute of an element chosen at run time".into()),
             v => outer(&v).ok_or_else(|| {
                 "an attribute of something that is not an array with a known range".into()
             }),

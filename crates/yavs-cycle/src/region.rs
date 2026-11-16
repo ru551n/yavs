@@ -1356,17 +1356,14 @@ fn proc_reads(
         .chain(waits.iter().map(|l| (l, true)))
     {
         match l.root {
-            ObjRoot::Decl(d) => match e.signal(p.scope, d) {
-                Some(o) => {
-                    let (a, z) = e.nets.obj(o).leaves;
-                    let leaves = (a.0..z.0).map(LeafId);
-                    if wait {
-                        waited.extend(leaves.clone());
-                    }
-                    seen.extend(leaves);
+            ObjRoot::Decl(d) => {
+                let (a, z) = e.nets.obj(e.signal(p.scope, d)?).leaves;
+                let leaves = (a.0..z.0).map(LeafId);
+                if wait {
+                    waited.extend(leaves.clone());
                 }
-                None => return None,
-            },
+                seen.extend(leaves);
+            }
             ObjRoot::External(_) => return None,
             ObjRoot::ImplicitSignal(_) => {}
         }
@@ -1400,6 +1397,11 @@ fn run_count_cone(db: &Db, e: &Elaborated, out: &[(usize, Why)]) -> Vec<(usize, 
     for d in &e.nets.drivers {
         drivers.entry(d.leaf).or_default().push(d.proc.index());
     }
+    // The testbench's processes run by their waits, not as logic: the walk stops there.
+    let behavioural: BTreeSet<usize> = (out.iter())
+        .filter(|(_, w)| matches!(w, Why::Behavioural(_)))
+        .map(|(pi, _)| *pi)
+        .collect();
     let every = || (0..e.nets.leaves.len() as u32).map(LeafId);
     let mut memo = BTreeMap::new();
     let mut procs: BTreeSet<usize> = sensitive.iter().copied().collect();
@@ -1417,7 +1419,7 @@ fn run_count_cone(db: &Db, e: &Elaborated, out: &[(usize, Why)]) -> Vec<(usize, 
             continue;
         }
         for &d in drivers.get(&l).into_iter().flatten() {
-            if e.procs[d].trigger.is_some() || !procs.insert(d) {
+            if e.procs[d].trigger.is_some() || behavioural.contains(&d) || !procs.insert(d) {
                 continue;
             }
             gone.push((

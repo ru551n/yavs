@@ -680,7 +680,13 @@ pub(crate) fn elaborate(
         e.check_sources();
     }
     if e.errors.is_empty() && e.cfg.collapse_ports {
-        crate::collapse::ports(e.db, &mut e.m.nets, &e.m.sigs, &mut e.procs);
+        crate::collapse::ports(
+            e.db,
+            &mut e.m.nets,
+            &e.m.sigs,
+            &mut e.procs,
+            e.cfg.keep_values,
+        );
     }
     if !e.errors.is_empty() {
         let mut v = e.db.take_diagnostics();

@@ -60,11 +60,16 @@ pub(crate) fn count_steps(n: u64) {
 }
 
 /// Collapse the ports of `nets` that qualify; returns how many formals were collapsed.
+///
+/// `one_source`: an `out` or `buffer` formal resolved by `resolved` on an unresolved actual is
+/// collapsed too when no element of the formal has more than one source (cycle mode, which keeps
+/// its writers out of the region otherwise): `resolved` of one value is that value.
 pub(crate) fn ports(
     db: &Db,
     nets: &mut NetGraph,
     sigs: &std::collections::HashMap<(crate::ScopeId, yavs_sem::DeclId), ObjId>,
     procs: &mut [ProcInst],
+    one_source: bool,
 ) -> usize {
     let Some(forced) = forced(db, sigs) else {
         return 0;
@@ -116,6 +121,14 @@ pub(crate) fn ports(
             .flatten()
             .for_each(|p| excluded[p.0.index()] = true);
     }
+    // Per leaf: whether no element has two sources.
+    let single: Vec<bool> = (sources.iter())
+        .map(|s| {
+            let mut r: Vec<&Range> = s.iter().filter(|r| r.len > 0).collect();
+            r.sort_unstable_by_key(|r| r.offset);
+            r.windows(2).all(|w| w[0].end() <= w[1].offset)
+        })
+        .collect();
     // Per leaf: the starts and the ends of its non-empty source ranges, each sorted. The sources
     // overlapping a non-empty `r` are those starting before its end less those ending at or
     // before its start (those start before its end too): two searches, not a scan per port.
@@ -188,6 +201,7 @@ pub(crate) fn ports(
                 // unresolved formal has at most one).
                 let res = match (&leaf.resolution, &al.resolution) {
                     (None, None | Some(LeafRes::StdLogic)) => true,
+                    (Some(LeafRes::StdLogic), None) => one_source && out && single[l],
                     (Some(LeafRes::StdLogic), r) => matches!(r, Some(LeafRes::StdLogic)),
                     _ => false,
                 };

@@ -3441,6 +3441,34 @@ fn null_arrays_equal_the_normal_mode() {
     }
 }
 
+/// An `out` port of `std_logic_vector` on a `std_ulogic_vector` actual: its writers join when
+/// no element of the formal has two drivers (a register, a concurrent assignment, a member reading
+/// the actual); a formal with two drivers stays resolved in the event kernel; against the normal
+/// mode at widths 1 to 128.
+#[test]
+fn resolved_out_ports_on_unresolved_actuals_equal_the_normal_mode() {
+    let dir = tempdir("cycle-portres");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("portres{w}.vhd"),
+            &with_width(include_str!("cycle/portres.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_portres");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_portres");
+            assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
+            assert!(normal.iter().any(|l| l.contains('X')), "{normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 3 of 6 processes run cycle-based")
+                    && err.contains("E4124 cycle_portres.u.two is also driven by"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// Memories held in shared variables (A15): single-process RAMs that read before and after they
 /// write, both at the address written and at another on one edge, join with their initial content;
 /// a RAM two processes write and read stays in the event kernel with the reason; against the

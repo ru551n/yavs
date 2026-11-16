@@ -703,6 +703,11 @@ Compiled tiers: Cranelift
      - ``1``
      - unset
      - ``run``
+   * - ``YAVS_CYCLE_FLAGS``
+     - Developers: more Cranelift settings for the code of a cycle region (``--cycle``), as ``name=value`` pairs separated by commas (for example ``opt_level=none``), to measure what they cost; a name or value Cranelift does not know is an internal error of the region.
+     - ``name=value,...``
+     - unset
+     - ``run``
    * - ``YAVS_CYCLE_GUARD``
      - Developers: ``all`` lets a cycle region (``--cycle``) skip every combinational step whose inputs did not change since its last run, also the small ones it would otherwise always run (for the tests).
      - ``all``

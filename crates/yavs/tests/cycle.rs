@@ -1714,6 +1714,52 @@ fn elements_of_constant_arrays_have_their_subtypes_ranges_at_widths_around_a_wor
     }
 }
 
+/// A signal a clocked process assigns itself after an earlier assignment of all or part of it in
+/// the same run (a vector, a record, a memory, an integer) keeps its value. The region had taken
+/// `q <= q` for a no-op, so the earlier assignment stood (found by the fuzzer).
+#[test]
+fn a_signal_assigned_itself_after_an_earlier_assignment_keeps_its_value() {
+    let dir = tempdir("cycle-selfassign");
+    analyze(&dir, "selfassign.vhd", include_str!("cycle/selfassign.vhd"));
+    for w in [1, 63, 64, 65, 128] {
+        let g = format!("-gW={w}");
+        for t in tiers() {
+            let t = [&t[..], &[&g[..]]].concat();
+            let (normal, _) = run(&dir, &t, "cycle_selfassign");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_selfassign");
+            assert_eq!(normal.len(), 40, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 1 of 3 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
+/// A logical right shift by a count known during elaboration (of 1, 63, 64, 65, 100 and the width
+/// less one) gives zeros above the bits that remain, also into a signal or variable that held
+/// another value in the same run: the region wrote only the words of the remaining bits.
+#[test]
+fn a_right_shift_by_a_known_count_writes_every_word_of_its_target() {
+    let dir = tempdir("cycle-shiftfill");
+    analyze(&dir, "shiftfill.vhd", include_str!("cycle/shiftfill.vhd"));
+    for w in [1, 63, 64, 65, 128] {
+        let g = format!("-gW={w}");
+        for t in tiers() {
+            let t = [&t[..], &[&g[..]]].concat();
+            let (normal, _) = run(&dir, &t, "cycle_shiftfill");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_shiftfill");
+            assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 2 of 4 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// Arrays of integers and enumerations in variables, constants and signals.
 #[test]
 fn arrays_of_integers_give_the_same_result() {

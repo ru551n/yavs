@@ -32,6 +32,12 @@ pub(crate) enum Ref {
     Edge,
 }
 
+/// A copy from `src` to `dst` would change nothing. Not for a signal: a clocked process
+/// writes its next value and reads its current one, so `q <= q` undoes an earlier write.
+fn same_place(dst: Ref, src: Ref) -> bool {
+    dst == src && !matches!(dst, Ref::Sig(_))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Gate {
     And,
@@ -2299,7 +2305,7 @@ impl Lx<'_> {
                     set_bits(&mut groups[g].2, d.lo, d.len);
                 }
                 for (dst, src, m, full) in groups {
-                    if dst == src {
+                    if same_place(dst, src) {
                         continue;
                     }
                     let mut all = vec![0; words(full) as usize];
@@ -2350,7 +2356,7 @@ impl Lx<'_> {
                     return Ok(());
                 }
                 match (whole, s_whole) {
-                    (true, true) if d.r == s.r => {}
+                    (true, true) if same_place(d.r, s.r) => {}
                     (true, true) => self.ops.push(Op::Copy {
                         dst: d.r,
                         src: s.r,
@@ -2404,7 +2410,7 @@ impl Lx<'_> {
                         site,
                     });
                 }
-                if d.r == s.r || self.retarget(s.fresh, s.r, d.r) {
+                if same_place(d.r, s.r) || self.retarget(s.fresh, s.r, d.r) {
                     return Ok(());
                 }
                 self.ops.push(Op::Copy {
@@ -4857,12 +4863,15 @@ impl Lx<'_> {
                 });
             }
             ShiftK::Srl => {
-                self.ops.push(Op::Extract {
+                // Every word of the result written: the target may be a signal or variable
+                // (`retarget`), whose words above `len - n` hold an earlier value.
+                let lo = ext(self, n, len - n);
+                self.ops.push(Op::Ext {
                     dst: t.r,
-                    src: a,
-                    lo: n,
-                    len: len - n,
-                    full: len,
+                    src: lo,
+                    from: len - n,
+                    to: len,
+                    signed: false,
                 });
             }
             ShiftK::Sra => {

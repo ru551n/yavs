@@ -140,6 +140,94 @@ pub(crate) fn const_elem(a: &yavs_sem::stat::ArrayConst, ix: &[i64]) -> Option<C
     }
 }
 
+/// Folded value `v` of subtype `st` with that subtype's index ranges at every level: a folded value
+/// carries them only at the top, an element keeps its literal's (`x"01"` is `0 to 7` in an array
+/// of `std_ulogic_vector(7 downto 0)`). `None` when a length differs or a range below the top is not
+/// known here; one at the top (of the value and of its record fields) is the value's, as
+/// elaboration gave a constant its subtype's there (LRM 5.3.2.2).
+pub(crate) fn bounded(
+    db: &Db,
+    v: ConstValue,
+    st: SubtypeId,
+    range: &mut dyn FnMut(&RangeC) -> Option<yavs_elab::Bounds>,
+) -> Option<ConstValue> {
+    bounded_in(db, v, db.base(st), &db.subtypes[st].constraint, true, range)
+}
+
+fn bounded_in(
+    db: &Db,
+    v: ConstValue,
+    t: yavs_sem::TypeId,
+    c: &Constraint,
+    top: bool,
+    range: &mut dyn FnMut(&RangeC) -> Option<yavs_elab::Bounds>,
+) -> Option<ConstValue> {
+    let own = |c: &Constraint| match c {
+        Constraint::Array { dims: Some(d), .. } => Some(d.clone()),
+        _ => None,
+    };
+    match (v, &db.types[t].kind) {
+        (ConstValue::Array(mut a), TypeKind::Array { elem, .. }) => {
+            if let Some(dims) =
+                own(c).or_else(|| own(&db.subtypes[db.types[t].base_subtype].constraint))
+            {
+                let want = (dims.iter())
+                    .map(|r| range(r).map(|b| (b.left, b.dir, b.right)))
+                    .collect::<Option<Vec<_>>>();
+                match want {
+                    Some(w) if *a.bounds != *w => a = a.with_bounds(&w)?,
+                    Some(_) => {}
+                    None if top => {}
+                    None => return None,
+                }
+            }
+            // The element constraint of the object's subtype, else the element subtype's own.
+            let ec = match c {
+                Constraint::Array { elem: ec, .. } if !matches!(**ec, Constraint::None) => ec,
+                _ => &db.subtypes[*elem].constraint,
+            };
+            let et = db.base(*elem);
+            if let Elems::Runs(runs) = &mut a.elems
+                && !db.types[et].kind.is_scalar()
+            {
+                *runs = (std::mem::take(runs).into_vec().into_iter())
+                    .map(|(n, x)| Some((n, bounded_in(db, x, et, ec, false, range)?)))
+                    .collect::<Option<_>>()?;
+            }
+            Some(ConstValue::Array(a))
+        }
+        (ConstValue::Record(fs), TypeKind::Record { elems }) if fs.len() == elems.len() => {
+            let fs = (fs.into_vec().into_iter().zip(elems.iter()).enumerate())
+                .map(|(i, (f, el))| {
+                    let fc = match c {
+                        Constraint::Record { elems: rc } => {
+                            rc.iter().find(|(j, _)| *j as usize == i).map(|(_, fc)| fc)
+                        }
+                        _ => None,
+                    };
+                    let fc = fc.unwrap_or(&db.subtypes[el.subtype].constraint);
+                    bounded_in(db, f, db.base(el.subtype), fc, top, range)
+                })
+                .collect::<Option<_>>()?;
+            Some(ConstValue::Record(fs))
+        }
+        (v, _) => Some(v),
+    }
+}
+
+/// An expression whose folded value is an object's or a call's, so of its subtype: `bounded`
+/// gives it that subtype's index ranges.
+pub(crate) fn named(k: &ExprKind) -> bool {
+    matches!(
+        k,
+        ExprKind::Obj(_)
+            | ExprKind::Index { .. }
+            | ExprKind::Field { .. }
+            | ExprKind::Call { .. }
+            | ExprKind::Qualified { .. }
+    )
+}
+
 /// What the subprograms of a design do as far as a process cares, kept from one process's check
 /// to the next.
 pub(crate) type Callees = HashMap<DeclId, Callee>;
@@ -1322,7 +1410,24 @@ impl Cx<'_> {
     /// The value of `x` when elaboration knows it: literals, generics, constants, loop
     /// parameters being enumerated, array attributes of objects with known bounds, and
     /// predefined operations of those.
+    /// `fold_raw` of a name or call with the index ranges of its subtype at every level
+    /// (`bounded`).
     fn fold(&mut self, x: ExprId) -> Option<ConstValue> {
+        let v = self.fold_raw(x)?;
+        let db = self.db;
+        if matches!(v, ConstValue::Array(_) | ConstValue::Record(_)) && named(&db.exprs[x].kind) {
+            let (e, scope) = (self.e, self.p.scope);
+            return bounded(db, v, db.exprs[x].subtype, &mut |r| {
+                self.range_bounds(r).or_else(|| match r {
+                    RangeC::Explicit { left, .. } => e.range(scope, *left),
+                    RangeC::Attr { .. } => None,
+                })
+            });
+        }
+        Some(v)
+    }
+
+    fn fold_raw(&mut self, x: ExprId) -> Option<ConstValue> {
         let (db, e) = (self.db, self.e);
         if let Some(v) = db.value(x) {
             return Some(v.clone());

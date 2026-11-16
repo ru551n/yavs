@@ -1651,6 +1651,51 @@ fn constants_only_region_code_reads_have_their_values() {
     }
 }
 
+/// `src` at width `w` with its string literals `PAT1` to `PAT3` of `w` elements filled in.
+fn with_pats(src: &str, w: u32) -> String {
+    let mut t = with_width(src, w);
+    for k in 1..=3 {
+        let lit: String = (0..w)
+            .map(|i| {
+                if (i * i + i * k + k) % 5 < 2 {
+                    '1'
+                } else {
+                    '0'
+                }
+            })
+            .collect();
+        t = t.replace(&format!("PAT{k}"), &format!("\"{lit}\""));
+    }
+    t
+}
+
+/// Bits, slices and elements of constant arrays of vectors: an element has its subtype's index
+/// range, not the `0 to n - 1` of the literal or function result that made it. Read by its
+/// literal's range, a `downto` element came out reversed and a range not starting at 0 failed.
+#[test]
+fn elements_of_constant_arrays_have_their_subtypes_ranges_at_widths_around_a_word() {
+    let dir = tempdir("cycle-constelem");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("constelem{w}.vhd"),
+            &with_pats(include_str!("cycle/constelem.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_constelem");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_constelem");
+            assert_eq!(normal.len(), 7, "{w} {t:?} {normal:?}");
+            assert!(normal[6].contains(" s8=9A01 "), "{normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            // Every process but the clock and the testbench's `main`.
+            assert!(
+                err.contains("cycle mode: 8 of 10 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// Arrays of integers and enumerations in variables, constants and signals.
 #[test]
 fn arrays_of_integers_give_the_same_result() {

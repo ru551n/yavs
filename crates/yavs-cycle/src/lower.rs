@@ -3545,8 +3545,20 @@ impl Lx<'_> {
     }
 
     /// The value of `x` if elaboration knows it: a literal, a folded expression, a constant, a
-    /// generic, a generate or unrolled loop parameter, or an operation of those.
+    /// generic, a generate or unrolled loop parameter, or an operation of those; a name's or a
+    /// call's with the index ranges of its subtype at every level (`check::bounded`).
     fn fold(&self, x: ExprId) -> Option<ConstValue> {
+        let v = self.fold_raw(x)?;
+        let db = self.db;
+        if matches!(v, ConstValue::Array(_) | ConstValue::Record(_))
+            && crate::check::named(&db.exprs[x].kind)
+        {
+            return crate::check::bounded(db, v, db.exprs[x].subtype, &mut |r| self.range_fold(r));
+        }
+        Some(v)
+    }
+
+    fn fold_raw(&self, x: ExprId) -> Option<ConstValue> {
         let db = self.db;
         if let Some(c) = db.exprs[x].value {
             return Some(db.consts[c].clone());
@@ -3743,16 +3755,28 @@ impl Lx<'_> {
                 });
             }
         };
-        let RangeC::Explicit { left, dir, right } = r else {
-            return None;
-        };
-        match (self.fold(*left), self.fold(*right)) {
-            (Some(l), Some(r)) => Some(Bounds {
-                left: l.as_int()?,
-                dir: *dir,
-                right: r.as_int()?,
-            }),
-            _ => self.e.range(self.p.scope, *left),
+        self.range_fold(r)
+    }
+
+    /// Range `r` when it is known here, without lowering anything.
+    fn range_fold(&self, r: &RangeC) -> Option<Bounds> {
+        match r {
+            RangeC::Explicit { left, dir, right } => match (self.fold(*left), self.fold(*right)) {
+                (Some(l), Some(r)) => Some(Bounds {
+                    left: l.as_int()?,
+                    dir: *dir,
+                    right: r.as_int()?,
+                }),
+                _ => self.e.range(self.p.scope, *left),
+            },
+            RangeC::Attr {
+                prefix: AttrPrefix::Subtype(st),
+                reverse,
+                dim: 1,
+            } => self
+                .subtype_fold(*st)
+                .map(|b| if *reverse { reversed(b) } else { b }),
+            RangeC::Attr { .. } => None,
         }
     }
 

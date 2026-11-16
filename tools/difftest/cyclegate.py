@@ -27,14 +27,25 @@ NORMAL = D.YAVS
 CYCLE = D.YAVS.replace(CYC, "--cycle " + CYC)
 
 # crates/yavs/tests/cycle/*.vhd: file -> [(top, extra run flags, text edit)]. numeric.vhd, calls.vhd,
-# recarr.vhd, slices.vhd, ram.vhd and reclit.vhd have the width token W; subset.vhd is a checker
-# test (never run by its test) and stays out.
+# recarr.vhd, slices.vhd, ram.vhd and reclit.vhd have the width token W, constelem.vhd also string
+# literals of that width; subset.vhd is a checker test (never run by its test) and stays out.
 W = re.compile(r"(?<![\w])W(?![\w])")
+
+
+def pats(s, w):
+    """`s` at width `w` with the string literals PAT1 to PAT3 filled in as the cargo test does."""
+    s = W.sub(str(w), s)
+    for k in (1, 2, 3):
+        s = s.replace(f"PAT{k}", '"' + "".join("1" if (i * i + i * k + k) % 5 < 2 else "0" for i in range(w)) + '"')
+    return s
+
+
 CYCLE_TESTS = {
     "calls.vhd": [("cycle_calls", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
     "clocks.vhd": [("cycle_clocks", "", None)],
     "cmpcount.vhd": [("cycle_cmpcount", "", None)],
     "consts.vhd": [("cycle_consts", "", None)],
+    "constelem.vhd": [("cycle_constelem", "", lambda s, w=w: pats(s, w)) for w in (1, 64, 65)],
     "export.vhd": [("cycle_export", "", None)],
     "fsmrec.vhd": [("cycle_fsmrec", "", None)],
     "handshake.vhd": [("cycle_handshake", "", None)],

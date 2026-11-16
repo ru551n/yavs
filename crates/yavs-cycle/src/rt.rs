@@ -190,6 +190,62 @@ pub(crate) struct RegionProc {
     /// Elements of member variables without an initial value, counted at initialisation.
     pub uninit: u64,
     pub buf: Vec<u8>,
+    /// `YAVS_CYCLE_STATS=1`: how often each member's inputs were unchanged.
+    pub stats: bool,
+    /// With `stats`: the chunks the last import read.
+    pub read_now: Vec<usize>,
+    /// Per input chunk (`chunk_cone`, an index into `cones`): the steps of the settle a change of
+    /// it can reach; `mark`, those of the chunks the last import read.
+    pub cones: Arc<Vec<Box<[u64]>>>,
+    pub chunk_cone: Arc<Vec<u32>>,
+    pub mark: Vec<u64>,
+}
+
+/// Developers (`YAVS_CYCLE_STATS=1`): the region's wakes, the input chunks read in wakes without an
+/// edge, and each guard's runs and skips; printed with the summary line.
+pub(crate) struct Stats {
+    pub wakes: u64,
+    pub edges: u64,
+    /// Per input chunk: its name, and the wakes without an edge that read it.
+    pub chunks: Vec<(String, u64)>,
+    pub code: Arc<Code>,
+}
+
+impl Drop for Stats {
+    fn drop(&mut self) {
+        eprintln!(
+            "cycle stats: {} wakes ran code, {} of them at an edge",
+            self.wakes, self.edges
+        );
+        let mut c: Vec<&(String, u64)> = self.chunks.iter().filter(|c| c.1 > 0).collect();
+        c.sort_by_key(|c| std::cmp::Reverse(c.1));
+        for (name, n) in c.iter().take(40) {
+            eprintln!("cycle stats: input {name} read in {n} wakes without an edge");
+        }
+        let Some(counts) = &self.code.counts else {
+            return;
+        };
+        let n = |x: &std::sync::atomic::AtomicU64| x.load(Ordering::Relaxed);
+        let (runs, skips): (u64, u64) =
+            (counts.iter()).fold((0, 0), |a, c| (a.0 + n(&c[0]), a.1 + n(&c[1])));
+        eprintln!(
+            "cycle stats: {} guards: {runs} runs, {skips} skipped",
+            counts.len()
+        );
+        let mut v: Vec<(usize, u64, u64)> = (counts.iter().enumerate())
+            .map(|(g, c)| (g, n(&c[0]), n(&c[1])))
+            .collect();
+        v.sort_by_key(|x| std::cmp::Reverse(x.1 + x.2));
+        for (g, r, k) in v.into_iter().take(30) {
+            let gd = &self.code.guards[g];
+            eprintln!(
+                "cycle stats: guard {} ({} spans, {} words) ran {r}, skipped {k}",
+                gd.name,
+                gd.ins.len(),
+                gd.ins.iter().map(|x| x.1).sum::<u32>()
+            );
+        }
+    }
 }
 
 impl RegionProc {
@@ -270,6 +326,14 @@ impl RegionProc {
                 metas += Self::read(ctx, &mut self.img, &mut self.buf, &self.chunks[i])?;
                 any = true;
                 now |= self.chunks[i].now;
+                for (m, c) in
+                    (self.mark.iter_mut()).zip(&self.cones[self.chunk_cone[i] as usize][..])
+                {
+                    *m |= c;
+                }
+                if self.stats {
+                    self.read_now.push(i);
+                }
             }
         }
         if metas != 0 {
@@ -468,6 +532,19 @@ impl RegionProc {
     /// The code at `site` failed: the error of the normal mode, in the member process.
     #[cold]
     fn failed(&self, ctx: &Ctx<'_>, site: u32) -> SimError {
+        if site == crate::codegen::STALE {
+            let g = self.code.stale.load(Ordering::Relaxed);
+            let what = match self.code.guards.get(g) {
+                Some(gd) => format!(
+                    "process {} was skipped as its inputs had not changed",
+                    gd.name
+                ),
+                None => "a step of the settle was skipped as no input it reads had changed".into(),
+            };
+            return ctx.error(ErrorKind::Internal(format!(
+                "cycle mode: {what}, but running it changed what it drives (YAVS_CYCLE_SKIP_CHECK)"
+            )));
+        }
         if site == crate::codegen::UNSETTLED {
             return ctx.error(ErrorKind::Internal(
                 "cycle mode: a loop group of the region changed in a pass after its fixed point"
@@ -487,7 +564,14 @@ impl RegionProc {
     }
 
     fn run_code(&mut self, ctx: &mut Ctx<'_>, f: Fun) -> Result<(), SimError> {
-        let r = self.code.run(&mut self.img, f);
+        self.run_marked(ctx, f, false)
+    }
+
+    /// Run function `f`; with `marked`, the settle only where the inputs read since the last
+    /// settle reach (`mark`).
+    fn run_marked(&mut self, ctx: &mut Ctx<'_>, f: Fun, marked: bool) -> Result<(), SimError> {
+        let mark = marked.then_some(&self.mark[..]);
+        let r = self.code.run(&mut self.img, f, mark);
         // The notes of the run come first, as in the normal mode before a failed check.
         if self.log.1 > 0 && self.img[self.log.0] > 0 {
             self.notes(ctx)?;
@@ -614,16 +698,36 @@ impl Process for RegionProc {
             }
             return Ok(());
         }
-        // The settle a change seen earlier left for the edge, on the inputs before this wake's.
+        // The settle a change seen earlier left for the edge, on the inputs before this wake's:
+        // the steps the inputs read since the last settle reach (`mark`).
         if edge && std::mem::take(&mut self.pending) {
-            self.run_code(ctx, Fun::Settle)?;
+            self.run_marked(ctx, Fun::Settle, true)?;
+            self.mark.fill(0);
         }
         // Without an edge, only a change something outside can see before the next edge is
         // settled now (with no input changed the settle would give what it gave last).
+        self.read_now.clear();
         let (any, now) = self.import(ctx)?;
         if edge || now {
             self.pending = false;
-            self.run_code(ctx, if edge { Fun::Edge } else { Fun::Settle })?;
+            if self.stats
+                && let Some(st) = self.metas.stats.lock().expect("not poisoned").as_mut()
+            {
+                if !edge {
+                    for &i in &self.read_now {
+                        st.chunks[i].1 += 1;
+                    }
+                }
+                st.wakes += 1;
+                st.edges += u64::from(edge);
+            }
+            // Without an edge only the inputs changed: the settle runs what they reach.
+            if edge {
+                self.run_code(ctx, Fun::Edge)?;
+            } else {
+                self.run_marked(ctx, Fun::Settle, true)?;
+            }
+            self.mark.fill(0);
             self.export(ctx)?;
         } else if any {
             self.pending = true;

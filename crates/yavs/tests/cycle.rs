@@ -11,12 +11,28 @@ use std::process::{Command, Output};
 use common::tempdir;
 
 fn yavs(dir: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_yavs"))
-        .current_dir(dir)
+    yavs_env(dir, args, &[])
+}
+
+/// `yavs` with more environment (an empty value removes a variable).
+fn yavs_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_yavs"));
+    c.current_dir(dir)
         .env("YAVS_STD_CACHE", "off")
         // Every import read again and compared: an input the region missed is an error.
         .env("YAVS_CYCLE_IMPORT_CHECK", "1")
-        .args(["--color", "never"])
+        // Every combinational step behind a guard, and every step a guard skips run anyway and
+        // compared: a skip on inputs that did change is an error.
+        .env("YAVS_CYCLE_GUARD", "all")
+        .env("YAVS_CYCLE_SKIP_CHECK", "1");
+    for &(k, v) in env {
+        if v.is_empty() {
+            c.env_remove(k);
+        } else {
+            c.env(k, v);
+        }
+    }
+    c.args(["--color", "never"])
         .args(args)
         .output()
         .expect("run yavs")
@@ -49,10 +65,14 @@ fn with_report(dir: &Path, flags: &[&str], top: &str, mut err: String) -> String
 
 /// The report lines of a successful run and its standard error.
 fn run(dir: &Path, flags: &[&str], top: &str) -> (Vec<String>, String) {
+    run_vars(dir, flags, top, &[])
+}
+
+fn run_vars(dir: &Path, flags: &[&str], top: &str, env: &[(&str, &str)]) -> (Vec<String>, String) {
     let mut args = vec!["run", "--work=work:lib", "--no-cache"];
     args.extend(flags);
     args.push(top);
-    let o = yavs(dir, &args);
+    let o = yavs_env(dir, &args, env);
     let (out, err) = (
         String::from_utf8_lossy(&o.stdout).into_owned(),
         String::from_utf8_lossy(&o.stderr).into_owned(),
@@ -3134,6 +3154,86 @@ fn ranges_elaboration_evaluated_per_instance_equal_the_normal_mode() {
             assert!(
                 err.contains("cycle mode: 6 of 7 processes run cycle-based"),
                 "{w}: {err}"
+            );
+        }
+    }
+}
+
+#[test]
+fn members_skipped_on_unchanged_inputs_give_the_same_result() {
+    let dir = tempdir("cycle-skip");
+    analyze(&dir, "skip.vhd", include_str!("cycle/skip.vhd"));
+    // The guards of large members only, unchecked; every member behind a guard, unchecked; and
+    // every skip run anyway and compared (the default of these tests).
+    let envs: [&[(&str, &str)]; 3] = [
+        &[("YAVS_CYCLE_GUARD", ""), ("YAVS_CYCLE_SKIP_CHECK", "")],
+        &[("YAVS_CYCLE_SKIP_CHECK", "")],
+        &[],
+    ];
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_skip");
+        assert_eq!(normal.len(), 68, "{normal:?}");
+        // Hand-checked at 1 ns: `q` counted once at the edge at 0 ns, nothing of `w` set.
+        assert!(
+            normal[0].contains("cnt=00") && normal[0].contains(" q=03 "),
+            "{normal:?}"
+        );
+        for env in envs {
+            let mut env = env.to_vec();
+            env.push(("YAVS_CYCLE_STATS", "1"));
+            let (cycle, err) = run_vars(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_skip", &env);
+            assert_eq!(cycle, normal, "{t:?} {env:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 14 of 18 processes run cycle-based"),
+                "{err}"
+            );
+            for name in [
+                "pc", "pf", "pg", "wr", "pm", "la", "lb", "pr", "po", "c1", "c2", "px", "pd", "pp",
+            ] {
+                let (section, _) = row(&err, &format!("cycle_skip.{name}"));
+                assert_eq!(section, "cycle-based:", "{name}\n{err}");
+            }
+            // Skips happened: the guards saw unchanged inputs.
+            let skipped: u64 = err
+                .lines()
+                .find_map(|l| {
+                    l.split_once(" runs, ")?
+                        .1
+                        .strip_suffix(" skipped")?
+                        .parse()
+                        .ok()
+                })
+                .unwrap_or_else(|| panic!("no guard counts\n{err}"));
+            assert!(skipped > 100, "{skipped}\n{err}");
+        }
+    }
+    // The failed check of a member whose last run saw what its early run saw (no confirming
+    // pass of the loop group, which would find it in a debug build).
+    for env in [
+        &[
+            ("YAVS_CYCLE_GUARD", ""),
+            ("YAVS_CYCLE_SKIP_CHECK", ""),
+            ("YAVS_CYCLE_CHECKS", "on"),
+        ][..],
+        &[("YAVS_CYCLE_CHECKS", "on")],
+    ] {
+        for mode in [None, Some("--cycle")] {
+            let mut args = vec![
+                "run",
+                "--work=work:lib",
+                "--no-cache",
+                "--tier=interp",
+                "-gFAIL=true",
+            ];
+            args.extend(mode);
+            args.push("cycle_skip");
+            let o = yavs_env(&dir, &args, env);
+            let err = String::from_utf8_lossy(&o.stderr);
+            assert_eq!(o.status.code(), Some(1), "{mode:?}: {err}");
+            assert!(
+                err.contains("error[E3009]: index 9 outside of")
+                    && err.contains("at 142 ns, delta 2, in process cycle_skip.la"),
+                "{mode:?}: {err}"
             );
         }
     }

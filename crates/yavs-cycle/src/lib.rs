@@ -9,7 +9,7 @@ mod lower;
 mod region;
 mod rt;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -139,11 +139,16 @@ fn title(code: &str) -> &'static str {
 pub struct Metas {
     pub init: AtomicU64,
     pub inputs: AtomicU64,
+    /// `YAVS_CYCLE_STATS=1`: the region's counts, printed with the summary.
+    pub(crate) stats: std::sync::Mutex<Option<rt::Stats>>,
 }
 
 impl Metas {
     /// The summary line of the metavalues the region read as 0, if it read any.
     pub fn summary(&self) -> Option<String> {
+        if let Some(st) = self.stats.lock().expect("not poisoned").take() {
+            drop(st);
+        }
         let (i, n) = (
             self.init.load(Ordering::Relaxed),
             self.inputs.load(Ordering::Relaxed),
@@ -518,7 +523,8 @@ fn build(
     let several = sel.clocks.len() > 1;
     let mut state: Vec<(u32, u32)> = Vec::new();
     // Each function as pieces, a member's body each (`codegen::compile` cuts between them).
-    let mut settle: Vec<codegen::Step> = Vec::new();
+    // Each step with the member it runs (`codegen::compile`'s units; `u32::MAX`: none).
+    let mut settle: Vec<(codegen::Step, u32)> = Vec::new();
     let mut edge: Vec<codegen::Step> = Vec::new();
     let mut init_fn: Vec<codegen::Step> = Vec::new();
     edge.push(codegen::Step::Ops(
@@ -681,17 +687,112 @@ fn build(
             sites: rs[k].sites,
         }
     };
+    let weight = |ops: &[Op]| ops.iter().map(codegen::weight_of).sum::<usize>();
+    // The image words of signal leaves, as (first, count); for the inputs of `b` (`Some`) also
+    // the whole words of a signal its operations read but none of whose leaves it lists.
+    let leaf_words = |ls: &BTreeSet<LeafId>, b: Option<&lower::Body>| -> Vec<(u32, u32)> {
+        let mut v: Vec<(u32, u32)> = Vec::new();
+        for &l in ls {
+            let (s, len) = (ksig(l), nets.leaf(l).ty.len);
+            let Some(&slot) = cur.get(&s).filter(|_| len > 0) else {
+                continue;
+            };
+            let base = nets.loc[l.index()].base;
+            v.push(if logic(s) {
+                (slot + base / 64, (base + len - 1) / 64 - base / 64 + 1)
+            } else {
+                (slot, codegen::words(klen(s)))
+            });
+        }
+        if let Some(b) = b {
+            let listed: BTreeSet<u32> = b.reads.iter().chain(&b.writes).map(|&l| ksig(l)).collect();
+            let srcs = std::cell::RefCell::new(BTreeSet::new());
+            for op in &b.ops {
+                op.map(
+                    &|r| {
+                        if let Ref::Sig(k) = r {
+                            srcs.borrow_mut().insert(k);
+                        }
+                        r
+                    },
+                    &|r| r,
+                    &|x| x,
+                );
+            }
+            for k in srcs.into_inner().difference(&listed) {
+                if let Some(&slot) = cur.get(k) {
+                    v.push((slot, codegen::words(klen(*k))));
+                }
+            }
+        }
+        v
+    };
+    // Sorted and joined; spans of inputs a few words apart are one (a compare of a span costs more
+    // than of a word).
+    let join = |mut v: Vec<(u32, u32)>, gap: u32| -> Vec<(u32, u32)> {
+        v.sort_unstable();
+        let mut out: Vec<(u32, u32)> = Vec::new();
+        for (w, c) in v {
+            match out.last_mut() {
+                Some(x) if w <= x.0 + x.1 + gap => x.1 = x.1.max(w + c - x.0),
+                _ => out.push((w, c)),
+            }
+        }
+        out
+    };
+    // A settle step outside loop groups: a shared body, or the member's own operations.
+    let plain_step = |k: usize,
+                      settle: &mut Vec<(codegen::Step, u32)>,
+                      guard: &mut dyn FnMut(usize, usize) -> Option<usize>|
+     -> Result<(), String> {
+        let b = &sel.members[k].1;
+        let step = if b.kind != Kind::Clocked && shared.contains_key(&k) {
+            (call(k), weight(&b.ops))
+        } else {
+            let ops = piece(k, &none)?;
+            let w = weight(&ops);
+            (codegen::Step::Ops(ops), w)
+        };
+        if let Some(g) = guard(k, step.1) {
+            settle.push((codegen::Step::Guard(g, true, 1), u32::MAX));
+        }
+        settle.push((step.0, k as u32));
+        Ok(())
+    };
     let confirm = codegen::confirm_on();
+    // Guards (`codegen::Guard`): combinational members heavy enough that comparing the words
+    // they read with those of their last run costs little against running them. Developers:
+    // `YAVS_CYCLE_GUARD=all` guards every settle step, reset branches included (for the tests).
+    let guard_all = std::env::var_os("YAVS_CYCLE_GUARD").is_some_and(|v| v == "all");
+    let mut guard_of: BTreeMap<usize, usize> = BTreeMap::new();
+    let guards: std::cell::RefCell<Vec<GuardSpec>> = Default::default();
+    let label = |k: usize| {
+        e.hier
+            .proc_label(&e.procs[sel.members[k].0], yavs_elab::Case::Lrm)
+    };
+    let mut guard = |k: usize, weight: usize| -> Option<usize> {
+        if let Some(&g) = guard_of.get(&k) {
+            return Some(g);
+        }
+        let b = &sel.members[k].1;
+        if !guard_all && (b.kind == Kind::Clocked || weight < GUARD_MIN) {
+            return None;
+        }
+        let ins = join(leaf_words(&b.reads, Some(b)), GUARD_GAP);
+        if !guard_all && ins.iter().map(|x| x.1 as usize).sum::<usize>() > weight {
+            return None;
+        }
+        let mut gs = guards.borrow_mut();
+        gs.push((label(k), ins, join(leaf_words(&b.writes, None), 0)));
+        guard_of.insert(k, gs.len() - 1);
+        Some(gs.len() - 1)
+    };
     let mut bodies: Vec<(Vec<Op>, bool)> = Vec::new();
     let mut groups: Vec<(Vec<(u32, u32)>, u32)> = Vec::new();
     let mut at = 0;
     for l in &sel.loops {
         for &k in &sel.settle[at..l.at.start] {
-            if sel.members[k].1.kind != Kind::Clocked && shared.contains_key(&k) {
-                settle.push(call(k));
-            } else {
-                settle.push(codegen::Step::Ops(piece(k, &none)?));
-            }
+            plain_step(k, &mut settle, &mut guard)?;
         }
         at = l.at.end;
         let steps = &sel.settle[l.at.clone()];
@@ -721,14 +822,58 @@ fn build(
             bodies.push((ops, true));
             body.insert(k, (bodies.len() - 1, early));
         }
+        // The whole group behind one guard too, on what its members read that none of them
+        // drives: the group's values are a function of those alone (its element graph has no
+        // loop), so they are unchanged when those are.
+        // Driven by the group alone: leaves whose every driver is a combinational member of it (a
+        // reset branch's register also changes at the edge, another process may drive other
+        // elements of a leaf).
+        let (mut reads, mut writes) = (BTreeSet::new(), BTreeSet::new());
+        let mut comb: BTreeSet<usize> = BTreeSet::new();
+        for &k in body.keys() {
+            let b = &sel.members[k].1;
+            reads.extend(b.reads.iter().copied());
+            writes.extend(b.writes.iter().copied());
+            if b.kind == Kind::Comb {
+                comb.insert(sel.members[k].0);
+            }
+        }
+        let mut inside = writes.clone();
+        for d in nets.drivers.iter().filter(|d| writes.contains(&d.leaf)) {
+            if !comb.contains(&d.proc.index()) {
+                inside.remove(&d.leaf);
+            }
+        }
+        let mut ins = leaf_words(&reads.difference(&inside).copied().collect(), None);
+        for &k in body.keys() {
+            let b = &sel.members[k].1;
+            ins.extend(leaf_words(&BTreeSet::new(), Some(b)));
+        }
+        let g = {
+            let mut gs = guards.borrow_mut();
+            gs.push((
+                format!(
+                    "the loop group of {}",
+                    label(*body.keys().next().expect("a member"))
+                ),
+                join(ins, GUARD_GAP),
+                join(leaf_words(&writes, None), 0),
+            ));
+            gs.len() - 1
+        };
+        settle.push((codegen::Step::Guard(g, true, steps.len()), u32::MAX));
         for (i, &k) in steps.iter().enumerate() {
             let (checked, early) = body[&k];
             let last = !steps[i + 1..].contains(&k);
-            settle.push(codegen::Step::Call(if last {
+            if let Some(g) = guard(k, weight(&bodies[checked].0)) {
+                settle.push((codegen::Step::Guard(g, last, 1), u32::MAX));
+            }
+            let b = if last {
                 checked
             } else {
                 early.expect("a member run twice has a body without checks")
-            }));
+            };
+            settle.push((codegen::Step::Call(b), k as u32));
         }
         // Debug builds: one more pass changes nothing the group drives.
         let words: Vec<(u32, u32)> = (ks.into_iter())
@@ -736,18 +881,14 @@ fn build(
             .collect();
         if confirm {
             let g = groups.len();
-            settle.push(codegen::Step::Save(g));
-            settle.extend(body.values().map(|b| codegen::Step::Call(b.0)));
-            settle.push(codegen::Step::Same(g));
+            settle.push((codegen::Step::Save(g), u32::MAX));
+            settle.extend(body.values().map(|b| (codegen::Step::Call(b.0), u32::MAX)));
+            settle.push((codegen::Step::Same(g), u32::MAX));
         }
         groups.push((words, 0));
     }
     for &k in &sel.settle[at..] {
-        if sel.members[k].1.kind != Kind::Clocked && shared.contains_key(&k) {
-            settle.push(call(k));
-        } else {
-            settle.push(codegen::Step::Ops(piece(k, &none)?));
-        }
+        plain_step(k, &mut settle, &mut guard)?;
     }
     // The edge: the clocked bodies of the classes whose edge happened (with one class only at its
     // edge, so behind no test), the commit; then the settle's functions.
@@ -844,6 +985,27 @@ fn build(
         g.1 = n;
         n += g.0.iter().map(|w| w.1).sum::<u32>();
     }
+    // Each guard's copy of its inputs and its word saying what its last run was.
+    let guards: Vec<codegen::Guard> = (guards.into_inner().into_iter())
+        .map(|(name, ins, outs)| {
+            let copy = n;
+            let at: Vec<u32> = (ins.iter())
+                .scan(0, |a, x| {
+                    *a += x.1;
+                    Some(*a - x.1)
+                })
+                .collect();
+            n += ins.iter().map(|x| x.1).sum::<u32>() + 1;
+            codegen::Guard {
+                name,
+                ins,
+                at,
+                copy,
+                flag: n - 1,
+                outs,
+            }
+        })
+        .collect();
     let mut keep = vec![false; n as usize];
     keep[..signal_words as usize].fill(true);
     for (w, c) in state {
@@ -888,18 +1050,23 @@ fn build(
             }
         })
         .collect();
+    let (settle, units): (Vec<codegen::Step>, Vec<u32>) = settle.into_iter().unzip();
     let code = Arc::new(codegen::compile(
         &settle,
+        &units,
         &edge,
         &init_fn,
         &bodies,
         &shapes,
         groups,
+        guards,
         &keep,
+        signal_words as usize,
         err,
         (log, notes),
         &label,
     )?);
+    let cone = cones(&sel, nets, &code.settle_units);
     let whole = |k: u32| {
         let s = yavs_kernel::SignalId(k);
         s.slice(0, nets.signal_len(s))
@@ -928,7 +1095,7 @@ fn build(
         .filter_map(|(_, b)| b.reset.map(|r| r.0))
         .chain(sel.at_once.keys().copied().filter(|_| !edge_outputs))
         .collect();
-    let mut by_sig: BTreeMap<u32, Vec<(rt::Read, Range)>> = BTreeMap::new();
+    let mut by_sig: BTreeMap<u32, Vec<InChunk>> = BTreeMap::new();
     for &l in sel.inputs.iter().filter(|&&l| nets.leaf(l).ty.len > 0) {
         let len = nets.leaf(l).ty.len;
         let at = nets.loc[l.index()];
@@ -945,17 +1112,25 @@ fn build(
                 bytes: b,
                 now: now.contains(&l),
             };
-            chunks.push((read, nets.kpart(l, part).1));
+            let name = if stats {
+                format!("{} ({}:{})", e.leaf_name(l), part.offset, part.len)
+            } else {
+                String::new()
+            };
+            chunks.push((read, nets.kpart(l, part).1, (name, l)));
         }
     }
     let (mut chunks, mut ins) = (Vec::new(), Vec::new());
+    let mut chunk_names: Vec<String> = Vec::new();
+    let mut chunk_leaves: Vec<LeafId> = Vec::new();
     let import_check = std::env::var_os("YAVS_CYCLE_IMPORT_CHECK").is_some_and(|v| v == "1");
     // One image per group of input signals of about `IMAGE_CHUNKS` chunks: a wake asks each
     // group's write count, and compares the chunk counts only of a group that was written.
     let mut items: Vec<yavs_kernel::ImageItem> = Vec::new();
     let mut groups = by_sig.into_iter().peekable();
     while let Some((k, rs)) = groups.next() {
-        for &(_, r) in &rs {
+        for (_, r, _) in &rs {
+            let r = *r;
             items.push(yavs_kernel::ImageItem {
                 sig: yavs_kernel::SignalId(k),
                 k: r.offset,
@@ -965,7 +1140,11 @@ fn build(
                 kind: yavs_kernel::ImageKind::Count,
             });
         }
-        chunks.extend(rs.into_iter().map(|c| c.0));
+        for c in rs {
+            chunks.push(c.0);
+            chunk_names.push(c.2.0);
+            chunk_leaves.push(c.2.1);
+        }
         if items.len() >= IMAGE_CHUNKS || groups.peek().is_none() {
             let n = items.len() as u32;
             ins.push(rt::InSig {
@@ -1057,6 +1236,29 @@ fn build(
         .map(|&k| (k, nets.signal_len(yavs_kernel::SignalId(k))))
         .collect();
     let words = n as usize;
+    // Per input chunk: the steps of the settle a change of it can reach.
+    let (cones, chunk_cone) = {
+        let mut by_leaf: BTreeMap<LeafId, u32> = BTreeMap::new();
+        let mut cones: Vec<Box<[u64]>> = Vec::new();
+        let chunk_cone: Vec<u32> = (chunk_leaves.iter())
+            .map(|&l| {
+                *by_leaf.entry(l).or_insert_with(|| {
+                    cones.push(cone(l));
+                    cones.len() as u32 - 1
+                })
+            })
+            .collect();
+        (Arc::new(cones), Arc::new(chunk_cone))
+    };
+    let mark_words = code.settle_units.len().div_ceil(64);
+    if stats {
+        *metas.stats.lock().expect("not poisoned") = Some(rt::Stats {
+            wakes: 0,
+            edges: 0,
+            chunks: chunk_names.iter().map(|n| (n.clone(), 0)).collect(),
+            code: code.clone(),
+        });
+    }
     let make: yavs_elab::RegionMake = Arc::new(move |ds: &[RegionDriver]| {
         // One export per kernel driver with an exported leaf: its range of the signal's words.
         let mut outs: BTreeMap<u32, rt::Out> = BTreeMap::new();
@@ -1112,6 +1314,11 @@ fn build(
             metas: metas.clone(),
             uninit,
             buf: Vec::new(),
+            read_now: Vec::new(),
+            cones: cones.clone(),
+            chunk_cone: chunk_cone.clone(),
+            mark: vec![0; mark_words],
+            stats,
         }) as Box<dyn yavs_kernel::Process>)
     });
     let mut members: Vec<usize> = sel.members.iter().map(|m| m.0).collect();
@@ -1124,6 +1331,122 @@ fn build(
         make,
     })
 }
+
+/// For a leaf the region reads from outside: the steps of the settle (`settle_units`, as a bit
+/// set) a change of it can reach, through the members that read it and, from what they drive, the
+/// members that read that, and so on. Reads and writes of a member are its listed leaves and every
+/// leaf of a signal its operations name without listing one.
+fn cones<'a>(
+    sel: &'a region::Selection,
+    nets: &'a yavs_elab::NetGraph,
+    settle_units: &[Vec<u32>],
+) -> impl Fn(LeafId) -> Box<[u64]> + 'a {
+    let ksig = |l: LeafId| nets.loc[l.index()].signal.0;
+    let n = sel.members.len();
+    // Every leaf of a signal named but not listed.
+    let leaves = |b: &lower::Body, reads: bool| -> BTreeSet<LeafId> {
+        let listed: BTreeSet<u32> = b.reads.iter().chain(&b.writes).map(|&l| ksig(l)).collect();
+        let named = std::cell::RefCell::new(BTreeSet::new());
+        let note = |r: Ref| {
+            if let Ref::Sig(k) = r {
+                named.borrow_mut().insert(k);
+            }
+            r
+        };
+        for op in &b.ops {
+            if reads {
+                op.map(&note, &|r| r, &|x| x);
+            } else {
+                op.map(&|r| r, &note, &|x| x);
+            }
+        }
+        let mut v: BTreeSet<LeafId> = if reads {
+            b.reads.clone()
+        } else {
+            b.writes.clone()
+        };
+        for k in named.into_inner().difference(&listed) {
+            let (a, z) = nets.packs[*k as usize];
+            v.extend((a.0..z.0).map(LeafId));
+        }
+        v
+    };
+    let words = settle_units.len().div_ceil(64);
+    // Each member's own steps.
+    let mut own: Vec<Vec<u64>> = vec![vec![0; words]; n];
+    for (i, us) in settle_units.iter().enumerate() {
+        for &u in us {
+            own[u as usize][i / 64] |= 1 << (i % 64);
+        }
+    }
+    let in_settle: Vec<bool> = own.iter().map(|w| w.iter().any(|&x| x != 0)).collect();
+    let mut readers: BTreeMap<LeafId, Vec<usize>> = BTreeMap::new();
+    for k in (0..n).filter(|&k| in_settle[k]) {
+        for l in leaves(&sel.members[k].1, true) {
+            readers.entry(l).or_default().push(k);
+        }
+    }
+    // What each member's steps reach: its own and those of the readers of what it drives, to a
+    // fixed point (loop groups go round).
+    let succ: Vec<Vec<usize>> = (0..n)
+        .map(|k| {
+            let mut v: Vec<usize> = if in_settle[k] {
+                (leaves(&sel.members[k].1, false).iter())
+                    .flat_map(|l| readers.get(l).into_iter().flatten().copied())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            v.sort_unstable();
+            v.dedup();
+            v
+        })
+        .collect();
+    let mut reach = own;
+    loop {
+        let mut moved = false;
+        for k in (0..n).rev() {
+            for &m in &succ[k] {
+                if m == k {
+                    continue;
+                }
+                let theirs = std::mem::take(&mut reach[m]);
+                for (x, y) in reach[k].iter_mut().zip(&theirs) {
+                    moved |= *x | y != *x;
+                    *x |= y;
+                }
+                reach[m] = theirs;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    move |l: LeafId| {
+        let mut v = vec![0u64; words];
+        for &k in readers.get(&l).into_iter().flatten() {
+            for (x, y) in v.iter_mut().zip(&reach[k]) {
+                *x |= y;
+            }
+        }
+        v.into_boxed_slice()
+    }
+}
+
+/// A guard before its words are placed: its name, the words it reads and those it drives.
+type GuardSpec = (String, Vec<(u32, u32)>, Vec<(u32, u32)>);
+
+/// An input chunk while the inputs are grouped: its read, its range of the kernel signal, its
+/// name (`YAVS_CYCLE_STATS`) and leaf.
+type InChunk = (rt::Read, Range, (String, LeafId));
+
+/// Operations a combinational member has at least for a guard (`codegen::Guard`), which also
+/// needs it to read no more words than it has operations: a smaller member costs less to run than
+/// to compare.
+const GUARD_MIN: usize = 64;
+
+/// Input spans of a guard at most this many words apart are compared as one.
+const GUARD_GAP: u32 = 4;
 
 /// The input chunks one kernel image counts the changes of (`rt::InSig`).
 const IMAGE_CHUNKS: usize = 32;

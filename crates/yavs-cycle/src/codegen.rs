@@ -47,6 +47,32 @@ pub(crate) struct Code {
     words: usize,
     /// By instance of a shared body: the byte offset in the image of each of its blocks.
     tables: Vec<Box<[usize]>>,
+    pub(crate) guards: Vec<Guard>,
+    /// Per step of the settle: the settle's units (`compile`'s `units`) it runs; a step with
+    /// none always runs.
+    pub(crate) settle_units: Vec<Vec<u32>>,
+    /// The words of the region's signals, the first ones of the image (`YAVS_CYCLE_SKIP_CHECK`).
+    signal_words: usize,
+    /// `YAVS_CYCLE_SKIP_CHECK=1`: a run a guard would skip runs and must change nothing.
+    skip_check: bool,
+    /// With `YAVS_CYCLE_STATS`: per guard its runs and skips.
+    pub(crate) counts: Option<Vec<[std::sync::atomic::AtomicU64; 2]>>,
+    /// The guard whose skipped run changed something (`STALE`).
+    pub(crate) stale: std::sync::atomic::AtomicUsize,
+}
+
+/// A combinational member the settle skips when the words it reads are what they were at its
+/// last run (its outputs are then what that run left): those words (first, count), where their
+/// copy from the last run starts, a word saying what the last run was (0 none, 1 without checks,
+/// 2 with), and the words it drives (for `YAVS_CYCLE_SKIP_CHECK`).
+pub(crate) struct Guard {
+    pub name: String,
+    pub ins: Vec<(u32, u32)>,
+    /// Where each span of `ins` starts in the copy, from `copy`.
+    pub at: Vec<u32>,
+    pub copy: u32,
+    pub flag: u32,
+    pub outs: Vec<(u32, u32)>,
 }
 
 /// One step of a trigger function at run time.
@@ -59,6 +85,8 @@ enum Run {
     Same(usize),
     /// A function of a shared body on the instance of table `t`, its sites from `sites`.
     Shared(SharedEntry, u32, u32),
+    /// Guard `g` of the next `n` steps, a run with checks or without.
+    Guard(usize, usize, bool),
 }
 
 /// A step of the settle as [`compile`] takes it.
@@ -78,6 +106,9 @@ pub(crate) enum Step {
         table: Vec<u32>,
         sites: u32,
     },
+    /// The next `n` steps that are not guards run behind guard `g` (in functions of their own),
+    /// with checks or without.
+    Guard(usize, bool, usize),
 }
 
 /// One compiled body for several members whose code is the same but for where their words lie:
@@ -93,22 +124,52 @@ pub(crate) struct Shape {
 /// The site [`Code::run`] gives when a loop group changed in a pass after its fixed point.
 pub(crate) const UNSETTLED: u32 = u32::MAX;
 
-/// A pass after a loop group's schedule confirms its fixed point (debug builds,
-/// `YAVS_CYCLE_CHECKS=all`).
+/// The site [`Code::run`] gives when a run a guard would have skipped changed a word it drives
+/// (`YAVS_CYCLE_SKIP_CHECK=1`; the guard in [`Code::stale`]).
+pub(crate) const STALE: u32 = u32::MAX - 1;
+
+/// A pass after a loop group's schedule confirms its fixed point (debug builds, unless
+/// `YAVS_CYCLE_CHECKS=on`; `YAVS_CYCLE_CHECKS=all`).
 pub(crate) fn confirm_on() -> bool {
-    cfg!(debug_assertions) || std::env::var_os("YAVS_CYCLE_CHECKS").is_some_and(|v| v == "all")
+    match std::env::var_os("YAVS_CYCLE_CHECKS") {
+        Some(v) if v == "all" => true,
+        Some(v) if v == "on" => false,
+        _ => cfg!(debug_assertions),
+    }
 }
 
 impl Code {
-    /// Run function `f` on `img`: `Err(site)` when a check failed.
-    pub(crate) fn run(&self, img: &mut [u64], f: Fun) -> Result<(), u32> {
+    /// Run function `f` on `img`: `Err(site)` when a check failed. With `mark` (the settle only),
+    /// a step with units (`settle_units`) whose bit in `mark` is clear is skipped: what it reads
+    /// did not change since the last settle.
+    pub(crate) fn run(&self, img: &mut [u64], f: Fun, mark: Option<&[u64]>) -> Result<(), u32> {
         assert!(
             img.len() >= self.words,
             "the image is smaller than the code's words"
         );
-        for r in &self.entries[f as usize] {
-            match *r {
-                // SAFETY: the code reads and writes only words below `words`, checked above.
+        let mark = mark.filter(|_| f == Fun::Settle);
+        self.steps(img, &self.entries[f as usize], mark)
+    }
+
+    fn steps(&self, img: &mut [u64], rs: &[Run], mark: Option<&[u64]>) -> Result<(), u32> {
+        let mut i = 0;
+        while i < rs.len() {
+            if let Some(m) = mark
+                && m[i / 64] >> (i % 64) & 1 == 0
+                && !self.settle_units[i].is_empty()
+            {
+                let n = match rs[i] {
+                    Run::Guard(_, n, _) => n + 1,
+                    _ => 1,
+                };
+                if self.skip_check {
+                    self.unmoved(img, &rs[i..i + n])?;
+                }
+                i += n;
+                continue;
+            }
+            match rs[i] {
+                // SAFETY: the code reads and writes only words below `words`, checked in `run`.
                 Run::Fn(e) => match unsafe { e(img.as_mut_ptr()) } {
                     0 => {}
                     s => return Err(s - 1),
@@ -137,9 +198,113 @@ impl Code {
                         at += c;
                     }
                 }
+                Run::Guard(g, n, checked) => {
+                    let skip = self.guard(img, g, checked);
+                    if let Some(c) = &self.counts {
+                        c[g][usize::from(skip)].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    if skip {
+                        if self.skip_check {
+                            self.recheck(img, g, &rs[i + 1..i + 1 + n])?;
+                        }
+                        i += n;
+                    }
+                }
             }
+            i += 1;
         }
         Ok(())
+    }
+
+    /// Whether guard `g`'s member may be skipped; if not, the inputs that changed are copied for
+    /// the next time. Its flag word: what the last run was (bits 0 and 1) and the span of inputs
+    /// that differed last (from bit 8), compared first.
+    #[inline]
+    fn guard(&self, img: &mut [u64], g: usize, checked: bool) -> bool {
+        let gd = &self.guards[g];
+        let (flag, n) = (gd.flag as usize, gd.ins.len());
+        let need = if checked { 2 } else { 1 };
+        let (state, hint) = (img[flag] & 3, (img[flag] >> 8) as usize);
+        // Spans compared equal need no copy; from the first that differs on, every one is copied.
+        let mut from = 0;
+        if state >= need {
+            loop {
+                if from == n {
+                    return true;
+                }
+                let j = wrap(hint + from, n);
+                let (w, c) = (gd.ins[j].0 as usize, gd.ins[j].1 as usize);
+                let at = gd.copy as usize + gd.at[j] as usize;
+                if !same(&img[w..w + c], &img[at..at + c]) {
+                    break;
+                }
+                from += 1;
+            }
+        }
+        let first = if from < n { wrap(hint + from, n) } else { 0 };
+        for i in from..n {
+            let j = wrap(hint + i, n);
+            let (w, c) = (gd.ins[j].0 as usize, gd.ins[j].1 as usize);
+            let at = gd.copy as usize + gd.at[j] as usize;
+            if c <= 8 {
+                for k in 0..c {
+                    img[at + k] = img[w + k];
+                }
+            } else {
+                img.copy_within(w..w + c, at);
+            }
+        }
+        img[flag] = need | (first as u64) << 8;
+        false
+    }
+
+    /// `YAVS_CYCLE_SKIP_CHECK=1`: steps of the settle skipped as outside what the wake's inputs
+    /// reach run anyway and must leave every signal word as it was.
+    #[cold]
+    fn unmoved(&self, img: &mut [u64], rs: &[Run]) -> Result<(), u32> {
+        let before = img[..self.signal_words].to_vec();
+        self.steps(img, rs, None)?;
+        if img[..self.signal_words] != before[..] {
+            self.stale
+                .store(usize::MAX, std::sync::atomic::Ordering::Relaxed);
+            return Err(STALE);
+        }
+        Ok(())
+    }
+
+    /// `YAVS_CYCLE_SKIP_CHECK=1`: the member a guard skipped runs anyway and must leave every word
+    /// it drives as it was.
+    #[cold]
+    fn recheck(&self, img: &mut [u64], g: usize, rs: &[Run]) -> Result<(), u32> {
+        let outs = &self.guards[g].outs;
+        let before: Vec<u64> = (outs.iter())
+            .flat_map(|&(w, c)| img[w as usize..(w + c) as usize].to_vec())
+            .collect();
+        self.steps(img, rs, None)?;
+        let after: Vec<u64> = (outs.iter())
+            .flat_map(|&(w, c)| img[w as usize..(w + c) as usize].to_vec())
+            .collect();
+        if before != after {
+            self.stale.store(g, std::sync::atomic::Ordering::Relaxed);
+            return Err(STALE);
+        }
+        Ok(())
+    }
+}
+
+/// `i` taken back into `0 .. n` from below `2 * n` (no division).
+#[inline(always)]
+fn wrap(i: usize, n: usize) -> usize {
+    if i >= n { i - n } else { i }
+}
+
+/// `a == b` for slices of one length, a loop for a few words (no call of `memcmp`).
+#[inline(always)]
+fn same(a: &[u64], b: &[u64]) -> bool {
+    if a.len() <= 8 {
+        a.iter().zip(b).all(|(x, y)| x == y)
+    } else {
+        a == b
     }
 }
 
@@ -415,12 +580,15 @@ fn span(op: &Op) -> u32 {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile<'a>(
     settle: &'a [Step],
+    units: &[u32],
     edge: &'a [Step],
     init: &'a [Step],
     bodies: &'a [(Vec<Op>, bool)],
     shapes: &'a [Shape],
     groups: Vec<(Vec<(u32, u32)>, u32)>,
+    guards: Vec<Guard>,
     keep: &[bool],
+    signal_words: usize,
     err: u32,
     log: (u32, u32),
     name: &str,
@@ -515,34 +683,68 @@ pub(crate) fn compile<'a>(
     }
     let mut tables: Vec<Box<[usize]>> = Vec::new();
     let mut runs: [Vec<Pend>; 3] = Default::default();
+    let mut settle_units: Vec<Vec<u32>> = Vec::new();
     for (f, (what, steps)) in [("settle", settle), ("edge", edge), ("init", init)]
         .into_iter()
         .enumerate()
     {
         let mut cur: Vec<(Cow<'a, [Op]>, bool)> = Vec::new();
-        let flush =
-            |funs: &mut Vec<Fn<'a>>, cur: &mut Vec<(Cow<'a, [Op]>, bool)>, runs: &mut Vec<Pend>| {
-                if !cur.is_empty() {
-                    runs.extend(pack(funs, what, std::mem::take(cur), true, None).map(Pend::Fn));
+        // The settle's units (`compile`'s `units`) of the parts in `cur`, and of each step made.
+        let mut cur_units: Vec<u32> = Vec::new();
+        let flush = |funs: &mut Vec<Fn<'a>>,
+                     cur: &mut Vec<(Cow<'a, [Op]>, bool)>,
+                     cur_units: &mut Vec<u32>,
+                     runs: &mut Vec<Pend>,
+                     eunits: &mut Vec<Vec<u32>>| {
+            if !cur.is_empty() {
+                let made = pack(funs, what, std::mem::take(cur), true, None);
+                cur_units.sort_unstable();
+                cur_units.dedup();
+                for k in made {
+                    runs.push(Pend::Fn(k));
+                    eunits.push(cur_units.clone());
                 }
+            }
+            cur_units.clear();
+        };
+        let mut eunits: Vec<Vec<u32>> = Vec::new();
+        // The guards open: each one's place, what it is and the steps it still covers.
+        let mut open: Vec<(usize, usize, bool, usize)> = Vec::new();
+        for (si, st) in steps.iter().enumerate() {
+            let unit: Vec<u32> = match units.get(si) {
+                Some(&u) if f == 0 && u != u32::MAX => vec![u],
+                _ => Vec::new(),
             };
-        for st in steps {
-            let r = match st {
+            match st {
                 Step::Ops(p) => {
                     cur.extend(parts(p));
-                    continue;
+                    cur_units.extend(&unit);
                 }
                 Step::Call(b) => {
-                    flush(&mut funs, &mut cur, &mut runs[f]);
-                    runs[f].extend(bodies[*b].clone().map(Pend::Fn));
-                    continue;
+                    flush(
+                        &mut funs,
+                        &mut cur,
+                        &mut cur_units,
+                        &mut runs[f],
+                        &mut eunits,
+                    );
+                    for k in bodies[*b].clone() {
+                        runs[f].push(Pend::Fn(k));
+                        eunits.push(unit.clone());
+                    }
                 }
                 Step::Shared {
                     shape,
                     table,
                     sites,
                 } => {
-                    flush(&mut funs, &mut cur, &mut runs[f]);
+                    flush(
+                        &mut funs,
+                        &mut cur,
+                        &mut cur_units,
+                        &mut runs[f],
+                        &mut eunits,
+                    );
                     let blocks = &shapes[*shape].blocks;
                     if table.len() != blocks.len()
                         || (table.iter().zip(blocks)).any(|(&w, &(_, n))| (w + n) as usize > words)
@@ -551,16 +753,85 @@ pub(crate) fn compile<'a>(
                     }
                     let t = tables.len() as u32;
                     tables.push(table.iter().map(|&w| w as usize * 8).collect());
-                    runs[f].extend(shaped[*shape].clone().map(|k| Pend::Shared(k, t, *sites)));
+                    for k in shaped[*shape].clone() {
+                        runs[f].push(Pend::Shared(k, t, *sites));
+                        eunits.push(unit.clone());
+                    }
+                }
+                Step::Guard(g, checked, n) => {
+                    if *n == 0 || open.last().is_some_and(|o| o.3 < *n) {
+                        return Err("a guard that does not nest in the one around it".into());
+                    }
+                    flush(
+                        &mut funs,
+                        &mut cur,
+                        &mut cur_units,
+                        &mut runs[f],
+                        &mut eunits,
+                    );
+                    open.push((runs[f].len(), *g, *checked, *n));
+                    runs[f].push(Pend::Run(Run::Guard(*g, 0, *checked)));
+                    eunits.push(Vec::new());
                     continue;
                 }
-                Step::Save(g) => Run::Save(*g),
-                Step::Same(g) => Run::Same(*g),
-            };
-            flush(&mut funs, &mut cur, &mut runs[f]);
-            runs[f].push(Pend::Run(r));
+                Step::Save(g) => {
+                    flush(
+                        &mut funs,
+                        &mut cur,
+                        &mut cur_units,
+                        &mut runs[f],
+                        &mut eunits,
+                    );
+                    runs[f].push(Pend::Run(Run::Save(*g)));
+                    eunits.push(Vec::new());
+                }
+                Step::Same(g) => {
+                    flush(
+                        &mut funs,
+                        &mut cur,
+                        &mut cur_units,
+                        &mut runs[f],
+                        &mut eunits,
+                    );
+                    runs[f].push(Pend::Run(Run::Same(*g)));
+                    eunits.push(Vec::new());
+                }
+            }
+            // A guarded step in functions of its own: the guard skips them all.
+            for o in &mut open {
+                o.3 -= 1;
+            }
+            while let Some(&(at, g, checked, 0)) = open.last() {
+                flush(
+                    &mut funs,
+                    &mut cur,
+                    &mut cur_units,
+                    &mut runs[f],
+                    &mut eunits,
+                );
+                let n = runs[f].len() - at - 1;
+                runs[f][at] = Pend::Run(Run::Guard(g, n, checked));
+                // A guard is in the settle's units of what it covers.
+                let mut u: Vec<u32> = eunits[at + 1..].concat();
+                u.sort_unstable();
+                u.dedup();
+                eunits[at] = u;
+                open.pop();
+            }
         }
-        flush(&mut funs, &mut cur, &mut runs[f]);
+        if !open.is_empty() {
+            return Err("a guard with fewer steps after it than it covers".into());
+        }
+        flush(
+            &mut funs,
+            &mut cur,
+            &mut cur_units,
+            &mut runs[f],
+            &mut eunits,
+        );
+        if f == 0 {
+            settle_units = eunits;
+        }
     }
     // Developers: `YAVS_CYCLE_STATS=1` prints each function's operations, Cranelift instructions,
     // machine code bytes and compile time.
@@ -655,8 +926,8 @@ pub(crate) fn compile<'a>(
         if disasm && let Some(text) = ctx.compiled_code().and_then(|c| c.vcode.as_ref()) {
             eprintln!("{sym}:\n{text}");
         }
+        let bytes = ctx.compiled_code().map_or(0, |c| c.code_info().total_size);
         if stats {
-            let bytes = ctx.compiled_code().map_or(0, |c| c.code_info().total_size);
             eprintln!(
                 "cycle stats: {sym}: {} operations, {n_ir} instructions, {bytes} bytes, {} us{}",
                 ops.iter().map(|(p, _)| weight(p)).sum::<usize>(),
@@ -664,7 +935,7 @@ pub(crate) fn compile<'a>(
                 if hit { ", from the cache" } else { "" }
             );
         }
-        ids.push((id, sym));
+        ids.push((id, sym, bytes));
     }
     module.finalize_definitions().map_err(|e| e.to_string())?;
     if stats {
@@ -676,9 +947,8 @@ pub(crate) fn compile<'a>(
     }
     let addr = |id: FuncId| module.get_finalized_function(id);
     if perf {
-        for (id, sym) in &ids {
-            // The size is not kept by the module; one page is an upper bound for a label.
-            yavs_rt::perfmap::append(addr(*id) as usize, 4096, sym);
+        for (id, sym, bytes) in &ids {
+            yavs_rt::perfmap::append(addr(*id) as usize, *bytes as usize, sym);
         }
     }
     let mut entries: [Vec<Run>; 3] = Default::default();
@@ -702,12 +972,29 @@ pub(crate) fn compile<'a>(
     // The edge runs the settle after its own pieces.
     let after = entries[0].clone();
     entries[1].extend(after);
+    if guards.iter().any(|g| {
+        let end = |v: &[(u32, u32)]| v.iter().map(|&(w, c)| (w + c) as usize).max().unwrap_or(0);
+        let n: u32 = g.ins.iter().map(|x| x.1).sum();
+        end(&g.ins) > words
+            || end(&g.outs) > words
+            || (g.copy + n) as usize > words
+            || g.flag as usize >= words
+    }) {
+        return Err("a guard's words do not fit the image".into());
+    }
+    let counts = stats.then(|| guards.iter().map(|_| Default::default()).collect());
     Ok(Code {
         _module: module,
         entries,
         groups,
         words,
         tables,
+        guards,
+        settle_units,
+        signal_words,
+        skip_check: std::env::var_os("YAVS_CYCLE_SKIP_CHECK").is_some_and(|v| v == "1"),
+        counts,
+        stale: Default::default(),
     })
 }
 

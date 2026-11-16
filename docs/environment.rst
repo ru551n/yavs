@@ -684,8 +684,8 @@ Compiled tiers: Cranelift
      - ``1`` in a debug build, else ``0``
      - ``run``
    * - ``YAVS_CYCLE_CHECKS``
-     - ``off``: the code of a cycle region (``--cycle``) leaves out its integer overflow and range checks and clamps an index chosen at run time into its array, to measure what the checks cost. Results are wrong where a check would have failed. ``all``: the checks, and after the processes of a loop group (processes reading through one another what they drive) one more run of each, which must change nothing; a change stops the run with an internal error (a debug build always does this).
-     - ``off``, ``all``
+     - ``off``: the code of a cycle region (``--cycle``) leaves out its integer overflow and range checks and clamps an index chosen at run time into its array, to measure what the checks cost. Results are wrong where a check would have failed. ``all``: the checks, and after the processes of a loop group (processes reading through one another what they drive) one more run of each, which must change nothing; a change stops the run with an internal error (a debug build does this unless the value is ``on``). ``on``: the checks without that run, also in a debug build (for the tests).
+     - ``off``, ``on``, ``all``
      - checks on
      - ``run``
    * - ``YAVS_CYCLE_CHUNK``
@@ -703,18 +703,23 @@ Compiled tiers: Cranelift
      - ``1``
      - unset
      - ``run``
-   * - ``YAVS_CYCLE_FLAGS``
-     - Developers: more Cranelift settings for the code of a cycle region (``--cycle``), as ``name=value`` pairs separated by commas (for example ``opt_level=none``), to measure what they cost; a name or value Cranelift does not know is an internal error of the region.
-     - ``name=value,...``
-     - unset
+   * - ``YAVS_CYCLE_GUARD``
+     - Developers: ``all`` lets a cycle region (``--cycle``) skip every combinational step whose inputs did not change since its last run, also the small ones it would otherwise always run (for the tests).
+     - ``all``
+     - only processes large enough to repay the comparison
      - ``run``
    * - ``YAVS_CYCLE_IMPORT_CHECK``
      - ``1``: a cycle region (``--cycle``), which reads only the inputs that changed since its last wake, reads all of them again after each wake and stops with an internal error if one differs.
      - ``1``
      - unset
      - ``run``
+   * - ``YAVS_CYCLE_SKIP_CHECK``
+     - ``1``: a cycle region (``--cycle``) runs every process it would skip because the values it reads did not change since its last run, and stops with an internal error if that run changes what the process drives.
+     - ``1``
+     - unset
+     - ``run``
    * - ``YAVS_CYCLE_STATS``
-     - Developers: prints on standard error, for a cycle region (``--cycle``), each compiled function's operations, Cranelift instructions, machine code bytes, compile time and whether its machine code came from the compilation cache, and how many of its processes would compile to the same code (shapes).
+     - Developers: prints on standard error, for a cycle region (``--cycle``), each compiled function's operations, Cranelift instructions, machine code bytes, compile time and whether its machine code came from the compilation cache, and how many of its processes would compile to the same code (shapes); after the run, the region's wakes, the inputs read most often in wakes without a clock edge, and how often each skippable process ran and was skipped.
      - any value
      - unset
      - ``run``

@@ -110,8 +110,8 @@ enum Found {
     Hit(Box<Selection>, Vec<u8>, u64, Key),
     /// The region built, with its machine code (`fast`).
     Fast(Box<Fast>),
-    /// Not in the cache: the key's parts, to store it under.
-    Miss(Vec<u8>, Key),
+    /// Not in the cache: the key's parts, to store it under, and the files the walk read.
+    Miss(Vec<u8>, Key, usize),
 }
 
 /// A region from the cache: what `build` made, its check sites (their encoding) and the machine
@@ -173,8 +173,8 @@ static CODE: Mutex<Option<(Store, Key, bool)>> = Mutex::new(None);
 /// no function body built.
 pub(crate) type Blob = Vec<(u64, Vec<u8>)>;
 
-/// The region built from the selection of key `k` and its machine code: postcard of [`Fast`],
-/// for the code's target.
+/// The region built from the selection of key `k` and its machine code ([`encode`]), for the
+/// code's target.
 const BUILT: &str = "cyc3c";
 
 fn code_key(k: &Key) -> Option<Key> {
@@ -263,8 +263,9 @@ pub fn analysis_cache(
 /// Everything the analysis depends on but the generics: the yavs build (in every key), the
 /// analysis of the closure (its files, their hashes, the options) and what elaboration added to
 /// the `Db`, the source files in order (spans name them by number), the command line, the
-/// environment variables of yavs.
-fn base(db: &Db, s: &Setup) -> Option<Vec<u8>> {
+/// environment variables of yavs, and the text files the elaboration read (`files`: name as
+/// given and bytes, with the working directory they are found from).
+fn base(db: &Db, s: &Setup, files: &[(Vec<u8>, Option<Vec<u8>>)]) -> Option<Vec<u8>> {
     let id = db
         .stages()?
         .identity(&db.stage_extent(), KIND, FORMAT.as_bytes())?;
@@ -286,6 +287,16 @@ fn base(db: &Db, s: &Setup) -> Option<Vec<u8>> {
     for (k, v) in env {
         put(k.as_bytes());
         put(v.as_bytes());
+    }
+    if !files.is_empty() {
+        put(std::env::current_dir().ok()?.as_os_str().as_encoded_bytes());
+        for (name, bytes) in files {
+            put(name);
+            match bytes {
+                Some(x) => put(x),
+                None => put(b"\0no such file"),
+            }
+        }
     }
     Some(b)
 }
@@ -326,17 +337,21 @@ fn look(db: &Db, reads: &GenericReads) -> bool {
     let Some(s) = setup.as_ref() else {
         return false;
     };
-    if yavs_interp::outside_calls() > 0 {
+    // Text files read from disk are in the key with their bytes.
+    if yavs_interp::outside_calls() > yavs_interp::file_calls() {
         stat(|| {
-            "analysis not cached: elaboration read a file, the environment or foreign code".into()
+            "analysis not cached: elaboration wrote a file or read the environment, the clock or \
+             foreign code"
+                .into()
         });
         return false;
     }
+    let files = yavs_interp::files_read();
     // The selection writes the file of `YAVS_CYCLE_SEEDS` (developers): a hit would not.
     if std::env::var_os("YAVS_CYCLE_SEEDS").is_some() {
         return false;
     }
-    let Some(b) = base(db, s) else {
+    let Some(b) = base(db, s, &files) else {
         return false;
     };
     let k1 = key(INDEX, &b, db, reads, &s.overrides, reads.walk);
@@ -356,7 +371,7 @@ fn look(db: &Db, reads: &GenericReads) -> bool {
             Some(Found::Hit(Box::new(sel), p.to_vec(), extra, k2))
         });
     let skip = hit.is_some() && !s.check;
-    *found = Some(hit.unwrap_or(Found::Miss(b, k1)));
+    *found = Some(hit.unwrap_or(Found::Miss(b, k1, files.len())));
     skip
 }
 
@@ -429,9 +444,13 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Result<Got, Vec<Diagnostic>> {
             drop(setup);
             code(&k2);
         }
-        (Some(Found::Miss(b, k1)), Some(s)) => {
+        (Some(Found::Miss(b, k1, files)), Some(s)) => {
             let k2 = key(KIND, &b, db, reads, &s.overrides, reads.walk | extra);
-            if yavs_interp::outside_calls() > 0 || reads.reported {
+            // Files read after the walk are not in the key.
+            if yavs_interp::outside_calls() > yavs_interp::file_calls()
+                || yavs_interp::files_read().len() != files
+                || reads.reported
+            {
                 stat(|| "analysis not cached: the value passes read outside or reported".into());
             } else if s.store.sightings(KIND, &k1, &k2) > PER_DESIGN {
                 stat(|| {

@@ -5905,6 +5905,7 @@ impl Machine {
         cells.clear();
         self.push_args(&mut cells, f, args, None, 0)?;
         let v = fun(self, ctx, n.ty, &cells);
+        crate::note_outside_done();
         let v = match v {
             Ok(v) => v,
             Err(e) => {

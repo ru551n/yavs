@@ -3458,13 +3458,14 @@ fn the_analysis_from_the_cache_gives_the_same_result() {
     assert!(a.contains(hit), "after the race: {a}");
 }
 
-/// An elaboration that reads a file (a constant from an impure function of `textio`) keeps no
-/// analysis in the cache: the file is not in the key, and a run after it changed follows it.
+/// An elaboration that reads a file (a constant from an impure function of `textio`) keeps the
+/// file's bytes in the key of its analysis: a run after the file changed follows it, and a run on
+/// the same bytes takes the analysis from the cache. One that also writes a file keeps none.
 #[test]
-fn an_elaboration_that_reads_a_file_keeps_no_analysis() {
+fn an_elaboration_that_reads_a_file_keys_its_bytes() {
     let dir = tempdir("cycle-acfile");
     analyze(&dir, "acfile.vhd", include_str!("cycle/acfile.vhd"));
-    let run = |step: &str| {
+    let run = |step: &str, flags: &[&str], cache: &str| {
         std::fs::write(dir.join("acfile.txt"), format!("{step}\n")).expect("write");
         let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
             .current_dir(&dir)
@@ -3478,6 +3479,7 @@ fn an_elaboration_that_reads_a_file_keeps_no_analysis() {
                 "--tier=interp",
             ])
             .args(["--cycle", "acfile"])
+            .args(flags)
             .output()
             .expect("run yavs");
         let (out, err) = (
@@ -3486,16 +3488,21 @@ fn an_elaboration_that_reads_a_file_keeps_no_analysis() {
         );
         assert!(o.status.success(), "{out}{err}");
         assert!(err.contains("run cycle-based"), "{err}");
-        assert!(err.contains("analysis not cached"), "{err}");
-        assert!(!err.contains("analysis from the cache"), "{err}");
+        assert!(err.contains(cache), "{step} {flags:?}: {err}");
         out.lines()
             .find(|l| l.contains("a="))
             .expect("report")
             .to_string()
     };
-    assert!(run("3").ends_with("a=30"));
-    assert!(run("3").ends_with("a=30"));
-    assert!(run("5").ends_with("a=50"));
+    let (stored, hit) = ("analysis stored", "analysis from the cache");
+    assert!(run("3", &[], stored).ends_with("a=30"));
+    assert!(run("3", &[], hit).ends_with("a=30"));
+    assert!(run("5", &[], stored).ends_with("a=50"));
+    assert!(run("5", &[], hit).ends_with("a=50"));
+    assert!(run("3", &[], hit).ends_with("a=30"));
+    let wrote = "analysis not cached: elaboration wrote a file";
+    assert!(run("4", &["-gWR=true"], wrote).ends_with("a=40"));
+    assert!(run("4", &["-gWR=true"], wrote).ends_with("a=40"));
 }
 
 /// A region of more functions than the store keeps is not cached: it could never be warm, and

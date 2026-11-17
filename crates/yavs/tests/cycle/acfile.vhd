@@ -1,10 +1,12 @@
 -- The analysis cache of cycle mode and an elaboration that reads a file: a register of the region
--- adds a step that a constant reads from `acfile.txt` with an impure function.
+-- adds a step that a constant reads from `acfile.txt` with an impure function. With `WR` the
+-- elaboration also writes a file.
 library ieee;
 use ieee.std_logic_1164.all;
 use std.textio.all;
 
 entity acfile is
+  generic (WR : boolean := false);
 end entity;
 
 architecture tb of acfile is
@@ -17,7 +19,19 @@ architecture tb of acfile is
     read(l, v);
     return v;
   end function;
-  constant STEP : natural := from_file;
+  impure function maybe_write(w : boolean) return natural is
+    file f : text;
+    variable l : line;
+  begin
+    if w then
+      file_open(f, "acfile.out", write_mode);
+      write(l, string'("x"));
+      writeline(f, l);
+      file_close(f);
+    end if;
+    return 0;
+  end function;
+  constant STEP : natural := from_file + maybe_write(WR);
   signal clk : std_ulogic := '0';
   signal a : natural range 0 to 999 := 0;
 begin

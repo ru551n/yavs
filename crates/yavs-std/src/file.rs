@@ -236,6 +236,11 @@ impl TextFile {
         self
     }
 
+    /// Opened for reading from a file on disk (not a stream, not `read_write`), and still open.
+    pub fn reads_disk(&self) -> bool {
+        self.kind == FileOpenKind::Read && matches!(self.inner, Some(Inner::Disk(_)))
+    }
+
     /// The external name given to FILE_OPEN (empty for a stream made by the runtime).
     pub fn logical_name(&self) -> &[u8] {
         &self.name

@@ -1,0 +1,8 @@
+exit	0
+diag	note	7000000	0	:drive_var_later:stim	s1=00000000 s2=00000000 s3=00000000 q=00000000 sv=00
+diag	note	17000000	0	:drive_var_later:stim	s1=00000000 s2=12345678 s3=00000000 q=00000000 sv=00
+diag	note	27000000	0	:drive_var_later:stim	s1=12345679 s2=12345679 s3=00005679 q=12345679 sv=79
+diag	note	37000000	0	:drive_var_later:stim	s1=1234567A s2=1234567A s3=0000567A q=1234567A sv=7A
+diag	note	47000000	0	:drive_var_later:stim	s1=00000000 s2=FFFFFFFF s3=00000000 q=00000000 sv=00
+diag	note	57000000	0	:drive_var_later:stim	s1=1234567C s2=1234567C s3=0000567C q=1234567C sv=7C
+diag	finish	60000000	0	-	0

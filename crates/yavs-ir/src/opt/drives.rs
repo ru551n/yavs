@@ -16,7 +16,9 @@
 //! into it, and the temporaries and constants only they read, none of which can fail. Registers
 //! defined once that these read (the target, an offset, a count) keep their value and stay;
 //! everything the moved instructions define is read by no other instruction. Signal values do
-//! not change inside an activation, so a copy reads what the original read.
+//! not change inside an activation, so a copy reads what the original read; a copy out of other
+//! memory (a variable, which a later statement may assign) keeps the drive where it is: a moved
+//! copy reads only a block of the drive or constant memory.
 //!
 //! Two drives are the same when their targets are: an instance signal, an offset (the same
 //! constant or the same register) and a length. The driver slot is no part of it, because two
@@ -752,6 +754,22 @@ impl Dr<'_> {
             }
         }
         let m: Vec<usize> = (0..=k - s0).filter(|&x| inm[x]).map(|x| x + s0).collect();
+        // A copy reads memory: only a block of the drive or constant memory, which nothing
+        // changes before the delayed copy runs. A variable can (`s <= v; v := x;`).
+        for &x in &m {
+            let (Inst::Copy { src, .. } | Inst::LCopy { src, .. }) = c[x] else {
+                continue;
+            };
+            let (mut r, mut at) = (src, x);
+            while !self.const_addr(r) {
+                let d = (s0..at).rev().find(|&j| defines(&c[j], r))?;
+                match c[d] {
+                    Inst::Alloc { .. } if m.binary_search(&d).is_ok() => break,
+                    Inst::Index { base, .. } | Inst::Move { src: base, .. } => (r, at) = (base, d),
+                    _ => return None,
+                }
+            }
+        }
         // Closed: what the instructions define is read only by them.
         for &d in &m {
             let mut dsts: Vec<Reg> = Vec::new();

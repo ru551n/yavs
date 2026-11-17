@@ -6137,3 +6137,54 @@ begin
   end process;
 end architecture;
 ";
+
+/// Reasons of one code with other wording (A40): each process of `strictmore.vhd` gives the row
+/// of its reason in the region report, the same words as its error under `--cycle-strict`.
+#[test]
+fn cycle_strict_reason_variants_are_triggered() {
+    let dir = tempdir("cycle-strict-more");
+    analyze(&dir, "strictmore.vhd", include_str!("cycle/strictmore.vhd"));
+    let report = verdicts(&dir, "t_more");
+    for (label, want) in [
+        (
+            "reset_reads_clock",
+            "E4123 a clocked process of another shape: the asynchronous reset condition reads the clock (strictmore.vhd:16)",
+        ),
+        (
+            "reset_no_signal",
+            "E4123 a clocked process of another shape: the branch before the edge test tests no signal, so it is not an asynchronous reset (strictmore.vhd:24)",
+        ),
+        (
+            "next_outer",
+            "E4139 a `next` of an outer loop (strictmore.vhd:36)",
+        ),
+        (
+            "no_exit",
+            "E4139 a loop without an exit (strictmore.vhd:48)",
+        ),
+        (
+            "big_loops",
+            "E4101 a loop of 300 iterations, more than the 65536 statements cycle mode unrolls (strictmore.vhd:59)",
+        ),
+        (
+            "guarded_null.nul",
+            "E4115 a `null` waveform (strictmore.vhd:79)",
+        ),
+        (
+            "guarded_null.GUARD <= ...",
+            "E4115 a guarded block (strictmore.vhd:74)",
+        ),
+        (
+            "dyn_loop",
+            "E4101 a value that is not known during elaboration (`to_integer(unsigned(v))`) (strictmore.vhd:90)",
+        ),
+    ] {
+        let (_, r) = row(&report, &format!("t_more.dut.{label}"));
+        assert!(r.ends_with(want), "{label}: {r}");
+    }
+    let err = strict_err(&dir, "t_more", &[]);
+    assert!(
+        err.contains("error[E4139]: a `next` of an outer loop is not supported in cycle mode"),
+        "{err}"
+    );
+}

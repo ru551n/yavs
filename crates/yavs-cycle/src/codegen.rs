@@ -1031,12 +1031,20 @@ fn join_level(mut ops: Vec<Op>, keep: &[bool], reads: &Words<u32>, wrote: &Words
                 return false;
             };
             let mut need = vec![word(*cond)];
+            // The words the chain's later operations write: an operation reading one of them or
+            // its own (`a := a and en`) would read what an earlier run left.
+            let mut later: Vec<i32> = Vec::new();
             let mut a = j;
             while a > i {
                 match chain_dst(&ops[a - 1]) {
-                    // Not one that reads what it writes (`a := a and en`).
-                    Some(d) if need.contains(&d) && !reads_word(&ops[a - 1], d) => {
-                        reads_of(&ops[a - 1], &mut need);
+                    Some(d) if need.contains(&d) => {
+                        later.push(d);
+                        let mut r = Vec::new();
+                        reads_of(&ops[a - 1], &mut r);
+                        if r.iter().any(|w| later.contains(w)) {
+                            break;
+                        }
+                        need.extend(r);
                         a -= 1;
                     }
                     _ => break,
@@ -1140,13 +1148,6 @@ fn join_level(mut ops: Vec<Op>, keep: &[bool], reads: &Words<u32>, wrote: &Words
         }
     }
     out
-}
-
-/// Whether `op` reads word `w`.
-fn reads_word(op: &Op, w: i32) -> bool {
-    let mut r = Vec::new();
-    reads_of(op, &mut r);
-    r.contains(&w)
 }
 
 /// The words `op` reads (`reads`), added to `need`.
@@ -3645,6 +3646,39 @@ mod tests {
         let own = |v: u32, c: u32| var(v, 0, c)[1..].to_vec();
         assert_eq!(
             ifs(&join_ifs(&[own(20, 30), own(21, 31)].concat(), &keep)),
+            2
+        );
+        // A chain operation reading a word a later one of the chain writes (what the last run left).
+        let stale = |t: u32, c: u32| {
+            vec![
+                Op::Copy {
+                    dst: l(t),
+                    src: l(t + 1),
+                    len: 1,
+                },
+                Op::Lit {
+                    dst: l(t + 1),
+                    val: vec![1].into(),
+                },
+                Op::Gate {
+                    g: crate::lower::Gate::And,
+                    dst: l(t + 2),
+                    a: l(t),
+                    b: l(t + 1),
+                    len: 1,
+                },
+                Op::If {
+                    cond: l(t + 2),
+                    then: vec![Op::Lit {
+                        dst: l(c),
+                        val: vec![1].into(),
+                    }],
+                    else_: vec![],
+                },
+            ]
+        };
+        assert_eq!(
+            ifs(&join_ifs(&[stale(40, 30), stale(44, 31)].concat(), &keep)),
             2
         );
         // A chain word written again later in the member: apart.

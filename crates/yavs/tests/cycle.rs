@@ -4336,6 +4336,45 @@ fn lanes_moved_word_by_word_equal_the_normal_mode() {
     }
 }
 
+/// A format record made by an aggregate whose field leaves its subtype (`s` is 2 in `natural
+/// range 0 to 1`) is not folded: the process stays in the kernel and fails with the normal
+/// mode's message, at the `return` of the function that made it.
+#[test]
+fn a_record_field_outside_its_subtype_fails_as_in_the_normal_mode() {
+    let dir = tempdir("cycle-recfmt-range");
+    let good = "return (s => 1, f => a.f";
+    let text = include_str!("cycle/recfmt.vhd");
+    assert!(text.contains(good));
+    for w in [1, 63, 64, 65, 128] {
+        let bad = with_width(&text.replace(good, "return (s => a.s + 1, f => a.f"), w);
+        analyze(&dir, &format!("recfmtr{w}.vhd"), &bad);
+        for t in tiers() {
+            let mut shown = Vec::new();
+            for mode in [None, Some("--cycle")] {
+                let mut args = vec!["run", "--work=work:lib", "--no-cache"];
+                args.extend(&t);
+                args.extend(mode);
+                args.push("cycle_recfmt");
+                let o = yavs(&dir, &args);
+                let err = String::from_utf8_lossy(&o.stderr).into_owned();
+                assert_eq!(o.status.code(), Some(1), "{w} {t:?} {mode:?}: {err}");
+                assert!(
+                    err.contains("error[E3009]: value 2 outside of INTEGER range 0 to 1"),
+                    "{w} {t:?} {mode:?}: {err}"
+                );
+                if mode.is_some() {
+                    assert!(
+                        err.contains("cycle mode: 0 of 2 processes run cycle-based"),
+                        "{w} {t:?}: {err}"
+                    );
+                }
+                shown.push(err[err.find("error[").expect("an error")..].to_string());
+            }
+            assert_eq!(shown[0], shown[1], "{w} {t:?}");
+        }
+    }
+}
+
 /// Clocks whose edges come in a known delta of their time step (made with a delay: the first;
 /// by clock processes waiting for a time: the second) share an edge group with logic between
 /// their registers, logic of the second kind's registers sampled by the first kind's joins, and

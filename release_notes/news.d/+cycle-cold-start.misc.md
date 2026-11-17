@@ -1,0 +1,1 @@
+The first run of a design under `yavs run --cycle` starts faster: the region's analysis does less work, and functions already in the compilation cache are linked without building them again. Test cases whose analysis and region come out the same keep one copy of them in the cache.

@@ -2015,6 +2015,15 @@ fn run_design(
         yavs_cycle::set_cache(
             (!a.common.no_cache && !work.is_empty()).then(|| std::path::Path::new(work)),
         );
+        // Its functions compile on `--threads` threads (those past the first on tokens under a
+        // token server), no more than the CPUs the run may use.
+        let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+        yavs_cycle::set_threads(
+            a.threads.count().min(cpus),
+            tokens
+                .clone()
+                .map(|p| p as std::sync::Arc<dyn yavs_kernel::Tokens>),
+        );
         match yavs_cycle::plan(&db, &e, mode) {
             Ok(plan) => {
                 if mode == yavs_cycle::Mode::Report {

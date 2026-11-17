@@ -14,8 +14,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::rc::Rc;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use cranelift_codegen::entity::SecondaryMap;
 use cranelift_codegen::ir::condcodes::IntCC;
@@ -26,7 +25,7 @@ use cranelift_codegen::ir::{
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module};
+use cranelift_module::{FuncId, Linkage, Module, ModuleReloc};
 use yavs_cache::{Key, KeyBuilder, Store};
 
 use crate::lower::{Arith, Cmp, Gate, Op, Ref, ShiftK};
@@ -466,6 +465,28 @@ const KIND: &str = "cycle";
 // ponytail: one store per process, as the compiled tier's (a run simulates one design).
 static STORE: Mutex<Option<Store>> = Mutex::new(None);
 
+// ponytail: one budget per process, as the store; set before the region is compiled.
+static THREADS: Mutex<(usize, Option<Arc<dyn yavs_kernel::Tokens>>)> = Mutex::new((1, None));
+
+/// Compile the region's functions on up to `n` threads, those past the first only on tokens of
+/// `tokens` when a test runner's token server lends them (`--threads`).
+pub fn set_threads(n: usize, tokens: Option<Arc<dyn yavs_kernel::Tokens>>) {
+    *THREADS.lock().unwrap_or_else(PoisonError::into_inner) = (n.max(1), tokens);
+}
+
+/// The threads to compile on, and the token server; developers: `YAVS_CYCLE_THREADS=N` instead
+/// of `--threads`'s count.
+fn threads() -> (usize, Option<Arc<dyn yavs_kernel::Tokens>>) {
+    let (n, t) = THREADS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    let env = std::env::var("YAVS_CYCLE_THREADS")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    (env.filter(|&n| n > 0).unwrap_or(n), t)
+}
+
 /// Keep the machine code of the region's functions in the compilation cache of library directory
 /// `lib` from now on (`None`: compile every function).
 pub fn set_cache(lib: Option<&Path>) {
@@ -658,7 +679,7 @@ impl std::hash::Hasher for WordHash {
 
 /// A part of a piece: its operations and, when its member goes on in the next part, the words
 /// the later parts read (scratch words among them are live at the part's end).
-type Part<'a> = (Cow<'a, [Op]>, Option<Rc<Words<()>>>);
+type Part<'a> = (Cow<'a, [Op]>, Option<Arc<Words<()>>>);
 
 /// Most words in registers at once: [`CACHE_MAX`], or fewer with `YAVS_CYCLE_REGS` (developers:
 /// a small value flushes the registers every few words, to test the code that does it).
@@ -679,7 +700,7 @@ fn parts(ops: &[Op]) -> Vec<Part<'_>> {
         return vec![(Cow::Borrowed(ops), None)];
     }
     let ps = cut(ops, chunk());
-    let mut later: Option<Rc<Words<()>>> = None;
+    let mut later: Option<Arc<Words<()>>> = None;
     let mut out: Vec<Part<'_>> = Vec::new();
     for p in ps.into_iter().rev() {
         let mut next = later.as_deref().cloned().unwrap_or_default();
@@ -687,7 +708,7 @@ fn parts(ops: &[Op]) -> Vec<Part<'_>> {
             next.insert(w, ());
         });
         out.push((Cow::Owned(p), later.take()));
-        later = Some(Rc::new(next));
+        later = Some(Arc::new(next));
     }
     out.reverse();
     out
@@ -1164,7 +1185,7 @@ fn span(op: &Op) -> u32 {
 
 /// The target of the region's code (the host, with `YAVS_CYCLE_FLAGS`) and a module for it, with
 /// the target's name: its triple and flags, the key of the code in the cache.
-fn module() -> Result<(JITModule, String), String> {
+fn module() -> Result<(JITModule, String, cranelift_codegen::isa::OwnedTargetIsa), String> {
     let mut flags = settings::builder();
     let set = |f: &mut settings::Builder, k: &str, v: &str| f.set(k, v).map_err(|e| e.to_string());
     set(&mut flags, "opt_level", "speed")?;
@@ -1194,8 +1215,8 @@ fn module() -> Result<(JITModule, String), String> {
         .fold(format!("{} {}", isa.triple(), isa.flags()), |a, v| {
             format!("{a} {v}")
         });
-    let jb = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-    Ok((JITModule::new(jb), isa_id))
+    let jb = JITBuilder::with_isa(isa.clone(), cranelift_module::default_libcall_names());
+    Ok((JITModule::new(jb), isa_id, isa))
 }
 
 /// The name of the target the region's code is made for ([`module`]).
@@ -1233,8 +1254,7 @@ pub(crate) fn compile<'a>(
     name: &str,
 ) -> Result<(Code, CodePlan, Option<crate::store::Blob>), String> {
     let words = keep.len();
-    let (mut module, isa) = module()?;
-    let ptr = module.target_config().pointer_type();
+    let (mut module, isa, target) = module()?;
     let checks = checks_on();
     // The functions to compile (label, parts, whether checks exit), the loop bodies first; and
     // what each trigger function runs, a function by its index. A part says whether its member
@@ -1532,17 +1552,16 @@ pub(crate) fn compile<'a>(
         }),
         settle_outs: Vec::new(),
     };
-    let (mut ctx, mut fbc) = (module.make_context(), FunctionBuilderContext::new());
+    // Three passes: the cache in function order; the functions it does not have built and
+    // compiled on up to `threads()` threads; the code defined in function order, so the module,
+    // the cache's entries and the output are those of one thread.
+    let mut slots: Vec<Slot> = Vec::with_capacity(funs.len());
     for (k, (_, ops, checked, shape)) in funs.iter().enumerate() {
         let t = std::time::Instant::now();
         let (id, sym, sig) = declare(&mut module, &plan.funs[k])?;
         if let Some(b) = &take {
-            let (align, bytes) = &b[k];
-            module
-                .define_function_bytes(id, *align, bytes, &[])
-                .map_err(|e| format!("{e:?}"))?;
-            hits += 1;
-            ids.push((id, sym, bytes.len() as u32));
+            let (align, bytes) = b[k].clone();
+            slots.push(Slot::Blob(id, sym, align, bytes));
             continue;
         }
         let fkeep = shape.map_or(keep, |k| &shapes[k].keep[..]);
@@ -1563,32 +1582,228 @@ pub(crate) fn compile<'a>(
         let cached = (store.as_ref().zip(key.as_ref()))
             .and_then(|(s, key)| s.get(KIND, key))
             .and_then(|e| from_entry(&e, fkeep, (err, log)));
-        if let Some((align, bytes)) = cached.as_ref().filter(|_| !cache_check) {
-            module
-                .define_function_bytes(id, *align, bytes, &[])
-                .map_err(|e| format!("{e:?}"))?;
-            if let Some(m) = made.as_mut() {
-                m.push((*align, bytes.clone()));
+        slots.push(match cached {
+            Some((align, bytes)) if !cache_check => {
+                Slot::Hit(id, sym, align, bytes, t.elapsed().as_micros())
             }
-            hits += 1;
-            if stats {
-                eprintln!(
-                    "cycle stats: {sym}: {} operations, {} bytes, {} us, from the cache",
-                    ops.iter().map(|(p, _)| weight(p)).sum::<usize>(),
-                    bytes.len(),
-                    t.elapsed().as_micros(),
-                );
-            }
-            ids.push((id, sym, bytes.len() as u32));
-            continue;
+            cached => Slot::Miss(id, sym, sig, key, cached),
+        });
+    }
+    let (want, tokens) = threads();
+    let mut order: Vec<usize> = (0..funs.len())
+        .filter(|&k| matches!(slots[k], Slot::Miss(..)))
+        .collect();
+    let want = want.min(order.len()).saturating_sub(1);
+    // On several threads the largest first: the last one to finish bounds the time. On one, in
+    // function order: largest first measured 0.4 percent more instructions there.
+    if want > 0 {
+        order.sort_by_key(|&k| {
+            std::cmp::Reverse(funs[k].1.iter().map(|(p, _)| weight(p)).sum::<usize>())
+        });
+    }
+    let env = Env {
+        isa: &*target,
+        shapes,
+        based: &based,
+        keep,
+        err,
+        log,
+        checks,
+        disasm,
+    };
+    let done: Vec<std::sync::OnceLock<Result<Made, String>>> =
+        (0..funs.len()).map(|_| Default::default()).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let one = |cx: &mut (cranelift_codegen::Context, FunctionBuilderContext)| {
+        let k = *order.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))?;
+        if let Slot::Miss(id, _, sig, ..) = &slots[k] {
+            let (_, ops, checked, shape) = &funs[k];
+            let _ = done[k].set(env.make(cx, sig.clone(), *id, ops, *checked, *shape));
         }
-        // One context for every function: Cranelift keeps its allocations (the register
-        // allocator's among them) from one to the next.
-        module.clear_context(&mut ctx);
+        Some(())
+    };
+    let new_cx = || {
+        (
+            cranelift_codegen::Context::new(),
+            FunctionBuilderContext::new(),
+        )
+    };
+    std::thread::scope(|s| {
+        let mut helpers = 0;
+        let mut cx = new_cx();
+        loop {
+            // A token server lends tokens when it can: asked again before each function here.
+            if helpers < want {
+                let n = tokens.as_ref().map_or(want, |t| t.take(want));
+                // The main thread's stack size: a member's nested code recurses as deep there.
+                for _ in helpers..n {
+                    let spawned = std::thread::Builder::new()
+                        .name("yavs-cycle-compile".into())
+                        .stack_size(8 << 20)
+                        .spawn_scoped(s, || {
+                            let mut cx = new_cx();
+                            while one(&mut cx).is_some() {}
+                        });
+                    // A thread the system refuses only leaves the work to the others.
+                    helpers += usize::from(spawned.is_ok());
+                }
+                helpers = helpers.max(n);
+            }
+            if one(&mut cx).is_none() {
+                break;
+            }
+        }
+    });
+    if want > 0
+        && let Some(t) = &tokens
+    {
+        t.give();
+    }
+    for (k, (slot, done)) in slots.into_iter().zip(done).enumerate() {
+        let ops = &funs[k].1;
+        match slot {
+            Slot::Blob(id, sym, align, bytes) => {
+                module
+                    .define_function_bytes(id, align, &bytes, &[])
+                    .map_err(|e| format!("{e:?}"))?;
+                hits += 1;
+                ids.push((id, sym, bytes.len() as u32));
+            }
+            Slot::Hit(id, sym, align, bytes, us) => {
+                module
+                    .define_function_bytes(id, align, &bytes, &[])
+                    .map_err(|e| format!("{e:?}"))?;
+                hits += 1;
+                if stats {
+                    eprintln!(
+                        "cycle stats: {sym}: {} operations, {} bytes, {us} us, from the cache",
+                        ops.iter().map(|(p, _)| weight(p)).sum::<usize>(),
+                        bytes.len(),
+                    );
+                }
+                ids.push((id, sym, bytes.len() as u32));
+                if let Some(m) = made.as_mut() {
+                    m.push((align, bytes));
+                }
+            }
+            Slot::Miss(id, sym, _, key, cached) => {
+                let m = done
+                    .into_inner()
+                    .ok_or("a region function was not compiled")??;
+                module
+                    .define_function_bytes(id, m.align, &m.code, &m.relocs)
+                    .map_err(|e| format!("{e:?}"))?;
+                // A function with relocations is not kept: its code alone does not link.
+                let relocs = !m.relocs.is_empty();
+                if relocs {
+                    made = None;
+                } else if let Some(made) = made.as_mut() {
+                    made.push((m.align, m.code.clone()));
+                }
+                if let Some((a, b)) = &cached
+                    && (*a, &b[..]) != (m.align, &m.code[..])
+                {
+                    return Err(format!(
+                        "YAVS_CYCLE_CACHE_CHECK: the machine code of {sym} in the cache differs from the one compiled now"
+                    ));
+                }
+                if let (Some(s), Some(key), false) = (&store, &key, relocs) {
+                    s.put(
+                        KIND,
+                        key,
+                        &entry(&m.seen, m.used, (err, log), m.align, &m.code),
+                    );
+                }
+                if let Some(text) = &m.text {
+                    eprintln!("{sym}:\n{text}");
+                }
+                if stats {
+                    eprintln!(
+                        "cycle stats: {sym}: {} operations, {} instructions, {} bytes, {} us",
+                        ops.iter().map(|(p, _)| weight(p)).sum::<usize>(),
+                        m.n_ir,
+                        m.size,
+                        m.us,
+                    );
+                }
+                ids.push((id, sym, m.size));
+            }
+        }
+    }
+    module.finalize_definitions().map_err(|e| e.to_string())?;
+    if stats {
+        eprintln!(
+            "cycle stats: {} functions in {} ms, {hits} from the cache",
+            ids.len(),
+            t0.elapsed().as_millis()
+        );
+    }
+    let code = finish(module, ids, plan.clone())?;
+    Ok((code, plan, made.filter(|_| take.is_none())))
+}
+
+/// What [`Env::make`] made of one function.
+struct Made {
+    n_ir: usize,
+    align: u64,
+    code: Vec<u8>,
+    relocs: Vec<ModuleReloc>,
+    seen: Words<bool>,
+    used: u8,
+    /// `YAVS_CYCLE_DISASM`: the machine code as text.
+    text: Option<String>,
+    size: u32,
+    us: u128,
+}
+
+/// A function of [`compile`] after the look into the cache: from the region's code in the cache
+/// (alignment, bytes), from its own entry (also the time it took), or to compile (its signature,
+/// key and, under `YAVS_CYCLE_CACHE_CHECK`, the entry's code).
+enum Slot {
+    Blob(FuncId, String, u64, Vec<u8>),
+    Hit(FuncId, String, u64, Vec<u8>, u128),
+    Miss(
+        FuncId,
+        String,
+        cranelift_codegen::ir::Signature,
+        Option<Key>,
+        Option<(u64, Vec<u8>)>,
+    ),
+}
+
+/// What every function of one [`compile`] is made with.
+struct Env<'a> {
+    isa: &'a dyn cranelift_codegen::isa::TargetIsa,
+    shapes: &'a [Shape],
+    based: &'a [Vec<(usize, i32)>],
+    keep: &'a [bool],
+    err: u32,
+    log: (u32, u32),
+    checks: bool,
+    disasm: bool,
+}
+
+impl Env<'_> {
+    /// Build and compile function `id` of parts `ops` in `cx` (its allocations kept from one
+    /// function to the next): the same code on any thread.
+    fn make(
+        &self,
+        cx: &mut (cranelift_codegen::Context, FunctionBuilderContext),
+        sig: cranelift_codegen::ir::Signature,
+        id: FuncId,
+        ops: &[Part<'_>],
+        checked: bool,
+        shape: Option<usize>,
+    ) -> Result<Made, String> {
+        let t = std::time::Instant::now();
+        let (ctx, fbc) = cx;
+        let ptr = self.isa.pointer_type();
+        let fkeep = shape.map_or(self.keep, |k| &self.shapes[k].keep[..]);
+        ctx.clear();
         ctx.func.signature = sig;
         let seen: (Words<bool>, u8);
         {
-            let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
+            let mut b = FunctionBuilder::new(&mut ctx.func, fbc);
             let blk = b.create_block();
             b.append_block_params_for_function_params(blk);
             b.switch_to_block(blk);
@@ -1599,8 +1814,8 @@ pub(crate) fn compile<'a>(
             if let Some(k) = shape {
                 let tbl = b.block_params(blk)[1];
                 let mut at: Vec<Value> = Vec::new();
-                for (j, &(v, _)) in shapes[*k].blocks.iter().enumerate() {
-                    let (r, d) = based[*k][j];
+                for (j, &(v, _)) in self.shapes[k].blocks.iter().enumerate() {
+                    let (r, d) = self.based[k][j];
                     let a = if r == j {
                         let off = b
                             .ins()
@@ -1616,10 +1831,10 @@ pub(crate) fn compile<'a>(
             let mut g = Gen {
                 b,
                 base,
-                err: err as i32 * 8,
-                log: (log.0 as i32 * 8, log.1),
-                checks: checks && *checked,
-                exits: *checked,
+                err: self.err as i32 * 8,
+                log: (self.log.0 as i32 * 8, self.log.1),
+                checks: self.checks && checked,
+                exits: checked,
                 ptr,
                 cache: BTreeMap::new(),
                 cap: CACHE_MAX,
@@ -1670,56 +1885,29 @@ pub(crate) fn compile<'a>(
             }
             let zero = g.b.ins().iconst(I32, 0);
             g.b.ins().return_(&[zero]);
-            g.b.finalize(module.target_config());
+            g.b.finalize(self.isa.frontend_config());
             seen = (g.seen.into_inner(), g.used.get());
         }
-        ctx.set_disasm(disasm);
+        ctx.set_disasm(self.disasm);
         let n_ir = ctx.func.dfg.num_insts();
-        module
-            .define_function(id, &mut ctx)
-            .map_err(|e| format!("{e:?}"))?;
+        ctx.compile(self.isa, &mut Default::default())
+            .map_err(|e| format!("{:?}", e.inner))?;
         let c = ctx.compiled_code().ok_or("no compiled code")?;
-        let (align, code) = (u64::from(c.buffer.min_alignment), c.code_buffer());
-        let relocs = !c.buffer.relocs().is_empty();
-        if relocs {
-            made = None;
-        } else if let Some(m) = made.as_mut() {
-            m.push((align, code.to_vec()));
-        }
-        if let Some((a, b)) = &cached
-            && (*a, &b[..]) != (align, code)
-        {
-            return Err(format!(
-                "YAVS_CYCLE_CACHE_CHECK: the machine code of {sym} in the cache differs from the one compiled now"
-            ));
-        }
-        // A function with relocations is not kept: its code alone does not link.
-        if let (Some(s), Some(key), false) = (&store, &key, relocs) {
-            s.put(KIND, key, &entry(&seen.0, seen.1, (err, log), align, code));
-        }
-        if disasm && let Some(text) = ctx.compiled_code().and_then(|c| c.vcode.as_ref()) {
-            eprintln!("{sym}:\n{text}");
-        }
-        let bytes = ctx.compiled_code().map_or(0, |c| c.code_info().total_size);
-        if stats {
-            eprintln!(
-                "cycle stats: {sym}: {} operations, {n_ir} instructions, {bytes} bytes, {} us",
-                ops.iter().map(|(p, _)| weight(p)).sum::<usize>(),
-                t.elapsed().as_micros(),
-            );
-        }
-        ids.push((id, sym, bytes));
+        let relocs = (c.buffer.relocs().iter())
+            .map(|r| ModuleReloc::from_mach_reloc(r, &ctx.func, id))
+            .collect();
+        Ok(Made {
+            n_ir,
+            align: u64::from(c.buffer.min_alignment),
+            code: c.code_buffer().to_vec(),
+            relocs,
+            seen: seen.0,
+            used: seen.1,
+            text: c.vcode.clone().filter(|_| self.disasm),
+            size: c.code_info().total_size,
+            us: t.elapsed().as_micros(),
+        })
     }
-    module.finalize_definitions().map_err(|e| e.to_string())?;
-    if stats {
-        eprintln!(
-            "cycle stats: {} functions in {} ms, {hits} from the cache",
-            ids.len(),
-            t0.elapsed().as_millis()
-        );
-    }
-    let code = finish(module, ids, plan.clone())?;
-    Ok((code, plan, made.filter(|_| take.is_none())))
 }
 
 /// Declare function `f` of a plan (its symbol, whether it is a shape's body) in `module`.
@@ -1747,7 +1935,7 @@ pub(crate) fn from_blob(plan: CodePlan, blob: &crate::store::Blob) -> Result<Cod
         return Err("the region's code in the cache does not fit its plan".into());
     }
     let t0 = std::time::Instant::now();
-    let (mut module, _) = module()?;
+    let (mut module, ..) = module()?;
     let mut ids = Vec::new();
     for (f, (align, bytes)) in plan.funs.iter().zip(blob) {
         let (id, sym, _) = declare(&mut module, f)?;
@@ -1948,7 +2136,7 @@ struct Gen<'a> {
     /// Per word the part reads: the last operation reading it (a scratch word is dead after it,
     /// unless a later part reads it, `later`).
     last: Words<u32>,
-    later: Option<Rc<Words<()>>>,
+    later: Option<Arc<Words<()>>>,
     /// Debug builds: scratch words dropped from registers unstored as dead, which no code may
     /// read from memory before writing them again.
     #[cfg(debug_assertions)]
@@ -1963,7 +2151,7 @@ impl Gen<'_> {
     }
 
     /// The reads of part `p`, which the parts after it read `later` of.
-    fn live_in(&mut self, p: &[Op], later: Option<Rc<Words<()>>>) {
+    fn live_in(&mut self, p: &[Op], later: Option<Arc<Words<()>>>) {
         self.last.clear();
         walk(p, &mut 0, &mut |i, w| {
             self.last.insert(w, i);

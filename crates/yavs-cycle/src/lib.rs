@@ -20,7 +20,7 @@ use yavs_elab::{Elaborated, LeafId, Region, RegionDriver};
 use yavs_kernel::{EDGE_LEVEL, EdgeTrigger, Range, SimError};
 use yavs_sem::Db;
 
-pub use codegen::set_cache;
+pub use codegen::{set_cache, set_threads};
 use lower::{Kind, Op, Ref};
 pub use store::analysis_cache;
 

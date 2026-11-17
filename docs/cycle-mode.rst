@@ -674,6 +674,11 @@ limited (16384 entries, 512 MiB; a region of more functions than that keeps its 
 ``yavs cache clean --work=NAME:PATH`` empties it. ``--no-cache`` makes a run neither read nor write it, so such a run
 analyses and compiles every time.
 
+A run that compiles compiles the region's functions on as many threads as ``--threads`` gives (one by default,
+``auto`` up to 8, at most the CPUs the run may use; under a test runner's token server the threads past the first
+only on the tokens it lends, :doc:`threads`). The machine code, and so the result and what goes into the cache, is
+the same on any number of threads; only the start-up of a run that finds nothing in the cache is shorter.
+
 When several tests start at once on a cold cache, each of them compiles the region. Run one test of the suite first, or
 keep ``yavs-cache`` between CI runs (:doc:`ci`), so that the others find the code.
 

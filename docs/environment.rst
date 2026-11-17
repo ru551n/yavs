@@ -716,6 +716,11 @@ Compiled tiers: Cranelift
      - a whole number of at least 1
      - ``4000``
      - ``run``
+   * - ``YAVS_CYCLE_THREADS``
+     - Developers: the threads the functions of a cycle region (``--cycle``) are compiled on, in place of the count of ``--threads``; under a test runner's token server the threads past the first still run only on the tokens it lends. The machine code is the same whatever the number.
+     - a whole number of at least 1
+     - the count of ``--threads`` (1 unless given), at most the CPUs the run may use
+     - ``run``
    * - ``YAVS_CYCLE_DISASM``
      - Prints the machine code of the functions of a cycle region (``--cycle``) on standard error. They are compiled, not taken from the compilation cache.
      - any value

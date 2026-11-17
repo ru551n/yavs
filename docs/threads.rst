@@ -14,8 +14,8 @@ What threads do
 ``yavs run --threads=N`` lets one simulation use N threads, a whole number of at least 1. The default
 is 1. ``--threads=auto`` decides while the run goes (`Letting yavs decide`_).
 
-* Only the evaluation of VHDL processes is shared. Analysis, elaboration and most of the rest of a run
-  stay on one thread.
+* Only the evaluation of VHDL processes is shared, and under ``--cycle`` the compilation of the region
+  before time 0 (:doc:`cycle-mode`). Analysis, elaboration and most of the rest of a run stay on one thread.
 * The output, reports, waves, coverage and exit status are identical at any thread count.
 * The processes that wake in one delta cycle go to the threads only when yavs estimates that the work
   is worth the hand-over. A smaller group stays on the main thread, as with ``--threads=1``. yavs measures

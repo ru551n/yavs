@@ -43,10 +43,11 @@ fn get_shared(s: &Store, kind: &str, key: &Key) -> Option<yavs_cache::Entry> {
     s.get(PAYLOAD, &p)
 }
 /// Environment variables that change nothing the analysis gives (the test runner's token server
-/// differs per invocation; the others print or count).
+/// differs per invocation; the others print, count or set the threads the code is made on).
 const ENV_SKIP: &[&str] = &[
     "YAVS_CYCLE_CACHE_CHECK",
     "YAVS_CYCLE_STATS",
+    "YAVS_CYCLE_THREADS",
     "YAVS_STD_CACHE",
     "YAVS_LOG",
     "YAVS_TOKENS",

@@ -1,0 +1,1 @@
+A `yavs run --cycle` that compiles its region uses the threads `--threads` gives (under a test runner's token server, the tokens it lends), so a first run starts sooner; the compiled code and the results are the same on any number of threads.

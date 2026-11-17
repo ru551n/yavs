@@ -3008,3 +3008,59 @@ impl Gen<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The settle's machine code of one copy into word 2, for an image whose word 2 holds state
+    /// or not, from the store in `lib` when given.
+    fn copy_code(state: bool, lib: Option<&Path>) -> Vec<(u64, Vec<u8>)> {
+        set_cache(lib);
+        let op = Op::Copy {
+            dst: Ref::Loc(2),
+            src: Ref::Loc(0),
+            len: 64,
+        };
+        let keep = [true, true, state, false, false, false];
+        let (_, _, made) = compile(
+            &[Step::Ops(vec![op])],
+            &[0],
+            &[],
+            &[],
+            &[],
+            &[],
+            Vec::new(),
+            Vec::new(),
+            &keep,
+            2,
+            4,
+            (5, 0),
+            "keep",
+        )
+        .expect("compiles");
+        set_cache(None);
+        made.expect("no relocations")
+    }
+
+    // Two images whose words differ only in which hold state share the function's key; the
+    // entry is a hit only where the `keep` bits the code generator read are the same.
+    #[test]
+    fn a_cached_function_is_no_hit_where_a_word_it_read_holds_state() {
+        let dir = std::env::temp_dir().join(format!("yavs_cycle_keep_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (scratch, state) = (copy_code(false, None), copy_code(true, None));
+        assert_ne!(
+            scratch, state,
+            "a state word must be stored, a scratch one need not"
+        );
+        assert_eq!(copy_code(false, Some(&dir)), scratch);
+        assert_eq!(
+            copy_code(true, Some(&dir)),
+            state,
+            "the scratch image's code was taken"
+        );
+        assert_eq!(copy_code(false, Some(&dir)), scratch);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

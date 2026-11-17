@@ -307,11 +307,20 @@ A cycle-based process computes with ``0`` and ``1`` only.
 * A signal the region reads that nothing drives keeps its start value for the whole run. When that is a metavalue
   (``'U'`` of a ``std_logic`` without an initial value), the normal mode reads it all the time and the region reads
   ``0``. A test that worked only because of the metavalue (a ``valid`` nobody drives, read as "not ``'0'``") then runs
-  differently, and may never end. Cycle mode names such signals at the start of the run and in the report:
+  differently, and may never end. The summary line counts such inputs and ``--cycle-report`` names them:
 
   .. code-block:: text
 
-      cycle mode: tb.bus_wrep_valid and 1 more signal the region reads are driven by nothing: the normal mode reads their start values, metavalues, for the whole run, the region reads 0 (see --cycle-report)
+      cycle mode: 370 of 488 processes run cycle-based, 118 in the event kernel, 3 inputs driven by nothing read as 0 (see --cycle-report)
+
+  .. code-block:: text
+
+      3 signals the region reads without a driver, each keeping its metavalue start value for the whole run (the region reads 0):
+        prim32_tc.bus_wrep_valid
+        prim32_tc.bus_wrep_ok
+        prim32_tc.num_dvalid
+
+  An unused field of a record port that nothing drives is counted too; it changes nothing.
 * So a bug that shows as an ``'X'`` or a ``'U'`` in the normal mode (a register without reset, an
   unconnected input, a metavalue in a comparison) cannot show. A test that checks for it passes. Run such checks
   in the normal mode. A process that compares with a metavalue literal stays out, because a two-state value never
@@ -651,8 +660,8 @@ Troubleshooting
 If none of these explains it, it is a bug in cycle mode: a wrong result is never an accepted loss. Report it with
 the smallest design that shows it.
 
-**A test hangs, or ends at another time.** If the run starts with a line naming signals driven by nothing, the
-test relies on their metavalue (see two-state values above): drive them in the testbench. If the end of the test came from RTL code (an ``assert`` or ``report`` of
+**A test hangs, or ends at another time.** If the summary line counts inputs driven by nothing, ``--cycle-report``
+names them; a test that relies on their metavalue (see two-state values above) needs them driven in the testbench. If the end of the test came from RTL code (an ``assert`` or ``report`` of
 severity failure in the design, which is dropped), the run now goes on to the testbench's own end or to
 ``--stop-time``. Give the test a ``--stop-time``, or move the check into the testbench. If it is a testbench that waits
 for a signal in the same delta as a register, see delta cycles above. ``--cycle-report`` shows whether the process

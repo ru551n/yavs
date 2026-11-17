@@ -4548,7 +4548,7 @@ fn impure_calls_of_the_value_pass_are_undone() {
 fn undriven_inputs_with_a_metavalue_are_named() {
     let dir = tempdir("cycle-undriven");
     analyze(&dir, "undriven.vhd", include_str!("cycle/undriven.vhd"));
-    let notice = "cycle mode: cycle_undriven.v, which the region reads, is driven by nothing";
+    let notice = "1 input driven by nothing read as 0 (see --cycle-report)";
     for t in tiers() {
         for drive in [false, true] {
             let g = format!("-gdrive={drive}");

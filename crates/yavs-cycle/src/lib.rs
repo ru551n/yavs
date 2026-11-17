@@ -222,35 +222,26 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
         "cycle mode: {} of {total} processes run cycle-based",
         sel.members.len()
     );
-    let mut summary = match total - sel.members.len() {
-        0 => format!("{head}\n"),
-        n => format!("{head}, {n} in the event kernel (see --cycle-report)\n"),
-    };
     // Inputs nothing drives that start with a metavalue: the normal mode reads that metavalue
-    // for the whole run, the region 0. Said at the start: a run that differs may never end.
+    // for the whole run, the region 0. Counted on the summary line: a run that differs this way
+    // may never end.
     let undriven: Vec<String> = (region::undriven_metas(e).intersection(&sel.inputs))
         .map(|&l| e.leaf_name(l))
         .collect();
-    if let Some(first) = undriven.first() {
-        let (who, whose) = match undriven.len() - 1 {
-            0 => (
-                ", which the region reads, is".to_string(),
-                "its start value, a metavalue",
-            ),
-            n => (
-                format!(
-                    " and {n} more signal{} the region reads are",
-                    if n == 1 { "" } else { "s" }
-                ),
-                "their start values, metavalues",
-            ),
-        };
-        let _ = writeln!(
-            summary,
-            "cycle mode: {first}{who} driven by nothing: the normal mode reads {whose}, for the \
-             whole run, the region reads 0 (see --cycle-report)"
-        );
+    let mut tail = Vec::new();
+    if total > sel.members.len() {
+        tail.push(format!("{} in the event kernel", total - sel.members.len()));
     }
+    match undriven.len() {
+        0 => {}
+        1 => tail.push("1 input driven by nothing read as 0".to_string()),
+        n => tail.push(format!("{n} inputs driven by nothing read as 0")),
+    }
+    let summary = if tail.is_empty() {
+        format!("{head}\n")
+    } else {
+        format!("{head}, {} (see --cycle-report)\n", tail.join(", "))
+    };
     report.push_str(&head);
     let edges: Vec<String> = (sel.clocks.iter())
         .map(|c| {

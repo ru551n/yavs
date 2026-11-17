@@ -259,16 +259,16 @@ STATS = re.compile(r"^cycle stats: (?:(analysis|region) from the cache( checked:
 
 
 def cache_hits(err):
-    """(stderr without its `cycle stats:` lines, {"analysis", "region": hits, "checked": hits compared with a
-    new compile (`YAVS_CYCLE_CACHE_CHECK`), "funs": functions made, "fhits": of them from the cache}) of a run
-    with `YAVS_CYCLE_STATS`."""
-    hits, keep = {"analysis": 0, "region": 0, "checked": 0, "funs": 0, "fhits": 0}, []
+    """(stderr without its `cycle stats:` lines, {"analysis", "region": hits, "achecked", "checked": analysis and
+    region hits compared with a new compile (`YAVS_CYCLE_CACHE_CHECK`), "funs": functions made, "fhits": of them
+    from the cache}) of a run with `YAVS_CYCLE_STATS`."""
+    hits, keep = {"analysis": 0, "region": 0, "achecked": 0, "checked": 0, "funs": 0, "fhits": 0}, []
     for l in err.splitlines(keepends=True):
         if not l.startswith("cycle stats: "):
             keep.append(l)
         elif m := STATS.match(l.rstrip("\n")):
             if m.group(1):
-                hits["checked" if m.group(2) else m.group(1)] += 1
+                hits[(("a" if m.group(1) == "analysis" else "") + "checked") if m.group(2) else m.group(1)] += 1
             else:
                 hits["funs"] += int(m.group(3))
                 hits["fhits"] += int(m.group(4))
@@ -441,7 +441,7 @@ def selftest():
         assert not (d / "keep" / "0_L" / "yavs-cache").exists()
     err = ("x\ncycle stats: analysis from the cache\ncycle stats: region from the cache\ncycle stats: f: 3 operations, 9 us\n"
            "cycle stats: 4 functions in 2 ms, 3 from the cache\ny\n")
-    assert cache_hits(err) == ("x\ny\n", {"analysis": 1, "region": 1, "checked": 0, "funs": 4, "fhits": 3}), cache_hits(err)
+    assert cache_hits(err) == ("x\ny\n", {"analysis": 1, "region": 1, "achecked": 0, "checked": 0, "funs": 4, "fhits": 3}), cache_hits(err)
     assert not_warm(cache_hits(err)[1]) is None  # the region from the cache
     cold = cache_hits("cycle stats: 4 functions in 2 ms, 3 from the cache\n")[1]
     assert not_warm(cold) == "not warm: the cycle run compiled 1 of 4 functions"
@@ -449,6 +449,8 @@ def selftest():
     assert not_warm(cache_hits("x\n")[1]) == "not warm: the cycle run printed no cache counts"
     chk = cache_hits("cycle stats: region from the cache checked: the same\ncycle stats: 4 functions in 2 ms, 0 from the cache\n")[1]
     assert chk["checked"] == 1 and not_warm(chk) is None, chk
+    ach = cache_hits("cycle stats: analysis from the cache checked: the same\ncycle stats: 4 functions in 2 ms, 0 from the cache\n")[1]
+    assert ach["achecked"] == 1 and not_warm(ach) is not None, ach  # the analysis alone: its code was compiled
     print("selftest ok")
 
 
@@ -531,7 +533,7 @@ def main():
     hs = [r.get("hits", {}) for r in ran if r["members"]]
     if a.warm:
         print(f"cycle replay: cache of the {len(hs)} cycle runs with members: {sum(bool(h.get('region')) for h in hs)} took the region from it, "
-              f"{sum(bool(h.get('analysis')) for h in hs)} the analysis, {sum(bool(h.get('checked')) for h in hs)} checked them, "
+              f"{sum(bool(h.get('analysis')) for h in hs)} the analysis, {sum(bool(h.get('checked')) for h in hs)} checked the region, "
               f"{sum(h.get('fhits', 0) for h in hs)} of {sum(h.get('funs', 0) for h in hs)} functions")
     if not ran:
         print("cyclereplay: nothing was compared")

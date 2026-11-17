@@ -179,8 +179,9 @@ the response file of each run), run in the directory the test runner ran in (`--
 
     python3 -I tools/difftest/cyclereplay.py --record <vunit out dir> --env K=V > cmds.jsonl
     YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclereplay.py cmds.jsonl --jobs 2 -v
-    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclereplay.py cmds.jsonl --libs L       # cold, kept
-    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclereplay.py cmds.jsonl --libs L --warm  # warm
+    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclereplay.py cmds.jsonl --libs L         # cold, kept
+    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclereplay.py cmds.jsonl --libs L         # warm, as users run
+    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclereplay.py cmds.jsonl --libs L --warm  # proof it is warm
 
 A test runner that has run the tests already needs no second run to record them: any simulator wrapper that
 exits at `run` still leaves each test's response file. The files are copied before each run; files written

@@ -222,10 +222,35 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
         "cycle mode: {} of {total} processes run cycle-based",
         sel.members.len()
     );
-    let summary = match total - sel.members.len() {
+    let mut summary = match total - sel.members.len() {
         0 => format!("{head}\n"),
         n => format!("{head}, {n} in the event kernel (see --cycle-report)\n"),
     };
+    // Inputs nothing drives that start with a metavalue: the normal mode reads that metavalue
+    // for the whole run, the region 0. Said at the start: a run that differs may never end.
+    let undriven: Vec<String> = (region::undriven_metas(e).intersection(&sel.inputs))
+        .map(|&l| e.leaf_name(l))
+        .collect();
+    if let Some(first) = undriven.first() {
+        let (who, whose) = match undriven.len() - 1 {
+            0 => (
+                ", which the region reads, is".to_string(),
+                "its start value, a metavalue",
+            ),
+            n => (
+                format!(
+                    " and {n} more signal{} the region reads are",
+                    if n == 1 { "" } else { "s" }
+                ),
+                "their start values, metavalues",
+            ),
+        };
+        let _ = writeln!(
+            summary,
+            "cycle mode: {first}{who} driven by nothing: the normal mode reads {whose}, for the \
+             whole run, the region reads 0 (see --cycle-report)"
+        );
+    }
     report.push_str(&head);
     let edges: Vec<String> = (sel.clocks.iter())
         .map(|c| {
@@ -303,6 +328,17 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
         );
         for (name, what) in rows {
             let _ = writeln!(report, "      {name:<w$}  {what}");
+        }
+    }
+    if !undriven.is_empty() {
+        let _ = writeln!(
+            report,
+            "  {} the region reads without a driver, each keeping its metavalue start value for \
+             the whole run (the region reads 0):",
+            plural(undriven.len(), "signal", "signals")
+        );
+        for n in &undriven {
+            let _ = writeln!(report, "    {n}");
         }
     }
     // Asserts and reports in members are compiled to nothing.

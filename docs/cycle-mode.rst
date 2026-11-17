@@ -210,8 +210,9 @@ body. A signal needs one source: one process drives each element of it.
      - E4124.
    * - Is clocked in a form that is not one of those above, or uses a clock made inside the region
      - E4123, E4125.
-   * - Compares with a metavalue literal (``= 'U'``), has a ``while`` loop or a ``for`` loop whose bounds are
-       not known when the design is elaborated, or another construct cycle mode cannot take *yet*
+   * - Compares with a metavalue literal (``= 'U'``), assigns one to a signal a process outside reads, passes on a
+       ``'Z'`` from outside to such a signal, has a ``while`` loop or a ``for`` loop whose bounds are not known when
+       the design is elaborated, or another construct cycle mode cannot take *yet*
      - E4101: in the subset, not implemented yet. This is the one reason that is expected to shrink.
 
 .. _cycle-report:
@@ -297,7 +298,20 @@ A cycle-based process computes with ``0`` and ``1`` only.
   ``0``. ``'1'`` and ``'H'`` read as ``1``, ``'0'`` and ``'L'`` as ``0``. yavs counts the elements read this way and
   prints the count at the end of the run, as in the example above.
 * Everything the region gives back to the kernel is ``'0'`` or ``'1'``. A testbench never sees ``'X'`` or ``'Z'``
-  from a cycle-based process.
+  from a cycle-based process. So a process that assigns a metavalue literal (``(others => 'X')`` on invalid data,
+  say) to a signal a process outside the region reads stays out, and so does one that passes on to such a signal a
+  signal a process outside sets to ``'Z'`` in its own statements (a copy of a tri-state line; a ``'Z'`` made in a
+  called subprogram or given by a generic is not seen): the testbench sees what the normal mode
+  gives it. A metavalue literal on a signal only cycle-based processes read is read as ``0``, as are values computed
+  from it.
+* A signal the region reads that nothing drives keeps its start value for the whole run. When that is a metavalue
+  (``'U'`` of a ``std_logic`` without an initial value), the normal mode reads it all the time and the region reads
+  ``0``. A test that worked only because of the metavalue (a ``valid`` nobody drives, read as "not ``'0'``") then runs
+  differently, and may never end. Cycle mode names such signals at the start of the run and in the report:
+
+  .. code-block:: text
+
+      cycle mode: tb.bus_wrep_valid and 1 more signal the region reads are driven by nothing: the normal mode reads their start values, metavalues, for the whole run, the region reads 0 (see --cycle-report)
 * So a bug that shows as an ``'X'`` or a ``'U'`` in the normal mode (a register without reset, an
   unconnected input, a metavalue in a comparison) cannot show. A test that checks for it passes. Run such checks
   in the normal mode. A process that compares with a metavalue literal stays out, because a two-state value never
@@ -637,7 +651,8 @@ Troubleshooting
 If none of these explains it, it is a bug in cycle mode: a wrong result is never an accepted loss. Report it with
 the smallest design that shows it.
 
-**A test hangs, or ends at another time.** If the end of the test came from RTL code (an ``assert`` or ``report`` of
+**A test hangs, or ends at another time.** If the run starts with a line naming signals driven by nothing, the
+test relies on their metavalue (see two-state values above): drive them in the testbench. If the end of the test came from RTL code (an ``assert`` or ``report`` of
 severity failure in the design, which is dropped), the run now goes on to the testbench's own end or to
 ``--stop-time``. Give the test a ``--stop-time``, or move the check into the testbench. If it is a testbench that waits
 for a signal in the same delta as a register, see delta cycles above. ``--cycle-report`` shows whether the process

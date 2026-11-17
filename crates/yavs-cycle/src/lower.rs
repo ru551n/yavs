@@ -630,6 +630,8 @@ pub(crate) struct Body {
     pub reports: Vec<(u8, String)>,
     /// Literals with a metavalue (`'U'`, `'X'`, `'W'`, `'-'`), read as 0.
     pub metas: u32,
+    /// Of those, the ones not taken by a comparison: their value may reach what it drives.
+    pub meta_out: u32,
     /// Elements of logic variables without an initial value (`'U'`), which start at 0.
     pub uninit: u64,
     /// The checks of the body, numbered by `site`, each with the source place of the statement
@@ -909,6 +911,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         at: db.stmts[p.stmt].span,
         unrolled: 0,
         lits: Vec::new(),
+        lit_cmp: BTreeSet::new(),
         bounds: false,
         loud: Default::default(),
         probing: Default::default(),
@@ -1000,6 +1003,8 @@ struct Lx<'a> {
     unrolled: u32,
     /// The codes of the literals with a metavalue (`Part::lit`).
     lits: Vec<Vec<u8>>,
+    /// The literals of `lits` a comparison took.
+    lit_cmp: BTreeSet<u32>,
     /// The calls folded from `Elaborated::region_calls` that reported (`Body::reports`).
     loud: std::cell::RefCell<BTreeSet<ExprId>>,
     /// Constants of elaboration folded as names, shared (`check::Consts`).
@@ -1034,6 +1039,7 @@ impl Lx<'_> {
             note_why: self.note_why,
             notes: self.notes,
             metas: self.metas,
+            meta_out: self.metas - self.lit_cmp.len() as u32,
             uninit: self.uninit,
             checks: self.checks,
         }
@@ -5895,6 +5901,7 @@ impl Lx<'_> {
         if let Some(k) = b.lit.or(a.lit) {
             // The literal's own codes decide (`'-'` as a mask when matching).
             let v = if b.lit.is_some() { a } else { b };
+            self.lit_cmp.insert(k);
             let codes = self.lits[k as usize].clone();
             let r = self.match_codes(v, &codes, matching)?;
             if !ne {

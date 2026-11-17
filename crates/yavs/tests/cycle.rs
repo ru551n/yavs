@@ -702,15 +702,22 @@ architecture a of cycle_codes is
   signal clk : std_ulogic := '0';
   signal din : std_ulogic_vector(8 downto 0) := \"UX01ZWLH-\";
   signal q : std_ulogic_vector(8 downto 0);
-  signal lit : std_ulogic_vector(3 downto 0);
+  signal lit, lit_i : std_ulogic_vector(3 downto 0);
 begin
   reg : process (clk)
   begin
     if rising_edge(clk) then
       q <= din;
-      lit <= \"X1U0\";
     end if;
   end process;
+  -- The literal reaches the testbench through a member that computes with it: two-state.
+  regl : process (clk)
+  begin
+    if rising_edge(clk) then
+      lit_i <= \"X1U0\";
+    end if;
+  end process;
+  lit <= lit_i or \"0000\";
   main : process
   begin
     for i in 1 to 2 loop
@@ -743,11 +750,11 @@ fn boundary_values_and_metavalues_become_two_state_and_are_counted() {
             err.contains("clocked, 1 literal with a metavalue read as 0"),
             "{err}"
         );
-        // At initialisation: 5 in `din`, 9 in `q` and 4 in `lit` (no initial value); `din`
-        // never changes, so it is not read again.
+        // At initialisation: 5 in `din`, 9 in `q`, 4 in `lit` and 4 in `lit_i` (no initial
+        // value); `din` never changes, so it is not read again.
         assert!(
             err.contains(
-                "cycle mode: 18 metavalue elements read as 0 (18 at initialisation, 0 at changes \
+                "cycle mode: 22 metavalue elements read as 0 (22 at initialisation, 0 at changes \
                  of the region's inputs)"
             ),
             "{err}"
@@ -4527,6 +4534,90 @@ fn impure_calls_of_the_value_pass_are_undone() {
                 assert!(
                     err.contains("cycle mode: 0 of 3 processes run cycle-based"),
                     "{err}"
+                );
+            }
+        }
+    }
+}
+
+/// An input nothing drives that starts with a metavalue: the normal mode reads it for the whole
+/// run, the region reads 0 (the contract), so the results may differ. Cycle mode names such an
+/// input at the start and in the report; a signal with a start value of its own (`w`) or a driver
+/// is not named.
+#[test]
+fn undriven_inputs_with_a_metavalue_are_named() {
+    let dir = tempdir("cycle-undriven");
+    analyze(&dir, "undriven.vhd", include_str!("cycle/undriven.vhd"));
+    let notice = "cycle mode: cycle_undriven.v, which the region reads, is driven by nothing";
+    for t in tiers() {
+        for drive in [false, true] {
+            let g = format!("-gdrive={drive}");
+            let mut args = vec!["run", "--work=work:lib", "--no-cache", &g];
+            args.extend(&t);
+            let normal = yavs(&dir, &[&args[..], &["cycle_undriven"]].concat());
+            let cycle = yavs(&dir, &[&args[..], &["--cycle", "cycle_undriven"]].concat());
+            let report = yavs(
+                &dir,
+                &[&args[..], &["--cycle-report", "cycle_undriven"]].concat(),
+            );
+            let (n, c) = (
+                String::from_utf8_lossy(&normal.stdout),
+                String::from_utf8_lossy(&cycle.stdout),
+            );
+            let (err, rep) = (
+                String::from_utf8_lossy(&cycle.stderr),
+                String::from_utf8_lossy(&report.stderr),
+            );
+            let members = if drive { "2 of 4" } else { "1 of 3" };
+            let head = format!("cycle mode: {members} processes run cycle-based");
+            assert!(err.contains(&head), "{err}");
+            assert_eq!(err.contains(notice), !drive, "{err}");
+            assert_eq!(rep.contains("    cycle_undriven.v\n"), !drive, "{rep}");
+            assert!(!rep.contains("cycle_undriven.w"), "{rep}");
+            let q = if drive { "q='1'" } else { "q='0'" };
+            assert!(n.contains("q='1'") && c.contains(q), "{n}\n{c}");
+        }
+    }
+}
+
+/// A member that would hide a metavalue the testbench reads stays in the event kernel: one that
+/// assigns a metavalue literal to a signal a process outside reads, and one that passes on a
+/// 'Z' an outside driver may give. The same literal on a signal only members read, and a copy of
+/// a signal without 'Z', stay members. Widths 1 to 128.
+#[test]
+fn metavalues_the_testbench_reads_are_kept() {
+    let dir = tempdir("cycle-metaout");
+    analyze(&dir, "metaout.vhd", include_str!("cycle/metaout.vhd"));
+    for t in tiers() {
+        for w in [1, 63, 64, 65, 128] {
+            let g = format!("-gW={w}");
+            let mut args = vec!["run", "--work=work:lib", "--no-cache", &g];
+            args.extend(&t);
+            let normal = yavs(&dir, &[&args[..], &["cycle_metaout"]].concat());
+            let cycle = yavs(&dir, &[&args[..], &["--cycle", "cycle_metaout"]].concat());
+            let report = yavs(
+                &dir,
+                &[&args[..], &["--cycle-report", "cycle_metaout"]].concat(),
+            );
+            let (n, c) = (
+                String::from_utf8_lossy(&normal.stdout),
+                String::from_utf8_lossy(&cycle.stdout),
+            );
+            let rep = String::from_utf8_lossy(&report.stderr);
+            assert!(n.contains("pin='Z'") && n.contains("x=true"), "{n}");
+            assert_eq!(
+                (cycle.status.code(), &c),
+                (normal.status.code(), &n),
+                "{w} {t:?}\n{rep}"
+            );
+            assert!(
+                rep.contains("cycle mode: 3 of 9 processes run cycle-based"),
+                "{rep}"
+            );
+            for p in ["cycle_metaout.copy ", "cycle_metaout.drv "] {
+                assert!(
+                    rep.lines().any(|l| l.trim_start().starts_with(p)),
+                    "{p}: {rep}"
                 );
             }
         }

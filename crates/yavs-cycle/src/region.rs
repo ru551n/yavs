@@ -547,6 +547,11 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         implicit.extend(l.implicit_more.iter().map(|x| x.0));
     }
     stat(|| format!("select: history {} ms", t0.elapsed().as_millis()));
+    // Leaves a process outside may set to 'Z' (no member can: two-state values have none).
+    let zsrc: BTreeSet<LeafId> = (0..e.procs.len())
+        .filter(|pi| !taken.contains_key(pi))
+        .flat_map(|pi| z_leaves(db, e, pi))
+        .collect();
     // Leave out what the set as a whole does not allow yet, until nothing changes.
     loop {
         stat(|| format!("select: round at {} ms", t0.elapsed().as_millis()));
@@ -658,6 +663,12 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             }
         }
         stat(|| format!("select: sources {} ms", t0.elapsed().as_millis()));
+        // The testbench sees the metavalues the normal mode gives it: a member that assigns a
+        // metavalue literal, or passes on a 'Z' from outside, to a leaf a process outside reads
+        // stays out (the region gives back '0' and '1' only).
+        if gone.is_empty() {
+            gone = meta_rule(db, e, &taken, &zsrc);
+        }
         if gone.is_empty() {
             gone = ram_rule(db, e, &taken);
         }
@@ -763,6 +774,165 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
                 out.push((pi, Why::NotYet(w)));
             }
         }
+    }
+}
+
+/// Logic leaves that nothing drives (no driver, no port or other source) whose start value holds
+/// a metavalue: the normal mode reads that metavalue for the whole run.
+pub(crate) fn undriven_metas(e: &Elaborated) -> BTreeSet<LeafId> {
+    let mut sourced: BTreeSet<LeafId> = e.nets.drivers.iter().map(|d| d.leaf).collect();
+    sourced.extend(e.nets.consts.iter().map(|c| c.0));
+    for pe in &e.nets.ports {
+        sourced.insert(pe.formal.0);
+        if pe.mode != yavs_kernel::PortMode::In {
+            sourced.insert(pe.actual.0);
+        }
+    }
+    for cp in &e.nets.conv_ports {
+        sourced.extend(cp.formal.iter().map(|x| x.0));
+        if cp.mode != yavs_kernel::PortMode::In {
+            sourced.extend(cp.actual.iter().map(|x| x.0));
+        }
+    }
+    (e.nets.leaves.iter().enumerate())
+        .filter_map(|(k, l)| {
+            let id = LeafId(k as u32);
+            let v = l.init.as_logic()?;
+            (l.implicit.is_none()
+                && !sourced.contains(&id)
+                && (0..v.len()).any(|i| v.get(i).is_x()))
+            .then_some(id)
+        })
+        .collect()
+}
+
+/// The members that would hide a metavalue from a process outside (see `select`), with why.
+fn meta_rule(
+    db: &Db,
+    e: &Elaborated,
+    taken: &BTreeMap<usize, (Fit, Body)>,
+    zsrc: &BTreeSet<LeafId>,
+) -> Vec<(usize, String)> {
+    let reads = |f: &Fit, b: &Body| -> Vec<LeafId> {
+        let fit = f.reads.iter().map(|(k, _, _)| LeafId(k as u32));
+        b.reads.iter().copied().chain(fit).collect()
+    };
+    let cands: Vec<(usize, Option<LeafId>)> = (taken.iter())
+        .filter_map(|(&pi, (f, b))| {
+            let z = reads(f, b).into_iter().find(|l| zsrc.contains(l));
+            (b.meta_out > 0 || z.is_some()).then_some((pi, z))
+        })
+        .collect();
+    if cands.is_empty() {
+        return Vec::new();
+    }
+    let members: BTreeSet<usize> = taken.keys().copied().collect();
+    let all = outside_reads_all(db, e, &members);
+    let seen = if all {
+        BTreeSet::new()
+    } else {
+        outside_reads(db, e, &members).0
+    };
+    let mut gone = Vec::new();
+    for (pi, z) in cands {
+        let Some(o) = (e.procs[pi].drivers.iter())
+            .map(|&d| e.nets.drivers[d].leaf)
+            .find(|l| all || seen.contains(l))
+        else {
+            continue;
+        };
+        let what = match z {
+            Some(z) if taken[&pi].1.meta_out == 0 => format!(
+                "it passes on {}, which a process outside may set to 'Z',",
+                e.leaf_name(z)
+            ),
+            _ => "it assigns a metavalue literal".to_string(),
+        };
+        gone.push((
+            pi,
+            format!(
+                "{what} and drives signals a process outside reads (the first: {}), to which \
+                 two-state values would give '0' or '1' instead",
+                e.leaf_name(o)
+            ),
+        ));
+    }
+    gone
+}
+
+/// The leaves process `pi` may set to `'Z'`: the targets of its signal assignments whose value
+/// names a logic value holding `'Z'` (a literal or a folded constant), every leaf it drives when
+/// another statement names one (a variable may carry it).
+fn z_leaves(db: &Db, e: &Elaborated, pi: usize) -> Vec<LeafId> {
+    let p = &e.procs[pi];
+    let mut stmts = vec![p.stmt];
+    deep(db, &db.stmt_children(p.stmt), &mut stmts);
+    let mut out = Vec::new();
+    for s in stmts {
+        let mut z = false;
+        db.stmt_exprs(s, &mut |x, _| {
+            db.walk_expr(x, &mut |y| {
+                let c = match db.exprs[y].kind {
+                    ExprKind::Const(c) => Some(c),
+                    _ => db.exprs[y].value,
+                };
+                z |= c.is_some_and(|c| z_value(db, y, &db.consts[c]));
+            })
+        });
+        if !z {
+            continue;
+        }
+        match &db.stmts[s].kind {
+            StmtKind::SignalAssign { target, .. } | StmtKind::ConcSignalAssign { target, .. } => {
+                for l in target.lsps.iter() {
+                    match l.root {
+                        ObjRoot::Decl(d) => match e.signal(p.scope, d) {
+                            Some(o) => {
+                                let (a, b) = e.nets.obj(o).leaves;
+                                out.extend((a.0..b.0).map(LeafId));
+                            }
+                            None => return all_driven(e, pi),
+                        },
+                        _ => return all_driven(e, pi),
+                    }
+                }
+            }
+            _ => return all_driven(e, pi),
+        }
+    }
+    out
+}
+
+fn all_driven(e: &Elaborated, pi: usize) -> Vec<LeafId> {
+    (e.procs[pi].drivers.iter())
+        .map(|&d| e.nets.drivers[d].leaf)
+        .collect()
+}
+
+/// A value of a logic type (a `std_ulogic` element or array of them) holding `'Z'`.
+fn z_value(db: &Db, x: ExprId, v: &yavs_sem::stat::ConstValue) -> bool {
+    use yavs_sem::stat::{ConstValue, Elems};
+    use yavs_sem::types::TypeKind;
+    let t = db.base(db.exprs[x].subtype);
+    let elem = match &db.types[t].kind {
+        TypeKind::Array { elem, .. } => db.base(*elem),
+        _ => t,
+    };
+    let wk = &db.well_known;
+    if Some(elem) == wk.bit
+        || Some(elem) == wk.boolean
+        || yavs_elab::elem_of(db, elem) != yavs_kernel::Elem::Logic
+        || !matches!(db.types[elem].kind, TypeKind::Enum { .. })
+    {
+        return false;
+    }
+    match v {
+        ConstValue::Enum(4) => true,
+        ConstValue::Array(a) => match &a.elems {
+            Elems::Bytes(b) => b.contains(&4),
+            Elems::Runs(r) => r.iter().any(|(_, v)| *v == ConstValue::Enum(4)),
+        },
+        _ => false,
     }
 }
 

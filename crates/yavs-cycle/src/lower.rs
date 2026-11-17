@@ -2522,7 +2522,11 @@ impl Lx<'_> {
                 site,
             });
         }
-        part_of(s.r, 64)
+        // Fresh only if the integer is: `retarget` must not take over the write of a variable.
+        Part {
+            fresh: s.fresh,
+            ..part_of(s.r, 64)
+        }
     }
 
     /// A dynamic element read into a temporary; any other part as it is.

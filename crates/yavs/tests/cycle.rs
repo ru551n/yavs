@@ -1783,6 +1783,26 @@ fn calls_on_elements_of_constant_tables_fold_by_the_elements_ranges() {
     }
 }
 
+/// A variable given an integer just computed and then assigned to the element of an array of one
+/// integer keeps its value: the element's word was taken for a fresh value, and the operation that
+/// wrote the variable was made to write the element instead.
+#[test]
+fn a_variable_given_to_an_array_of_one_integer_keeps_its_value() {
+    let dir = tempdir("cycle-intelem1");
+    analyze(&dir, "intelem1.vhd", include_str!("cycle/intelem1.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_intelem1");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_intelem1");
+        assert_eq!(normal.len(), 6, "{t:?} {normal:?}");
+        assert!(normal[0].contains("q=8 q2=5 q3=19 s=5"), "{normal:?}");
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 2 of 4 processes run cycle-based"),
+            "{err}"
+        );
+    }
+}
+
 /// Arrays of integers and enumerations in variables, constants and signals.
 #[test]
 fn arrays_of_integers_give_the_same_result() {

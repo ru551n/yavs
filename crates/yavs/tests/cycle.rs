@@ -1767,7 +1767,8 @@ fn a_z_passed_on_by_a_process_outside_keeps_its_reader_out() {
 /// of its clock port chosen by a generic, a falling edge of a copy starting at `'U'`, and two
 /// copies of a clock nothing else tests (one class of the two) are copies too. An inverted and a
 /// gated clock, a copy of a clock a register of the region makes, and a copy whose start value
-/// gives it an edge at time 0 its source does not have keep classes of their own.
+/// gives it an edge at time 0 its source does not have keep classes of their own, and so do the
+/// members on a copy that a register of the event kernel on that copy samples.
 /// `YAVS_CYCLE_EXACT_CLOCKS=1` keeps every copy a clock of its own: then the logic stays out and
 /// every value is the normal mode's.
 #[test]
@@ -1787,7 +1788,7 @@ fn clocks_copied_by_assignment_are_their_source() {
         assert_eq!(normal.len(), 13, "{normal:?}");
         let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_clkcopy");
         assert!(
-            err.contains("cycle mode: 20 of 33 processes run cycle-based"),
+            err.contains("cycle mode: 21 of 36 processes run cycle-based"),
             "{err}"
         );
         let edges = err.lines().find(|l| l.contains(", on the ")).unwrap_or("");
@@ -1801,6 +1802,7 @@ fn clocks_copied_by_assignment_are_their_source() {
             ".hcopy",
             ".dcopy",
             ".b1",
+            ".two",
             "falling edge of cycle_clkcopy.clk",
         ] {
             assert!(edges.contains(own), "{own}: {edges}");
@@ -1820,7 +1822,7 @@ fn clocks_copied_by_assignment_are_their_source() {
         );
         assert_eq!(cycle, normal, "{t:?}\n{err}");
         assert!(
-            err.contains("cycle mode: 17 of 33 processes run cycle-based"),
+            err.contains("cycle mode: 18 of 36 processes run cycle-based"),
             "{err}"
         );
         for out in [

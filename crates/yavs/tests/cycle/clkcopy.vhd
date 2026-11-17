@@ -53,6 +53,8 @@ architecture tb of cycle_clkcopy is
   signal inv, gated, one, hcopy : std_logic;
   signal a, b, m, c, d, g, n, p, h, k, f, e, x, y, z, v, w : unsigned(7 downto 0) := (others => '0');
   signal div, dcopy, bsrc, b1, b2 : std_logic := '0';
+  signal two : std_logic;
+  signal wv, ov : unsigned(7 downto 0) := (others => '0');
   signal en : std_logic := '1';
 begin
   clk <= not clk after 5 ns;
@@ -118,6 +120,15 @@ begin
     if rising_edge(b2) then z <= v; end if;
   end process;
   w <= z;
+  -- A register of the kernel on a copy (`after` keeps it out) samples a member on that copy:
+  -- the member keeps the copy's edges, or the sampler would see its new value.
+  two <= clk;
+  reg_w : process (two) begin
+    if rising_edge(two) then wv <= wv + 7; end if;
+  end process;
+  reg_o : process (two) begin
+    if rising_edge(two) then ov <= wv after 1 ps; end if;
+  end process;
   main : process begin
     for i in 0 to 12 loop
       wait for 7 ns;
@@ -127,7 +138,7 @@ begin
         & " p=" & to_string(to_integer(p)) & " h=" & to_string(to_integer(h))
         & " k=" & to_string(to_integer(k)) & " f=" & to_string(to_integer(f))
         & " e=" & to_string(to_integer(e)) & " x=" & to_string(to_integer(x))
-        & " z=" & to_string(to_integer(w));
+        & " z=" & to_string(to_integer(w)) & " o=" & to_string(to_integer(ov));
     end loop;
     std.env.finish;
   end process;

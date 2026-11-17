@@ -551,7 +551,8 @@ there:
 A clock computed from another (``not clk``, ``clk and en``, a divider) is no copy: it keeps its own edges, and logic
 between it and its source stays in the event simulation as before. Nor is a copy whose start value would give it an
 edge at time 0 that its source does not have (a ``clk'event and clk = '1'`` user of a copy of a clock that starts at
-``'1'``).
+``'1'``). When a process in the event simulation has a clock edge on the copy, the cycle-based processes on that
+copy keep the copy's own edges too, so that process samples them as in the normal mode.
 
 Signal history
 ~~~~~~~~~~~~~~

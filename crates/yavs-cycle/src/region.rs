@@ -378,7 +378,11 @@ fn copy_chain(
 /// kernel signal keeps the event history an edge test needs; where none above the clock does,
 /// copies of one source at the same distance from it (they change in the same delta) share the
 /// first of them.
-fn same_clocks(e: &Elaborated, copies: &Copies, taken: &mut BTreeMap<usize, (Fit, Body)>) {
+fn same_clocks(
+    e: &Elaborated,
+    copies: &Copies,
+    taken: &mut BTreeMap<usize, (Fit, Body)>,
+) -> BTreeMap<usize, (Clock, Vec<LeafId>)> {
     type El = (LeafId, u32);
     // Copies of one source at one distance, with one start value.
     type Sib = (El, usize, Option<char>);
@@ -387,7 +391,7 @@ fn same_clocks(e: &Elaborated, copies: &Copies, taken: &mut BTreeMap<usize, (Fit
         .collect();
     let history = |x: &El| e.bare.get(x.0.index()) != Some(&true);
     let init = |x: El| (e.nets.leaf(x.0).init.as_logic()).map(|v| v.get(x.1 as usize).to_char());
-    let mut to: BTreeMap<usize, Result<El, Sib>> = BTreeMap::new();
+    let mut to: BTreeMap<usize, (Result<El, Sib>, Vec<El>)> = BTreeMap::new();
     for (&pi, (_, b)) in taken.iter() {
         let Some(c) = b.clock else { continue };
         let chain = copy_chain(e, copies, &made, c);
@@ -398,22 +402,70 @@ fn same_clocks(e: &Elaborated, copies: &Copies, taken: &mut BTreeMap<usize, (Fit
             Some(k) => Ok(chain[k]),
             None => Err((chain[chain.len() - 1], chain.len(), init(chain[0]))),
         };
-        to.insert(pi, t);
+        to.insert(pi, (t, chain));
     }
     let mut first: BTreeMap<Sib, El> = BTreeMap::new();
-    for (pi, t) in &to {
+    for (pi, (t, _)) in &to {
         if let (Err(k), Some(c)) = (t, taken[pi].1.clock) {
             let x = first.entry(*k).or_insert((c.leaf, c.elem));
             *x = (*x).min((c.leaf, c.elem));
         }
     }
-    for (pi, t) in to {
+    let mut moved = BTreeMap::new();
+    for (pi, (t, chain)) in to {
         let b = &mut taken.get_mut(&pi).expect("listed").1;
         if let Some(c) = b.clock {
+            // The copies between the clock and where it moved: their edges come later. A
+            // sibling's edges come in the same delta.
+            let later = match t {
+                Ok(to) => chain
+                    .iter()
+                    .take_while(|x| **x != to)
+                    .map(|x| x.0)
+                    .collect(),
+                Err(_) => Vec::new(),
+            };
             let (leaf, elem) = t.unwrap_or_else(|k| first[&k]);
             b.clock = Some(Clock { leaf, elem, ..c });
+            moved.insert(pi, (c, later));
         }
     }
+    moved
+}
+
+/// Members moved onto a copied clock's source (`same_clocks`) whose copy a process outside
+/// waits on (a register of the kernel on the copy): that process samples in the copy's delta,
+/// after the moved member changed, so the member goes back to its own clock.
+fn copy_rule(
+    db: &Db,
+    e: &Elaborated,
+    taken: &mut BTreeMap<usize, (Fit, Body)>,
+    moved: &mut BTreeMap<usize, (Clock, Vec<LeafId>)>,
+) -> bool {
+    moved.retain(|pi, _| taken.contains_key(pi));
+    if moved.is_empty() {
+        return false;
+    }
+    let mut memo = BTreeMap::new();
+    let mut waited: Option<BTreeSet<LeafId>> = Some(BTreeSet::new());
+    for q in (0..e.procs.len()).filter(|q| !taken.contains_key(q)) {
+        match (proc_reads(db, e, q, &mut memo), waited.as_mut()) {
+            (Some((_, w)), Some(all)) => all.extend(w),
+            _ => waited = None,
+        }
+    }
+    let back: Vec<usize> = (moved.iter())
+        .filter(|(_, (_, ls))| {
+            ls.iter()
+                .any(|l| waited.as_ref().is_none_or(|w| w.contains(l)))
+        })
+        .map(|(&pi, _)| pi)
+        .collect();
+    for pi in &back {
+        let (c, _) = moved.remove(pi).expect("listed");
+        taken.get_mut(pi).expect("member").1.clock = Some(c);
+    }
+    !back.is_empty()
 }
 
 /// The subset verdict of every process: what fits, and why the others do not.
@@ -842,7 +894,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
     let own_clock: BTreeMap<usize, LeafId> = (taken.iter())
         .filter_map(|(&pi, (_, b))| Some((pi, b.clock?.leaf)))
         .collect();
-    same_clocks(e, &copies, &mut taken);
+    let mut moved = same_clocks(e, &copies, &mut taken);
     // Combinational logic feeding a process outside whose result depends on how often it runs.
     let seeds = delta_seeds(db, e, &out, &checked);
     // Developers (`YAVS_CYCLE_SEEDS=FILE`): the signals those processes drive, one leaf a line,
@@ -1007,6 +1059,9 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         // stays out (the region gives back '0' and '1' only).
         if gone.is_empty() && exact_meta {
             gone = meta_rule(db, e, &taken, &zsrc, &out);
+        }
+        if gone.is_empty() && copy_rule(db, e, &mut taken, &mut moved) {
+            continue;
         }
         if gone.is_empty() {
             gone = ram_rule(db, e, &taken);

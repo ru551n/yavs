@@ -934,6 +934,13 @@ fn pass_on_z(
             (cp.actual.iter()).flat_map(|a| cp.formal.iter().map(move |f| (a.0, f.0)))
         }))
         .collect();
+    // `x'delayed(T)` holds what `x` held.
+    let delayed: Vec<(LeafId, LeafId)> = (e.nets.leaves.iter().enumerate())
+        .filter_map(|(k, l)| match l.implicit {
+            Some((yavs_elab::ImplicitKind::Delayed(_), src, _)) => Some((LeafId(k as u32), src)),
+            _ => None,
+        })
+        .collect();
     let holds = |l: LeafId, claim: &BTreeSet<(usize, LeafId)>| -> bool {
         let ds = drivers.get(&l).map_or(&[][..], |v| &v[..]);
         if ds.len() < 2 || !matches!(e.nets.leaf(l).resolution, Some(LeafRes::StdLogic)) {
@@ -968,6 +975,11 @@ fn pass_on_z(
         for &(a, f) in &ports {
             if zsrc.contains(&a) || zsrc.contains(&f) {
                 zsrc.extend([a, f]);
+            }
+        }
+        for &(d, src) in &delayed {
+            if zsrc.contains(&src) {
+                zsrc.insert(d);
             }
         }
         if (zsrc.len(), claim.len()) == n {
@@ -1035,14 +1047,14 @@ fn value_reads(
     let mut out = BTreeSet::new();
     for l in &lsps {
         match l.root {
-            ObjRoot::Decl(d) => {
+            // An implicit signal names its own leaf (`x'delayed(T)` is followed from `x`).
+            ObjRoot::Decl(d) | ObjRoot::ImplicitSignal(d) => {
                 if let Some(o) = e.signal(p.scope, d) {
                     let (a, z) = e.nets.obj(o).leaves;
                     out.extend((a.0..z.0).map(LeafId));
                 }
             }
             ObjRoot::External(_) => return Some(full),
-            ObjRoot::ImplicitSignal(_) => {}
         }
     }
     Some(out)

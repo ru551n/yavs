@@ -2,8 +2,9 @@
 -- the region) reaches a register the testbench reads: that register stays in the kernel, so the
 -- testbench sees the 'Z' the normal mode gives; a register of a line without one joins, and so
 -- does one of a tri-state line with a pull-up, which never resolves to 'Z', and one of a copy
--- outside that only tests the line. Copies through a variable and through `to_x01`, and a line
--- pulled up on one element only, keep their readers out. `W` is replaced by a width.
+-- outside that only tests the line. Copies through a variable, through `to_x01` and through
+-- `'delayed`, and a line pulled up on one element only, keep their readers out. `W` is replaced by
+-- a width.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -14,7 +15,7 @@ architecture a of cycle_zpass is
   signal pad, pull : std_logic_vector(W - 1 downto 0);
   signal mid, clean, q, r, p : std_ulogic_vector(W - 1 downto 0);
   signal tested, c : std_ulogic;
-  signal vmid, xmid, qv, qx, qh : std_ulogic_vector(W - 1 downto 0);
+  signal vmid, xmid, dmid, qv, qx, qh, qd : std_ulogic_vector(W - 1 downto 0);
   signal half : std_logic_vector(1 downto 0);
   signal k : unsigned(W - 1 downto 0) := (others => '0');
 begin
@@ -25,6 +26,7 @@ begin
   pull <= (others => 'H');
   tested <= '0' when pad(0) = '0' else '1' after 1 ns;
   xmid <= to_x01(pad) after 1 ns;
+  dmid <= pad'delayed(1 ns);
   half <= pad(0) & pad(0) when en = '1' else "ZZ";
   half(0) <= 'H';
 
@@ -77,6 +79,13 @@ begin
     end if;
   end process;
 
+  reg_d : process (clk)
+  begin
+    if rising_edge(clk) then
+      qd <= dmid;
+    end if;
+  end process;
+
   reg_h : process (clk)
   begin
     if rising_edge(clk) then
@@ -98,7 +107,7 @@ begin
       wait for 5 ns;
       clk <= '0';
       report "k=" & integer'image(n) & " q=" & to_string(q) & " r=" & to_string(r) & " p=" & to_string(p) & " c=" & std_ulogic'image(c)
-        & " v=" & to_string(qv) & " x=" & to_string(qx) & " h=" & to_string(qh);
+        & " v=" & to_string(qv) & " x=" & to_string(qx) & " h=" & to_string(qh) & " d=" & to_string(qd);
     end loop;
     wait;
   end process;

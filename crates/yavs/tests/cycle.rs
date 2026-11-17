@@ -1515,8 +1515,9 @@ fn arrays_of_records_equal_the_normal_mode_at_widths_around_a_word() {
 /// A 'Z' copied by a process that stays out for another reason (a delay) reaches a register the
 /// testbench reads: the register stays out too and the testbench sees the 'Z'; a register of a
 /// line without one joins, and so do one of a line with a pull-up (it never resolves to 'Z') and
-/// one of a copy outside that only tests the line; copies through a variable and `to_x01`, and a
-/// line pulled up on one element only, keep theirs out. Against the normal mode at widths 1 to 128.
+/// one of a copy outside that only tests the line; copies through a variable, `to_x01` and
+/// `'delayed`, and a line pulled up on one element only, keep theirs out. Against the normal mode
+/// at widths 1 to 128.
 #[test]
 fn a_z_passed_on_by_a_process_outside_keeps_its_reader_out() {
     let dir = tempdir("cycle-zpass");
@@ -1538,7 +1539,7 @@ fn a_z_passed_on_by_a_process_outside_keeps_its_reader_out() {
             assert!(normal.iter().any(|l| l.contains("q=Z")), "{normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
-                err.contains("cycle mode: 3 of 18 processes run cycle-based"),
+                err.contains("cycle mode: 3 of 20 processes run cycle-based"),
                 "{w}: {err}"
             );
             // The members, listed as clocked.

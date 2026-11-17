@@ -894,7 +894,8 @@ impl RegionProc {
                 "cycle mode: check {site} failed, which the region does not have"
             )));
         };
-        let mut e = ctx.error(ErrorKind::Runtime(check.message(a, b)));
+        let vals = crate::region::exact_meta().then_some((a, b));
+        let mut e = ctx.error(ErrorKind::Runtime(check.message(vals)));
         e.process = Some((ProcId(*pi as u32), name.clone()));
         e.at.clone_from(at);
         e

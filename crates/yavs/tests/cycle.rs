@@ -39,6 +39,41 @@ fn yavs_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
         .expect("run yavs")
 }
 
+/// `err` with each failed check's message as plain `--cycle` gives it (A34): without the
+/// operands' values, which only `--cycle-exact-meta` keeps.
+fn bare(err: &str) -> String {
+    const HINT: &str = " (--cycle-exact-meta shows the values)";
+    let one = |l: &str| -> String {
+        let Some(m) = l.trim_start().strip_prefix("error[E3009]: ") else {
+            return l.to_string();
+        };
+        let head = &l[..l.len() - m.len()];
+        let w: Vec<&str> = m.splitn(4, ' ').collect();
+        let m = match &w[..] {
+            // The type is not in the normal mode's message: INTEGER in these tests.
+            ["division", "by", "zero"] => {
+                "division by zero, or a result that cannot be represented as INTEGER".into()
+            }
+            ["result", "of", _, rest] => {
+                let (op, ty) = rest
+                    .split_once(' ')
+                    .and_then(|(op, r)| Some((op, r.split_once(" cannot be represented as ")?.1)))
+                    .expect("an arithmetic message");
+                if ["/", "mod", "rem"].contains(&op) {
+                    format!("division by zero, or a result that cannot be represented as {ty}")
+                } else {
+                    format!("result of {op} cannot be represented as {ty}")
+                }
+            }
+            [k @ ("value" | "index"), _, "outside", rest] => format!("{k} outside {rest}"),
+            _ => panic!("a check message bare() does not know: {m}"),
+        };
+        format!("{head}{m}{HINT}")
+    };
+    err.lines().map(one).collect::<Vec<_>>().join("\n")
+        + if err.ends_with('\n') { "\n" } else { "" }
+}
+
 fn analyze(dir: &Path, file: &str, text: &str) {
     std::fs::write(dir.join(file), text).expect("write design");
     let o = yavs(dir, &["analyze", "--std=2008", "--work=work:lib", file]);
@@ -954,6 +989,32 @@ fn boundary_values_and_metavalues_become_two_state_and_are_counted() {
 
 /// The overflow, range and index checks of region code stop the run as the normal mode does.
 const CHECKS: &str = "\
+entity cycle_div is
+end entity;
+architecture a of cycle_div is
+  signal clk : bit := '0';
+  signal x : integer := 3;
+  signal y : integer := 0;
+begin
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      x <= x - 1;
+      y <= 100 / x;
+    end if;
+  end process;
+  main : process
+  begin
+    for i in 1 to 40 loop
+      clk <= '1';
+      wait for 5 ns;
+      clk <= '0';
+      wait for 5 ns;
+    end loop;
+    wait;
+  end process;
+end architecture;
+
 entity cycle_ovf is
 end entity;
 architecture a of cycle_ovf is
@@ -1110,11 +1171,20 @@ begin
 end architecture;
 ";
 
+/// The normal mode, plain `--cycle` (no values in a failed check's message) and the exact
+/// contract (`--cycle-exact-meta`: the normal mode's message).
+const MODES: [&[&str]; 3] = [&[], &["--cycle"], &["--cycle", "--cycle-exact-meta"]];
+
 #[test]
 fn failed_checks_in_region_code_stop_the_run_as_in_the_normal_mode() {
     let dir = tempdir("cycle-checks");
     analyze(&dir, "checks.vhd", CHECKS);
     for (top, msg, note) in [
+        (
+            "cycle_div",
+            "error[E3009]: division by zero",
+            "at 30 ns, delta 1, in process cycle_div.reg",
+        ),
         (
             "cycle_ovf",
             "error[E3009]: result of 1162261467 * 3 cannot be represented as INTEGER",
@@ -1148,27 +1218,47 @@ fn failed_checks_in_region_code_stop_the_run_as_in_the_normal_mode() {
         ),
     ] {
         let mut shown = Vec::new();
-        for mode in [None, Some("--cycle")] {
+        for mode in MODES {
             let mut args = vec!["run", "--work=work:lib", "--no-cache", "--tier=interp"];
             args.extend(mode);
             args.push(top);
             let o = yavs(&dir, &args);
             let err = String::from_utf8_lossy(&o.stderr);
             assert_eq!(o.status.code(), Some(1), "{top} {mode:?}: {err}");
+            let want = if mode.len() == 1 {
+                bare(msg)
+            } else {
+                msg.into()
+            };
             assert!(
-                err.contains(msg) && err.contains(note),
+                err.contains(&want) && err.contains(note),
                 "{top} {mode:?}: {err}"
             );
             shown.push(err[err.find("error[").expect("an error")..].to_string());
-            if mode.is_some() {
+            if !mode.is_empty() {
                 assert!(
                     err.contains("cycle mode: 1 of 2 processes run cycle-based"),
                     "{err}"
                 );
             }
         }
-        // The same diagnostic, with the place of the statement and of the calls around it.
-        assert_eq!(shown[0], shown[1], "{top}");
+        // The same diagnostic, with the place of the statement and of the calls around it; plain
+        // `--cycle` without the operands' values (A34).
+        assert_eq!(shown[0], shown[2], "{top}");
+        assert_eq!(bare(&shown[0]), shown[1], "{top}");
+    }
+    // With the compilation cache: code compiled without the values is never reused under
+    // `--cycle-exact-meta`, nor the other way round.
+    let msg = "error[E3009]: result of 1162261467 * 3 cannot be represented as INTEGER";
+    for exact in [false, true, false, true] {
+        let mut args = vec!["run", "--work=work:lib", "--tier=interp", "--cycle"];
+        args.extend(exact.then_some("--cycle-exact-meta"));
+        args.push("cycle_ovf");
+        let o = yavs(&dir, &args);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "{exact}: {err}");
+        let want = if exact { msg.into() } else { bare(msg) };
+        assert!(err.contains(&want), "{exact}: {err}");
     }
 }
 
@@ -1453,27 +1543,34 @@ fn failed_checks_in_inlined_calls_stop_the_run_as_in_the_normal_mode() {
         ),
     ] {
         let mut shown = Vec::new();
-        for mode in [None, Some("--cycle")] {
+        for mode in MODES {
             let mut args = vec!["run", "--work=work:lib", "--no-cache", "--tier=interp"];
             args.extend(mode);
             args.push(top);
             let o = yavs(&dir, &args);
             let err = String::from_utf8_lossy(&o.stderr);
             assert_eq!(o.status.code(), Some(1), "{top} {mode:?}: {err}");
+            let want = if mode.len() == 1 {
+                bare(msg)
+            } else {
+                msg.into()
+            };
             assert!(
-                err.contains(msg) && err.contains(note),
+                err.contains(&want) && err.contains(note),
                 "{top} {mode:?}: {err}"
             );
             shown.push(err[err.find("error[").expect("an error")..].to_string());
-            if mode.is_some() {
+            if !mode.is_empty() {
                 assert!(
                     err.contains("cycle mode: 1 of 2 processes run cycle-based"),
                     "{err}"
                 );
             }
         }
-        // The same diagnostic, with the place of the statement and of the calls around it.
-        assert_eq!(shown[0], shown[1], "{top}");
+        // The same diagnostic, with the place of the statement and of the calls around it; plain
+        // `--cycle` without the operands' values (A34).
+        assert_eq!(shown[0], shown[2], "{top}");
+        assert_eq!(bare(&shown[0]), shown[1], "{top}");
     }
 }
 
@@ -3269,9 +3366,14 @@ fn a_check_failing_in_a_loop_group_stops_the_run_as_in_the_normal_mode() {
         let o = yavs(&dir, &args);
         let err = String::from_utf8_lossy(&o.stderr);
         assert_eq!(o.status.code(), Some(1), "{mode:?}: {err}");
+        let msg = "error[E3009]: value 8 outside of INTEGER range 0 to 7 for signal K2";
+        let want = if mode.is_some() {
+            bare(msg)
+        } else {
+            msg.into()
+        };
         assert!(
-            err.contains("error[E3009]: value 8 outside of INTEGER range 0 to 7 for signal K2")
-                && err.contains("in process cycle_loops.pg"),
+            err.contains(&want) && err.contains("in process cycle_loops.pg"),
             "{mode:?}: {err}"
         );
     }
@@ -3400,7 +3502,7 @@ fn members_cut_into_several_functions_give_the_same_result() {
         );
         assert_eq!(rc, 1, "{chunk:?}: {err}");
         for l in &failure {
-            assert!(err.contains(l), "{chunk:?}: {l}: {err}");
+            assert!(err.contains(&bare(l)), "{chunk:?}: {l}: {err}");
         }
     }
     // The region from the cache decodes its check sites when the check fails.
@@ -3427,7 +3529,7 @@ fn members_cut_into_several_functions_give_the_same_result() {
             "{err}"
         );
         for l in &failure {
-            assert!(err.contains(l), "{pass}: {l}: {err}");
+            assert!(err.contains(&bare(l)), "{pass}: {l}: {err}");
         }
     }
 }
@@ -3482,7 +3584,7 @@ fn instances_of_one_shape_share_a_body_and_others_do_not() {
         );
         assert_eq!(rc, 1, "{chunk:?}: {err}");
         for l in &failure {
-            assert!(err.contains(l), "{chunk:?}: {l}: {err}");
+            assert!(err.contains(&bare(l)), "{chunk:?}: {l}: {err}");
         }
     }
 }
@@ -4295,8 +4397,13 @@ fn members_skipped_on_unchanged_inputs_give_the_same_result() {
             let o = yavs_env(&dir, &args, env);
             let err = String::from_utf8_lossy(&o.stderr);
             assert_eq!(o.status.code(), Some(1), "{mode:?}: {err}");
+            let idx = if mode.is_some() {
+                "index outside of"
+            } else {
+                "index 9 outside of"
+            };
             assert!(
-                err.contains("error[E3009]: index 9 outside of")
+                err.contains(&format!("error[E3009]: {idx}"))
                     && err.contains("at 142 ns, delta 2, in process cycle_skip.la"),
                 "{mode:?}: {err}"
             );
@@ -4556,10 +4663,10 @@ fn elements_of_elements_at_run_time_indices_equal_the_normal_mode() {
         }
         for (bad, msg) in [
             ("1", format!("outside of range {} downto 0 for m", w - 1)),
-            ("2", "index 7 outside of range 0 to 5 for m".to_string()),
+            ("2", "outside of range 0 to 5 for m".to_string()),
         ] {
             let mut shown = Vec::new();
-            for mode in [None, Some("--cycle")] {
+            for mode in MODES {
                 let mut args = vec!["run", "--work=work:lib", "--no-cache", "--tier=interp"];
                 args.extend(mode);
                 let g = format!("-gBAD={bad}");
@@ -4570,7 +4677,8 @@ fn elements_of_elements_at_run_time_indices_equal_the_normal_mode() {
                 assert!(err.contains(&msg), "{w} {bad} {mode:?}: {err}");
                 shown.push(err[err.find("error[").expect("an error")..].to_string());
             }
-            assert_eq!(shown[0], shown[1], "{w} {bad}");
+            assert_eq!(shown[0], shown[2], "{w} {bad}");
+            assert_eq!(bare(&shown[0]), shown[1], "{w} {bad}");
         }
     }
 }

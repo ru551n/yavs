@@ -3,8 +3,9 @@
 //! `ceil(len / 64)` words, element 0 in bit 0 of the first, the bits above `len` zero; an integer
 //! is one word.
 //!
-//! A check that fails (`Op::Int`, `Op::Range`, the dynamic indices) stores its operands in the
-//! two error words and returns its site number plus one; `RegionProc` makes the error. With
+//! A check that fails (`Op::Int`, `Op::Range`, the dynamic indices) returns its site number plus
+//! one through the function's one exit of failed checks; `RegionProc` makes the error. Under `--cycle-exact-meta` it first stores its operands in
+//! the two error words, for the message's values (A34: the default drops them). With
 //! `YAVS_CYCLE_CHECKS=off` (developers, to measure them) range and overflow checks are left out
 //! and a dynamic index is clamped into its vector, so the code stays memory safe.
 //!
@@ -1302,6 +1303,7 @@ pub(crate) fn compile<'a>(
     let words = keep.len();
     let (mut module, isa, target) = module()?;
     let checks = checks_on();
+    let vals = crate::region::exact_meta();
     // The functions to compile (label, parts, whether checks exit), the loop bodies first; and
     // what each trigger function runs, a function by its index. A part says whether its member
     // goes on in the next one (`cut`).
@@ -1616,6 +1618,7 @@ pub(crate) fn compile<'a>(
                 i64::from(shape.is_some()),
                 i64::from(checks && *checked),
                 i64::from(*checked),
+                i64::from(vals),
                 cache_cap() as i64,
             ];
             if let Some(k) = shape {
@@ -1655,6 +1658,7 @@ pub(crate) fn compile<'a>(
         err,
         log,
         checks,
+        vals,
         disasm,
     };
     let done: Vec<std::sync::OnceLock<Result<Made, String>>> =
@@ -1828,6 +1832,8 @@ struct Env<'a> {
     err: u32,
     log: (u32, u32),
     checks: bool,
+    /// Failed checks store their operands (`--cycle-exact-meta`).
+    vals: bool,
     disasm: bool,
 }
 
@@ -1883,6 +1889,8 @@ impl Env<'_> {
                 log: (self.log.0 as i32 * 8, self.log.1),
                 checks: self.checks && checked,
                 exits: checked,
+                vals: self.vals,
+                exit: None,
                 ptr,
                 cache: BTreeMap::new(),
                 cap: CACHE_MAX,
@@ -1933,6 +1941,12 @@ impl Env<'_> {
             }
             let zero = g.b.ins().iconst(I32, 0);
             g.b.ins().return_(&[zero]);
+            if let Some(x) = g.exit {
+                g.b.switch_to_block(x);
+                g.b.seal_block(x);
+                let s = g.b.block_params(x)[0];
+                g.b.ins().return_(&[s]);
+            }
             g.b.finalize(self.isa.frontend_config());
             seen = (g.seen.into_inner(), g.used.get());
         }
@@ -2153,6 +2167,10 @@ struct Gen<'a> {
     /// A failed check (a zero divisor: the one check `checks` off keeps) exits the function;
     /// without, a division by zero divides by one.
     exits: bool,
+    /// A failed check stores its operands in the error words.
+    vals: bool,
+    /// The exit of failed checks, made at the first: it returns its parameter, the site plus one.
+    exit: Option<CBlock>,
     ptr: cranelift_codegen::ir::Type,
     /// The words in registers, by byte offset: their value and whether memory is behind it. Every
     /// value dominates the code that follows (a branch drops what it made at its join).
@@ -2533,7 +2551,8 @@ impl Gen<'_> {
     }
 
     /// A check: `fail` (an `I8` truth value) jumps to a cold block that stores `vals` in the
-    /// error words and returns `site + 1`.
+    /// error words (only under `--cycle-exact-meta`) and goes to the function's one exit of failed
+    /// checks with `site + 1` (one epilogue for all of them).
     /// The divisor `y` of `x`: a failed check where `fail` (zero, or `MIN / -1`); without exits,
     /// one instead, so the machine division never traps.
     fn div_guard(&mut self, fail: Value, site: u32, x: Value, y: Value) -> Value {
@@ -2552,14 +2571,23 @@ impl Gen<'_> {
         self.b.ins().brif(fail, bad, &[], ok, &[]);
         self.b.switch_to_block(bad);
         self.b.seal_block(bad);
-        let err = self.err();
-        for (k, &v) in vals.iter().enumerate() {
-            self.b
-                .ins()
-                .store(MemFlagsData::trusted(), v, self.base, err + k as i32 * 8);
+        if self.vals {
+            let err = self.err();
+            for (k, &v) in vals.iter().enumerate() {
+                self.b
+                    .ins()
+                    .store(MemFlagsData::trusted(), v, self.base, err + k as i32 * 8);
+            }
         }
         let s = self.b.ins().iconst(I32, i64::from(site) + 1);
-        self.b.ins().return_(&[s]);
+        let b = &mut self.b;
+        let exit = *self.exit.get_or_insert_with(|| {
+            let x = b.create_block();
+            b.set_cold_block(x);
+            b.append_block_param(x, I32);
+            x
+        });
+        self.b.ins().jump(exit, &[s.into()]);
         self.b.switch_to_block(ok);
         self.b.seal_block(ok);
     }

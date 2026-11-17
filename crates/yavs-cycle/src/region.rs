@@ -106,6 +106,11 @@ pub fn set_exact_meta(on: bool) {
     EXACT_META.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Whether `--cycle-exact-meta` is on: also, failed checks keep their operands for the message.
+pub(crate) fn exact_meta() -> bool {
+    EXACT_META.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// `YAVS_CYCLE_EXACT_CLOCKS=1` (tests and gates only): a clock copied by assignment stays a
 /// clock of its own, as the normal mode's delta order has it (A32).
 pub(crate) fn exact_clocks() -> Result<bool, String> {

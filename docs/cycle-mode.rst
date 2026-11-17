@@ -72,7 +72,8 @@ There are three flags of ``yavs run``. They are alternatives; giving two is a us
   and ends with exit status 0 before anything is compiled or simulated (:ref:`cycle-report`).
   ``--cycle-report=FILE`` writes the report to a file instead of standard error.
 
-``--cycle-exact-meta``, given with any of the three, keeps the testbench's metavalues exact (:ref:`cycle-contract`):
+``--cycle-exact-meta``, given with any of the three, keeps the testbench's metavalues exact and the values in the
+message of a failed check (:ref:`cycle-contract`):
 
 .. code-block:: bash
 
@@ -330,8 +331,9 @@ Cycle mode is for speed. By default it gives up these, and nothing else, in the 
   gives their new values (:ref:`cycle-deltas`, :ref:`cycle-clock-copies`).
 * **Library warnings.** The ``numeric_std`` and other ``ieee`` warnings (metavalues, truncation) are not given by
   cycle-based processes, nor are their reports and assertions below the top-level unit (:ref:`cycle-reports`).
-* **Message wording.** A failed check (overflow, range, index) stops the run with the normal mode's error code,
-  source line, time and process; the wording of its message may differ (:ref:`cycle-checks`).
+* **Values in error messages.** A failed check (overflow, range, index) stops the run with the normal mode's error
+  code, source line, time and process, and says what failed, but not the values involved: keeping them costs code
+  in every check. ``--cycle-exact-meta`` keeps them, with the normal mode's message (:ref:`cycle-checks`).
 
 .. _cycle-two-state:
 
@@ -597,8 +599,10 @@ Checks that stay
 
 Integer overflow, subtype range checks and array index checks are still made in cycle-based processes. A failure
 stops the run with the same error code and exit status as in the normal mode, with the source line, the time and the
-process. The wording of the message is the normal mode's today, but only the code, the source line, the time and
-the process are promised: a later version may shorten the text for speed. A check inside a function or procedure that was inlined also lists the statements it was called from, as the
+process. The message says what failed (the operator of an overflow, the subtype and range of a range check, the
+range of an index), but not the values: a failed check stores nothing, so each check is less code. With
+``--cycle-exact-meta`` the checks keep the values and the message is the normal mode's. A division by zero and a
+quotient too large for its type are one message. A check inside a function or procedure that was inlined also lists the statements it was called from, as the
 normal mode does. With several clocks, the processes of each clock edge run together, one clock after the other:
 when checks of two clocks fail at the same edge, the run stops with that of the clock that runs first, which need
 not be the one the normal mode reports. In the same way a message of a top-level checker on one clock can come before
@@ -607,7 +611,7 @@ the failure of a process on another clock at that edge. ``overflow.vhd`` counts 
 .. code-block:: text
 
     cycle mode: 1 of 3 processes run cycle-based, 2 in the event kernel (see --cycle-report)
-    error[E3009]: result of 2147483647 + 1 cannot be represented as INTEGER
+    error[E3009]: result of + cannot be represented as INTEGER (--cycle-exact-meta shows the values)
       --> overflow.vhd:11:12
        |
     11 |       n <= n + 1;  -- overflows at the third edge

@@ -188,15 +188,21 @@ impl Note {
     }
 }
 
+/// `lo to hi` or `hi downto lo`.
+fn range(lo: i64, hi: i64, down: bool) -> String {
+    if down {
+        format!("{hi} downto {lo}")
+    } else {
+        format!("{lo} to {hi}")
+    }
+}
+
 impl Check {
-    /// The message for the operands the code stored (`a`, and `b` for arithmetic).
-    pub(crate) fn message(&self, a: i64, b: i64) -> String {
-        let range = |lo: i64, hi: i64, down: bool| {
-            if down {
-                format!("{hi} downto {lo}")
-            } else {
-                format!("{lo} to {hi}")
-            }
+    /// The message for the operands the code stored (`a`, and `b` for arithmetic); `None`: the
+    /// code stored none (A34, without `--cycle-exact-meta`), the message says what failed.
+    pub(crate) fn message(&self, vals: Option<(i64, i64)>) -> String {
+        let Some((a, b)) = vals else {
+            return self.bare();
         };
         match self {
             Check::Arith { op, .. }
@@ -239,6 +245,55 @@ impl Check {
                 format!(
                     "index {a} outside of range {} for {what}",
                     range(lo, hi, x.dir == Direction::Downto)
+                )
+            }
+            Check::Note(_) => "an assert or report fired".into(),
+        }
+    }
+
+    /// The message without the operands' values.
+    fn bare(&self) -> String {
+        const HINT: &str = " (--cycle-exact-meta shows the values)";
+        let what = |w: &str| {
+            if w.is_empty() {
+                String::new()
+            } else {
+                format!(" for {w}")
+            }
+        };
+        match self {
+            // The site's checks of the divisor and of the quotient are one site.
+            Check::Arith {
+                op: Arith::Div | Arith::Mod | Arith::Rem,
+                ty,
+            } => {
+                format!("division by zero, or a result that cannot be represented as {ty}{HINT}")
+            }
+            Check::Arith { op, ty } => {
+                let sym = match op {
+                    Arith::Add => "+",
+                    Arith::Sub => "-",
+                    _ => "*",
+                };
+                format!("result of {sym} cannot be represented as {ty}{HINT}")
+            }
+            Check::Range {
+                ty,
+                lo,
+                hi,
+                down,
+                what: w,
+            } => format!(
+                "value outside of {ty} range {}{}{HINT}",
+                range(*lo, *hi, *down),
+                what(w)
+            ),
+            Check::Index { b: x, what: w } => {
+                let (lo, hi) = x.low_high();
+                format!(
+                    "index outside of range {}{}{HINT}",
+                    range(lo, hi, x.dir == Direction::Downto),
+                    what(w)
                 )
             }
             Check::Note(_) => "an assert or report fired".into(),

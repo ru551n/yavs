@@ -515,7 +515,7 @@ Arguments:
 
 .. option:: --cycle-exact-meta
 
-   With ``--cycle``, ``--cycle-strict`` or ``--cycle-report``: keep the exact metavalue rules. By default a metavalue (``'U'``, ``'X'``, ``'Z'``, ...) reaching the region is read as ``0`` and no process stays out for one; with this option a process that would hide a metavalue from the testbench (it assigns a metavalue literal to a signal the testbench reads, or passes on a ``'Z'`` from outside) stays in the event kernel, so the testbench sees what the normal mode gives it.
+   With ``--cycle``, ``--cycle-strict`` or ``--cycle-report``: keep the exact metavalue rules. By default a metavalue (``'U'``, ``'X'``, ``'Z'``, ...) reaching the region is read as ``0`` and no process stays out for one; with this option a process that would hide a metavalue from the testbench (it assigns a metavalue literal to a signal the testbench reads, or passes on a ``'Z'`` from outside) stays in the event kernel, so the testbench sees what the normal mode gives it. A failed check's message then also gives its values, as in the normal mode.
 
 .. option:: --tier=interp|auto|clift|clift-auto
 

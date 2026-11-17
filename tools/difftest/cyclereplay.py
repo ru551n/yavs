@@ -12,7 +12,9 @@ argument and environment value); `cwd` is the working directory of the process; 
 `--record OUT_DIR...` makes the file from the output directories of a VUnit run with yavs
 (`<out>/test_output/<test>/yavs/args.rsp`), on standard output. The libraries of `--work=`/`--map=` are
 replayed from private copies made once per invocation (without their `yavs-cache/`), so the recorded
-libraries are never written.
+libraries are never written; `--libs DIR` keeps the copies and the std store in DIR, and a later replay with
+the same DIR runs on them as they were left (warm: `--warm` then fails a cycle run that compiled anything).
+Every cycle run prints `YAVS_CYCLE_STATS` (taken out before the compare): the summary counts its cache hits.
 
 Buckets: identical; documented (equal once the delta of report stamps and the reports and asserts of
 cycle-based processes are taken out, or the normal run ended on a failure of such a process); differs
@@ -73,12 +75,17 @@ def load(path, filt):
 LIB_ARG = re.compile(r"^(--(?:work|map)=[^:]+:)(.+)$")
 
 
-def private_libs(todo, root, std):
+def private_libs(todo, root, std, keep=False):
     """Point every `--work=`/`--map=` library outside a run's own directory at a copy under `root` (one per
     library, without its `yavs-cache/`), and a `--std-cache=DIR` at `std`: runs write their caches there,
-    never into the recorded libraries."""
-    shutil.rmtree(root, ignore_errors=True)  # left by a replay that was killed
-    copies = {}
+    never into the recorded libraries. With `keep` the copies of an earlier replay listed in
+    `root/libs.json` are used as they are (with the caches the runs left in them); the new copies are returned."""
+    man = root / "libs.json"
+    if not keep:
+        shutil.rmtree(root, ignore_errors=True)  # left by a replay that was killed
+    copies = {k: Path(v) for k, v in json.loads(man.read_text()).items()} if keep and man.is_file() else {}
+    old = {k: v for k, v in copies.items() if v.is_dir()}
+    copies = dict(old)
     for e in todo:
         own = e.get("dir", "").rstrip("/")
         for i, x in enumerate(e["argv"]):
@@ -95,9 +102,13 @@ def private_libs(todo, root, std):
                 continue  # a mapped library the run may not use: nothing to write into
             if src not in copies:
                 copies[src] = dst = root / f"{len(copies)}_{Path(src).name}"
+                shutil.rmtree(dst, ignore_errors=True)  # a kept copy whose entry was dropped
                 shutil.copytree(src, dst, symlinks=True, ignore=shutil.ignore_patterns("yavs-cache"))
             e["argv"][i] = m.group(1) + str(copies[src])
-    return copies
+    if keep:
+        root.mkdir(parents=True, exist_ok=True)
+        man.write_text(json.dumps({k: str(v) for k, v in copies.items()}))
+    return {k: v for k, v in copies.items() if k not in old}
 
 
 # ---------------------------------------------------------------- comparison
@@ -244,6 +255,25 @@ def compare(nrc, nl, nfiles, crc, cl, cfiles, lost, members=frozenset(), roots=(
 
 
 # ---------------------------------------------------------------- running
+STATS = re.compile(r"^cycle stats: (?:(analysis|region) from the cache$|(\d+) functions in \d+ ms, (\d+) from the cache$)")
+
+
+def cache_hits(err):
+    """(stderr without its `cycle stats:` lines, {"analysis", "region": hits, "funs": functions made,
+    "fhits": of them from the cache}) of a run with `YAVS_CYCLE_STATS`."""
+    hits, keep = {"analysis": 0, "region": 0, "funs": 0, "fhits": 0}, []
+    for l in err.splitlines(keepends=True):
+        if not l.startswith("cycle stats: "):
+            keep.append(l)
+        elif m := STATS.match(l.rstrip("\n")):
+            if m.group(1):
+                hits[m.group(1)] += 1
+            else:
+                hits["funs"] += int(m.group(2))
+                hits["fhits"] += int(m.group(3))
+    return "".join(keep), hits
+
+
 def snapshot(d):
     return {p: (p.stat().st_size, p.stat().st_mtime_ns) for p in d.rglob("*") if p.is_file()} if d.is_dir() else {}
 
@@ -267,7 +297,9 @@ def one_run(e, mode, base, a):
     flag = {"normal": [], "cycle": ["--cycle"], "report": ["--cycle-report"]}[mode]
     argv = [a.bin, "run", *flag, *[fix(x) for x in e["argv"][2:]]]
     env = {**os.environ, **{k: fix(v) for k, v in e.get("env", {}).items()}, **dict(x.split("=", 1) for x in a.env),
-           "YAVS_STD_CACHE": str(D.CACHE / "std")}
+           "YAVS_STD_CACHE": str(a.std)}
+    if mode == "cycle":
+        env["YAVS_CYCLE_STATS"] = "1"  # the cache hits; its lines are taken out below
     cmd = shlex.split(a.prefix) + [shutil.which("timeout"), str(a.timeout)]
     if not a.no_sandbox:
         cmd += ["systemd-run", "--user", "--scope", "-q", "-p", f"MemoryMax={a.memory}"]
@@ -276,7 +308,9 @@ def one_run(e, mode, base, a):
     (base / f"{mode}.out").write_text(p.stdout)
     (base / f"{mode}.err").write_text(p.stderr)
     clean = lambda t: masked(t.replace(str(work), "<dir>"))
-    return p.returncode, clean(p.stdout), clean(p.stderr), files
+    err, hits = cache_hits(p.stderr) if mode == "cycle" else (p.stderr, {})
+    a.hits[e["name"]] = hits if mode == "cycle" else a.hits.get(e["name"], {})
+    return p.returncode, clean(p.stdout), clean(err), files
 
 
 def one(e, a):
@@ -303,6 +337,9 @@ def one(e, a):
             res["bucket"], res["why"] = compare(nrc, nl, nf, crc, cl, cf_, lost, member_paths(rep), (str(base / "normal"), str(base / "cycle")))
             if res["bucket"] == "identical" and (nout, nerr) != tuple(strip_records(t, hr, mr) for t in (nout, nerr)):
                 res.update(bucket="documented", why=["reports and library warnings of cycle-based processes"])
+            h = res["hits"] = a.hits.get(e["name"], {})
+            if a.warm and res["bucket"] != "differs" and res["members"] and h.get("fhits", 0) < h.get("funs", 0):
+                res.update(bucket="differs", why=[f"not warm: the cycle run compiled {h['funs'] - h['fhits']} of {h['funs']} functions"])
             if crc == 124:  # nothing to compare: its output stops where the time ran out
                 res.update(bucket="timeout", why=[f"the cycle run timed out after {a.timeout} s; the normal run did not"])
         if res["bucket"] in ("differs", "timeout"):
@@ -382,6 +419,18 @@ def selftest():
         assert e[0]["argv"][2:] == [f"--work=w:{d}/priv/0_L", f"--map=v:{d}/priv/0_L", f"--map=o:{t}/lib", f"--std-cache={d}/std",
                                     "--std-cache=off"], e
         assert (d / "priv" / "0_L" / "u").is_file() and not (d / "priv" / "0_L" / "yavs-cache").exists()
+        (d / "priv" / "0_L" / "yavs-cache").mkdir()  # a run's cache; a kept replay finds it again
+        e2 = [{"name": "t", "argv": ["yavs", "run", f"--work=w:{d}/L", f"--map=n:{t}"]}]
+        assert private_libs(e2, d / "keep", d / "std", keep=True).keys() == {f"{d}/L", str(t)}
+        (d / "keep" / "0_L" / "yavs-cache").mkdir()
+        e3 = [{"name": "t", "argv": ["yavs", "run", f"--work=w:{d}/L", f"--map=n:{t}"]}]
+        assert private_libs(e3, d / "keep", d / "std", keep=True) == {} and e3[0]["argv"] == e2[0]["argv"]
+        assert (d / "keep" / "0_L" / "yavs-cache").is_dir()
+        private_libs(e3, d / "keep", d / "std")  # not kept: copied afresh
+        assert not (d / "keep" / "0_L" / "yavs-cache").exists()
+    err = ("x\ncycle stats: analysis from the cache\ncycle stats: region from the cache\ncycle stats: f: 3 operations, 9 us\n"
+           "cycle stats: 4 functions in 2 ms, 3 from the cache\ny\n")
+    assert cache_hits(err) == ("x\ny\n", {"analysis": 1, "region": 1, "funs": 4, "fhits": 3}), cache_hits(err)
     print("selftest ok")
 
 
@@ -403,6 +452,9 @@ def main():
     ap.add_argument("--memory", default="8G", help="MemoryMax of each run")
     ap.add_argument("--prefix", default="", help="command put before every run, e.g. 'tools/claim core --'")
     ap.add_argument("--no-sandbox", action="store_true", help="skip systemd-run")
+    ap.add_argument("--libs", type=Path, metavar="DIR",
+                    help="keep the private copies of the libraries and the std store in DIR; a later replay with the same DIR uses them as left (warm)")
+    ap.add_argument("--warm", action="store_true", help="a cycle run with members that compiles a function differs (with the --libs of an earlier replay)")
     ap.add_argument("--json", type=Path, help="write one JSON result per test to this file")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("-v", "--verbose", action="store_true", help="one line per test")
@@ -426,8 +478,13 @@ def main():
     if a.shuffle is not None:
         random.Random(a.shuffle).shuffle(todo)
     D.guard(D.CACHE)
-    atexit.register(shutil.rmtree, D.CACHE / "libs", ignore_errors=True)  # runs before D.cleanup
-    print(f"cycle replay: {len(private_libs(todo, D.CACHE / 'libs', D.CACHE / 'std'))} libraries copied", flush=True)
+    libs = a.libs.resolve() if a.libs else D.CACHE / "libs"
+    if not a.libs:
+        atexit.register(shutil.rmtree, libs, ignore_errors=True)  # runs before D.cleanup
+    a.std, a.hits = libs / "std", {}
+    new = private_libs(todo, libs, a.std, keep=bool(a.libs))
+    kept = len(json.loads((libs / "libs.json").read_text())) - len(new) if a.libs else 0
+    print(f"cycle replay: {len(new)} libraries copied" + (f" into {libs}, {kept} kept from an earlier replay" if a.libs else ""), flush=True)
     res = []
     with cf.ThreadPoolExecutor(max(1, min(a.jobs, D.MAX_JOBS))) as ex:
         try:
@@ -452,6 +509,9 @@ def main():
     print(f"cycle replay: {len(res)} tests: {c['identical']} identical, {c['documented']} documented losses only, "
           f"{c['differs']} differ, {c['timeout']} cycle runs timed out (not compared), {c['skipped'] - budget} skipped, {budget} not started (budget); {with_m} of {len(ran)} compared tests have at least one process "
           f"in the region ({sum(r['members'] for r in ran)} of {sum(r['procs'] for r in ran)} processes)")
+    hs = [r.get("hits", {}) for r in ran if r["members"]]
+    print(f"cycle replay: cache of the {len(hs)} cycle runs with members: {sum(bool(h.get('region')) for h in hs)} took the region from it, "
+          f"{sum(bool(h.get('analysis')) for h in hs)} the analysis, {sum(h.get('fhits', 0) for h in hs)} of {sum(h.get('funs', 0) for h in hs)} functions")
     if not ran:
         print("cyclereplay: nothing was compared")
     sys.exit(1 if c["differs"] or not ran else 0)

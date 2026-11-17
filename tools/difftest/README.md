@@ -156,7 +156,13 @@ directory) and runs each normal and with `--cycle` with one binary (`--bin` or `
 copy of the run's output directory (its path is replaced in every argument, so the files a test
 writes land in the copy). The libraries the runs name (`--work=` and `--map=` outside the output directory) are
 copied once per replay, without their `yavs-cache/`, and the runs use the copies: the caches a run writes land
-there, so a recorded or shared library is never written. A `--std-cache=DIR` of a run is replaced by the replay's own. It compares the exit status, the simulation end time (the times of the `stop` and
+there, so a recorded or shared library is never written. A `--std-cache=DIR` of a run is replaced by the replay's own.
+The copies and that std store are removed at the end, unless `--libs DIR` keeps them in DIR: a later replay with the
+same DIR runs on them as the first left them, its caches included, and with `--warm` a cycle run of a test with
+members that compiles any function differs ("not warm"). Each cycle run runs with `YAVS_CYCLE_STATS=1` (those lines are
+taken out of its console), and the summary counts the runs that took the region and the analysis from the cache and
+the functions taken from it, so a warm pass shows that it was warm. Tests of one design share the store within a
+replay too: only the first run of each analysis is cold. It compares the exit status, the simulation end time (the times of the `stop` and
 `finish` events, else the last report), the console in the canonical form and every file the run wrote
 (a `?` in the normal mode's file matches any character). From the console it takes out the delta of report
 stamps, the cycle summary line and the reports and asserts of cycle-based processes, found through a
@@ -166,13 +172,15 @@ compared), differs (any other difference, with the first differing line and both
 timeout (the cycle run does not finish in `--timeout` while the normal one does: not compared, listed) and
 skipped (the normal run does not finish). Each test shows `[members/processes in the region]` and the summary
 counts the tests with a member, so a pass is not vacuous. `--jobs` (default 2), `--filter`, `--budget SECONDS` (start no further test after that), `--mask REGEX` (text that differs between runs by itself, such as the name of a temporary directory a test makes), `--env K=V`,
-`--subst OLD=NEW`, `--prefix` (a command before every run, such as `tools/claim core --`), `--timeout`, `--memory`,
+`--subst OLD=NEW`, `--libs DIR`, `--warm`, `--prefix` (a command before every run, such as `tools/claim core --`), `--timeout`, `--memory`,
 `--json FILE`, `-v`, `--selftest`. A command file is JSON lines, `{"name", "cwd", "dir", "argv", "env"}`;
 `--record OUT_DIR...` writes it from the output directories of a VUnit run with yavs (`test_output/*/*/args.rsp`,
 the response file of each run), run in the directory the test runner ran in (`--cwd`):
 
     python3 -I tools/difftest/cyclereplay.py --record <vunit out dir> --env K=V > cmds.jsonl
     YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclereplay.py cmds.jsonl --jobs 2 -v
+    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclereplay.py cmds.jsonl --libs L       # cold, kept
+    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclereplay.py cmds.jsonl --libs L --warm  # warm
 
 A test runner that has run the tests already needs no second run to record them: any simulator wrapper that
 exits at `run` still leaves each test's response file. The files are copied before each run; files written

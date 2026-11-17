@@ -3739,6 +3739,65 @@ fn union_dep(a: &Dep, b: &Dep, n: u32) -> Dep {
     Dep::set(Rc::new(s))
 }
 
+/// Runs sorted, each of at least one element, none overlapping the next.
+fn tidy(s: &[(u32, u32, Dep)]) -> bool {
+    s.iter().all(|r| r.0 < r.1) && s.windows(2).all(|w| w[0].1 <= w[1].0)
+}
+
+/// `mine` after `set_vals(.., false)` of every run of `segs`, one after the other (lists that are not
+/// [`tidy`]).
+fn widen_each(mine: &[(u32, u32, Dep)], segs: Vec<(u32, u32, Dep)>) -> Vec<(u32, u32, Dep)> {
+    let mut st = St::default();
+    st.vals.insert(0, mine.to_vec());
+    for (lo, hi, d) in segs {
+        set_vals(&mut st, 0, lo, hi, d, false);
+    }
+    st.vals.remove(&0).unwrap_or_default()
+}
+
+/// [`widen_each`] of two [`tidy`] lists in one pass: the same runs (cut at every boundary of
+/// either, never joined), the same dependences.
+fn widen_all(mine: &[(u32, u32, Dep)], segs: &[(u32, u32, Dep)]) -> Vec<(u32, u32, Dep)> {
+    let mut out = Vec::with_capacity(mine.len() + 2 * segs.len());
+    let mut rest = mine.iter().cloned();
+    let mut front = rest.next();
+    for (a, z, d) in segs {
+        let (a, z) = (*a, *z);
+        while let Some(f) = front.take_if(|f| f.1 <= a) {
+            out.push(f);
+            front = rest.next();
+        }
+        // The first element of `a .. z` no run of `mine` covered so far.
+        let mut p = a;
+        while let Some((lo, hi, old)) = front.take_if(|f| f.0 < z) {
+            if lo < a {
+                out.push((lo, a, old.clone()));
+            }
+            let (x, y) = (lo.max(a), hi.min(z));
+            if x > p {
+                out.push((p, x, shift(d, p - a)));
+            }
+            out.push((
+                x,
+                y,
+                union_dep(&shift(&old, x - lo), &shift(d, x - a), y - x),
+            ));
+            p = y;
+            front = if hi > z {
+                Some((z, hi, shift(&old, z - lo)))
+            } else {
+                rest.next()
+            };
+        }
+        if p < z {
+            out.push((p, z, shift(d, p - a)));
+        }
+    }
+    out.extend(front);
+    out.extend(rest);
+    out
+}
+
 /// The join of the states at the end of two paths: dependences of either, elements assigned on
 /// both.
 fn join(a: St, b: St) -> St {
@@ -3752,15 +3811,13 @@ fn join(a: St, b: St) -> St {
                 vals.insert(k, segs);
             }
             Some(mine) if *mine == segs => {}
-            Some(_) => {
-                let mut st = St {
-                    vals: std::mem::take(&mut vals),
-                    ..St::default()
-                };
-                for (lo, hi, d) in segs {
-                    set_vals(&mut st, k, lo, hi, d, false);
-                }
-                vals = st.vals;
+            Some(mine) if tidy(mine) && tidy(&segs) => {
+                let merged = widen_all(mine, &segs);
+                vals.insert(k, merged);
+            }
+            Some(mine) => {
+                let merged = widen_each(mine, segs);
+                vals.insert(k, merged);
             }
         }
     }
@@ -3942,4 +3999,47 @@ fn add_layout(
         parts: Vec::new(),
     });
     id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Random tidy runs over `0 .. 40`, some with an element-by-element copy.
+    fn runs(seed: &mut u64) -> Vec<(u32, u32, Dep)> {
+        let mut next = |n: u64| {
+            *seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (*seed >> 33) % n
+        };
+        let mut v = Vec::new();
+        let mut at = next(4) as u32;
+        while at < 40 {
+            let len = 1 + next(6) as u32;
+            let mut s = ESet::default();
+            s.add(next(3), next(8) as u32, 8 + next(8) as u32);
+            let ident = (next(2) == 0).then(|| (next(3) + 10, next(20) as u32));
+            v.push((
+                at,
+                at + len,
+                Dep {
+                    ident,
+                    set: Rc::new(s),
+                },
+            ));
+            at += len + next(3) as u32;
+        }
+        v
+    }
+
+    #[test]
+    fn the_join_in_one_pass_is_the_join_run_by_run() {
+        let mut seed = 7;
+        for _ in 0..2000 {
+            let (a, b) = (runs(&mut seed), runs(&mut seed));
+            assert!(tidy(&a) && tidy(&b));
+            assert_eq!(widen_all(&a, &b), widen_each(&a, b.clone()));
+        }
+    }
 }

@@ -190,7 +190,7 @@ class Gen:
             el = s.vtype(w=s.width(70)) if r < 0.55 else s.rng.choice(s.recs) if r < 0.7 and s.recs else s.scalar_type()
             if el.k == "arr":
                 el = T("sl")
-            n = s.rng.choice([2, 4, 4, 8, 16, 5])
+            n = s.rng.choice([1, 2, 4, 4, 8, 16, 5])
             lo = s.rng.choice([0, 0, 0, 1, 4])
             s.arrs.append(T("arr", name=f"a{i}_t", elem=el, lo=lo, hi=lo + n - 1, asc=s.chance(0.8)))
         if s.chance(0.3):  # a bigger memory
@@ -561,7 +561,7 @@ class Gen:
                     if ft.k == "rec" and x.f.startswith(ft.name + "'(") and s.chance(0.9):
                         x.f = x.f[len(ft.name) + 1:]
                 return Ex(f"{t.name}'(" + ", ".join(f"{f} => {{}}" for f, _ in t.fields) + ")", t, fs)
-            if s.chance(0.5) or t.n() > 8:
+            if s.chance(0.5) or t.n() > 8 or t.n() == 1:
                 return Ex(f"{t.name}'(others => {{}})", t, [s.expr(t.elem)])
             return Ex(f"{t.name}'(" + ", ".join("{}" for _ in range(t.n())) + ")", t, [s.expr(t.elem) for _ in range(t.n())])
         finally:
@@ -576,7 +576,7 @@ class Gen:
             [o for o in pool if o.t.k in VEC and o.t.w == t.w]
         if not c or s.chance(0.3):
             if rng.random() < 0.6:
-                n = rng.choice([2, 4, 8, 16, 3])
+                n = rng.choice([1, 2, 4, 8, 16, 3])
                 lo = rng.choice([0, 0, 1, 2])
                 et = s.vtype(t.k, t.w)
                 at = T("arr", name=s.fresh("rom") + "_t", elem=et, lo=lo, hi=lo + n - 1, asc=s.chance(0.7))
@@ -1596,6 +1596,8 @@ def main():
         r.add_argument("--cycles", type=int, default=40)
         r.add_argument("--keep", action="store_true", help="keep the directories of passing seeds")
         r.add_argument("--json", help="append one line per seed to this file")
+        if name == "run":
+            r.add_argument("--min-share", type=float, default=60.0, help="fail when fewer percent of the processes joined")
     a = ap.parse_args()
     if a.cmd == "gen":
         print(render(build(a.seed, a.scale), a.cycles), end="")
@@ -1638,7 +1640,12 @@ def main():
     print("members by construct (processes holding it): " + ", ".join(f"{k} {m1}/{n1} ({100 * m1 // max(n1, 1)}%)" for k, (m1, n1) in sorted(tg.items(), key=lambda x: x[1][0] / max(x[1][1], 1))))
     for r in bad:
         print(f"{r['verdict']}: seed {r['seed']} {r.get('run', '')} {r['dir']}\n  {r['why'][:800]}")
-    return 1 if any(r["verdict"] == "differs" for r in bad) else 0
+    # Any seed that did not compare (a design the normal mode refuses is a generator or yavs bug too),
+    # and a region that holds fewer of the designs' processes than the floor, fail the run.
+    share = 100 * m / max(p, 1)
+    if share < a.min_share:
+        print(f"members {share:.1f}% of the design processes, under the floor of {a.min_share}%: the run did not test the region")
+    return 1 if bad or share < a.min_share else 0
 
 
 def report(futs, tot, reasons_all, bad, a, wait=False):

@@ -211,7 +211,10 @@ no code in the cache fails); `--checks N` runs every Nth seed once more with `YA
 `YAVS_CYCLE_SKIP_CHECK=1`, `YAVS_CYCLE_IMPORT_CHECK=1` and `YAVS_CYCLE_GUARD=all`. Compared: exit status,
 standard output and standard error without the summary line. A `--cycle-report` run gives the members; the
 summary prints how many of the design's processes joined the region and the most common reasons of the
-others, so a pass is not vacuous (a seed with no member is `vacuous`). Simulations run under
+others, so a pass is not vacuous (a seed with no member is `vacuous`). The exit status is 1 when a
+seed differs or does not compare (analysis or elaboration fails, the normal run fails or times out:
+a valid design, so a bug of the generator or of yavs) and when fewer than `--min-share` percent
+(default 60) of the designs' processes joined the region. Simulations run under
 `systemd-run --user --scope -p MemoryMax=2G`, at most 2 at a time, and wait while less than 20 GB of
 memory is available. Passing seeds' directories are removed (`--keep` keeps them); `--json FILE` appends
 a line per seed. `shrink` deletes processes, statements, signals, ports, constants and subprograms,

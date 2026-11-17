@@ -166,7 +166,8 @@ YAVS_CYCLE_FLAGS=enable_incremental_compilation_cache_checks=true YAVS_BIN=... p
   shows how many of the designs' processes joined. A longer run (`--seeds A:B` with new seeds) after a lowering change.
 - When a recorded command file of the user's test runs exists, run `tools/difftest/cyclereplay.py` on it before every push
   of cycle code too (README "Cycle mode gate"): it replays those runs normal and `--cycle` and compares the exit status, the
-  end time, the console and the files written. Five wrong results passed `cyclegate.py` and `cyclebig.py` and were found
+  end time, the console and the files written. It runs on private copies of the recorded libraries (made per replay,
+  removed at its end), so a shared command file's libraries stay as they were. Five wrong results passed `cyclegate.py` and `cyclebig.py` and were found
   on such runs (one test of a bench stopped one clock early: same verdict, same last message, another STOP time).
 - `crates/yavs/tests/cycle/recreset.vhd` (arrays of records under synchronous and asynchronous reset, one reset by a literal aggregate), `cmpcount.vhd` (a counter with an enable feeding comparators), `fsmrec.vhd` (a state machine whose state is a
   record, in the two-process style) and `handshake.vhd` (a request and acknowledge handshake between clocks of 10 ns and 7 ns) are run by

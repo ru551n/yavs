@@ -10,14 +10,16 @@ Command file: one JSON object per line: {"name", "cwd", "dir", "argv", "env"}. `
 binary, `argv[1]` is `run`; `dir` is the run's output directory (copied per mode, its path replaced in every
 argument and environment value); `cwd` is the working directory of the process; `env` is optional.
 `--record OUT_DIR...` makes the file from the output directories of a VUnit run with yavs
-(`<out>/test_output/<test>/yavs/args.rsp`), on standard output.
+(`<out>/test_output/<test>/yavs/args.rsp`), on standard output. The libraries of `--work=`/`--map=` are
+replayed from private copies made once per invocation (without their `yavs-cache/`), so the recorded
+libraries are never written.
 
 Buckets: identical; documented (equal once the delta of report stamps and the reports and asserts of
 cycle-based processes are taken out, or the normal run ended on a failure of such a process); differs
 (a wrong result: the exit status, the end time, the console or a written file; fails the gate); skipped
 (the normal run does not finish or fails to start). Each test shows how many processes joined the region.
 """
-import argparse, concurrent.futures as cf, difflib, json, os, random, re, shlex, shutil, subprocess, sys, time
+import argparse, atexit, concurrent.futures as cf, difflib, json, os, random, re, shlex, shutil, subprocess, sys, time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -66,6 +68,31 @@ def load(path, filt):
     if dup:
         sys.exit(f"cyclereplay: duplicate test names (the scratch directories would collide): {dup[:3]}")
     return out
+
+
+LIB_ARG = re.compile(r"^(--(?:work|map)=[^:]+:)(.+)$")
+
+
+def private_libs(todo, root):
+    """Point every `--work=`/`--map=` library outside a run's own directory at a copy under `root` (one per
+    library, without its `yavs-cache/`): runs write their caches there, never into the recorded libraries."""
+    copies = {}
+    for e in todo:
+        own = e.get("dir", "").rstrip("/")
+        for i, x in enumerate(e["argv"]):
+            if x in ("--work", "--map"):
+                sys.exit(f"cyclereplay: {e['name']}: `{x} LIB:DIR` as two arguments is not supported: record it as `{x}=LIB:DIR`")
+            m = LIB_ARG.match(x)
+            if not m or (own and (m.group(2) + "/").startswith(own + "/")):
+                continue
+            src = m.group(2).rstrip("/")
+            if src not in copies:
+                if not Path(src).is_dir():
+                    sys.exit(f"cyclereplay: {e['name']}: library directory {src} does not exist")
+                copies[src] = dst = root / f"{len(copies)}_{Path(src).name}"
+                shutil.copytree(src, dst, symlinks=True, ignore=shutil.ignore_patterns("yavs-cache"))
+            e["argv"][i] = m.group(1) + str(copies[src])
+    return copies
 
 
 # ---------------------------------------------------------------- comparison
@@ -342,6 +369,12 @@ def selftest():
         (t / "args.rsp").write_text("--work=w:/x\n-gp=a b\n")
         e = record([d / "o"], "/cwd", {})
         assert e[0]["name"] == "t" and e[0]["argv"] == ["yavs", "run", "--work=w:/x", "-gp=a b"] and e[0]["dir"].endswith("0" * 40)
+        (d / "L" / "yavs-cache").mkdir(parents=True)
+        (d / "L" / "u").write_text("unit")
+        e = [{"name": "t", "dir": str(t), "argv": ["yavs", "run", f"--work=w:{d}/L", f"--map=v:{d}/L/", f"--map=o:{t}/lib"]}]
+        private_libs(e, d / "priv")
+        assert e[0]["argv"][2:] == [f"--work=w:{d}/priv/0_L", f"--map=v:{d}/priv/0_L", f"--map=o:{t}/lib"], e
+        assert (d / "priv" / "0_L" / "u").is_file() and not (d / "priv" / "0_L" / "yavs-cache").exists()
     print("selftest ok")
 
 
@@ -386,6 +419,8 @@ def main():
     if a.shuffle is not None:
         random.Random(a.shuffle).shuffle(todo)
     D.guard(D.CACHE)
+    atexit.register(shutil.rmtree, D.CACHE / "libs", ignore_errors=True)  # runs before D.cleanup
+    print(f"cycle replay: {len(private_libs(todo, D.CACHE / 'libs'))} libraries copied", flush=True)
     res = []
     with cf.ThreadPoolExecutor(max(1, min(a.jobs, D.MAX_JOBS))) as ex:
         try:

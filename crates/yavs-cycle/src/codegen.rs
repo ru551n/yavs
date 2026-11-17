@@ -1254,6 +1254,7 @@ pub(crate) fn compile<'a>(
             }),
         settle_outs: Vec::new(),
     };
+    let (mut ctx, mut fbc) = (module.make_context(), FunctionBuilderContext::new());
     for (k, (_, ops, checked, shape)) in funs.iter().enumerate() {
         let t = std::time::Instant::now();
         let (id, sym, sig) = declare(&mut module, &plan.funs[k])?;
@@ -1303,9 +1304,10 @@ pub(crate) fn compile<'a>(
             ids.push((id, sym, bytes.len() as u32));
             continue;
         }
-        let mut ctx = module.make_context();
+        // One context for every function: Cranelift keeps its allocations (the register
+        // allocator's among them) from one to the next.
+        module.clear_context(&mut ctx);
         ctx.func.signature = sig;
-        let mut fbc = FunctionBuilderContext::new();
         let seen: (Words<bool>, u8);
         {
             let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
@@ -3061,6 +3063,15 @@ mod tests {
             "the scratch image's code was taken"
         );
         assert_eq!(copy_code(false, Some(&dir)), scratch);
+        // One key for both images: the keep bits are not in it (else this test checks nothing).
+        let store = dir.join(yavs_cache::DIR).join(yavs_cache::CYCLE_DIR);
+        let entries = (std::fs::read_dir(store).expect("the store"))
+            .filter(|f| {
+                (f.as_ref().ok())
+                    .is_some_and(|f| f.file_name().to_string_lossy().starts_with("cycle-"))
+            })
+            .count();
+        assert_eq!(entries, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

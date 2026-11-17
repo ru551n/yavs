@@ -703,15 +703,20 @@ fn built(
     // Each member's slots and resolution.
     let none = BTreeMap::new();
     let mut rs: Vec<Resolve> = Vec::new();
-    // Per member: its clocked body with the memory writes kept back, and those writes.
-    let mut deferred: Vec<(Vec<Op>, Vec<Pending>)> = Vec::new();
+    // Per member: its clocked body with the memory writes kept back, those writes, and the slot
+    // that says one of them happened.
+    let mut deferred: Vec<(Vec<Op>, Vec<Pending>, u32)> = Vec::new();
     for (pi, b) in &sel.members {
         let base = n;
         n += b.locs;
         let mut pend = Vec::new();
+        let any = b.locs;
         let ops = if b.kind == Kind::Clocked && !rams.is_empty() {
-            let mut at = b.locs;
-            let ops = defer(&b.ops, &rams, &mut at, &mut pend);
+            let mut at = any + 1;
+            let ops = defer(&b.ops, &rams, any, &mut at, &mut pend);
+            if pend.is_empty() {
+                at = b.locs;
+            }
             // The writes' words hold state from the body to the commit.
             state.push((base + b.locs, at - b.locs));
             n += at - b.locs;
@@ -719,7 +724,7 @@ fn built(
         } else {
             Vec::new()
         };
-        deferred.push((ops, pend));
+        deferred.push((ops, pend, any));
         init.extend(b.init.iter().map(|&(w, v)| (base + w, v)));
         let sites = checks.len() as u32;
         checks.extend(b.checks.iter().map(|(c, at)| {
@@ -1106,6 +1111,7 @@ fn built(
         }
     }
     // The memory writes of this edge, in member and program order, then the next-state blocks.
+    // A member's are behind the word its body sets with each one's flag.
     // A memory something outside reads keeps the flags of its writes for the export, which
     // drives only what they changed and clears them (`rt::RamWrite`).
     let exported = |k: u32| {
@@ -1116,13 +1122,18 @@ fn built(
     // each in member and program order: an edge of another class skips them.
     let mut writes: BTreeMap<Vec<u32>, Vec<Op>> = BTreeMap::new();
     let mut ram_writes: BTreeMap<u32, Vec<rt::RamWrite>> = BTreeMap::new();
-    for (k, (_, pend)) in deferred.iter().enumerate() {
+    for (k, (_, pend, any)) in deferred.iter().enumerate() {
+        if pend.is_empty() {
+            continue;
+        }
         let r = &rs[k];
         let gate = match class_word(k) {
             _ if !several => Vec::new(),
             Some(w) => vec![w],
             None => edge_words.clone(),
         };
+        // Behind the member's word that one of them happened, cleared after them.
+        let mut ifs = Vec::new();
         for p in pend {
             let Op::IndexWrite {
                 dst: Ref::Sig(sig),
@@ -1161,12 +1172,21 @@ fn built(
                     val: Box::new([0]),
                 });
             }
-            writes.entry(gate.clone()).or_default().push(r.op(&Op::If {
+            ifs.push(Op::If {
                 cond: Ref::Loc(p.flag),
                 then,
                 else_: Vec::new(),
-            }));
+            });
         }
+        ifs.push(Op::Lit {
+            dst: Ref::Loc(*any),
+            val: Box::new([0]),
+        });
+        writes.entry(gate).or_default().push(r.op(&Op::If {
+            cond: Ref::Loc(*any),
+            then: ifs,
+            else_: Vec::new(),
+        }));
     }
     for (w, ops) in writes {
         edge.push(codegen::Step::Gate(w));
@@ -1997,6 +2017,7 @@ struct Pending {
 fn defer(
     ops: &[Op],
     rams: &std::collections::BTreeSet<u32>,
+    any: u32,
     at: &mut u32,
     out: &mut Vec<Pending>,
 ) -> Vec<Op> {
@@ -2005,8 +2026,8 @@ fn defer(
         match op {
             Op::If { cond, then, else_ } => res.push(Op::If {
                 cond: *cond,
-                then: defer(then, rams, at, out),
-                else_: defer(else_, rams, at, out),
+                then: defer(then, rams, any, at, out),
+                else_: defer(else_, rams, any, at, out),
             }),
             Op::IndexWrite {
                 dst: Ref::Sig(k),
@@ -2035,6 +2056,10 @@ fn defer(
                     },
                     Op::Lit {
                         dst: Ref::Loc(f),
+                        val: Box::new([1]),
+                    },
+                    Op::Lit {
+                        dst: Ref::Loc(any),
                         val: Box::new([1]),
                     },
                 ]);

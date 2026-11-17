@@ -2932,14 +2932,16 @@ fn push_actual(a: &yavs_sem::hir::Actual, stack: &mut Vec<ExprId>) -> bool {
     true
 }
 
-/// A subprogram declared outside a package (in an architecture, block, process or another
-/// subprogram of one): its body may read the signals of its region directly.
+/// A subprogram declared outside a library package (in an architecture, block, process, another
+/// subprogram of one or a package declared in one): its body may read the signals of its region
+/// directly.
 fn local_subprogram(db: &Db, d: yavs_sem::DeclId) -> bool {
     use yavs_sem::scope::ScopeKind as S;
     let mut s = Some(db.decls[d].scope);
     while let Some(x) = s {
         match db.scopes[x].kind {
-            S::Package | S::PackageBody => return false,
+            // A package declared in a design unit's region (not a library unit) is local: its
+            // subprograms may read that region's signals.
             S::Architecture | S::Entity | S::Process | S::Block | S::Generate => return true,
             _ => s = db.scopes[x].parent,
         }

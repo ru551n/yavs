@@ -227,6 +227,29 @@ fn region_outputs_seen_every_clock_on_events_and_through_local_subprograms() {
     }
 }
 
+/// A subprogram of a package declared in an architecture reads that architecture's signals: the
+/// testbench calling it reads `acc`, which must be exported (it read 0 in cycle mode before).
+#[test]
+fn a_package_declared_in_an_architecture_reads_its_signals() {
+    let dir = tempdir("cycle-localpkg");
+    analyze(&dir, "localpkg.vhd", include_str!("cycle/localpkg.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_localpkg");
+        // Hand-checked: `acc` is 5 times the edge count, 5 * (1 + ... + 20).
+        assert!(
+            normal.len() == 1 && normal[0].ends_with("sum=1050"),
+            "{t:?} {normal:?}"
+        );
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_localpkg");
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 2 of 3 processes run cycle-based")
+                && err.contains("1 signal leaves exported (1 nothing outside waits on)"),
+            "{err}"
+        );
+    }
+}
+
 /// Owner decision A29 as it stands: an 'X' from a process outside, copied by a member to a signal
 /// the testbench reads, reads as '0' there. A change of this rule changes this test.
 #[test]

@@ -4604,17 +4604,24 @@ fn metavalues_the_testbench_reads_are_kept() {
                 String::from_utf8_lossy(&cycle.stdout),
             );
             let rep = String::from_utf8_lossy(&report.stderr);
-            assert!(n.contains("pin='Z'") && n.contains("x=true"), "{n}");
+            assert!(
+                n.contains("pin='Z'") && n.contains("pin3='Z'") && n.contains("x=true"),
+                "{n}"
+            );
             assert_eq!(
                 (cycle.status.code(), &c),
                 (normal.status.code(), &n),
                 "{w} {t:?}\n{rep}"
             );
             assert!(
-                rep.contains("cycle mode: 3 of 9 processes run cycle-based"),
+                rep.contains("cycle mode: 3 of 10 processes run cycle-based"),
                 "{rep}"
             );
-            for p in ["cycle_metaout.copy ", "cycle_metaout.drv "] {
+            for p in [
+                "cycle_metaout.copy ",
+                "cycle_metaout.copy3 ",
+                "cycle_metaout.drv ",
+            ] {
                 assert!(
                     rep.lines().any(|l| l.trim_start().starts_with(p)),
                     "{p}: {rep}"

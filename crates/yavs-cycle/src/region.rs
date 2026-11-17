@@ -548,7 +548,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
     }
     stat(|| format!("select: history {} ms", t0.elapsed().as_millis()));
     // Leaves a process outside may set to 'Z' (no member can: two-state values have none).
-    let zsrc: BTreeSet<LeafId> = (0..e.procs.len())
+    let mut zsrc: BTreeSet<LeafId> = (0..e.procs.len())
         .filter(|pi| !taken.contains_key(pi))
         .flat_map(|pi| z_leaves(db, e, pi))
         .collect();
@@ -667,7 +667,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         // metavalue literal, or passes on a 'Z' from outside, to a leaf a process outside reads
         // stays out (the region gives back '0' and '1' only).
         if gone.is_empty() {
-            gone = meta_rule(db, e, &taken, &zsrc);
+            gone = meta_rule(db, e, &taken, &mut zsrc, &out);
         }
         if gone.is_empty() {
             gone = ram_rule(db, e, &taken);
@@ -806,12 +806,14 @@ pub(crate) fn undriven_metas(e: &Elaborated) -> BTreeSet<LeafId> {
         .collect()
 }
 
-/// The members that would hide a metavalue from a process outside (see `select`), with why.
+/// The members that would hide a metavalue from the testbench (see `select`), with why. The
+/// testbench: the processes of the top-level unit and the behavioural ones, outside the region.
 fn meta_rule(
     db: &Db,
     e: &Elaborated,
     taken: &BTreeMap<usize, (Fit, Body)>,
-    zsrc: &BTreeSet<LeafId>,
+    zsrc: &mut BTreeSet<LeafId>,
+    out: &[(usize, Why)],
 ) -> Vec<(usize, String)> {
     let reads = |f: &Fit, b: &Body| -> Vec<LeafId> {
         let fit = f.reads.iter().map(|(k, _, _)| LeafId(k as u32));
@@ -827,12 +829,39 @@ fn meta_rule(
         return Vec::new();
     }
     let members: BTreeSet<usize> = taken.keys().copied().collect();
-    let all = outside_reads_all(db, e, &members);
-    let seen = if all {
-        BTreeSet::new()
-    } else {
-        outside_reads(db, e, &members).0
-    };
+    let mut all = outside_reads_all(db, e, &members);
+    let tb: BTreeSet<usize> = (out.iter())
+        .filter(|(pi, w)| matches!(w, Why::Behavioural(_)) || in_top_unit(e, *pi))
+        .map(|(pi, _)| *pi)
+        .collect();
+    let mut seen = BTreeSet::new();
+    let mut memo = BTreeMap::new();
+    for &pi in tb.iter().filter(|pi| !members.contains(pi)) {
+        if all {
+            break;
+        }
+        match proc_reads(db, e, pi, &mut memo) {
+            Some((r, _)) => seen.extend(r),
+            None => all = true,
+        }
+    }
+    // What the testbench reads through an uncollapsed port: the formal the member drives.
+    for _ in 0..64 {
+        let n = seen.len();
+        for pe in &e.nets.ports {
+            if seen.contains(&pe.actual.0) {
+                seen.insert(pe.formal.0);
+            }
+        }
+        for cp in &e.nets.conv_ports {
+            if cp.actual.iter().any(|a| seen.contains(&a.0)) {
+                seen.extend(cp.formal.iter().map(|x| x.0));
+            }
+        }
+        if seen.len() == n {
+            break;
+        }
+    }
     let mut gone = Vec::new();
     for (pi, z) in cands {
         let Some(o) = (e.procs[pi].drivers.iter())
@@ -848,10 +877,14 @@ fn meta_rule(
             ),
             _ => "it assigns a metavalue literal".to_string(),
         };
+        // Outside now, it passes the 'Z' on to what it drives.
+        if z.is_some() {
+            zsrc.extend(all_driven(e, pi));
+        }
         gone.push((
             pi,
             format!(
-                "{what} and drives signals a process outside reads (the first: {}), to which \
+                "{what} and drives signals the testbench reads (the first: {}), to which \
                  two-state values would give '0' or '1' instead",
                 e.leaf_name(o)
             ),

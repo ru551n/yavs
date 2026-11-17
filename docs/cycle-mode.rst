@@ -210,7 +210,7 @@ body. A signal needs one source: one process drives each element of it.
      - E4124.
    * - Is clocked in a form that is not one of those above, or uses a clock made inside the region
      - E4123, E4125.
-   * - Compares with a metavalue literal (``= 'U'``), assigns one to a signal a process outside reads, passes on a
+   * - Compares with a metavalue literal (``= 'U'``), assigns one to a signal the testbench reads, passes on a
        ``'Z'`` from outside to such a signal, has a ``while`` loop or a ``for`` loop whose bounds are not known when
        the design is elaborated, or another construct cycle mode cannot take *yet*
      - E4101: in the subset, not implemented yet. This is the one reason that is expected to shrink.
@@ -299,8 +299,9 @@ A cycle-based process computes with ``0`` and ``1`` only.
   prints the count at the end of the run, as in the example above.
 * Everything the region gives back to the kernel is ``'0'`` or ``'1'``. A testbench never sees ``'X'`` or ``'Z'``
   from a cycle-based process. So a process that assigns a metavalue literal (``(others => 'X')`` on invalid data,
-  say) to a signal a process outside the region reads stays out, and so does one that passes on to such a signal a
-  signal a process outside sets to ``'Z'`` in its own statements (a copy of a tri-state line; a ``'Z'`` made in a
+  say) to a signal the testbench reads (a process of the top-level unit, or a behavioural one) stays out, and so
+  does one that passes on to such a signal a signal a process outside sets to ``'Z'`` in its own statements, or
+  that such a process passes on (a copy of a tri-state line; a ``'Z'`` made in a
   called subprogram or given by a generic is not seen): the testbench sees what the normal mode
   gives it. A metavalue literal on a signal only cycle-based processes read is read as ``0``, as are values computed
   from it.

@@ -158,10 +158,10 @@ writes land in the copy). The libraries the runs name (`--work=` and `--map=` ou
 copied once per replay, without their `yavs-cache/`, and the runs use the copies: the caches a run writes land
 there, so a recorded or shared library is never written. A `--std-cache=DIR` of a run is replaced by the replay's own.
 The copies and that std store are removed at the end, unless `--libs DIR` keeps them in DIR: a later replay with the
-same DIR runs on them as the first left them, its caches included, and with `--warm` a cycle run of a test with
-members that compiles any function differs ("not warm"). Each cycle run runs with `YAVS_CYCLE_STATS=1` (those lines are
-taken out of its console), and the summary counts the runs that took the region and the analysis from the cache and
-the functions taken from it, so a warm pass shows that it was warm. Tests of one design share the store within a
+same DIR runs on them as the first left them, its caches included. With `--warm` each cycle run runs with
+`YAVS_CYCLE_STATS=1` (those lines are taken out of its console), the summary counts the runs that took the region and
+the analysis from the cache (or checked them, under `YAVS_CYCLE_CACHE_CHECK=1`) and the functions taken from it, and a
+run of a test with members that took neither the region nor every function from the cache differs ("not warm"). Tests of one design share the store within a
 replay too: only the first run of each analysis is cold. It compares the exit status, the simulation end time (the times of the `stop` and
 `finish` events, else the last report), the console in the canonical form and every file the run wrote
 (a `?` in the normal mode's file matches any character). From the console it takes out the delta of report

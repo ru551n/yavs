@@ -13,8 +13,8 @@ argument and environment value); `cwd` is the working directory of the process; 
 (`<out>/test_output/<test>/yavs/args.rsp`), on standard output. The libraries of `--work=`/`--map=` are
 replayed from private copies made once per invocation (without their `yavs-cache/`), so the recorded
 libraries are never written; `--libs DIR` keeps the copies and the std store in DIR, and a later replay with
-the same DIR runs on them as they were left (warm: `--warm` then fails a cycle run that compiled anything).
-Every cycle run prints `YAVS_CYCLE_STATS` (taken out before the compare): the summary counts its cache hits.
+the same DIR runs on them as they were left. `--warm` runs each cycle run with `YAVS_CYCLE_STATS` (its lines taken
+out before the compare), counts the cache hits in the summary and fails a run with members that was not warm.
 
 Buckets: identical; documented (equal once the delta of report stamps and the reports and asserts of
 cycle-based processes are taken out, or the normal run ended on a failure of such a process); differs
@@ -255,23 +255,34 @@ def compare(nrc, nl, nfiles, crc, cl, cfiles, lost, members=frozenset(), roots=(
 
 
 # ---------------------------------------------------------------- running
-STATS = re.compile(r"^cycle stats: (?:(analysis|region) from the cache$|(\d+) functions in \d+ ms, (\d+) from the cache$)")
+STATS = re.compile(r"^cycle stats: (?:(analysis|region) from the cache( checked: the same)?$|(\d+) functions in \d+ ms, (\d+) from the cache$)")
 
 
 def cache_hits(err):
-    """(stderr without its `cycle stats:` lines, {"analysis", "region": hits, "funs": functions made,
-    "fhits": of them from the cache}) of a run with `YAVS_CYCLE_STATS`."""
-    hits, keep = {"analysis": 0, "region": 0, "funs": 0, "fhits": 0}, []
+    """(stderr without its `cycle stats:` lines, {"analysis", "region": hits, "checked": hits compared with a
+    new compile (`YAVS_CYCLE_CACHE_CHECK`), "funs": functions made, "fhits": of them from the cache}) of a run
+    with `YAVS_CYCLE_STATS`."""
+    hits, keep = {"analysis": 0, "region": 0, "checked": 0, "funs": 0, "fhits": 0}, []
     for l in err.splitlines(keepends=True):
         if not l.startswith("cycle stats: "):
             keep.append(l)
         elif m := STATS.match(l.rstrip("\n")):
             if m.group(1):
-                hits[m.group(1)] += 1
+                hits["checked" if m.group(2) else m.group(1)] += 1
             else:
-                hits["funs"] += int(m.group(2))
-                hits["fhits"] += int(m.group(3))
+                hits["funs"] += int(m.group(3))
+                hits["fhits"] += int(m.group(4))
     return "".join(keep), hits
+
+
+def not_warm(h):
+    """Why a cycle run with members was not warm (None: it was): every function from the cache, or the region
+    from it (also when the cache check compiled it again and found it the same). No stats line is no proof."""
+    if h.get("region") or (h.get("checked") and h.get("funs")) or (h.get("funs") and h["fhits"] == h["funs"]):
+        return None
+    if not h.get("funs"):
+        return "not warm: the cycle run printed no cache counts"
+    return f"not warm: the cycle run compiled {h['funs'] - h['fhits']} of {h['funs']} functions"
 
 
 def snapshot(d):
@@ -298,7 +309,7 @@ def one_run(e, mode, base, a):
     argv = [a.bin, "run", *flag, *[fix(x) for x in e["argv"][2:]]]
     env = {**os.environ, **{k: fix(v) for k, v in e.get("env", {}).items()}, **dict(x.split("=", 1) for x in a.env),
            "YAVS_STD_CACHE": str(a.std)}
-    if mode == "cycle":
+    if mode == "cycle" and a.warm:
         env["YAVS_CYCLE_STATS"] = "1"  # the cache hits; its lines are taken out below
     cmd = shlex.split(a.prefix) + [shutil.which("timeout"), str(a.timeout)]
     if not a.no_sandbox:
@@ -308,7 +319,7 @@ def one_run(e, mode, base, a):
     (base / f"{mode}.out").write_text(p.stdout)
     (base / f"{mode}.err").write_text(p.stderr)
     clean = lambda t: masked(t.replace(str(work), "<dir>"))
-    err, hits = cache_hits(p.stderr) if mode == "cycle" else (p.stderr, {})
+    err, hits = cache_hits(p.stderr) if mode == "cycle" and a.warm else (p.stderr, {})
     a.hits[e["name"]] = hits if mode == "cycle" else a.hits.get(e["name"], {})
     return p.returncode, clean(p.stdout), clean(err), files
 
@@ -338,8 +349,8 @@ def one(e, a):
             if res["bucket"] == "identical" and (nout, nerr) != tuple(strip_records(t, hr, mr) for t in (nout, nerr)):
                 res.update(bucket="documented", why=["reports and library warnings of cycle-based processes"])
             h = res["hits"] = a.hits.get(e["name"], {})
-            if a.warm and res["bucket"] != "differs" and res["members"] and h.get("fhits", 0) < h.get("funs", 0):
-                res.update(bucket="differs", why=[f"not warm: the cycle run compiled {h['funs'] - h['fhits']} of {h['funs']} functions"])
+            if a.warm and res["bucket"] != "differs" and res["members"] and (w := not_warm(h)):
+                res.update(bucket="differs", why=[w])
             if crc == 124:  # nothing to compare: its output stops where the time ran out
                 res.update(bucket="timeout", why=[f"the cycle run timed out after {a.timeout} s; the normal run did not"])
         if res["bucket"] in ("differs", "timeout"):
@@ -430,7 +441,14 @@ def selftest():
         assert not (d / "keep" / "0_L" / "yavs-cache").exists()
     err = ("x\ncycle stats: analysis from the cache\ncycle stats: region from the cache\ncycle stats: f: 3 operations, 9 us\n"
            "cycle stats: 4 functions in 2 ms, 3 from the cache\ny\n")
-    assert cache_hits(err) == ("x\ny\n", {"analysis": 1, "region": 1, "funs": 4, "fhits": 3}), cache_hits(err)
+    assert cache_hits(err) == ("x\ny\n", {"analysis": 1, "region": 1, "checked": 0, "funs": 4, "fhits": 3}), cache_hits(err)
+    assert not_warm(cache_hits(err)[1]) is None  # the region from the cache
+    cold = cache_hits("cycle stats: 4 functions in 2 ms, 3 from the cache\n")[1]
+    assert not_warm(cold) == "not warm: the cycle run compiled 1 of 4 functions"
+    assert not_warm(cache_hits("cycle stats: 4 functions in 2 ms, 4 from the cache\n")[1]) is None
+    assert not_warm(cache_hits("x\n")[1]) == "not warm: the cycle run printed no cache counts"
+    chk = cache_hits("cycle stats: region from the cache checked: the same\ncycle stats: 4 functions in 2 ms, 0 from the cache\n")[1]
+    assert chk["checked"] == 1 and not_warm(chk) is None, chk
     print("selftest ok")
 
 
@@ -454,7 +472,8 @@ def main():
     ap.add_argument("--no-sandbox", action="store_true", help="skip systemd-run")
     ap.add_argument("--libs", type=Path, metavar="DIR",
                     help="keep the private copies of the libraries and the std store in DIR; a later replay with the same DIR uses them as left (warm)")
-    ap.add_argument("--warm", action="store_true", help="a cycle run with members that compiles a function differs (with the --libs of an earlier replay)")
+    ap.add_argument("--warm", action="store_true",
+                    help="count the cache hits; a cycle run with members that is not warm differs (with the --libs of an earlier replay)")
     ap.add_argument("--json", type=Path, help="write one JSON result per test to this file")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("-v", "--verbose", action="store_true", help="one line per test")
@@ -510,8 +529,10 @@ def main():
           f"{c['differs']} differ, {c['timeout']} cycle runs timed out (not compared), {c['skipped'] - budget} skipped, {budget} not started (budget); {with_m} of {len(ran)} compared tests have at least one process "
           f"in the region ({sum(r['members'] for r in ran)} of {sum(r['procs'] for r in ran)} processes)")
     hs = [r.get("hits", {}) for r in ran if r["members"]]
-    print(f"cycle replay: cache of the {len(hs)} cycle runs with members: {sum(bool(h.get('region')) for h in hs)} took the region from it, "
-          f"{sum(bool(h.get('analysis')) for h in hs)} the analysis, {sum(h.get('fhits', 0) for h in hs)} of {sum(h.get('funs', 0) for h in hs)} functions")
+    if a.warm:
+        print(f"cycle replay: cache of the {len(hs)} cycle runs with members: {sum(bool(h.get('region')) for h in hs)} took the region from it, "
+              f"{sum(bool(h.get('analysis')) for h in hs)} the analysis, {sum(bool(h.get('checked')) for h in hs)} checked them, "
+              f"{sum(h.get('fhits', 0) for h in hs)} of {sum(h.get('funs', 0) for h in hs)} functions")
     if not ran:
         print("cyclereplay: nothing was compared")
     sys.exit(1 if c["differs"] or not ran else 0)

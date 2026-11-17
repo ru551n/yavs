@@ -1642,10 +1642,7 @@ impl Cx<'_> {
                 if let [a] = &args[..]
                     && let Actual::Expr(ax) = a.actual
                     && let Some(m) = (db.decls[*callee].kind.subprogram())
-                        .and_then(|sp| yavs_ir::ieee::native_symbol(sp.mangled.as_str()))
-                        .as_deref()
-                        .and_then(yavs_ir::ieee::symbol_key)
-                        .and_then(yavs_ir::ieee::parse) =>
+                        .and_then(|sp| crate::lower::ieee_op(sp.mangled.as_str())) =>
             {
                 use yavs_ir::ieee::{Math, Op};
                 let Some(ConstValue::Real(r)) = self.fold(ax) else {

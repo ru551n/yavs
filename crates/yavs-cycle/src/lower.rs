@@ -32,6 +32,26 @@ pub(crate) enum Ref {
     Edge,
 }
 
+/// The `ieee` subprogram with this mangled name that has a native key, remembered per name (a
+/// design calls few, many times: the key is text the lookup builds).
+pub(crate) fn ieee_op(mangled: &str) -> Option<yavs_ir::ieee::Op> {
+    thread_local! {
+        static OPS: std::cell::RefCell<HashMap<String, Option<yavs_ir::ieee::Op>>> =
+            Default::default();
+    }
+    OPS.with_borrow_mut(|m| {
+        if let Some(&op) = m.get(mangled) {
+            return op;
+        }
+        let op = yavs_ir::ieee::native_symbol(mangled)
+            .as_deref()
+            .and_then(yavs_ir::ieee::symbol_key)
+            .and_then(yavs_ir::ieee::parse);
+        m.insert(mangled.to_string(), op);
+        op
+    })
+}
+
 /// A copy from `src` to `dst` would change nothing. Not for a signal: a clocked process
 /// writes its next value and reads its current one, so `q <= q` undoes an earlier write.
 fn same_place(dst: Ref, src: Ref) -> bool {
@@ -2130,11 +2150,7 @@ impl Lx<'_> {
                         Family::ToOString => digits(self, 3, out, args),
                         _ => cannot(),
                     },
-                    _ => match yavs_ir::ieee::native_symbol(sp.mangled.as_str())
-                        .as_deref()
-                        .and_then(yavs_ir::ieee::symbol_key)
-                        .and_then(yavs_ir::ieee::parse)
-                    {
+                    _ => match ieee_op(sp.mangled.as_str()) {
                         Some(yavs_ir::ieee::Op::Str(octal)) if cargs.len() == 1 => {
                             digits(self, if octal { 3 } else { 4 }, out, args)
                         }
@@ -5344,11 +5360,7 @@ impl Lx<'_> {
                 }
             }
             _ => {
-                let Some(op) = yavs_ir::ieee::native_symbol(sp.mangled.as_str())
-                    .as_deref()
-                    .and_then(yavs_ir::ieee::symbol_key)
-                    .and_then(yavs_ir::ieee::parse)
-                else {
+                let Some(op) = ieee_op(sp.mangled.as_str()) else {
                     let library = ["ieee.", "std."]
                         .iter()
                         .any(|p| sp.mangled.as_str().starts_with(p));

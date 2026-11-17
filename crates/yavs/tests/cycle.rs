@@ -4989,10 +4989,14 @@ fn clocks_of_a_known_delta_share_their_logic() {
     assert_eq!(normal.len(), 1, "{normal:?}");
     assert_eq!(cycle, normal, "{err}");
     assert!(
-        err.contains("cycle mode: 2 of 7 processes run cycle-based")
+        err.contains("cycle mode: 3 of 7 processes run cycle-based")
             && err.contains(
                 "it computes, from registers on cycle_deltazero.cc, a value a register on \
                  cycle_deltazero.cz samples"
+            )
+            && err.lines().any(
+                |l| l.contains("cycle_deltazero.xz <= ... (deltacls128.vhd:107)")
+                    && l.ends_with("combinational")
             ),
         "{err}"
     );
@@ -5789,7 +5793,8 @@ fn a_register_on_a_clock_the_region_makes_samples_its_logic_before_it_settles() 
             assert_eq!(normal.len(), 40, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
-                err.contains("cycle mode: 1 of 5 processes run cycle-based"),
+                err.contains("cycle mode: 1 of 5 processes run cycle-based")
+                    && err.contains("a value a register on cycle_dclkreg.dk samples"),
                 "{w}: {err}"
             );
         }
@@ -5798,8 +5803,8 @@ fn a_register_on_a_clock_the_region_makes_samples_its_logic_before_it_settles() 
 
 /// A register outside the region on a clock copied twice samples combinational logic fed by a
 /// member register on the once-copied clock: the normal mode's new value comes a delta after
-/// the edge. The register stays out only for a later rule (an output port associated in parts),
-/// so the run-count cone is computed again then and keeps that logic out (found by the fuzzer).
+/// the edge. The register stays out only for a later rule (an output port associated in parts):
+/// the cross-delta rule, run in every round, keeps that logic out (found by the fuzzer).
 #[test]
 fn a_register_left_out_late_still_keeps_the_logic_it_samples_out() {
     let dir = tempdir("cycle-latecone");
@@ -5814,16 +5819,96 @@ fn a_register_left_out_late_still_keeps_the_logic_it_samples_out() {
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
                 err.contains("cycle mode: 1 of 7 processes run cycle-based")
-                    && err.contains("in the fan-in of cycle_latecone.u.process"),
+                    && err.contains("a value a register on cycle_latecone.dk2 samples"),
                 "{w}: {err}"
             );
         }
     }
 }
 
+/// Logic between registers of clocks whose edges come in different deltas, on paths through a
+/// process outside the region (its history read, a metavalue literal under the exact contract),
+/// from a register outside, and through a converted port: it stays out in both contracts, and
+/// logic between registers of one clock through such a process joins. Two gates of a clock in
+/// the region would give its edge a delta early: the second stays out. A logger with text I/O and
+/// a checker of the top-level unit on the late clock sample such logic too.
+#[test]
+fn paths_through_processes_outside_still_keep_cross_delta_logic_out() {
+    let dir = tempdir("cycle-crossout");
+    analyze(&dir, "crossout.vhd", include_str!("cycle/crossout.vhd"));
+    let exact = [("YAVS_CYCLE_EXACT_CLOCKS", "1")];
+    for w in [1, 63, 64, 65, 128] {
+        let g = format!("-gW={w}");
+        for t in tiers() {
+            let t = [&t[..], &[&g[..]]].concat();
+            // Only the report lines: at width 1 the additions warn of truncation.
+            let k = |v: Vec<String>| {
+                (v.into_iter())
+                    .filter(|l| [" k=", "lg=", " ck="].iter().any(|x| l.contains(x)))
+                    .collect::<Vec<_>>()
+            };
+            let normal = k(run(&dir, &t, "cycle_xout").0);
+            let gated = k(run(&dir, &t, "cycle_xgate").0);
+            let sinks = k(run(&dir, &t, "cycle_xsink").0);
+            assert_eq!(sinks.len(), 22, "{w} {t:?} {sinks:?}");
+            assert_eq!(
+                normal.len() + gated.len(),
+                20,
+                "{w} {t:?} {normal:?} {gated:?}"
+            );
+            for (flags, env) in [
+                (&["--cycle"][..], &[][..]),
+                (&["--cycle", "--cycle-exact-meta"][..], &exact[..]),
+            ] {
+                let f = [&t[..], flags].concat();
+                let (cycle, err) = run_vars(&dir, &f, "cycle_xout", env);
+                assert_eq!(k(cycle), normal, "width {w} {f:?}\n{err}");
+                assert!(
+                    err.contains("cycle mode: 8 of 22 processes run cycle-based"),
+                    "{w}: {err}"
+                );
+                for p in ["xa", "z", "m", "xs2", "xq", "u.q"] {
+                    assert!(
+                        err.contains(&format!(
+                            "cycle_xout.{p} <= ... (crossout.vhd:{}) ",
+                            match p {
+                                "xa" => 37,
+                                "z" => 39,
+                                "m" => 47,
+                                "xs2" => 52,
+                                "xq" => 55,
+                                _ => 15,
+                            }
+                        )) && err.contains("a value a register on cycle_xout.cg2 samples"),
+                        "{p} {w}: {err}"
+                    );
+                }
+                assert!(err.contains("    cycle_xout.xb <= ... (crossout.vhd:42)   combinational"));
+                let (cycle, err) = run_vars(&dir, &f, "cycle_xgate", env);
+                assert_eq!(k(cycle), gated, "width {w} {f:?}\n{err}");
+                let (cycle, serr) = run_vars(&dir, &f, "cycle_xsink", env);
+                assert_eq!(k(cycle), sinks, "width {w} {f:?}\n{serr}");
+                assert!(
+                    serr.contains("cycle mode: 2 of 11 processes run cycle-based")
+                        && serr.contains("a value a register on cycle_xsink.cg2 samples"),
+                    "{w}: {serr}"
+                );
+                assert!(
+                    err.contains("cycle mode: 3 of 9 processes run cycle-based")
+                        && err.contains("cycle_xgate.cg1 <= ... (crossout.vhd:91)  it computes")
+                        && err.contains(
+                            "    cycle_xgate.cg0 <= ... (crossout.vhd:90)  combinational"
+                        ),
+                    "{w}: {err}"
+                );
+            }
+        }
+    }
+}
+
 /// A register with an asynchronous reset outside the region (the checker fits it, the lowering
 /// takes no `while` loop) on a copy of the clock samples logic fed by a member register on the
-/// clock: it is a delta seed like a plain register on such a clock (found by the fuzzer).
+/// clock: the cross-delta rule keeps that logic out as for a plain register (found by the fuzzer).
 #[test]
 fn a_register_with_a_reset_on_a_late_clock_keeps_the_logic_it_samples_out() {
     let dir = tempdir("cycle-lateasync");
@@ -5838,7 +5923,7 @@ fn a_register_with_a_reset_on_a_late_clock_keeps_the_logic_it_samples_out() {
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
                 err.contains("cycle mode: 1 of 6 processes run cycle-based")
-                    && err.contains("in the fan-in of cycle_lateasync.late"),
+                    && err.contains("a value a register on cycle_lateasync.dk samples"),
                 "{w}: {err}"
             );
         }

@@ -924,9 +924,6 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             out.push((pi, Why::NotYet(w)));
         }
     }
-    // The cone is computed again when later rules leave more processes out (a register left out
-    // for its port may be one on a late clock): `coned` is how many were out at the last one.
-    let mut coned = out.len();
     // The history processes read (A10), and the sources of implicit signals.
     let mut memo = BTreeMap::new();
     let hist: Vec<Vec<Hist>> = (0..e.procs.len())
@@ -1073,17 +1070,10 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         }
         stat(|| format!("select: ram {} ms", t0.elapsed().as_millis()));
         if gone.is_empty() {
-            gone = cross_delta(db, e, &taken);
-        }
-        if gone.is_empty() {
             gone = pulse_rule(e, &taken);
         }
-        if gone.is_empty() && !off && out.len() > coned {
-            coned = out.len();
-            let seeds = delta_seeds(db, e, &out, &checked);
-            gone = (run_count_cone(db, e, &out, &seeds).into_iter())
-                .filter(|(pi, _)| taken.contains_key(pi))
-                .collect();
+        if gone.is_empty() {
+            gone = cross_delta(db, e, &taken, &out);
         }
         stat(|| format!("select: cross {} ms", t0.elapsed().as_millis()));
         if gone.is_empty() {
@@ -1617,6 +1607,18 @@ fn delta_key(db: &Db, e: &Elaborated, c: &Clock) -> (bool, usize, u32) {
     (false, c.leaf.index(), c.elem)
 }
 
+/// The delta of its time step a clock of key `k` (`delta_key`) has its edges in: at the earliest,
+/// and exactly when known. A clock process whose timeout elaboration does not know resumes in the
+/// first delta (above zero) or later (zero), so its edges come in the second or later.
+fn first_delta(k: (bool, usize, u32)) -> (u8, Option<u8>) {
+    match k {
+        (true, DELTA0, _) => (0, Some(0)),
+        (true, DELTA1, _) => (1, Some(1)),
+        (true, _, _) => (1, None),
+        _ => (0, None),
+    }
+}
+
 /// The time of `x` when elaboration knows it is above zero.
 fn positive_time(db: &Db, e: &Elaborated, pi: usize, x: ExprId) -> bool {
     check::const_value(
@@ -1785,18 +1787,64 @@ fn pulse_rule(e: &Elaborated, taken: &BTreeMap<usize, (Fit, Body)>) -> Vec<(usiz
     gone
 }
 
+/// Logic in the region between registers of clocks whose edges may come in different deltas of
+/// a time step. Paths go through every process but the testbench's (behavioural: design 2.1),
+/// members or not, and through port edges: a process left out for any reason (a metavalue
+/// literal, history read) does not cut a path, and a register outside is a source and a sink of
+/// its clock's class. Only members leave.
 fn cross_delta(
     db: &Db,
     e: &Elaborated,
     taken: &BTreeMap<usize, (Fit, Body)>,
+    out: &[(usize, Why)],
 ) -> Vec<(usize, String)> {
+    let behavioural: BTreeSet<usize> = (out.iter())
+        .filter(|(_, w)| matches!(w, Why::Behavioural(_)))
+        .map(|(pi, _)| *pi)
+        .collect();
+    let outside = |pi: &usize| !taken.contains_key(pi) && !behavioural.contains(pi);
+    let trig = |pi: usize| {
+        (e.procs[pi].trigger.as_ref()).map(|t| Clock {
+            leaf: t.leaf,
+            elem: t.elem,
+            rising: t.rising,
+            legacy: t.legacy,
+        })
+    };
+    // An edge-only process without a trigger (a sensitivity list with edge tests) acts at the
+    // events of what its list names: placed when that is one element.
+    let mut memo = BTreeMap::new();
+    let mut place = |pi: usize| {
+        trig(pi).or_else(|| {
+            let (_, w) = proc_reads(db, e, pi, &mut memo).filter(|_| edge_only(db, e, pi))?;
+            let [l] = w.into_iter().collect::<Vec<_>>()[..] else {
+                return None;
+            };
+            (e.nets.leaf(l).ty.len == 1).then_some(Clock {
+                leaf: l,
+                elem: 0,
+                rising: true,
+                legacy: false,
+            })
+        })
+    };
+    let placed: BTreeMap<usize, Clock> = (0..e.procs.len())
+        .filter(outside)
+        .filter_map(|pi| Some((pi, place(pi)?)))
+        .collect();
+    // A process of the testbench kind with a trigger (a clocked logger) samples at its edge: a
+    // sink, though no source.
+    let tb: BTreeMap<usize, Clock> = (behavioural.iter().copied())
+        .filter_map(|pi| Some((pi, trig(pi)?)))
+        .collect();
+    let clocks = (taken.values().filter_map(|(_, b)| b.clock))
+        .chain(placed.values().copied())
+        .chain(tb.values().copied());
     let mut keys: Vec<(bool, usize, u32)> = Vec::new();
     let mut names: Vec<Clock> = Vec::new();
     let mut bit: BTreeMap<(LeafId, u32), u64> = BTreeMap::new();
-    for (_, b) in taken.values() {
-        if let Some(c) = b.clock
-            && !bit.contains_key(&(c.leaf, c.elem))
-        {
+    for c in clocks {
+        bit.entry((c.leaf, c.elem)).or_insert_with(|| {
             let k = delta_key(db, e, &c);
             let g = keys.iter().position(|x| *x == k).unwrap_or_else(|| {
                 keys.push(k);
@@ -1805,20 +1853,14 @@ fn cross_delta(
             });
             // ponytail: beyond 63 groups they share the top bit, which counts as differing from
             // everything (sound, coarse); a set per leaf if a design ever has that many.
-            bit.insert((c.leaf, c.elem), 1 << g.min(63));
-        }
-    }
-    if keys.len() < 2 {
-        return Vec::new();
+            1 << g.min(63)
+        });
     }
     const TOP: u64 = 1 << 63;
-    // A register of the second delta class may sample what those of the first make: they
-    // change after it has. Beyond 63 groups, the shared top bit differs from everything.
-    let class = |k: usize| match keys.iter().position(|x| *x == (true, k, 0)) {
-        Some(g) if g < 63 => 1u64 << g,
-        _ => 0,
-    };
-    let (early, late) = (class(DELTA0), class(DELTA1));
+    // A register may sample what registers of a group make whose edges never come before its
+    // own delta (`first_delta`): they change after it has. Beyond 63 groups, the shared top bit
+    // differs from everything.
+    let first = |m: u64| first_delta(keys[m.trailing_zeros() as usize]);
     let bits = |m: u64| (0..64).map(|i| 1u64 << i).filter(move |b| m & b != 0);
     let differ = |t: u64, f: u64| {
         if (t | f) & TOP != 0 && t != 0 && f != 0 {
@@ -1826,13 +1868,13 @@ fn cross_delta(
         }
         bits(t)
             .flat_map(|a| bits(f).map(move |b| (a, b)))
-            .find(|&(a, b)| a != b && !(a == late && b == early))
+            .find(|&(a, b)| a != b && !first(b).1.is_some_and(|d| first(a).0 >= d))
     };
     // Registers by clock group, and what registers of each group read.
     let mut reg: BTreeMap<LeafId, u64> = BTreeMap::new();
     let mut feeds: BTreeMap<LeafId, u64> = BTreeMap::new();
-    // The combinational pieces: process, reads, writes.
-    let mut pieces: Vec<(usize, Vec<LeafId>, Vec<LeafId>)> = Vec::new();
+    // The combinational pieces: member or not, reads, writes.
+    let mut pieces: Vec<(Option<usize>, Vec<LeafId>, Vec<LeafId>)> = Vec::new();
     for (&pi, (f, b)) in taken {
         match b.clock {
             Some(c) => {
@@ -1847,16 +1889,113 @@ fn cross_delta(
                     let mut ws: Vec<LeafId> =
                         f.outs.iter().map(|o| LeafId(o.leaf as u32)).collect();
                     ws.dedup();
-                    pieces.push((pi, out_reads(f).collect(), ws));
+                    pieces.push((Some(pi), out_reads(f).collect(), ws));
                 }
             }
             None => pieces.push((
-                pi,
+                Some(pi),
                 b.reads.iter().copied().collect(),
                 b.writes.iter().copied().collect(),
             )),
         }
     }
+    // Processes outside: a register by its clock (through its list too when it has an
+    // asynchronous reset, as `run_count_cone` walks it), any other process as logic. Reads the
+    // scan cannot follow, and a register whose clock is not known, count as every group.
+    let mut anywhere = 0u64;
+    let mut unknown = false;
+    for pi in (0..e.procs.len()).filter(outside) {
+        let mut ws: Vec<LeafId> = (e.procs[pi].drivers.iter())
+            .map(|&d| e.nets.drivers[d].leaf)
+            .collect();
+        ws.dedup();
+        let reads = proc_reads(db, e, pi, &mut memo);
+        let g = match placed.get(&pi) {
+            Some(c) => Some(bit[&(c.leaf, c.elem)]),
+            None if edge_only(db, e, pi) => {
+                unknown = true;
+                Some(TOP)
+            }
+            None => None,
+        };
+        match (g, reads) {
+            (Some(g), Some((r, w))) => {
+                for &l in &ws {
+                    *reg.entry(l).or_default() |= g;
+                }
+                // A monitor without a trigger that drives nothing (a reporter on `process (done)`)
+                // sees settled values earlier by contract.
+                let monitor = ws.is_empty() && trig(pi).is_none();
+                for l in r.into_iter().filter(|_| !monitor) {
+                    *feeds.entry(l).or_default() |= g;
+                }
+                if e.procs[pi]
+                    .trigger
+                    .as_ref()
+                    .is_some_and(|t| t.reset.is_some())
+                {
+                    pieces.push((None, w.into_iter().collect(), ws));
+                }
+            }
+            (Some(g), None) => {
+                for &l in &ws {
+                    *reg.entry(l).or_default() |= g;
+                }
+                if !ws.is_empty() || trig(pi).is_some() {
+                    anywhere |= g;
+                }
+            }
+            (None, Some((r, _))) => pieces.push((None, r.into_iter().collect(), ws)),
+            (None, None) => {
+                for &l in &ws {
+                    *reg.entry(l).or_default() |= TOP;
+                }
+                if !ws.is_empty() {
+                    anywhere |= TOP;
+                    unknown = true;
+                }
+            }
+        }
+    }
+    for (&pi, c) in &tb {
+        let g = bit[&(c.leaf, c.elem)];
+        match proc_reads(db, e, pi, &mut memo) {
+            Some((r, _)) => r
+                .into_iter()
+                .for_each(|l| *feeds.entry(l).or_default() |= g),
+            None => anywhere |= g,
+        }
+    }
+    // Port edges the kernel updates in the delta of their source.
+    let port = |mode: yavs_kernel::PortMode, f: Vec<LeafId>, a: Vec<LeafId>| match mode {
+        yavs_kernel::PortMode::In => vec![(None, a, f)],
+        yavs_kernel::PortMode::Inout => vec![(None, a.clone(), f.clone()), (None, f, a)],
+        _ => vec![(None, f, a)],
+    };
+    for pe in &e.nets.ports {
+        pieces.extend(port(pe.mode, vec![pe.formal.0], vec![pe.actual.0]));
+    }
+    for cp in &e.nets.conv_ports {
+        let side = |v: &[(LeafId, yavs_kernel::Range)]| v.iter().map(|x| x.0).collect();
+        pieces.extend(port(cp.mode, side(&cp.formal), side(&cp.actual)));
+    }
+    // Logic a clock is made from: two levels of it in the region give the edge in fewer deltas.
+    let mut gone = clock_logic(e, taken, &pieces);
+    if keys.len() < 2 && !unknown {
+        return gone;
+    }
+    stat(|| {
+        let ks: Vec<String> = (keys.iter().zip(&names))
+            .map(|(k, c)| format!("{} {k:?}", clock_name(e, c)))
+            .collect();
+        format!(
+            "cross_delta: {} pieces ({} ports), unknown {unknown}, read by an unknown scan {}, groups: {}",
+            pieces.len(),
+            e.nets.ports.len() + e.nets.conv_ports.len(),
+            anywhere != 0,
+            ks.join(", ")
+        )
+    });
     // What reaches each leaf from registers through the pieces, and which registers each leaf
     // reaches through them.
     let mut taint: BTreeMap<LeafId, u64> = BTreeMap::new();
@@ -1896,15 +2035,21 @@ fn cross_delta(
             break;
         }
     }
-    let name = |m: u64| clock_name(e, &names[m.trailing_zeros() as usize]);
-    let mut gone = Vec::new();
+    let name = |m: u64| match names.get(m.trailing_zeros() as usize) {
+        Some(c) => clock_name(e, c),
+        None => "a clock cycle mode does not place".to_string(),
+    };
     for (pi, rs, ws) in &pieces {
+        let Some(pi) = pi else { continue };
         let t = (rs.iter())
             .map(|r| reg.get(r).copied().unwrap_or(0) | taint.get(r).copied().unwrap_or(0))
             .fold(0, |a, b| a | b);
         let f = (ws.iter())
             .map(|w| feeds.get(w).copied().unwrap_or(0))
-            .fold(0, |a, b| a | b);
+            .fold(anywhere, |a, b| a | b);
+        if gone.iter().any(|(q, _)| q == pi) {
+            continue;
+        }
         if let Some((from, to)) = differ(t, f) {
             gone.push((*pi, format!(
                 "it computes, from registers on {}, a value a register on {} samples, whose edges \
@@ -1913,6 +2058,59 @@ fn cross_delta(
                 name(from),
                 name(to)
             )));
+        }
+    }
+    gone
+}
+
+/// The members in the combinational fan-in of a clock (of any process) that read what another
+/// member drives: the region exports their value in the delta after its inputs change, where the
+/// normal mode takes a delta per level, so the edge would come early. One level reading only
+/// inputs changes in the same delta in both modes.
+fn clock_logic(
+    e: &Elaborated,
+    taken: &BTreeMap<usize, (Fit, Body)>,
+    pieces: &[(Option<usize>, Vec<LeafId>, Vec<LeafId>)],
+) -> Vec<(usize, String)> {
+    let mut clocks: BTreeSet<LeafId> = (e.procs.iter())
+        .filter_map(|p| p.trigger.as_ref().map(|t| t.leaf))
+        .collect();
+    clocks.extend(taken.values().filter_map(|(_, b)| b.clock.map(|c| c.leaf)));
+    let made: BTreeSet<LeafId> = (taken.keys())
+        .flat_map(|&pi| e.procs[pi].drivers.iter().map(|&d| e.nets.drivers[d].leaf))
+        .collect();
+    let mut by_write: BTreeMap<LeafId, Vec<usize>> = BTreeMap::new();
+    for (i, (_, _, ws)) in pieces.iter().enumerate() {
+        for &w in ws {
+            by_write.entry(w).or_default().push(i);
+        }
+    }
+    let (mut seen, mut done) = (BTreeSet::new(), BTreeSet::new());
+    let mut work: Vec<(LeafId, LeafId)> = clocks.iter().map(|&c| (c, c)).collect();
+    let mut gone = Vec::new();
+    while let Some((l, c)) = work.pop() {
+        if !seen.insert(l) {
+            continue;
+        }
+        for &i in by_write.get(&l).into_iter().flatten() {
+            if !done.insert(i) {
+                continue;
+            }
+            let (pi, rs, _) = &pieces[i];
+            if let Some(pi) = pi
+                && let Some(&m) = rs.iter().find(|r| made.contains(r))
+            {
+                gone.push((
+                    *pi,
+                    format!(
+                        "it computes, from {}, which the region drives, part of the clock {}: the \
+                         region would give its edge in fewer deltas than the normal mode",
+                        e.leaf_name(m),
+                        e.leaf_name(c)
+                    ),
+                ));
+            }
+            work.extend(rs.iter().map(|&r| (r, c)));
         }
     }
     gone
@@ -2435,67 +2633,6 @@ fn delta_seeds(
     out: &[(usize, Why)],
     checked: &BTreeSet<usize>,
 ) -> Vec<(usize, &'static str)> {
-    // A register outside on a clock whose edges may come a delta after the first one of their
-    // time step samples combinational logic fed by registers of another clock class: the region
-    // settles that logic in the delta it exports it, the normal mode a delta or more later.
-    let mut drivers: BTreeMap<LeafId, Vec<usize>> = BTreeMap::new();
-    for d in &e.nets.drivers {
-        drivers.entry(d.leaf).or_default().push(d.proc.index());
-    }
-    let key = |pi: usize| {
-        e.procs[pi].trigger.as_ref().map(|t| {
-            let c = Clock {
-                leaf: t.leaf,
-                elem: t.elem,
-                rising: t.rising,
-                legacy: t.legacy,
-            };
-            delta_key(db, e, &c)
-        })
-    };
-    let mut memo = BTreeMap::new();
-    let mut late = |pi: usize| {
-        let Some(k) = key(pi) else { return false };
-        if k == (true, DELTA0, 0) {
-            return false;
-        }
-        let Some((reads, _)) = proc_reads(db, e, pi, &mut memo) else {
-            return true;
-        };
-        // Its clock's timing is the key; only what it samples is followed.
-        let clk = e.procs[pi].trigger.as_ref().map(|t| t.leaf);
-        let mut work: Vec<LeafId> = reads.into_iter().filter(|l| Some(*l) != clk).collect();
-        let (mut seen, mut procs) = (BTreeSet::new(), BTreeSet::new());
-        while let Some(l) = work.pop() {
-            if !seen.insert(l) {
-                continue;
-            }
-            for &d in drivers.get(&l).into_iter().flatten() {
-                if d == pi || !procs.insert(d) {
-                    continue;
-                }
-                if edge_only(db, e, d) {
-                    // A register on the same clock class changes after the reader has sampled;
-                    // one without a trigger is taken as another class.
-                    if key(d) != Some(k) {
-                        return true;
-                    }
-                    continue;
-                }
-                if out
-                    .iter()
-                    .any(|(x, w)| *x == d && matches!(w, Why::Behavioural(_)))
-                {
-                    continue;
-                }
-                match proc_reads(db, e, d, &mut memo) {
-                    Some((r, _)) => work.extend(r),
-                    None => return true,
-                }
-            }
-        }
-        false
-    };
     (out.iter())
         .filter_map(|(pi, w)| {
             let how = match w {
@@ -2503,10 +2640,6 @@ fn delta_seeds(
                 // keeps a value too, even when its processes fit one by one.
                 Why::Subset(r) if r.code == crate::codes::LOOP => {
                     "it is in a combinational loop, which keeps a value of an earlier run"
-                }
-                _ if e.procs[*pi].trigger.is_some() && late(*pi) => {
-                    "it is a register on a clock whose edges may come a delta after those of \
-                     registers on other clocks that feed it through combinational logic"
                 }
                 // ponytail: an edge-only process without a trigger (a sensitivity list with
                 // edge tests) is taken as early; find its clock if the fuzzer shows one.

@@ -70,7 +70,8 @@ end architecture;
 
 -- A clock process waiting 0 ns every other time: its rising edges come a delta after those of
 -- the other clock process, so its timeout, which elaboration does not know, keeps it apart and
--- the logic between them in the event kernel.
+-- the logic it samples in the event kernel. The logic its registers feed joins: its edges never
+-- come before the second delta, after the other clock's registers have sampled.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;

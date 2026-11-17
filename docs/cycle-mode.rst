@@ -216,10 +216,8 @@ body. A signal needs one source: one process drives each element of it.
        l;``), or, below the top-level unit, a process that drives a signal and has an incomplete sensitivity
        list or that cycle mode could not show keeps no value (a process with a ``'Z'`` and a variable, for
        example). A concurrent assignment with a final ``else`` that reads nothing it drives and stays out for
-       its ``'Z'`` or its ``after`` alone does not count, nor does a process that acts at clock edges alone,
-       unless its clock's edges may come a delta cycle after those of the registers that feed it through such
-       logic (a clock a register of the design divides, or one a process outside makes from another); a register
-       on such a clock counts also when it has an asynchronous reset or fits but stays out for another reason. Testbench code (the top-level unit, and a monitor that drives no signal) sees the settled values
+       its ``'Z'`` or its ``after`` alone does not count, nor does a process that acts at clock edges alone
+       (logic between clocks whose edges come in different delta cycles is the row below). Testbench code (the top-level unit, and a monitor that drives no signal) sees the settled values
        earlier, as described below
      - E4101. The region settles such logic in one delta cycle where the normal mode takes several, so that
        process would see other values or run another number of times.
@@ -232,7 +230,10 @@ body. A signal needs one source: one process drives each element of it.
        cycle of their time step, and those of clocks made by clock processes that wait for a time and assign
        without a delay in the second, when yavs knows the delays and times when the design is elaborated:
        logic between clocks of one of these kinds joins, and so does logic that registers of the second kind
-       feed and registers of the first kind sample
+       (or of a clock process whose time yavs does not know, whose edges come in the second delta cycle or
+       later) feed and registers of the first or second kind sample. The path counts whatever lies on it: processes outside the
+       region for any reason (a testbench process excepted), registers outside the region, ports. Logic that
+       computes a clock from what the region drives stays out too: the clock's edge would come early
      - E4101. The normal mode samples such logic before its new value arrives; the region would hand over the
        settled value.
    * - Is clocked in a form that is not one of those above, or uses a clock made inside the region

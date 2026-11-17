@@ -22,9 +22,10 @@ BIG = 1 << 30
 # impure: impure functions reading signals; sigparam: signal parameters and concurrent procedure calls;
 # ifgen: if-generate; cgen: composite generics; gwidth: one entity at several widths; assert: asserts and
 # reports; zpass: a 'Z' of the testbench passed on, and a metavalue read only when valid; inout: a tri-state
-# pin with a pull; dclk: clocks made by the design.
+# pin with a pull; dclk: clocks made by the design; xout: concurrent assignments `after 0 ns` (outside the region in
+# both contracts, on paths between clocks) and clocks gated twice.
 FEATS = ["rtslice", "md", "bigmem", "ucon", "alias", "while", "caseq", "impure", "sigparam", "ifgen", "cgen",
-         "gwidth", "assert", "zpass", "inout", "dclk"]
+         "gwidth", "assert", "zpass", "inout", "dclk", "xout"]
 NOT93 = {"ucon", "caseq"}  # VHDL-2008 only
 MSG = "fzmsg"  # the text of the region's asserts and reports, filtered from both outputs (cycle mode drops them)
 
@@ -1073,6 +1074,20 @@ class Gen:
                     ent.procs.append(Proc("cond", tgt=o, arms=[(Ex("clk0", T("sl")), Ex("G_B", T("bool")))], els=Ex("clk1", T("sl")), used=s.used))
                 ent.dclks.append(o.name)
                 sigs.append(o)
+        if top and "xout" in s.feat:  # a clk0 register, a member, a process outside, a register on clk0 gated twice
+            s.used = {"xout"}
+            en = Obj(s.fresh("xe"), T("sl"), "sig")
+            g1, g2 = Obj(s.fresh("xg"), T("sl"), "sig"), Obj(s.fresh("xg"), T("sl"), "sig")
+            t = T("uns", w=rng.choice(WIDTHS))
+            r, m1, m2, q = (Obj(s.fresh(p), t, "sig") for p in ("xr", "xm", "xo", "xq"))
+            ent.procs += [Proc("whenclk", tgt=en, e=Ex("'1'", T("sl")), drives=[en], edge="falling_edge(clk0)", used=s.used),
+                          Proc("conc", tgt=g1, e=Ex(f"(clk0 and {en.name})", T("sl")), used=s.used),
+                          Proc("conc", tgt=g2, e=Ex(f"({g1.name} and {en.name})", T("sl")), used=s.used),
+                          Proc("whenclk", tgt=r, e=Ex(f"({r.name} + 1)", t), drives=[r], edge="rising_edge(clk0)", used=s.used),
+                          Proc("conc", tgt=m1, e=Ex(f"(not {r.name})", t), used=s.used),
+                          Proc("conc", tgt=m2, e=Ex(m1.name, t), used=s.used, late=True),
+                          Proc("whenclk", tgt=q, e=Ex(f"({q.name} + {m2.name})", t), drives=[q], edge=f"rising_edge({g2.name})", used=s.used)]
+            sigs += [en, g1, g2, r, m1, m2, q]
         if top and "zpass" in s.feat:
             s.zpass(ent, avail, sigs)
         if top and "inout" in s.feat:
@@ -1389,7 +1404,7 @@ class Gen:
         s.depth = rng.randint(1, 3)
         r = rng.random()
         if r < 0.5 or out.t.k in COMP:
-            ent.procs.append(Proc("conc", tgt=out, e=s.expr(out.t), used=s.used))
+            ent.procs.append(Proc("conc", tgt=out, e=s.expr(out.t), used=s.used, late="xout" in s.feat and s.chance(0.4)))
         elif r < 0.75:
             arms = [(s.expr(out.t), s.cond()) for _ in range(rng.randint(1, 3))]
             ent.procs.append(Proc("cond", tgt=out, arms=arms, els=s.expr(out.t), used=s.used))
@@ -1640,7 +1655,7 @@ def render_proc1(p, n):
         out += [f"{ind(n)}else generate", f"{ind(n + 1)}{p.tgt.name} <= {p.els.text()};", f"{ind(n)}end generate;"]
         return "\n".join(out)
     if p.k == "conc":
-        return f"{ind(n)}{lab}{p.tgt.name} <= {p.e.text()};"
+        return f"{ind(n)}{lab}{p.tgt.name} <= {p.e.text()}{' after 0 ns' if getattr(p, 'late', False) else ''};"
     if p.k == "whenclk":
         return f"{ind(n)}{lab}{p.tgt.name} <= {p.e.text()} when {p.edge};"
     if p.k == "cond":

@@ -259,6 +259,7 @@ ones every seed uses; the seed's line of `--json` and the `-- tbprocs=` line of 
 | `zpass` | a `'Z'` the testbench drives passed on to outputs (copy, mux, register), and data with metavalues read only when valid |
 | `inout` | a tri-state `std_logic` pin the testbench pulls to `'H'` or `'L'`, read back with `to_x01` |
 | `dclk` | clocks made by the design: gated, divided by a register, copied, chosen by a generic |
+| `xout` | concurrent assignments with `after 0 ns` (outside the region in both contracts), and a path from a register of `clk0` through a member and such an assignment to a register on `clk0` gated twice |
 
 A seed is VHDL-2008, or with a chance of 10 percent each VHDL-1993 (no 2008 operators or forms, `buffer` ports,
 the testbench stops its clocks) or VHDL-2019 (`--std` sets it). Every signal and variable is initialised and

@@ -1,0 +1,1 @@
+Cycle mode keeps fewer processes out of the region around a register outside it on a clock whose edges come late: only the logic on paths from registers of earlier clocks stays out, not all the logic the register samples. Logic from registers of a clock process whose time yavs does not know, sampled by registers of clocks made with delays or by clock processes yavs knows, joins.

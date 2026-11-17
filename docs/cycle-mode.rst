@@ -312,7 +312,7 @@ A cycle-based process computes with ``0`` and ``1`` only.
 
   .. code-block:: text
 
-      cycle mode: 370 of 488 processes run cycle-based, 118 in the event kernel, 3 inputs driven by nothing read as 0 (see --cycle-report)
+      cycle mode: 359 of 488 processes run cycle-based, 129 in the event kernel, 3 inputs driven by nothing read as 0 (see --cycle-report)
 
   .. code-block:: text
 

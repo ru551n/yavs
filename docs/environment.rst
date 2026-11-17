@@ -767,6 +767,11 @@ Compiled tiers: Cranelift
      - ``seeds.txt``
      - unset
      - ``run``
+   * - ``YAVS_CYCLE_DOWNSTREAM``
+     - Developers: a file to write, under ``--cycle-report``, with the processes outside the region that read a signal the region drives, directly or through other processes outside, one a line as the console names them; the comparison gates use it to tell a library warning such a process gives or loses because of a value cycle mode reads as ``0`` from one any other process gives (``tools/difftest/README.md``).
+     - ``down.txt``
+     - unset
+     - ``run``
    * - ``YAVS_CYCLE_GUARD``
      - Developers: ``all`` lets a cycle region (``--cycle``) skip every combinational step whose inputs did not change since its last run, also the small ones it would otherwise always run (for the tests).
      - ``all``

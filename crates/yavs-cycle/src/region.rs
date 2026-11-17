@@ -2607,6 +2607,58 @@ fn outside_reads(
     (seen, waited, readers)
 }
 
+/// Developers (`YAVS_CYCLE_DOWNSTREAM`): the processes outside the region that read an exported
+/// leaf, directly or through other processes outside, port edges and implicit signals. Only they
+/// can see a value the region made two-state (tools/difftest README "contract classes").
+pub fn downstream(db: &Db, e: &Elaborated, sel: &Selection) -> Vec<usize> {
+    let mut hot: BTreeSet<LeafId> = sel.outputs.clone();
+    let mut memo = BTreeMap::new();
+    let mut todo: Vec<(usize, Option<BTreeSet<LeafId>>)> = (sel.out.iter())
+        .map(|&(pi, _)| (pi, proc_reads(db, e, pi, &mut memo).map(|r| r.0)))
+        .collect();
+    let mut links: Vec<(LeafId, LeafId)> = (e.nets.ports.iter())
+        .map(|p| (p.actual.0, p.formal.0))
+        .collect();
+    for cp in &e.nets.conv_ports {
+        for a in &cp.actual {
+            links.extend(cp.formal.iter().map(|f| (a.0, f.0)));
+        }
+    }
+    for (i, leaf) in e.nets.leaves.iter().enumerate() {
+        if let Some((_, src, _)) = leaf.implicit {
+            links.push((src, LeafId(i as u32)));
+        }
+    }
+    let mut found = Vec::new();
+    loop {
+        // Both ways across a link: an over-approximation, so the rule only ever explains less.
+        for &(a, b) in &links {
+            if hot.contains(&a) || hot.contains(&b) {
+                hot.insert(a);
+                hot.insert(b);
+            }
+        }
+        let n = found.len();
+        todo.retain(|(pi, reads)| {
+            let hit = reads
+                .as_ref()
+                .is_none_or(|r| r.iter().any(|l| hot.contains(l)));
+            if hit {
+                found.push(*pi);
+            }
+            !hit
+        });
+        if found.len() == n {
+            break;
+        }
+        for &pi in &found[n..] {
+            hot.extend(e.procs[pi].drivers.iter().map(|&d| e.nets.drivers[d].leaf));
+        }
+    }
+    found.sort_unstable();
+    found
+}
+
 /// The signal leaves process `pi` may read (its names, whole objects, and those of the local
 /// subprograms it calls), and of those the ones it waits on; `None` when the scan cannot follow
 /// it (an external name without the alias elaboration bound it to, a call it cannot see into):

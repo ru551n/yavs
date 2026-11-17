@@ -1953,6 +1953,49 @@ fn a_z_passed_on_by_a_process_outside_keeps_its_reader_out() {
 /// members on a copy that a register of the event kernel on that copy samples.
 /// `YAVS_CYCLE_EXACT_CLOCKS=1` keeps every copy a clock of its own: then the logic stays out and
 /// every value is the normal mode's.
+/// `YAVS_CYCLE_DOWNSTREAM` lists the processes outside that read what the region exports, directly
+/// and through processes outside and ports, and no other: the gates' rule for library warnings of
+/// processes outside (tools/difftest README "Contract classes") rests on it.
+#[test]
+fn the_processes_downstream_of_the_region_are_listed() {
+    for w in [1, 63, 64, 65, 128] {
+        let dir = tempdir(&format!("cycle-down-{w}"));
+        let text = include_str!("cycle/downstream.vhd").replace("W - 1", &format!("{} - 1", w));
+        analyze(&dir, "downstream.vhd", &text);
+        let file = dir.join("down.txt");
+        let f = file.to_string_lossy().into_owned();
+        let o = yavs_env(
+            &dir,
+            &[
+                "run",
+                "--work=work:lib",
+                "--no-cache",
+                "--cycle-report",
+                "cycle_down",
+            ],
+            &[("YAVS_CYCLE_DOWNSTREAM", &f)],
+        );
+        let report = String::from_utf8_lossy(&o.stderr);
+        assert!(o.status.success(), "{report}");
+        let member = |n: &str| {
+            (report.lines()).any(|l| l.trim_start().starts_with(n) && l.ends_with("clocked"))
+        };
+        assert!(member("cycle_down.dut.reg (downstream.vhd:11)"), "{report}");
+        assert!(report.contains("cycle mode: 1 of "), "{report}");
+        let down = std::fs::read_to_string(&file).expect("the file");
+        let names: Vec<&str> = down.lines().collect();
+        assert!(
+            names.iter().any(|n| n.starts_with("cycle_down.reader ")),
+            "{down}"
+        );
+        assert!(
+            names.iter().any(|n| n.starts_with("cycle_down.mon.chain ")),
+            "{down}"
+        );
+        assert_eq!(names.len(), 2, "{down}\n{report}");
+    }
+}
+
 #[test]
 fn clocks_copied_by_assignment_are_their_source() {
     let dir = tempdir("cycle-clkcopy");

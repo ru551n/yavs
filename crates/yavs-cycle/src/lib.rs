@@ -618,6 +618,18 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
     let metas = Arc::new(Metas::default());
     // The region report only for `--cycle-report`: its names and source lines cost a run.
     if mode == Mode::Report || sel.members.is_empty() {
+        // Developers (`YAVS_CYCLE_DOWNSTREAM=FILE`): the processes outside that may see what the
+        // region exports, one name a line as the console prints it (tools/difftest).
+        if mode == Mode::Report
+            && let Some(f) = std::env::var_os("YAVS_CYCLE_DOWNSTREAM")
+        {
+            let text: String = (region::downstream(db, e, &sel).into_iter())
+                .map(|pi| region::where_(db, e, pi) + "\n")
+                .collect();
+            if let Err(x) = std::fs::write(&f, text) {
+                eprintln!("YAVS_CYCLE_DOWNSTREAM: {}: {x}", f.to_string_lossy());
+            }
+        }
         return Ok(Plan {
             report: match mode {
                 Mode::Report => report(db, e, &sel, &head, &undriven),

@@ -17,6 +17,7 @@ mod keep_codes;
 mod lean;
 pub mod libstage;
 mod pkgcall;
+pub mod reach;
 mod sim;
 mod stuck;
 mod summary;

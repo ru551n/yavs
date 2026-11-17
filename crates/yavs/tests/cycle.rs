@@ -2943,7 +2943,9 @@ fn force_is_outside_the_subset() {
 /// forced register out while members read the forced value (forced and released in the delta of
 /// an edge and between edges); a forced clock copy keeps its register on the copy, and a forced
 /// clock its own delta class; a force of a signal parameter, and any force under
-/// `--cycle-exact-meta`, keeps every process out. Against the normal mode at widths 1 to 128.
+/// `--cycle-exact-meta`, keeps every process out, but one the design does not reach does not
+/// stop ports from collapsing (`fsc_unreached_tb`). Against the
+/// normal mode at widths 1 to 128.
 #[test]
 fn forces_keep_out_only_the_drivers_of_what_they_force() {
     let dir = tempdir("cycle-force-scope");
@@ -2957,11 +2959,14 @@ fn forces_keep_out_only_the_drivers_of_what_they_force() {
             &format!("forcescopef{w}.vhd"),
             &with_width(include_str!("cycle/forcescopef.vhd"), w),
         );
-        let cases: [(&Path, &str, &[&str], usize, &str); 4] = [
+        // `fsc_unreached_tb` uses a package whose procedure forces a signal parameter but never
+        // calls it: its ports collapse and the same processes join as in `fsc_ext_tb`.
+        let cases: [(&Path, &str, &[&str], usize, &str); 5] = [
             (&dir, "fsc_ext_tb", &[], 16, "5 of 9"),
             (&dir, "fsc_pkg_tb", &[], 16, "5 of 9"),
             (&dir, "fsc_dclk_tb", &["--stop-time=40ns"], 6, "2 of 7"),
             (&fdir, "fsc_formal_tb", &[], 16, "0 of 9"),
+            (&fdir, "fsc_unreached_tb", &[], 16, "5 of 9"),
         ];
         for (d, top, flags, n, members) in cases {
             for t in tiers() {

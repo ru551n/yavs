@@ -71,7 +71,7 @@ pub(crate) fn ports(
     procs: &mut [ProcInst],
     one_source: bool,
 ) -> usize {
-    let Some(forced) = forced(db, sigs) else {
+    let Some(forced) = forced(db, sigs, procs) else {
         return 0;
     };
     let n = nets.leaves.len();
@@ -505,15 +505,17 @@ pub(crate) fn put_init(dst: &mut Value, off: u32, src: &Value, len: u32) {
     }
 }
 
-/// The signal objects a VHDL force or release names, directly, through an alias or through
-/// an external name; `None` when one names a signal parameter (any port may be its actual).
+/// The signal objects a VHDL force or release the design can run (`reach::forces`) names,
+/// directly, through an alias or through an external name; `None` when one names a signal
+/// parameter (any port may be its actual).
 pub(crate) fn forced(
     db: &Db,
     sigs: &std::collections::HashMap<(crate::ScopeId, yavs_sem::DeclId), ObjId>,
+    procs: &[ProcInst],
 ) -> Option<HashSet<ObjId>> {
     let mut decls = HashSet::new();
     let mut exts = HashSet::new();
-    for &id in &db.facts().forces {
+    for id in crate::reach::forces(db, procs).0 {
         let t = match &db.stmts[id].kind {
             StmtKind::Force { target, .. } | StmtKind::Release { target, .. } => target,
             _ => continue,

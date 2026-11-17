@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use yavs_elab::reach::{constraint_exprs, decl_exprs, deep, follow};
 use yavs_elab::{Case, Elaborated, LeafId, LeafRes, ScopeKind};
 use yavs_sem::hir::{ExprKind, ObjRoot, Sensitivity, StmtKind};
 use yavs_sem::{Db, ExprId, StmtId};
@@ -3512,51 +3513,14 @@ fn forced(db: &Db, e: &Elaborated) -> Forced {
     if facts.forces.is_empty() {
         return Forced::Leaves(leaves);
     }
-    let all: BTreeSet<StmtId> = facts.forces.iter().copied().collect();
-    // Every statement the processes can run, through the subprograms they call.
-    let (mut seen, mut stmts, mut exprs, mut ok) = (BTreeSet::new(), Vec::new(), Vec::new(), true);
-    for p in &e.procs {
-        exprs.extend(p.actual.as_ref().map(|a| a.expr));
-        deep(db, &[p.stmt], &mut stmts);
-        if let StmtKind::Process { scope, .. } = &db.stmts[p.stmt].kind {
-            decl_exprs(db, *scope, &mut exprs);
-        }
-    }
-    let mut reached = BTreeSet::new();
-    loop {
-        for x in std::mem::take(&mut exprs) {
-            let mut later = Vec::new();
-            db.walk_expr(x, &mut |y| {
-                if let ExprKind::Call { callee, .. } = &db.exprs[y].kind {
-                    ok &= follow(db, *callee, &mut seen, &mut stmts, &mut later);
-                }
-            });
-            exprs.append(&mut later);
-        }
-        if let Some(s) = stmts.pop() {
-            if all.contains(&s) {
-                reached.insert(s);
-            }
-            db.stmt_exprs(s, &mut |x, _| exprs.push(x));
-            if let StmtKind::ProcCall(c) | StmtKind::ConcProcCall { call: c, .. } =
-                &db.stmts[s].kind
-            {
-                ok &= follow(db, c.callee, &mut seen, &mut stmts, &mut exprs);
-            }
-        } else if exprs.is_empty() {
-            break;
-        }
-    }
+    let (reached, ok) = yavs_elab::reach::forces(db, &e.procs);
     stat(|| {
         format!(
             "forces: {} in the design, {} reached, every call followed: {ok}",
-            all.len(),
+            facts.forces.len(),
             reached.len()
         )
     });
-    if !ok {
-        reached = all;
-    }
     // The signal objects of each declaration and external name, in every instance.
     let mut objs: BTreeMap<yavs_sem::DeclId, Vec<yavs_elab::ObjId>> = BTreeMap::new();
     let mut ext: BTreeMap<yavs_sem::ids::ExternalId, Vec<yavs_elab::ObjId>> = BTreeMap::new();
@@ -3599,66 +3563,6 @@ fn forced(db: &Db, e: &Elaborated) -> Forced {
         }
     }
     Forced::Leaves(leaves)
-}
-
-/// Add the statements of subprogram `f` to `stmts` once (a body of the design); false for one the
-/// scan cannot follow (no body here). `ieee` and `std` bodies use no shared variable of the design.
-fn follow(
-    db: &Db,
-    f: yavs_sem::DeclId,
-    seen: &mut BTreeSet<yavs_sem::DeclId>,
-    stmts: &mut Vec<StmtId>,
-    exprs: &mut Vec<ExprId>,
-) -> bool {
-    let Some(sp) = db.decls[f].kind.subprogram() else {
-        return true;
-    };
-    if ["ieee.", "std."]
-        .iter()
-        .any(|p| sp.mangled.as_str().starts_with(p))
-    {
-        return true;
-    }
-    match &sp.body {
-        yavs_sem::decl::Body::Hir { scope, stmts: body } => {
-            if seen.insert(f) {
-                deep(db, body, stmts);
-                exprs.extend(sp.params.iter().filter_map(|p| p.default));
-                decl_exprs(db, *scope, exprs);
-            }
-            true
-        }
-        yavs_sem::decl::Body::Implicit(_) => true,
-        _ => false,
-    }
-}
-
-/// What the declarations of region `scope` evaluate: initial values, file names, constraints,
-/// the targets of object aliases.
-fn decl_exprs(db: &Db, scope: yavs_sem::ScopeId, out: &mut Vec<ExprId>) {
-    for &x in &db.scopes[scope].order {
-        match &db.decls[x].kind {
-            yavs_sem::decl::DeclKind::Object(o) => {
-                out.extend(o.default);
-                if let Some((a, b)) = o.file_open {
-                    out.extend(a);
-                    out.push(b);
-                }
-                constraint_exprs(&db.subtypes[o.subtype].constraint, out);
-            }
-            yavs_sem::decl::DeclKind::Alias(yavs_sem::decl::Alias::Object { target, .. }) => {
-                out.push(*target)
-            }
-            _ => {}
-        }
-    }
-}
-
-fn deep(db: &Db, body: &[StmtId], out: &mut Vec<StmtId>) {
-    for &s in body {
-        out.push(s);
-        deep(db, &db.stmt_children(s), out);
-    }
 }
 
 /// A call of a subprogram declared outside a package, with its actuals.
@@ -3852,25 +3756,6 @@ fn callee_sigs(
     }
     memo.insert(d, Some(sum.clone()));
     Some(sum)
-}
-
-/// The bound expressions of a constraint.
-fn constraint_exprs(c: &yavs_sem::types::Constraint, out: &mut Vec<ExprId>) {
-    use yavs_sem::types::{Constraint as C, RangeC};
-    let mut range = |r: &RangeC| {
-        if let RangeC::Explicit { left, right, .. } = r {
-            out.extend([*left, *right]);
-        }
-    };
-    match c {
-        C::Range(r) => range(r),
-        C::Array { dims, elem } => {
-            dims.iter().flatten().for_each(&mut range);
-            constraint_exprs(elem, out);
-        }
-        C::Record { elems } => elems.iter().for_each(|(_, c)| constraint_exprs(c, out)),
-        _ => {}
-    }
 }
 
 /// The signals the actuals of a call read.

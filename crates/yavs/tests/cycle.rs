@@ -1827,6 +1827,27 @@ fn a_register_with_an_internal_reset_feeding_a_short_list_stays_out() {
     }
 }
 
+/// A register reset asynchronously by another register pulses for one delta in the normal mode
+/// when the reset rises at an edge that changes it; the pulse resets and clocks other registers.
+/// The region settled edge and reset together and showed no pulse, so that register stays out.
+#[test]
+fn a_register_whose_pulse_resets_or_clocks_another_stays_out() {
+    let dir = tempdir("cycle-pulse");
+    analyze(&dir, "pulse.vhd", include_str!("cycle/pulse.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_pulse");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_pulse");
+        assert_eq!(normal.len(), 12, "{t:?} {normal:?}");
+        assert!(normal[2].contains("t=00"), "{normal:?}");
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 2 of 6 processes run cycle-based")
+                && err.contains("its asynchronous reset cycle_pulse.r is made by a register"),
+            "{err}"
+        );
+    }
+}
+
 /// Arrays of integers and enumerations in variables, constants and signals.
 #[test]
 fn arrays_of_integers_give_the_same_result() {

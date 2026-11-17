@@ -195,6 +195,10 @@ body. A signal needs one source: one process drives each element of it.
    * - Is a latch, reads a variable before assigning it, has an incomplete sensitivity list, is part of a
        combinational loop
      - E4119, E4120, E4121, E4122.
+   * - Is a register whose asynchronous reset another register makes, and whose output is the clock or the
+       asynchronous reset of a process: the normal mode can change it at the edge and again a delta later, and
+       that pulse resets or clocks the other process
+     - E4101. The region settles the edge and the reset together and would not show the pulse.
    * - Is combinational logic, or a register with an asynchronous reset (the normal mode can change it twice in
        one time step: at the edge and at a reset made by another register), that feeds, back to the registers
        (processes that act at clock edges alone), a process outside the region whose result may depend on the delta cycles its inputs change in: one that

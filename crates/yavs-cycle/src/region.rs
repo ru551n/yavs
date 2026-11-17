@@ -676,6 +676,9 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         if gone.is_empty() {
             gone = cross_delta(db, e, &taken);
         }
+        if gone.is_empty() {
+            gone = pulse_rule(e, &taken);
+        }
         stat(|| format!("select: cross {} ms", t0.elapsed().as_millis()));
         if gone.is_empty() {
             // The order and the loop groups of what is left: a group runs as a loop of passes.
@@ -1167,6 +1170,50 @@ fn one_step(db: &Db, e: &Elaborated, pi: usize) -> Option<ExprId> {
 /// its new value arrives; the region settles it at the first edge's wake. Clocks one process
 /// makes in one step (`delta_key`) or one signal's two edges never differ by a delta.
 /// Element runs are taken as whole leaves (a superset).
+/// A register whose asynchronous reset another register makes can change twice in a time step in
+/// the normal mode: at the edge, then at the reset a delta later (a pulse of one delta). The region
+/// settles both at once, so where that register's output is the clock or the asynchronous reset of
+/// a process (in the region or outside), that process would miss the pulse: the register stays out.
+fn pulse_rule(e: &Elaborated, taken: &BTreeMap<usize, (Fit, Body)>) -> Vec<(usize, String)> {
+    let sig = |l: LeafId| e.nets.loc[l.index()].signal;
+    let mut control: BTreeSet<yavs_kernel::SignalId> = BTreeSet::new();
+    for p in &e.procs {
+        if let Some(t) = &p.trigger {
+            control.insert(sig(t.leaf));
+            control.extend(t.reset.map(|r| sig(r.0)));
+        }
+    }
+    let registers: BTreeSet<yavs_kernel::SignalId> = (e.nets.drivers.iter())
+        .filter(|d| e.procs[d.proc.index()].trigger.is_some())
+        .map(|d| sig(d.leaf))
+        .collect();
+    let mut gone = Vec::new();
+    for (&pi, (_, b)) in taken {
+        let Some((r, ..)) = b.reset else {
+            continue;
+        };
+        if !registers.contains(&sig(r)) {
+            continue;
+        }
+        if let Some(&d) =
+            (e.procs[pi].drivers.iter()).find(|&&d| control.contains(&sig(e.nets.drivers[d].leaf)))
+        {
+            gone.push((
+                pi,
+                format!(
+                    "its asynchronous reset {} is made by a register, so the normal mode can change \
+                     {} at the edge and again a delta later, and {} is the clock or asynchronous reset \
+                     of a process: the region would not show it that pulse",
+                    e.leaf_name(r),
+                    e.leaf_name(e.nets.drivers[d].leaf),
+                    e.leaf_name(e.nets.drivers[d].leaf)
+                ),
+            ));
+        }
+    }
+    gone
+}
+
 fn cross_delta(
     db: &Db,
     e: &Elaborated,

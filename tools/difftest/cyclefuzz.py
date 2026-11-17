@@ -1225,11 +1225,11 @@ class Gen:
 
     def gw_inst(s, ent, avail):
         """Instances of the entity with a width generic, at several widths."""
-        s.in_actual = True
+        saved, s.in_actual = s.in_actual, True
         try:
             return s.gw_inst1(ent, avail)
         finally:
-            s.in_actual = False
+            s.in_actual = saved
 
     def gw_inst1(s, ent, avail):
         rng = s.rng
@@ -1259,7 +1259,6 @@ class Gen:
         return outs
 
     def instance(s, ent, depth, avail):
-        s.in_actual = True
         try:
             return s.instance1(ent, depth, avail)
         finally:
@@ -1270,6 +1269,7 @@ class Gen:
         saved = (s.econsts, s.arrs_local, s.read, s.lconsts, s.ent)
         sub = s.entity(depth - 1)
         s.econsts, s.arrs_local, s.read, s.lconsts, s.ent = saved
+        s.in_actual = True  # the port maps (after the entity, whose own processes may call impure functions)
         outs_all = []
         for k in range(2 if s.chance(0.3) else 1):
             s.read = list(avail)
@@ -2498,6 +2498,8 @@ def edit(g, kind, i):
         return False
     e = all_exprs(g)[i]
     if kind == "ex":
+        if e.t.k == "str":  # a message: no constant to put there
+            return False
         z = "false" if e.t.k == "bool" else zero(e.t) if e.t.k != "int" or e.r is None or e.r[0] <= 0 <= e.r[1] else str(e.r[0])
         if e.a == [] and e.f == z:
             return False

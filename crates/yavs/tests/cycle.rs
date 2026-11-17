@@ -5522,3 +5522,52 @@ fn a_register_on_a_clock_the_region_makes_samples_its_logic_before_it_settles() 
         }
     }
 }
+
+/// A register outside the region on a clock copied twice samples combinational logic fed by a
+/// member register on the once-copied clock: the normal mode's new value comes a delta after
+/// the edge. The register stays out only for a later rule (an output port associated in parts),
+/// so the run-count cone is computed again then and keeps that logic out (found by the fuzzer).
+#[test]
+fn a_register_left_out_late_still_keeps_the_logic_it_samples_out() {
+    let dir = tempdir("cycle-latecone");
+    analyze(&dir, "latecone.vhd", include_str!("cycle/latecone.vhd"));
+    for w in [1, 63, 64, 65, 128] {
+        let g = format!("-gW={w}");
+        for t in tiers() {
+            let t = [&t[..], &[&g[..]]].concat();
+            let (normal, _) = run(&dir, &t, "cycle_latecone");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_latecone");
+            assert_eq!(normal.len(), 40, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 1 of 7 processes run cycle-based")
+                    && err.contains("in the fan-in of cycle_latecone.u.process"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
+/// A register with an asynchronous reset outside the region (the checker fits it, the lowering
+/// takes no `while` loop) on a copy of the clock samples logic fed by a member register on the
+/// clock: it is a delta seed like a plain register on such a clock (found by the fuzzer).
+#[test]
+fn a_register_with_a_reset_on_a_late_clock_keeps_the_logic_it_samples_out() {
+    let dir = tempdir("cycle-lateasync");
+    analyze(&dir, "lateasync.vhd", include_str!("cycle/lateasync.vhd"));
+    for w in [1, 63, 64, 65, 128] {
+        let g = format!("-gW={w}");
+        for t in tiers() {
+            let t = [&t[..], &[&g[..]]].concat();
+            let (normal, _) = run(&dir, &t, "cycle_lateasync");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_lateasync");
+            assert_eq!(normal.len(), 40, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 1 of 6 processes run cycle-based")
+                    && err.contains("in the fan-in of cycle_lateasync.late"),
+                "{w}: {err}"
+            );
+        }
+    }
+}

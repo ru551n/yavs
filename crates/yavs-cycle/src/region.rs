@@ -534,6 +534,9 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             out.push((pi, Why::NotYet(w)));
         }
     }
+    // The cone is computed again when later rules leave more processes out (a register left out
+    // for its port may be one on a late clock): `coned` is how many were out at the last one.
+    let mut coned = out.len();
     // The history processes read (A10), and the sources of implicit signals.
     let mut memo = BTreeMap::new();
     let hist: Vec<Vec<Hist>> = (0..e.procs.len())
@@ -679,6 +682,13 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         }
         if gone.is_empty() {
             gone = pulse_rule(e, &taken);
+        }
+        if gone.is_empty() && !off && out.len() > coned {
+            coned = out.len();
+            let seeds = delta_seeds(db, e, &out, &checked);
+            gone = (run_count_cone(db, e, &out, &seeds).into_iter())
+                .filter(|(pi, _)| taken.contains_key(pi))
+                .collect();
         }
         stat(|| format!("select: cross {} ms", t0.elapsed().as_millis()));
         if gone.is_empty() {
@@ -2099,7 +2109,7 @@ fn delta_seeds(
                 Why::Subset(r) if r.code == crate::codes::LOOP => {
                     "it is in a combinational loop, which keeps a value of an earlier run"
                 }
-                _ if edge_only(db, e, *pi) && late(*pi) => {
+                _ if e.procs[*pi].trigger.is_some() && late(*pi) => {
                     "it is a register on a clock whose edges may come a delta after those of \
                      registers on other clocks that feed it through combinational logic"
                 }

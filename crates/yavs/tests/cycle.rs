@@ -3553,6 +3553,25 @@ fn the_analysis_from_the_cache_gives_the_same_result() {
     // build: made again, right, then from the cache.
     let excl = [("YAVS_CYCLE_EXCLUDE", "nothing_has_this_name")];
     let salt = [("YAVS_CACHE_SALT", "another build")];
+    // Another key whose analysis and region come out the same keeps no second copy of either.
+    let payloads = || {
+        (entries().iter())
+            .filter(|p| p.to_string_lossy().contains("cyc3p-"))
+            .count()
+    };
+    let (n, all) = (payloads(), entries().len());
+    let other = [("YAVS_CYCLE_EXCLUDE", "nor_has_this_one")];
+    let (got, a, _) = acached(&dir, &other, &["--cycle"]);
+    assert_eq!(got, want);
+    assert!(a.contains(stored), "another environment: {a}");
+    assert_eq!((n, payloads()), (2, 2), "the same payloads stored again");
+    assert!(entries().len() > all, "no entries of the new key");
+    let (got, a, _) = acached(&dir, &other, &["--cycle"]);
+    assert_eq!(got, want);
+    assert!(
+        a.contains("region from the cache"),
+        "another environment, warm: {a}"
+    );
     for (what, env, flags) in [
         ("W", &[][..], &["-gW=9"][..]),
         ("L", &[][..], &["-gL=abc"][..]),

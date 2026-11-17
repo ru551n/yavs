@@ -22,7 +22,26 @@ const INDEX: &str = "cyc3i";
 /// megabytes each, per test case, and push the code its test cases share out of the store.
 const PER_DESIGN: usize = 16;
 /// Of the payload's encoding: changed with any type of `Selection` or `Built`.
-const FORMAT: &str = "2";
+const FORMAT: &str = "3";
+/// The payloads of `cyc3` and `cyc3c` entries, by a hash of their bytes: an entry holds the hex
+/// of its payload's key, so test cases whose analyses come out the same keep it once.
+const PAYLOAD: &str = "cyc3p";
+
+/// Keep `bytes` as the entry `key` of `kind`: the payload first, then the entry naming it.
+fn put_shared(s: &Store, kind: &str, key: &Key, bytes: &[u8]) {
+    let mut b = KeyBuilder::new(PAYLOAD);
+    b.part(bytes);
+    let p = b.finish();
+    s.put(PAYLOAD, &p, bytes);
+    s.put(kind, key, p.hex().as_bytes());
+}
+
+/// The payload of entry `key` of `kind`; a missing or damaged entry or payload is a miss.
+fn get_shared(s: &Store, kind: &str, key: &Key) -> Option<yavs_cache::Entry> {
+    let e = s.get(kind, key)?;
+    let p = Key::from_hex(std::str::from_utf8(&e).ok()?)?;
+    s.get(PAYLOAD, &p)
+}
 /// Environment variables that change nothing the analysis gives (the test runner's token server
 /// differs per invocation; the others print or count).
 const ENV_SKIP: &[&str] = &[
@@ -187,7 +206,7 @@ fn code_key(k: &Key) -> Option<Key> {
 
 /// The region built from the selection of `k`, whole and fitting its code.
 fn fast_get(s: &Store, k: &Key) -> Option<Box<Fast>> {
-    let e = s.get(BUILT, &code_key(k)?)?;
+    let e = get_shared(s, BUILT, &code_key(k)?)?;
     let f = decode(&e)?;
     (f.2.len() == f.0.code.functions()).then(|| Box::new(f))
 }
@@ -215,7 +234,7 @@ pub(crate) fn keep_built(b: &crate::Built, made: Option<Blob>) -> Result<(), Str
         return Ok(());
     };
     let now = made.as_ref().and_then(|m| encode(b, m));
-    match (s.get(BUILT, &key), now) {
+    match (get_shared(s, BUILT, &key), now) {
         (Some(e), now) if check => {
             if now.as_deref() != Some(&e[..]) {
                 return Err(
@@ -226,7 +245,7 @@ pub(crate) fn keep_built(b: &crate::Built, made: Option<Blob>) -> Result<(), Str
             stat(|| "region from the cache checked: the same".into());
         }
         (None, Some(p)) => {
-            s.put(BUILT, &key, &p);
+            put_shared(s, BUILT, &key, &p);
             stat(|| format!("region stored ({} bytes)", p.len()));
         }
         _ => {}
@@ -366,7 +385,7 @@ fn look(db: &Db, reads: &GenericReads) -> bool {
             {
                 return Some(Found::Fast(f));
             }
-            let p = s.store.get(KIND, &k2)?;
+            let p = get_shared(&s.store, KIND, &k2)?;
             let sel: Selection = postcard::from_bytes(&p).ok()?;
             Some(Found::Hit(Box::new(sel), p.to_vec(), extra, k2))
         });
@@ -457,7 +476,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Result<Got, Vec<Diagnostic>> {
                     format!("analysis not cached: {PER_DESIGN} analyses of this design are kept")
                 });
             } else if let Ok(p) = postcard::to_allocvec(&sel) {
-                s.store.put(KIND, &k2, &p);
+                put_shared(&s.store, KIND, &k2, &p);
                 s.store.put(INDEX, &k1, &extra.to_le_bytes());
                 *CODE.lock().unwrap_or_else(PoisonError::into_inner) =
                     Some((s.store.clone(), k2, s.check));

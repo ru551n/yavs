@@ -3074,9 +3074,15 @@ impl Fx<'_, '_> {
                     self.signals_in(i, out);
                 }
             }
-            ExprKind::Slice { prefix, .. } | ExprKind::Field { prefix, .. } => {
-                self.signals_in(*prefix, out)
+            // The bounds of a slice are read too (LRM 10.2): `x(k + 1 downto k)` waits on `k`.
+            ExprKind::Slice { prefix, range } => {
+                self.signals_in(*prefix, out);
+                if let yavs_sem::types::RangeC::Explicit { left, right, .. } = range {
+                    self.signals_in(*left, out);
+                    self.signals_in(*right, out);
+                }
             }
+            ExprKind::Field { prefix, .. } => self.signals_in(*prefix, out),
             ExprKind::Qualified { operand, .. }
             | ExprKind::Conv { operand, .. }
             | ExprKind::ImplicitConv { operand } => self.signals_in(*operand, out),
@@ -3087,6 +3093,21 @@ impl Fx<'_, '_> {
             }
             ExprKind::Aggregate { assocs, .. } => {
                 for a in assocs.iter() {
+                    // Choices too: `(1 to k => '1')` waits on `k`.
+                    for c in a.choices.iter() {
+                        match c {
+                            yavs_sem::hir::Choice::Expr(e) => self.signals_in(*e, out),
+                            yavs_sem::hir::Choice::Range(yavs_sem::types::RangeC::Explicit {
+                                left,
+                                right,
+                                ..
+                            }) => {
+                                self.signals_in(*left, out);
+                                self.signals_in(*right, out);
+                            }
+                            _ => {}
+                        }
+                    }
                     self.signals_in(a.value, out);
                 }
             }

@@ -5173,10 +5173,25 @@ impl Model {
                 }
                 (*prefix, Sel::Index(v))
             }
-            ExprKind::Slice { prefix, range } => (
-                *prefix,
-                Sel::Slice(self.range(db, range, Some(scope), ex.span)?),
-            ),
+            // A slice whose bounds are not globally static (they read a signal) is no static
+            // name: its bounds are not elaboration's to pick (LRM 8.1; as for an index).
+            ExprKind::Slice { prefix, range } => {
+                if let yavs_sem::types::RangeC::Explicit { left, right, .. } = range
+                    && (db.exprs[*left].stat < Staticness::Globally
+                        || db.exprs[*right].stat < Staticness::Globally)
+                {
+                    return Err(crate::eval::err(
+                        codes::NOT_EVALUATED,
+                        ex.span,
+                        "the bounds of this slice are not globally static",
+                        "not a static name",
+                    ));
+                }
+                (
+                    *prefix,
+                    Sel::Slice(self.range(db, range, Some(scope), ex.span)?),
+                )
+            }
             ExprKind::Field { prefix, elem } => (*prefix, Sel::Field(*elem)),
             _ => return Ok(None),
         };
@@ -5883,7 +5898,12 @@ impl Model {
         decl: &yavs_sem::decl::Decl,
     ) -> R<Shape> {
         let espan = db.exprs[e].span;
-        if let Some((ao, asels)) = self.name_ref(db, e, sc)? {
+        // A name with a subscript that is not static is an expression here (`actual_name`).
+        let named = match self.name_ref(db, e, sc) {
+            Err(d) if d.code == codes::NOT_EVALUATED => None,
+            r => r?,
+        };
+        if let Some((ao, asels)) = named {
             return Ok(self.select(ao, &asels, espan)?.1);
         }
         if let Some(sh) = self.shape(db, db.exprs[e].subtype, Some(sc), espan)? {

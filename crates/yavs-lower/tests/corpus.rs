@@ -18,6 +18,7 @@ use yavs_sem::{Db, LangRev, Options};
 
 /// Corpus files whose output matches its `.expected` exactly.
 const PASS: &[&str] = &[
+    "hierarchy/nonstatic_port_slice",
     "composite/const_elem_constraint",
     "composite/null_record_field",
     "composite/null_slice",

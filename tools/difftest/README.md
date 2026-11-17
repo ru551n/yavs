@@ -123,9 +123,11 @@ run stops when it differs:
 
 Every comparing tool here (`cyclegate.py`, `cyclereplay.py`, `cyclebig.py`, `cyclefuzz.py`, `seeddiff.py`) compares
 exactly by default, `--contract exact`: its cycle runs take `--cycle-exact-meta` and `YAVS_CYCLE_EXACT_CLOCKS=1`,
-which keep the normal mode's metavalue rules and a copied clock a clock of its own, so a difference is a bug. The
-default contract of `--cycle` gives up both (`docs/cycle-mode.rst`, "The contract in short"): `--contract default`
-runs plain `--cycle` to show it does not crash. `cyclegate.py` and `cyclereplay.py` then also make the region report
+which keep the normal mode's metavalue rules, a copied clock a clock of its own and the values in a failed check's
+message, so a difference is a bug. The default contract of `--cycle` gives up all three (`docs/cycle-mode.rst`, "The
+contract in short"): `--contract default` runs plain `--cycle` to show it does not crash. `cyclegate.py` and
+`cyclereplay.py` compare a failed check (E3009) there by its code and source place only (`difftest.code_loc`, both
+modes), and also make the region report
 under the exact rules: where it equals the default's, the test must pass as under the exact gate; where it differs,
 a difference of the output is bucket `contract` (listed with the first rows the exact region has and the default's
 lacks, not failing); a crash or an internal error (`E9999`) always fails. `cyclebig.py --contract default` lists a

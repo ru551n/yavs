@@ -173,6 +173,20 @@ YAVS_RTE = re.compile(r"^error\[(?:E3\d{3}|E9999)\]: (.*)$")
 YAVS_AT = re.compile(r"^\s*= note: at (\d+) ([a-z]+), delta (\d+)(?:, in process (.+))?")
 
 
+YAVS_LOC = re.compile(r"^\s*--> (?:.*/)?([^/]+:\d+:\d+)$")
+
+
+def code_loc(err):
+    """Each failed check (E3009) of `err` as its code and source place (file name, line, column)
+    only: cycle mode's default contract leaves the operands' values out of the message (A34)."""
+    lines = err.splitlines()
+    for i, l in enumerate(lines):
+        if l.startswith("error[E3009]: "):
+            at = next((m.group(1) for m in map(YAVS_LOC.match, lines[i + 1:i + 3]) if m), "?")
+            lines[i] = f"error[E3009]: E3009 at {at}"
+    return "\n".join(lines)
+
+
 def yavs_fatal(out, err):
     """yavs prints a runtime error as a rustc-style diagnostic on stderr (code E3xxx or E9999,
     a `= note: at T, delta D` line): turn it into sim1's `** Fatal` line at the end of stdout,

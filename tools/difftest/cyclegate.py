@@ -17,7 +17,8 @@ and YAVS_CYCLE_EXACT_CLOCKS=1, which keep the metavalue rules and copied clocks 
 mode. `--contract default` runs plain `--cycle` (two-state metavalues, a copied clock is its
 source: docs/cycle-mode.rst "The contract in short") and also reports the region under the exact
 rules: where the two reports agree the test must pass as under the exact gate; where they differ
-a difference of the output is bucket `contract` (listed, not failing) and only a crash fails it.
+a difference of the output is bucket `contract` (listed, not failing) and only a crash fails it. A
+failed check (E3009) is compared there by its code and source place only (no values in its message).
 """
 import argparse, atexit, os, shutil, zlib, concurrent.futures as cf, difflib, json, re, sys
 from pathlib import Path
@@ -309,6 +310,8 @@ def one(item, jobs_args):
             if crc != 0 and nrc == 0 and re.search(r"E41\d\d", cerr) and "E9999" not in cerr:
                 res.update(bucket="refused", why=re.search(r"E41\d\d", cerr).group(0))
             else:
+                if jobs_args.contract == "default":  # a failed check by code and place (A34)
+                    nerr, cerr = D.code_loc(nerr), D.code_loc(cerr)
                 nl = D.normalise(nrc, nout, nerr, yavs=True)
                 cl = D.normalise(crc, cout, cerr, yavs=True)
                 lost = lambda path: dropped > 0 and (path in members or (path == "-" and "-" in members))
@@ -327,6 +330,11 @@ def one(item, jobs_args):
 
 
 def selftest():
+    e = "error[E3009]: value 8 outside of INTEGER range 0 to 7\n  --> /a/b/t.vhd:12:5\n   |"
+    assert D.code_loc(e).splitlines()[:2] == ["error[E3009]: E3009 at t.vhd:12:5", "  --> /a/b/t.vhd:12:5"]
+    fat = lambda e: D.normalise(1, "", D.code_loc(e + "\n   = note: at 5 ns, delta 1, in process t.p"), yavs=True)
+    assert fat(e) == fat(e.replace("value 8 outside", "value outside").replace("/a/b/", "/c/"))
+    assert fat(e) != fat(e.replace(":12:5", ":13:5")) and fat(e) != fat(e.replace("E3009", "E3010"))
     n = ["exit\t0", "diag\tnote\t5\t1\t:tb:p\thi", "diag\tnote\t9\t1\t:tb:m\tmember", "out\tdone"]
     lost = lambda p: p == ":tb:m"
     assert classify(n, n, lost)[0] == "identical"

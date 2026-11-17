@@ -24,7 +24,8 @@ cycle-based processes are taken out, or the normal run ended on a failure of suc
 `--contract exact` (the default) runs cycle mode under the exact rules, as cyclegate.py does
 (`--cycle-exact-meta`, YAVS_CYCLE_EXACT_CLOCKS=1). `--contract default` runs plain `--cycle` and a report
 under the exact rules too: a difference where the two regions differ is bucket `contract` (listed, not
-failing), a crash or an internal error always fails.
+failing), a crash or an internal error always fails; a failed check (E3009) is compared by its code and
+source place only (no values in its message).
 """
 import argparse, atexit, concurrent.futures as cf, difflib, json, math, os, random, re, shlex, shutil, subprocess, sys, time
 from pathlib import Path
@@ -403,6 +404,8 @@ def one(e, a):
             res["members"], res["procs"] = G.count_members(rep)
             lost = lambda path: dropped > 0 and path != "-" and path in held
             hr, mr = raw_names(rep)
+            if a.contract == "default":  # a failed check by code and place (A34)
+                nerr, cerr = D.code_loc(nerr), D.code_loc(cerr)
             nl = D.normalise(nrc, strip_records(nout, hr, mr), strip_records(nerr, hr, mr), yavs=True)
             cl = D.normalise(crc, strip_records(cout, hr, mr), strip_records(cerr, hr, mr), yavs=True)
             res["end"] = ends(nl)[-1] if ends(nl) == ends(cl) else f"{ends(nl)[-1]} normal, {ends(cl)[-1]} cycle"

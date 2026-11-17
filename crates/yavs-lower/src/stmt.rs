@@ -2952,84 +2952,19 @@ impl Fx<'_, '_> {
         Ok(())
     }
 
-    /// Signals named in `e` (the implicit sensitivity of `wait until`, LRM 10.2).
+    /// The signals evaluating `e` reads, as the sensitivity set of a `wait until` without
+    /// `on` and of a port actual's equivalent process (LRM 10.2, 6.5.6.3): every signal named,
+    /// through aliases, with those of indices, slice bounds, aggregate choices and calls'
+    /// actuals; each as a whole object (a part's static index may lie outside its range where
+    /// that part is never evaluated: `n < 4 and v(n)'event`).
     pub fn signals_in(&self, e: ExprId, out: &mut Vec<Lsp>) {
-        let db = self.db;
-        let x = &db.exprs[e];
-        match &x.kind {
-            ExprKind::Obj(d) => {
-                if matches!(
-                    self.cx.objs.get(d),
-                    Some(Obj::Signal { .. } | Obj::RecSignal(_))
-                ) && !out.iter().any(|l| l.root == ObjRoot::Decl(*d))
-                {
-                    out.push(Lsp {
-                        root: ObjRoot::Decl(*d),
-                        path: Box::new([]),
-                        stat: x.stat,
-                        span: x.span,
-                    });
-                }
+        let mut parts = Vec::new();
+        self.db.reads(e, &mut parts);
+        for mut l in parts {
+            if !out.iter().any(|x| x.root == l.root) {
+                l.path = Box::new([]);
+                out.push(l);
             }
-            ExprKind::Call { args, .. } => {
-                for a in args.iter() {
-                    if let yavs_sem::hir::Actual::Expr(e) = a.actual {
-                        self.signals_in(e, out);
-                    }
-                }
-            }
-            ExprKind::Index { prefix, indices } => {
-                self.signals_in(*prefix, out);
-                for &i in indices.iter() {
-                    self.signals_in(i, out);
-                }
-            }
-            // The bounds of a slice are read too (LRM 10.2): `x(k + 1 downto k)` waits on `k`.
-            ExprKind::Slice { prefix, range } => {
-                self.signals_in(*prefix, out);
-                if let yavs_sem::types::RangeC::Explicit { left, right, .. } = range {
-                    self.signals_in(*left, out);
-                    self.signals_in(*right, out);
-                }
-            }
-            ExprKind::Field { prefix, .. } => self.signals_in(*prefix, out),
-            ExprKind::Qualified { operand, .. }
-            | ExprKind::Conv { operand, .. }
-            | ExprKind::ImplicitConv { operand } => self.signals_in(*operand, out),
-            ExprKind::Attr { args, .. } => {
-                for &a in args.iter() {
-                    self.signals_in(a, out);
-                }
-            }
-            ExprKind::Aggregate { assocs, .. } => {
-                for a in assocs.iter() {
-                    // Choices too: `(1 to k => '1')` waits on `k`.
-                    for c in a.choices.iter() {
-                        match c {
-                            yavs_sem::hir::Choice::Expr(e) => self.signals_in(*e, out),
-                            yavs_sem::hir::Choice::Range(yavs_sem::types::RangeC::Explicit {
-                                left,
-                                right,
-                                ..
-                            }) => {
-                                self.signals_in(*left, out);
-                                self.signals_in(*right, out);
-                            }
-                            _ => {}
-                        }
-                    }
-                    self.signals_in(a.value, out);
-                }
-            }
-            ExprKind::Conditional { alts } => {
-                for &(v, c) in alts.iter() {
-                    self.signals_in(v, out);
-                    if let Some(c) = c {
-                        self.signals_in(c, out);
-                    }
-                }
-            }
-            _ => {}
         }
     }
 

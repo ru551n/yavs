@@ -359,6 +359,7 @@ pub(crate) fn ports(
     for p in &mut nets.conv_ports {
         p.formal.iter_mut().chain(&mut p.actual).for_each(mr);
     }
+    nets.fn_reads.iter_mut().flatten().for_each(mr);
     for d in &mut nets.drivers {
         let mut p = (d.leaf, d.range);
         mr(&mut p);

@@ -159,6 +159,7 @@ fn conversion_functions_in_both_directions() {
         PortConv {
             to_formal: Some(to_formal),
             to_actual: None,
+            ..Default::default()
         },
     );
     b.port(
@@ -168,6 +169,7 @@ fn conversion_functions_in_both_directions() {
         PortConv {
             to_formal: None,
             to_actual: Some(to_actual),
+            ..Default::default()
         },
     );
     let da = b.driver(a);
@@ -192,6 +194,108 @@ fn conversion_functions_in_both_directions() {
     sim.run_until(ns(2)).unwrap();
     assert_eq!(sim.value(f).unwrap(), Value::Bytes(vec![5]));
     assert_eq!(sim.value(y).unwrap(), Value::Logic(lv("00000110")));
+}
+
+#[test]
+fn conversion_reads_other_signals_without_converting_on_them() {
+    // `f <= a + k`: `k` is read (the formal of a port itself, so updated through the
+    // worklist), its new value seen in the same cycle; a change of `k` alone converts nothing.
+    let conv: Converter = Arc::new(|v| {
+        let x = |i: usize| v[i].as_bytes().ok_or("not bytes").map(|b| b[0]);
+        Ok(vec![Value::Bytes(vec![x(0)? + x(1)?])])
+    });
+    let mut b = Builder::new();
+    let f = b.signal("u.f", BYTE, &[0]);
+    let k = b.signal("w.k", BYTE, &[3]);
+    let a = b.signal("a", BYTE, &[1]);
+    let kk = b.signal("kk", BYTE, &[3]);
+    b.port(k, kk, PortMode::In, PortConv::default());
+    b.port(
+        f,
+        a,
+        PortMode::In,
+        PortConv {
+            to_formal: Some(conv),
+            formal_reads: vec![k.into()],
+            ..Default::default()
+        },
+    );
+    stim(&mut b, "sa", a, &[(1, 2)]);
+    stim(&mut b, "sk", kk, &[(1, 10), (2, 20)]);
+    let (mut sim, _) = build(b, Config::default());
+    assert_eq!(sim.value(f).unwrap(), Value::Bytes(vec![4]));
+    sim.run_until(ns(1)).unwrap();
+    assert_eq!(sim.value(f).unwrap(), Value::Bytes(vec![12]));
+    sim.run_until(ns(3)).unwrap();
+    assert_eq!(sim.value(k).unwrap(), Value::Bytes(vec![20]));
+    assert_eq!(sim.value(f).unwrap(), Value::Bytes(vec![12]));
+}
+
+#[test]
+fn formal_conversion_reads_a_port_signal_of_the_same_cycle() {
+    // `z <= o + k` on the formal side, `k` an in-port fed by `y`: the read stands for `y`,
+    // which is updated in the driving value pass before the formal (an in-port's own value
+    // comes only after it), so the conversion sees the new value, as with the port collapsed.
+    let conv: Converter = Arc::new(|v| {
+        let x = |i: usize| v[i].as_bytes().ok_or("not bytes").map(|b| b[0]);
+        Ok(vec![Value::Bytes(vec![x(0)? + x(1)?])])
+    });
+    let mut b = Builder::new();
+    let y = b.signal("y", BYTE, &[1]);
+    let z = b.signal("z", BYTE, &[0]);
+    let o = b.signal("u.o", BYTE, &[2]);
+    let k = b.signal("w.k", BYTE, &[0]);
+    b.port(k, y, PortMode::In, PortConv::default());
+    b.port(
+        o,
+        z,
+        PortMode::Out,
+        PortConv {
+            to_actual: Some(conv),
+            actual_reads: vec![k.into()],
+            ..Default::default()
+        },
+    );
+    stim(&mut b, "so", o, &[(0, 2), (1, 5)]);
+    stim(&mut b, "sy", y, &[(0, 1), (1, 10), (2, 20)]);
+    let (mut sim, _) = build(b, Config::default());
+    sim.run_until(ns(0)).unwrap();
+    sim.run_until(ns(1)).unwrap();
+    assert_eq!(sim.value(z).unwrap(), Value::Bytes(vec![15]));
+    sim.run_until(ns(3)).unwrap();
+    assert_eq!(sim.value(k).unwrap(), Value::Bytes(vec![20]));
+    assert_eq!(sim.value(z).unwrap(), Value::Bytes(vec![15]));
+}
+
+#[test]
+fn formal_conversion_reading_a_whole_resolved_part_is_not_implemented() {
+    // `o` converted to `y` reads `r.n`, a leaf of a record resolved as a whole: it has no
+    // driving value of its own before the driving value pass ends.
+    let conv: Converter = Arc::new(|v| Ok(vec![v[0].clone()]));
+    let mut b = Builder::new();
+    let o = b.signal("u.o", BYTE, &[0]);
+    let y = b.signal("y", BYTE, &[0]);
+    let a = b.signal("r.a", BYTE, &[0]);
+    let n = b.signal("r.n", BYTE, &[0]);
+    b.resolved_composite(&[a, n], Arc::new(|_: &[&[u8]], _: &mut [u8]| Ok(())));
+    let ds = [b.driver(a), b.driver(n)];
+    b.process("p", NONE, &ds, p(|_| Ok(())));
+    b.port(
+        o,
+        y,
+        PortMode::Out,
+        PortConv {
+            to_actual: Some(conv),
+            actual_reads: vec![n.into()],
+            ..Default::default()
+        },
+    );
+    let err = b.build(Config::default()).err().expect("an error");
+    assert!(
+        matches!(&err.kind, ErrorKind::Conversion { formal, message }
+            if formal == "u.o" && message.contains("r.n") && message.contains("not implemented")),
+        "{err:?}"
+    );
 }
 
 #[test]
@@ -233,6 +337,7 @@ fn multi_part_conversions_run_in_the_same_delta() {
         PortConv {
             to_formal: Some(swap),
             to_actual: None,
+            ..Default::default()
         },
     );
     stim(&mut b, "sn", n, &[(1, 3), (2, 4)]);
@@ -278,6 +383,7 @@ fn multi_part_out_conversion_feeds_every_actual_part() {
         PortConv {
             to_formal: None,
             to_actual: Some(split),
+            ..Default::default()
         },
     );
     stim(&mut b, "so", o, &[(1, 0x35)]);
@@ -324,6 +430,7 @@ fn conversion_failure_stops_the_simulation() {
         PortConv {
             to_formal: Some(bad),
             to_actual: None,
+            ..Default::default()
         },
     );
     let err = b.build(Config::default()).err().unwrap();

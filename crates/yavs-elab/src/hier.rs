@@ -518,6 +518,8 @@ pub struct NetGraph {
     pub leaves: Vec<Leaf>,
     pub ports: Vec<PortEdge>,
     pub conv_ports: Vec<ConvPort>,
+    /// Per conversion (`Elaborated::convs`), the parts of the signals its function reads.
+    pub fn_reads: Vec<Vec<(LeafId, Range)>>,
     pub drivers: Vec<DriverDecl>,
     /// Sources no process owns, holding a value: the default of the elements of a collapsed
     /// `inout` formal that have no source of their own.

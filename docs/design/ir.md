@@ -673,6 +673,13 @@ marks the targets active. So the conversion runs once per cycle in which any sou
 active, in the delta of the source, independent of thread count (the port update is serial).
 An equivalent process would be a delta late, which is why this is kernel state and not IR.
 
+A conversion function may read other signals of its region (#1166): their parts follow the
+source parts in the converter's input and never start a conversion. An `in` conversion's formal
+is a level deeper than every read part and the edge converts at the part (actual or read) its
+worklist reaches last; a formal-side conversion's read parts are a level deeper than its formal
+(an `in` formal read stands for its actual), so their driving values are computed first and the
+converter gets their effective values. Both see the values of the cycle at any thread count.
+
 **Signal net graph and sub-element driver map (rule 2).**
 
 ```rust

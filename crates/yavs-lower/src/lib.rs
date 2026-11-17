@@ -507,6 +507,10 @@ pub(crate) struct Cx {
     /// its object ([`Lowerer::capture_free_objects`]).
     #[serde(skip)]
     pub capture_vars: bool,
+    /// A port conversion function: signals of those regions it reads become value slots
+    /// filled per call ([`Lowerer::capture_signals`]).
+    #[serde(skip)]
+    pub capture_sigs: bool,
     #[serde(skip)]
     pub free_objs: Vec<FreeObj>,
     /// Which function reads which of `free_objs` (index), directly.
@@ -519,13 +523,14 @@ pub(crate) struct Cx {
 
 /// A constant or generic of an enclosing region that a function called during elaboration
 /// reads: the elaborator writes its value to the instance data slot at `off`. A shared variable
-/// (`var`) has the handle of its object there.
+/// (`var`) has the handle of its object there, a signal (`sig`) its current value.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct FreeObj {
     pub decl: DeclId,
     pub ty: TyId,
     pub off: u32,
     pub var: bool,
+    pub sig: bool,
 }
 
 /// One kernel signal of a record signal.
@@ -807,6 +812,7 @@ impl<'a> Lowerer<'a> {
                 context_funcs: Vec::new(),
                 capture_free: false,
                 capture_vars: false,
+                capture_sigs: false,
                 free_objs: Vec::new(),
                 free_readers: Vec::new(),
                 region_inits: HashMap::default(),
@@ -827,6 +833,13 @@ impl<'a> Lowerer<'a> {
     pub fn capture_free_objects(&mut self, vars: bool) {
         self.cx.capture_free = true;
         self.cx.capture_vars = vars;
+    }
+
+    /// Let the functions lowered next read the signals of entity, architecture, block and
+    /// generate regions by value: each a slot of instance data ([`FreeObj::sig`]) that the
+    /// caller fills with the signal's current value before every call (a port conversion).
+    pub fn capture_signals(&mut self) {
+        self.cx.capture_sigs = true;
     }
 
     /// The captured objects and the bytes of instance data they need.

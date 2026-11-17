@@ -2378,6 +2378,29 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   process per conversion (one delta late, unlike the reference simulators). Ordering: the edge
   converts at the part that the level-ordered update worklist reaches last, so the result does
   not depend on which part changed or on the thread count (docs/design/ir.md 4.1).
+- **Impure conversion functions that read signals** (#1166, agent 2026-11-17): a port conversion
+  function may read signals of entity, architecture, block and generate regions by value. The
+  function is lowered on its own with those signals as instance-data slots
+  (`Lowerer::capture_signals`, `FreeObj::sig`); elaboration finds their kernel parts
+  (`NetGraph::fn_reads`) and the kernel passes their current values after the source values
+  (`PortConv::formal_reads`, `actual_reads`). They do not trigger a conversion: only the actual
+  (or formal) does (LRM 6.5.7.1). In the `in` direction the formal sits a port level below every
+  signal read and the conversion runs at the part the worklist reaches last, read signals
+  included, so it sees their values of the cycle, as sim1 (sim2 sometimes reads an older value:
+  catalogue `impure-conversion-read-same-cycle`). The formal side converts in the driving value
+  pass: a signal it reads sits a port level below the formal, so its driving value of the cycle
+  is computed first, and the conversion reads its effective value from the layers
+  (`Signal::effective_of`); an unconverted `in` or `inout` formal read stands for its actual, so
+  the result does not depend on port collapsing (`--wave`, `--dap`, `--vhpi` run uncollapsed).
+  The references differ there (catalogue `impure-conversion-formal-read-in-port`,
+  `impure-conversion-formal-read-resolved`: sim1 sometimes reads the old value of a resolved
+  signal, sim2 of an `in` port); yavs reads the value of the cycle everywhere, owner decision
+  pending. Gaps: a read signal that the other direction of an `inout` association reads, or
+  that is the association's own actual, has its value of the last cycle; a part of a composite
+  resolved as a whole, or a formal fed through a converted port, is E3008 "not implemented".
+  Other uses of such a signal (attributes,
+  signal parameters) stay E2106. Rejected: the expression-actual route (an equivalent process is
+  one delta late and starts at `U`, unlike both references).
 - **Type conversions of composite ports** (#74, 2026-10-19; LRM 9.3.6): closely related
   composites have the same leaves, so a type conversion of a record port or an array of
   composites is the identity leaf by leaf (an integer leaf to a real one converted element by

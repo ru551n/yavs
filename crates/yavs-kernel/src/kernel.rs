@@ -935,11 +935,15 @@ pub(crate) struct PortEdge {
     pub actual: Vec<(SignalId, Range)>,
     pub mode: PortMode,
     pub conv: PortConv,
+    /// The signal parts `to_formal` and `to_actual` read besides their source
+    /// (`PortConv::formal_reads`, `actual_reads`).
+    pub down_reads: Vec<(SignalId, Range)>,
+    pub up_reads: Vec<(SignalId, Range)>,
     /// Per actual part, its source slot fed by the formal (`out`, `inout`, `buffer`).
     pub slots: Vec<u32>,
     /// The formal part (signal) whose update passes the driving values up, and the actual
-    /// part whose update passes the effective values down: the one each worklist reaches
-    /// last, so every other part is up to date (`Builder::build`).
+    /// part (or signal read, `down_reads`) whose update passes the effective values down: the
+    /// one each worklist reaches last, so every other part is up to date (`Builder::build`).
     pub up_at: u32,
     pub down_at: u32,
 }
@@ -1404,11 +1408,13 @@ fn signal_pair(v: &mut [Signal], a: usize, b: usize) -> (&Signal, &mut Signal) {
     }
 }
 
-/// Run a port conversion over the source parts `v` and check that its result fits the
+/// Run a port conversion over the source parts `v`, then the signal parts it `reads` (their
+/// effective values in the driving value pass, `up`), and check that its result fits the
 /// target parts. Without a conversion both sides are one part of the same type (`build`).
 fn convert(
     conv: Option<&crate::builder::Converter>,
     v: Vec<Buf>,
+    (reads, up): (&[(SignalId, Range)], bool),
     signals: &[Signal],
     targets: &[(SignalId, Range)],
     formal: &str,
@@ -1419,7 +1425,17 @@ fn convert(
         formal: formal.to_string(),
         message,
     };
-    let vals: Vec<Value> = v.iter().map(Buf::to_value).collect();
+    let mut vals: Vec<Value> = v.iter().map(Buf::to_value).collect();
+    for &(s, r) in reads {
+        // In the driving value pass a signal read has its new driving value but not yet its
+        // current value: its effective value is computed from the layers.
+        let sig = &signals[s.0 as usize];
+        let v = match up {
+            true => sig.effective_of(r),
+            false => sig.cur.extract(r.offset as usize, r.len as usize),
+        };
+        vals.push(v.to_value());
+    }
     let out = match callouts {
         Some(c) => {
             let (r, reps) = crate::callout::capture(|| f(&vals));
@@ -1562,6 +1578,32 @@ impl SimControl {
                 if matches!(p.mode, PortMode::In | PortMode::Inout) && down.last() != Some(&i) {
                     down.push(i);
                 }
+            }
+            // A signal its conversion reads converts there when the worklist reaches it last.
+            let at = |r: &(SignalId, Range)| r.0.0 == p.down_at;
+            if p.down_reads.iter().any(at) && !p.actual.iter().any(at) {
+                ports_down[p.down_at as usize].push(i);
+            }
+        }
+        // A formal-side conversion runs in the driving value pass: a signal it reads that is
+        // resolved with others as a whole, or that a converted port feeds, has no value of the
+        // cycle before the pass ends.
+        for p in &ports {
+            let odd = |r: &&(SignalId, Range)| {
+                let s = &signals[r.0.0 as usize];
+                !s.groups.is_empty() || s.port_in.is_some()
+            };
+            if let Some(&(s, _)) = p.up_reads.iter().find(odd) {
+                let name = |s: SignalId| signals[s.0 as usize].name.clone();
+                return Err(SimError::new(ErrorKind::Conversion {
+                    formal: name(p.formal[0].0),
+                    message: format!(
+                        "it reads signal {}, a part of a composite resolved as a whole or a \
+                         port converted on its way in: a conversion on the formal side that \
+                         reads such a signal is not implemented yet",
+                        name(s)
+                    ),
+                }));
             }
         }
         let mut implicit_srcs: Vec<(u32, Range)> = Vec::new();
@@ -1963,6 +2005,7 @@ impl SimControl {
             let vs = convert(
                 p.conv.to_actual.as_ref(),
                 v,
+                (&p.up_reads, true),
                 &self.signals,
                 &p.actual,
                 name,
@@ -2061,6 +2104,7 @@ impl SimControl {
             let vs = convert(
                 p.conv.to_formal.as_ref(),
                 v,
+                (&p.down_reads, false),
                 &self.signals,
                 &p.formal,
                 name,

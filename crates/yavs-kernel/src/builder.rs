@@ -1,7 +1,7 @@
 //! Elaboration-free model construction.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{ErrorKind, SimError};
@@ -46,11 +46,15 @@ pub enum PortMode {
 pub type Converter = Arc<dyn Fn(&[Value]) -> Result<Vec<Value>, String> + Send + Sync>;
 
 /// Conversions of one association: actual to formal (`in`, `inout`) and formal to actual
-/// (`out`, `inout`, `buffer`).
+/// (`out`, `inout`, `buffer`). An impure conversion function also reads other signals
+/// (`formal_reads` for `to_formal`, `actual_reads` for `to_actual`): their current values
+/// follow the source values, in order. A change of one of them alone does not convert.
 #[derive(Clone, Default)]
 pub struct PortConv {
     pub to_formal: Option<Converter>,
     pub to_actual: Option<Converter>,
+    pub formal_reads: Vec<SigRef>,
+    pub actual_reads: Vec<SigRef>,
 }
 
 struct ProcDecl {
@@ -587,12 +591,19 @@ impl Builder {
         formal: &[SigRef],
         actual: &[SigRef],
         mode: PortMode,
-        conv: PortConv,
+        mut conv: PortConv,
     ) {
         let mut parts = |refs: &[SigRef]| -> Option<Vec<(SignalId, Range)>> {
             refs.iter().map(|&r| self.chk(r)).collect()
         };
         let (Some(fs), Some(as_)) = (parts(formal), parts(actual)) else {
+            return;
+        };
+        let (fr, ar) = (
+            std::mem::take(&mut conv.formal_reads),
+            std::mem::take(&mut conv.actual_reads),
+        );
+        let (Some(down_reads), Some(up_reads)) = (parts(&fr), parts(&ar)) else {
             return;
         };
         let name = |b: &Builder, p: &[(SignalId, Range)]| {
@@ -635,6 +646,8 @@ impl Builder {
             actual: as_,
             mode,
             conv,
+            down_reads,
+            up_reads,
             slots: Vec::new(),
             up_at: 0,
             down_at: 0,
@@ -707,6 +720,42 @@ impl Builder {
             }
         }
         drop(taken);
+        // A formal-side conversion reads in the driving value pass, before an `in` or `inout`
+        // formal has its value from its actual: it reads the actual instead (the formal's
+        // effective value), through any chain of unconverted ports.
+        let mut via: HashMap<u32, Vec<(Range, SignalId, Range)>> = HashMap::default();
+        for p in &self.ports {
+            if matches!(p.mode, PortMode::In | PortMode::Inout)
+                && p.conv.to_formal.is_none()
+                && p.formal.len() == p.actual.len()
+            {
+                for (&(f, fr), &(a, ar)) in p.formal.iter().zip(&p.actual) {
+                    if fr.len == ar.len {
+                        via.entry(f.0).or_default().push((fr, a, ar));
+                    }
+                }
+            }
+        }
+        if !via.is_empty() {
+            let n = self.signals.len();
+            for p in &mut self.ports {
+                for r in &mut p.up_reads {
+                    for _ in 0..n {
+                        let hop = via.get(&r.0.0).and_then(|v| {
+                            v.iter()
+                                .find(|(fr, ..)| fr.contains(r.1))
+                                .map(|&(fr, a, ar)| {
+                                    (a, Range::new(ar.offset + r.1.offset - fr.offset, r.1.len))
+                                })
+                        });
+                        match hop {
+                            Some(h) => *r = h,
+                            None => break,
+                        }
+                    }
+                }
+            }
+        }
         // Port levels: every formal part deeper than every actual part.
         let mut changed = true;
         let mut passes = 0;
@@ -717,9 +766,8 @@ impl Builder {
                 return Err(usage("port associations form a cycle".into()));
             }
             for p in &self.ports {
-                let want = p
-                    .actual
-                    .iter()
+                // Also deeper than the signals its conversion reads, so they are current.
+                let want = (p.actual.iter().chain(&p.down_reads))
                     .map(|a| self.signals[a.0.0 as usize].level + 1)
                     .max()
                     .unwrap_or(0);
@@ -727,6 +775,26 @@ impl Builder {
                     let f = &mut self.signals[f.0.0 as usize];
                     if f.level < want {
                         f.level = want;
+                        changed = true;
+                    }
+                }
+                // A signal a formal-side conversion reads is deeper than the formal, so its
+                // driving value is computed before the formal passes its value up. Not the
+                // edge's own actual, nor a signal the other direction reads, nor a part of a
+                // composite resolved as a whole (the kernel refuses that read).
+                let deep = (p.formal.iter())
+                    .map(|f| self.signals[f.0.0 as usize].level + 1)
+                    .max()
+                    .unwrap_or(0);
+                for r in &p.up_reads {
+                    let own = |l: &[(SignalId, Range)]| l.iter().any(|a| a.0 == r.0);
+                    let s = &mut self.signals[r.0.0 as usize];
+                    if s.level < deep
+                        && s.groups.is_empty()
+                        && !own(&p.actual)
+                        && !own(&p.down_reads)
+                    {
+                        s.level = deep;
                         changed = true;
                     }
                 }
@@ -742,7 +810,9 @@ impl Builder {
                 .iter()
                 .map(|f| f.0)
                 .max_by_key(|s| (Reverse(level(s)), s.0));
-            let down = p.actual.iter().map(|a| a.0).max_by_key(|s| (level(s), s.0));
+            let down = (p.actual.iter().chain(&p.down_reads))
+                .map(|a| a.0)
+                .max_by_key(|s| (level(s), s.0));
             p.up_at = up.map_or(0, |s| s.0);
             p.down_at = down.map_or(0, |s| s.0);
         }

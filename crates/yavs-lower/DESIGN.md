@@ -68,6 +68,9 @@ a call into your module in a small commit.
 
 ## Contract with yavs-interp and yavs-elab
 
+- A port conversion function lowered with `Lowerer::capture_signals` reads each signal of its
+  region it names by value from an instance-data slot (`FreeObj::sig`, laid out as a captured
+  constant); the elaborator writes the signal's current value there before every call (#1166).
 - Calls: one cell per scalar `in` parameter (8-byte slot); the address of the actual for a scalar
   `out`/`inout` variable (a frame temporary written back after the call for logic elements and
   slices); four cells (data, left, right, dir) per array parameter of a type `Ty::flat_array` allows, the frame's slots after the data cell being the descriptor (`Cx::flat_params`), else two cells (data, dope). Signal parameters: the signal reference

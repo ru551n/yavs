@@ -681,7 +681,27 @@ impl<'a> Fx<'a, '_> {
                         ty: t,
                         off,
                         var: true,
+                        sig: false,
                     });
+                    self.read_obj(d, span)
+                }
+                // A signal of an enclosing region, read by a port conversion function: a slot
+                // holding the value the kernel passes to the call.
+                DeclKind::Object(o)
+                    if self.cx.capture_sigs
+                        && o.class == yavs_sem::decl::ObjClass::Signal
+                        && matches!(
+                            db.scopes[decl.scope].kind,
+                            yavs_sem::scope::ScopeKind::Entity
+                                | yavs_sem::scope::ScopeKind::Architecture
+                                | yavs_sem::scope::ScopeKind::Block
+                                | yavs_sem::scope::ScopeKind::Generate
+                        ) =>
+                {
+                    self.capture_free(d, o.subtype, span)?;
+                    if let Some(o) = self.cx.free_objs.last_mut() {
+                        o.sig = true;
+                    }
                     self.read_obj(d, span)
                 }
                 // A package constant whose initialiser is not folded, read by a function lowered
@@ -761,6 +781,7 @@ impl<'a> Fx<'a, '_> {
             ty: t,
             off,
             var: false,
+            sig: false,
         });
         Ok(())
     }
@@ -916,6 +937,14 @@ impl<'a> Fx<'a, '_> {
                 let (t, _) = self.alias_target(d).ok_or(Failed)?;
                 self.sig_expr(t)
             }
+            // A port conversion function reads the value of an outer signal only.
+            _ if self.cx.capture_sigs => Err(self.cx.unsupported(
+                span,
+                &format!(
+                    "a use of signal `{}` other than its value in a port conversion function",
+                    self.db.decls[d].name
+                ),
+            )),
             _ => Err(self.cx.unsupported(span, "this signal")),
         }
     }

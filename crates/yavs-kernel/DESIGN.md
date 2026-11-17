@@ -255,7 +255,9 @@ different signals (a record port with a conversion function, #74): the converter
 per source part and returns one per target part. Every formal part is deeper than every actual
 part; each edge runs its conversion when the worklist reaches the part it reaches last
 (`PortEdge::up_at`, `down_at`), so it runs once per cycle with every part current, in the same
-update phase (docs/design/ir.md 4.1). Without a conversion both sides must be one range.
+update phase (docs/design/ir.md 4.1). Without a conversion both sides must be one range. A
+converter may also read other signal parts (`PortConv::formal_reads`, `actual_reads`), placed by
+port level so that they hold their values of the cycle when it runs (ir.md 4.1, #1166).
 
 **Guarded signals** (`Builder::guard(sig, Bus | Register, disconnect_time)`, resolved only):
 `Ctx::disconnect` schedules a null transaction (after the given delay or the disconnection

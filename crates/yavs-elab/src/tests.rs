@@ -1424,6 +1424,49 @@ fn port_conversions() {
     assert_eq!(y.get(0) as u8, 3);
 }
 
+/// A formal-side conversion that reads a signal updated through ports (here the actual of a
+/// converted port, which is not collapsed) sees its value (#1166).
+#[test]
+fn impure_formal_conversion_reading_a_port_signal() {
+    let src = "entity d is port (q : in real); end;
+      architecture a of d is begin end;
+      entity s is port (o : out integer := 5); end;
+      architecture a of s is begin end;
+      entity t is end; architecture a of t is
+        signal ya : integer := 1;
+        signal z : integer;
+        impure function f(i : integer) return integer is begin return i + ya; end;
+      begin
+        d1 : entity work.d port map (q => real(ya));
+        u : entity work.s port map (f(o) => z);
+      end;";
+    let (mut db, mut e) = elab("convreads", src, "t", &[]);
+    e.lower(&mut db).expect("lower");
+    let mut sim = e.build(yavs_kernel::Config::default()).expect("build");
+    sim.run_for(yavs_kernel::Time::ns(1)).expect("run");
+    let z = sim.signal_id("t.z").expect("z");
+    assert_eq!(
+        sim.value(z).expect("value"),
+        yavs_kernel::Value::Bytes(6i32.to_le_bytes().to_vec())
+    );
+}
+
+/// A port conversion function reads only the values of the signals of its region: an attribute
+/// of one is not implemented (#1166).
+#[test]
+fn impure_conversion_reading_an_attribute() {
+    let src = "entity c is port (i : in integer); end;
+      architecture a of c is begin end;
+      entity t is end; architecture a of t is
+        signal x, y : integer := 1;
+        impure function f(i : integer) return integer is
+        begin if y'event then return i; end if; return 0; end;
+      begin
+        u : entity work.c port map (i => f(x));
+      end;";
+    assert_eq!(err_codes("convattr", src, "t", &[]), ["E2106"]);
+}
+
 /// Nested element and record element resolution indications (#76).
 #[test]
 fn nested_element_resolution() {

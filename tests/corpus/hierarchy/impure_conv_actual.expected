@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:tb_impure_conv_actual:u:_p0	b=13 c=AB13
+diag	note	1000000	1	:tb_impure_conv_actual:u:_p0	b=35 c=AB35
+diag	note	3000000	1	:tb_impure_conv_actual:u:_p0	b=A9 c=AB55

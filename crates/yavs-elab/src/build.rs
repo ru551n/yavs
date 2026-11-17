@@ -189,10 +189,18 @@ impl Elaborated {
                 c.apply(v)
             }))
         };
+        let reads = |i: Option<u32>| match i {
+            Some(i) => (self.nets.fn_reads.get(i as usize).into_iter().flatten())
+                .map(sig)
+                .collect(),
+            None => Vec::new(),
+        };
         for e in &self.nets.ports {
             let pc = PortConv {
                 to_formal: conv(e.to_formal),
                 to_actual: conv(e.to_actual),
+                formal_reads: reads(e.to_formal),
+                actual_reads: reads(e.to_actual),
             };
             b.port(sig(&e.formal), sig(&e.actual), e.mode, pc);
         }
@@ -203,6 +211,8 @@ impl Elaborated {
             let pc = PortConv {
                 to_formal: conv(e.to_formal),
                 to_actual: conv(e.to_actual),
+                formal_reads: reads(e.to_formal),
+                actual_reads: reads(e.to_actual),
             };
             let f: Vec<_> = e.formal.iter().map(sig).collect();
             let a: Vec<_> = e.actual.iter().map(sig).collect();

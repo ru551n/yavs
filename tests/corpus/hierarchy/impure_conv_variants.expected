@@ -1,0 +1,20 @@
+exit	0
+diag	note	0	0	:tb_impure_conv_variants:b1:_p1	io=XX
+diag	note	0	0	:tb_impure_conv_variants:r1:_p0	r=3 '1' 107 v=08
+diag	note	0	0	:tb_impure_conv_variants:w1:u:_p0	:tb_impure_conv_variants(a):w1@wrap_icv(a):u@sink_icv(a): b=06
+diag	note	0	0	:tb_impure_conv_variants:g(1):u:_p0	:tb_impure_conv_variants(a):g(1):u@sink_icv(a): b=10
+diag	note	0	0	:tb_impure_conv_variants:g(2):u:_p0	:tb_impure_conv_variants(a):g(2):u@sink_icv(a): b=20
+diag	note	0	0	:tb_impure_conv_variants:_p0	z=XX w=XX
+diag	note	0	1	:tb_impure_conv_variants:_p0	z=13 w=20
+diag	note	0	1	:tb_impure_conv_variants:b1:_p1	io=13
+diag	note	1000000	1	:tb_impure_conv_variants:_p0	z=35 w=20
+diag	note	2000000	1	:tb_impure_conv_variants:_p0	z=35 w=42
+diag	note	2000000	1	:tb_impure_conv_variants:b1:_p1	io=71
+diag	note	3500000	1	:tb_impure_conv_variants:g(2):u:_p0	:tb_impure_conv_variants(a):g(2):u@sink_icv(a): b=2A
+diag	note	3500000	1	:tb_impure_conv_variants:g(1):u:_p0	:tb_impure_conv_variants(a):g(1):u@sink_icv(a): b=1A
+diag	note	3500000	1	:tb_impure_conv_variants:r1:_p0	r=B '0' 108 v=22
+diag	note	4000000	1	:tb_impure_conv_variants:_p0	z=46 w=42
+diag	note	5000000	1	:tb_impure_conv_variants:w1:u:_p0	:tb_impure_conv_variants(a):w1@wrap_icv(a):u@sink_icv(a): b=16
+diag	note	7500000	1	:tb_impure_conv_variants:g(2):u:_p0	:tb_impure_conv_variants(a):g(2):u@sink_icv(a): b=2D
+diag	note	7500000	1	:tb_impure_conv_variants:g(1):u:_p0	:tb_impure_conv_variants(a):g(1):u@sink_icv(a): b=1D
+diag	note	7500000	1	:tb_impure_conv_variants:r1:_p0	r=C '0' 108 v=23

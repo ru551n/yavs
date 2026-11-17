@@ -167,6 +167,10 @@ pub struct ConvFn {
     )>,
     pub from: Side,
     pub to: Side,
+    /// The signals an impure function reads besides its argument (#1166): the instance data
+    /// slot, IR type and end of each. Their values follow the source parts, in this order.
+    pub(crate) reads: Vec<(u32, yavs_ir::TyId, Side)>,
+    pub(crate) inst_size: u32,
 }
 
 /// One end of a conversion: a scalar, an array leaf with its bounds as an IR descriptor, or
@@ -188,13 +192,56 @@ pub enum Side {
     Leaves(Vec<(Enc, u64)>),
 }
 
-impl ConvFn {
-    /// Convert kernel values: one per part of the source side, one per part of the target.
-    pub fn apply(&self, vs: &[Value]) -> Result<Vec<Value>, String> {
+impl Side {
+    /// How many kernel parts this end has.
+    fn parts(&self) -> usize {
+        match self {
+            Side::Scalar(_) | Side::Array { .. } => 1,
+            Side::Composite { parts, .. } => parts.len(),
+            Side::Leaves(l) => l.len(),
+        }
+    }
+
+    /// The IR value of the kernel values `vs`, one per part.
+    fn call_val(&self, vs: &[Value]) -> Result<yavs_interp::CallVal, String> {
         let one = || match vs {
             [v] => Ok(v),
             _ => Err(format!("a port conversion got {} values for one", vs.len())),
         };
+        Ok(match self {
+            Side::Leaves(_) => return Err("a type conversion of composites to a scalar".into()),
+            Side::Scalar(e) => yavs_interp::CallVal::Cell(decode(e, one()?)?),
+            Side::Array { desc, .. } => yavs_interp::CallVal::Composite {
+                data: value_bytes(one()?),
+                desc: desc.clone(),
+            },
+            Side::Composite { map, parts } => {
+                if vs.len() != parts.len() {
+                    return Err("a port conversion got the wrong number of parts".into());
+                }
+                let mut codes = Vec::new();
+                for v in vs {
+                    match v {
+                        Value::Bytes(b) => codes.extend_from_slice(b),
+                        Value::Logic(l) => codes.extend((0..l.len()).map(|i| l.get(i) as u8)),
+                    }
+                }
+                yavs_interp::CallVal::Composite {
+                    data: map.pack(&codes)?,
+                    desc: map.desc.clone(),
+                }
+            }
+        })
+    }
+}
+
+impl ConvFn {
+    /// Convert kernel values: one per part of the source side, one per part of the target.
+    pub fn apply(&self, vs: &[Value]) -> Result<Vec<Value>, String> {
+        let n: usize = self.reads.iter().map(|r| r.2.parts()).sum();
+        let (vs, mut read) = vs
+            .split_at_checked(vs.len().wrapping_sub(n))
+            .ok_or("a port conversion got too few values")?;
         // A type conversion of composites: leaf by leaf, element by element (LRM 9.3.6).
         if let (Side::Leaves(a), Side::Leaves(b)) = (&self.from, &self.to) {
             if vs.len() != a.len() {
@@ -224,37 +271,35 @@ impl ConvFn {
                 })
                 .collect();
         }
-        let arg = match &self.from {
-            Side::Leaves(_) => return Err("a type conversion of composites to a scalar".into()),
-            Side::Scalar(e) => yavs_interp::CallVal::Cell(decode(e, one()?)?),
-            Side::Array { desc, .. } => yavs_interp::CallVal::Composite {
-                data: value_bytes(one()?),
-                desc: desc.clone(),
-            },
-            Side::Composite { map, parts } => {
-                if vs.len() != parts.len() {
-                    return Err("a port conversion got the wrong number of parts".into());
-                }
-                let mut codes = Vec::new();
-                for v in vs {
-                    match v {
-                        Value::Bytes(b) => codes.extend_from_slice(b),
-                        Value::Logic(l) => codes.extend((0..l.len()).map(|i| l.get(i) as u8)),
-                    }
-                }
-                yavs_interp::CallVal::Composite {
-                    data: map.pack(&codes)?,
-                    desc: map.desc.clone(),
-                }
-            }
-        };
+        let arg = self.from.call_val(vs)?;
         let r = match &self.func {
             Some((rt, f, ret)) => {
                 let ret = match self.to {
                     Side::Array { .. } | Side::Composite { .. } | Side::Leaves(_) => *ret,
                     Side::Scalar(_) => None,
                 };
-                yavs_interp::call_values(rt.clone(), *f, Default::default(), &[arg], ret)
+                let mut inst = yavs_interp::InstData::default();
+                if !self.reads.is_empty() {
+                    inst.data = vec![0; self.inst_size as usize];
+                }
+                for (off, ty, side) in &self.reads {
+                    let here;
+                    (here, read) = read.split_at(side.parts());
+                    match side.call_val(here)? {
+                        yavs_interp::CallVal::Cell(c) => {
+                            let n = (rt.prog.types.get(*ty))
+                                .and_then(|t| t.scalar_size())
+                                .ok_or("a signal read by a conversion without a scalar size")?
+                                as usize;
+                            let at = *off as usize;
+                            inst.data[at..at + n].copy_from_slice(&c.to_le_bytes()[..n]);
+                        }
+                        yavs_interp::CallVal::Composite { data, desc } => {
+                            yavs_lower::UnitIr::write_composite(*off, &data, &desc, &mut inst.data);
+                        }
+                    }
+                }
+                yavs_interp::call_values(rt.clone(), *f, std::sync::Arc::new(inst), &[arg], ret)
                     .map_err(|e| e.to_string())?
                     .ok_or("the conversion function returned no value")?
             }
@@ -466,8 +511,20 @@ pub(crate) fn enc_of(db: &Db, t: TypeId) -> Option<Enc> {
     })
 }
 
-/// A conversion `f` (a function or a type) from a signal of shape `from` to one of `to`.
-pub(crate) fn conv_fn(db: &Db, f: DeclId, from: &Shape, to: &Shape, at: Span) -> R<ConvFn> {
+/// The kernel parts and shape of a signal a conversion function reads, by declaration.
+pub(crate) type ReadSig<'a> =
+    dyn FnMut(DeclId) -> R<(Vec<(crate::LeafId, yavs_kernel::Range)>, Shape)> + 'a;
+
+/// A conversion `f` (a function or a type) from a signal of shape `from` to one of `to`, and
+/// the kernel parts of the other signals it reads (`sig` finds them).
+pub(crate) fn conv_fn(
+    db: &Db,
+    f: DeclId,
+    from: &Shape,
+    to: &Shape,
+    at: Span,
+    sig: &mut ReadSig<'_>,
+) -> R<(ConvFn, Vec<(crate::LeafId, yavs_kernel::Range)>)> {
     let (fe, te) = (side_of(db, from), side_of(db, to));
     let is_fn = matches!(db.decls[f].kind, DeclKind::Subprogram(_));
     let mut pty = None;
@@ -497,20 +554,25 @@ pub(crate) fn conv_fn(db: &Db, f: DeclId, from: &Shape, to: &Shape, at: Span) ->
                 "conversion",
             ));
         }
-        return Ok(ConvFn {
+        let c = ConvFn {
             func: None,
             from: Side::Leaves(a),
             to: Side::Leaves(b),
-        });
+            reads: Vec::new(),
+            inst_size: 0,
+        };
+        return Ok((c, Vec::new()));
     }
+    let (mut free, mut inst_size) = (Vec::new(), 0);
     let func = match &db.decls[f].kind {
         DeclKind::Subprogram(_) => {
-            let l = lower_one(db, f, false).map_err(|e| match e {
+            let l = lower_one(db, f, false, true).map_err(|e| match e {
                 crate::pkgcall::Fail::Lower(why) => not_callable(db, f, at, &why),
                 crate::pkgcall::Fail::Unsupported(w) => err(codes::INTERNAL, at, w, "here"),
                 crate::pkgcall::Fail::Runtime(w) => err(codes::INTERNAL, at, w, "here"),
             })?;
             pty = l.sig.params.first().copied();
+            (free, inst_size) = (l.free, l.inst_size);
             Some((l.rt, l.sig.func, l.sig.ret))
         }
         _ => None,
@@ -540,11 +602,32 @@ pub(crate) fn conv_fn(db: &Db, f: DeclId, from: &Shape, to: &Shape, at: Span) ->
         })
     };
     let rty = func.as_ref().and_then(|f| f.2);
-    Ok(ConvFn {
+    let (mut reads, mut parts) = (Vec::new(), Vec::new());
+    for o in &free {
+        if !o.sig {
+            return Err(err(
+                codes::INTERNAL,
+                at,
+                "a conversion reads a non-signal",
+                "here",
+            ));
+        }
+        let (leaves, shape) = sig(o.decl)?;
+        reads.push((
+            o.off,
+            o.ty,
+            composite(side_of(db, &shape), Some(o.ty), &shape)?,
+        ));
+        parts.extend(leaves);
+    }
+    let c = ConvFn {
         from: composite(fe, pty, from)?,
         to: composite(te, rty, to)?,
         func,
-    })
+        reads,
+        inst_size,
+    };
+    Ok((c, parts))
 }
 
 /// A function lowered on its own into a program, for `yavs_interp::call`.
@@ -895,7 +978,7 @@ impl Model {
         match self
             .funcs
             .entry(callee)
-            .or_insert_with(|| lower_one(db, callee, true))
+            .or_insert_with(|| lower_one(db, callee, true, false))
         {
             Ok(l) => {
                 yavs_interp::Runtime::promote_hot(&mut l.rt);
@@ -1921,10 +2004,18 @@ fn not_callable(db: &Db, f: DeclId, at: Span, why: &str) -> Box<Diagnostic> {
 ///
 /// With `capture`, the constants and generics of the regions around `f` that it reads are
 /// listed in the result, to be given their values in each call.
-fn lower_one(db: &Db, f: DeclId, capture: bool) -> Result<Lowered1, crate::pkgcall::Fail> {
+fn lower_one(
+    db: &Db,
+    f: DeclId,
+    capture: bool,
+    sigs: bool,
+) -> Result<Lowered1, crate::pkgcall::Fail> {
     let mut l = yavs_lower::Lowerer::new(db, yavs_lower::LowerOptions::default());
     if capture {
         l.capture_free_objects(false);
+    }
+    if sigs {
+        l.capture_signals();
     }
     let lowered = crate::pkgcall::sig(&mut l, db, f).and_then(|s| {
         let (free, size) = l.free_objects();

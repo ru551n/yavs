@@ -1790,11 +1790,7 @@ impl Elab<'_> {
                  -> R<Option<u32>> {
                     match f {
                         None => Ok(None),
-                        Some(f) => {
-                            let c = crate::eval::conv_fn(db, f, from, to, aspan)?;
-                            m.convs.push(c);
-                            Ok(Some(m.convs.len() as u32 - 1))
-                        }
+                        Some(f) => conv_index(m, db, f, from, to, sc, aspan).map(Some),
                     }
                 };
                 let to_formal = idx(&mut self.m, *actual_conv, &ashape, &fshape)?;
@@ -1889,9 +1885,7 @@ impl Elab<'_> {
                         let mut conv_idx = |f: Option<DeclId>, from: &Shape, to: &Shape| match f {
                             None => Ok(None),
                             Some(f) => {
-                                let k = crate::eval::conv_fn(db, f, from, to, espan)?;
-                                self.m.convs.push(k);
-                                Ok::<_, Box<Diagnostic>>(Some(self.m.convs.len() as u32 - 1))
+                                conv_index(&mut self.m, db, f, from, to, sc, espan).map(Some)
                             }
                         };
                         let to_formal = conv_idx(c, &ashape, &fshape)?;
@@ -6310,4 +6304,30 @@ fn length_differs(shape: &Shape, v: &Val) -> Option<(u64, u64)> {
             .find_map(|((_, f), x)| length_differs(f, x)),
         _ => None,
     }
+}
+
+/// Add the conversion `f` of a port association made in region `sc`: its index into
+/// `Model::convs`, with the kernel parts of the signals it reads in `NetGraph::fn_reads`.
+fn conv_index(
+    m: &mut crate::Model,
+    db: &Db,
+    f: DeclId,
+    from: &Shape,
+    to: &Shape,
+    sc: ScopeId,
+    at: Span,
+) -> R<u32> {
+    let mut sig = |d: DeclId| {
+        let o = m.signal(sc, d).ok_or_else(|| {
+            Box::new(ice(
+                at,
+                "a signal a conversion function reads is not elaborated",
+            ))
+        })?;
+        m.select(o, &[], at)
+    };
+    let (c, reads) = crate::eval::conv_fn(db, f, from, to, at, &mut sig)?;
+    m.convs.push(c);
+    m.nets.fn_reads.push(reads);
+    Ok(m.convs.len() as u32 - 1)
 }

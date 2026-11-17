@@ -697,7 +697,7 @@ Compiled tiers: Cranelift
      - ``1`` in a debug build, else ``0``
      - ``run``
    * - ``YAVS_CYCLE_CACHE_CHECK``
-     - ``1``: a run that finds the analysis of its cycle region (``--cycle``) or the region's machine code in the compilation cache makes both again and stops with an internal error when they differ from the cached ones (to test the cache).
+     - ``1``: a run that finds the analysis of its cycle region (``--cycle``), the region as it was built or its machine code in the compilation cache makes them again and stops with an internal error when they differ from the cached ones (to test the cache).
      - ``1``
      - unset
      - ``run``

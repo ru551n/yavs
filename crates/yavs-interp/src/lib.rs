@@ -239,6 +239,11 @@ pub fn file_calls() -> u64 {
     FILE_CALLS.load(Ordering::Relaxed)
 }
 
+/// How many [`files_read`] holds.
+pub fn files_read_count() -> usize {
+    FILES.lock().unwrap_or_else(|e| e.into_inner()).len()
+}
+
 /// The text files opened for reading while [`watch_outside`] was on, in order: the name as
 /// given and the bytes it had then (`None`: it could not be opened).
 pub fn files_read() -> Vec<FileRead> {
@@ -269,11 +274,12 @@ pub(crate) fn note_file_call() {
 /// Text file `name` was opened for reading from disk (`ok`) or could not be: kept with its
 /// bytes for [`files_read`].
 pub(crate) fn note_file_open(name: &[u8], ok: bool) {
+    // Larger files, and what is not a plain file (a pipe, a device), stay outside calls.
+    const MAX: u64 = 64 << 20;
     if OUTSIDE_ON.load(Ordering::Relaxed) {
-        let bytes = ok
-            .then(|| std::fs::read(yavs_std::file::path_of(name)).ok())
-            .flatten();
-        // A file that opened but cannot be read whole is not a plain file read.
+        let path = yavs_std::file::path_of(name);
+        let plain = std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() <= MAX);
+        let bytes = (ok && plain).then(|| std::fs::read(&path).ok()).flatten();
         if ok && bytes.is_none() {
             return;
         }

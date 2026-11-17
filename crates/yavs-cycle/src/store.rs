@@ -448,7 +448,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Result<Got, Vec<Diagnostic>> {
             let k2 = key(KIND, &b, db, reads, &s.overrides, reads.walk | extra);
             // Files read after the walk are not in the key.
             if yavs_interp::outside_calls() > yavs_interp::file_calls()
-                || yavs_interp::files_read().len() != files
+                || yavs_interp::files_read_count() != files
                 || reads.reported
             {
                 stat(|| "analysis not cached: the value passes read outside or reported".into());

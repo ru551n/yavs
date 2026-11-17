@@ -2995,6 +2995,33 @@ fn members_cut_into_several_functions_give_the_same_result() {
             assert!(err.contains(l), "{chunk:?}: {l}: {err}");
         }
     }
+    // The region from the cache decodes its check sites when the check fails.
+    for pass in ["cold", "warm"] {
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .current_dir(&dir)
+            .env("YAVS_STD_CACHE", "off")
+            .env("YAVS_CYCLE_STATS", "1")
+            .args([
+                "--color",
+                "never",
+                "run",
+                "--work=work:lib",
+                "--tier=interp",
+            ])
+            .args(["--cycle", "-gLIMIT=5000", "cycle_cut"])
+            .output()
+            .expect("run yavs");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "{pass}: {err}");
+        assert_eq!(
+            err.contains("region from the cache"),
+            pass == "warm",
+            "{err}"
+        );
+        for l in &failure {
+            assert!(err.contains(l), "{pass}: {l}: {err}");
+        }
+    }
 }
 
 /// Instances sharing one compiled body (`share.vhd`): two of one generic share one body, two of
@@ -3510,12 +3537,13 @@ fn the_analysis_from_the_cache_gives_the_same_result() {
 fn an_elaboration_that_reads_a_file_keys_its_bytes() {
     let dir = tempdir("cycle-acfile");
     analyze(&dir, "acfile.vhd", include_str!("cycle/acfile.vhd"));
-    let run = |step: &str, flags: &[&str], cache: &str| {
+    let run_env = |step: &str, flags: &[&str], env: &[(&str, &str)], cache: &str| {
         std::fs::write(dir.join("acfile.txt"), format!("{step}\n")).expect("write");
         let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
             .current_dir(&dir)
             .env("YAVS_STD_CACHE", "off")
             .env("YAVS_CYCLE_STATS", "1")
+            .envs(env.iter().copied())
             .args([
                 "--color",
                 "never",
@@ -3539,12 +3567,15 @@ fn an_elaboration_that_reads_a_file_keys_its_bytes() {
             .expect("report")
             .to_string()
     };
+    let run = |step: &str, flags: &[&str], cache: &str| run_env(step, flags, &[], cache);
     let (stored, hit) = ("analysis stored", "analysis from the cache");
     assert!(run("3", &[], stored).ends_with("a=30"));
     assert!(run("3", &[], hit).ends_with("a=30"));
     assert!(run("5", &[], stored).ends_with("a=50"));
     assert!(run("5", &[], hit).ends_with("a=50"));
     assert!(run("3", &[], hit).ends_with("a=30"));
+    let check = [("YAVS_CYCLE_CACHE_CHECK", "1")];
+    assert!(run_env("5", &[], &check, "checked: the same").ends_with("a=50"));
     let wrote = "analysis not cached: elaboration wrote a file";
     assert!(run("4", &["-gWR=true"], wrote).ends_with("a=40"));
     assert!(run("4", &["-gWR=true"], wrote).ends_with("a=40"));

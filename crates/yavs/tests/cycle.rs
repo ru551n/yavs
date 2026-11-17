@@ -551,6 +551,34 @@ fn plain_cycle_prints_one_summary_line() {
 }
 
 #[test]
+fn a_skip_check_value_it_does_not_take_is_an_error() {
+    let dir = tempdir("cycle-skipval");
+    analyze(&dir, "partial.vhd", include_str!("cycle/partial.vhd"));
+    for (v, ok) in [("1", true), ("full", true), ("ful", false), ("yes", false)] {
+        let args = [
+            "run",
+            "--work=work:lib",
+            "--no-cache",
+            "--cycle",
+            "cycle_partial",
+        ];
+        let o = yavs_env(&dir, &args, &[("YAVS_CYCLE_SKIP_CHECK", v)]);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.success(), ok, "{v}: {err}");
+        if !ok {
+            let want =
+                format!("error[E4104]: YAVS_CYCLE_SKIP_CHECK takes `1` or `full`, not `{v}`");
+            assert!(err.contains(&want), "{err}");
+            assert_eq!(
+                err.contains("similar name exists: `full`"),
+                v == "ful",
+                "{err}"
+            );
+        }
+    }
+}
+
+#[test]
 fn the_report_groups_what_stays_out_by_reason_most_common_first() {
     let dir = tempdir("cycle-groups");
     analyze(&dir, "subset.vhd", include_str!("cycle/subset.vhd"));

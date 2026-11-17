@@ -191,7 +191,7 @@ YAVS_CYCLE_CACHE_CHECK=1 YAVS_BIN=... python3 -I tools/difftest/cyclegate.py --w
   (user-visible reasons in `docs/cycle-mode.rst`): `--profile` (samples the interpreter; the region is one kernel
   entry), `--assert-summary` (counts the asserts that run), `--shuffle`, `--hang-report`, `--time-report`. A new
   option that observes signals goes into that one function, and into the vunit-yavs check if the package can set it.
-- Codes owned: `E4100`-`E4199`, `W4100`-`W4199` (in use: `E4101`, `E4102`, `E4103`, `E4110` to `E4127`, `lib.rs` `codes`).
+- Codes owned: `E4100`-`E4199`, `W4100`-`W4199` (in use: `E4101` to `E4104`, `E4110` to `E4127`, `lib.rs` `codes`).
 - `yavs run --cycle-report[=FILE] ...` (user decision 2026-11-15, amendment A11) analyses the design,
   prints the full region report and exits 0 before compiling or simulating: the checker's verdicts on
   any design, whatever the lowering supports. It is a third mode, exclusive with `--cycle` and

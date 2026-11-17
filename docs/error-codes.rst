@@ -612,6 +612,8 @@ Cycle mode (E4 and W4)
      - ``yavs run --cycle`` (or ``--cycle-strict``) cannot be used with an option that records, shows, counts or changes signals inside the cycle region: a debug session (``--dap``, ``--interactive``, ``--do``), ``--wave``, ``--surfer`` (which records a waveform), ``--cov``, ``--vhpi`` or ``--activity``.
    * - _`E4103`
      - The file given to ``yavs run --cycle-report=FILE`` cannot be created or written (missing directory, permissions, full disk).
+   * - _`E4104`
+     - A developer environment variable of cycle mode has a value it does not take, such as ``YAVS_CYCLE_SKIP_CHECK=yes`` (it takes ``1`` or ``full``).
    * - _`E4110`
      - Cycle mode takes a process with a wait only in one shape: ``wait until <edge>;`` as the first statement, the only wait, a clocked process (``rising_edge(clk)``, ``falling_edge(clk)`` or ``clk'event and clk = '1'``, optionally followed by ``and`` more conditions).
    * - _`E4111`

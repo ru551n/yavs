@@ -547,6 +547,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "The file given to `yavs run --cycle-report=FILE` cannot be created or written (missing directory, permissions, full disk). The check is made before any work, so a run does not end with its report lost.",
     ),
     (
+        "E4104",
+        "A developer environment variable of cycle mode has a value it does not take, such as `YAVS_CYCLE_SKIP_CHECK=yes` (it takes `1` or `full`). The message names the values it takes; unset the variable, or leave it empty, to turn the check off.",
+    ),
+    (
         "E4110",
         "Cycle mode takes a process with a wait only in one shape: `wait until <edge>;` as the first statement, the only wait, a clocked process (`rising_edge(clk)`, `falling_edge(clk)` or `clk'event and clk = '1'`, optionally followed by `and` more conditions). Any other wait (`wait on a;`, a wait on a level) keeps the process in the event kernel. A process that waits for a time, waits forever, waits more than once or calls a procedure that waits is behavioural and stays in the event kernel without this code.",
     ),

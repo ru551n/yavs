@@ -33,6 +33,8 @@ pub mod codes {
     pub const NOT_WITH: &str = "E4102";
     /// The file of `--cycle-report=FILE` cannot be written.
     pub const REPORT_FILE: &str = "E4103";
+    /// A developer environment variable of cycle mode with a value it does not take.
+    pub const ENV_VALUE: &str = "E4104";
     /// A wait other than the one `wait until <edge>;` of a clocked process.
     pub const WAIT: &str = "E4110";
     /// `after`, `transport`, `reject`, a waveform of several elements.
@@ -180,6 +182,7 @@ fn at(db: &Db, span: yavs_diag::Span) -> String {
 /// reason, all of them listed. Under [`Mode::Report`] only the report is made, nothing is
 /// compiled.
 pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>> {
+    codegen::skip_check().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
     let sel = match store::select(db, e)? {
         store::Got::Sel(sel) => *sel,
         // `--cycle` on a hit: the region as it was built, its code as it was compiled.

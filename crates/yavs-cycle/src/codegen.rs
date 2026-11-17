@@ -150,6 +150,29 @@ pub(crate) const STALE: u32 = u32::MAX - 1;
 /// [`Code::stale`] after `YAVS_CYCLE_SKIP_CHECK=full` saw a difference.
 pub(crate) const FULL: usize = usize::MAX - 1;
 
+/// What `YAVS_CYCLE_SKIP_CHECK` asks for (unset or empty: nothing).
+#[derive(PartialEq)]
+pub(crate) enum SkipCheck {
+    Off,
+    One,
+    Full,
+}
+
+/// `YAVS_CYCLE_SKIP_CHECK`; another value is an error naming the accepted ones.
+pub(crate) fn skip_check() -> Result<SkipCheck, String> {
+    let v = std::env::var_os("YAVS_CYCLE_SKIP_CHECK").unwrap_or_default();
+    let v = v.to_string_lossy();
+    match &*v {
+        "" => Ok(SkipCheck::Off),
+        "1" => Ok(SkipCheck::One),
+        "full" => Ok(SkipCheck::Full),
+        _ => Err(format!(
+            "YAVS_CYCLE_SKIP_CHECK takes `1` or `full`, not `{v}`{}",
+            yavs_diag::suggest::tail(&v, "value", ["full"].into_iter())
+        )),
+    }
+}
+
 /// A pass after a loop group's schedule confirms its fixed point (debug builds, unless
 /// `YAVS_CYCLE_CHECKS=on`; `YAVS_CYCLE_CHECKS=all`).
 pub(crate) fn confirm_on() -> bool {
@@ -1240,18 +1263,16 @@ pub(crate) fn compile<'a>(
         settle_units,
         signal_words,
         log_count: log.0 as usize,
-        full_check: std::env::var_os("YAVS_CYCLE_SKIP_CHECK")
-            .is_some_and(|v| v == "full")
-            .then(|| {
-                let mut v: Vec<(u32, u32)> = Vec::new();
-                for (w, _) in keep.iter().enumerate().filter(|x| *x.1) {
-                    match v.last_mut() {
-                        Some(x) if x.0 + x.1 == w as u32 => x.1 += 1,
-                        _ => v.push((w as u32, 1)),
-                    }
+        full_check: (skip_check()? == SkipCheck::Full).then(|| {
+            let mut v: Vec<(u32, u32)> = Vec::new();
+            for (w, _) in keep.iter().enumerate().filter(|x| *x.1) {
+                match v.last_mut() {
+                    Some(x) if x.0 + x.1 == w as u32 => x.1 += 1,
+                    _ => v.push((w as u32, 1)),
                 }
-                v
-            }),
+            }
+            v
+        }),
         settle_outs: Vec::new(),
     };
     let (mut ctx, mut fbc) = (module.make_context(), FunctionBuilderContext::new());
@@ -1569,8 +1590,7 @@ fn finish(
         signal_words: plan.signal_words,
         settle_outs: plan.settle_outs,
         log_count: plan.log_count,
-        skip_check: std::env::var_os("YAVS_CYCLE_SKIP_CHECK")
-            .is_some_and(|v| v == "1" || v == "full"),
+        skip_check: skip_check()? != SkipCheck::Off,
         full_check: plan.full_check,
         counts,
         stale: Default::default(),

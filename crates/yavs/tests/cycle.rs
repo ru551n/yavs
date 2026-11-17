@@ -4304,6 +4304,38 @@ fn records_of_scalars_given_to_a_function_fold() {
     }
 }
 
+/// Narrow lanes of packed vectors (`lanes.vhd`): delay chains, lanes copied in place and from two
+/// sources in turn, in-place shifts of a variable both ways, a swap, sign-extended lanes multiplied,
+/// at lane widths 1 to 128; also with one and two words in registers (`YAVS_CYCLE_REGS`) and with
+/// every check (lanes moved by one word op must equal those moved one by one).
+#[test]
+fn lanes_moved_word_by_word_equal_the_normal_mode() {
+    let dir = tempdir("cycle-lanes");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("lanes{w}.vhd"),
+            &with_width(include_str!("cycle/lanes.vhd"), w),
+        );
+        let (normal, _) = run(&dir, &["--tier=interp"], "cycle_lanes");
+        assert_eq!(normal.len(), 16, "{w} {normal:?}");
+        let flags = ["--tier=interp", "--cycle"];
+        for env in [
+            &[][..],
+            &[("YAVS_CYCLE_REGS", "1")],
+            &[("YAVS_CYCLE_REGS", "2")],
+            &[("YAVS_CYCLE_CHECKS", "all")],
+        ] {
+            let (cycle, err) = run_vars(&dir, &flags, "cycle_lanes", env);
+            assert_eq!(cycle, normal, "width {w} {env:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 1 of 2 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// Clocks whose edges come in a known delta of their time step (made with a delay: the first;
 /// by clock processes waiting for a time: the second) share an edge group with logic between
 /// their registers, logic of the second kind's registers sampled by the first kind's joins, and

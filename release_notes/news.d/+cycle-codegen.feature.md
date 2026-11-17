@@ -1,1 +1,1 @@
-Cycle mode (`yavs run --cycle`) runs the compiled code of the region faster and compiles it sooner: temporaries stay out of memory, neighbouring processes hand on the signals they share in registers, and range checks are cheaper.
+Cycle mode (`yavs run --cycle`) runs the compiled code of the region faster and compiles it sooner: temporaries stay out of memory, neighbouring processes hand on the signals they share in registers, range checks are cheaper, and lanes of packed vectors (an array of bytes in a vector) move as whole words.

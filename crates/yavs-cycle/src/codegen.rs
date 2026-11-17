@@ -17,10 +17,13 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Mutex, PoisonError};
 
+use cranelift_codegen::entity::SecondaryMap;
 use cranelift_codegen::incremental_cache::CacheKvStore;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::{I32, I64};
-use cranelift_codegen::ir::{AbiParam, Block as CBlock, InstBuilder, MemFlagsData, Value};
+use cranelift_codegen::ir::{
+    AbiParam, Block as CBlock, InstBuilder, InstructionData, MemFlagsData, Opcode, Value,
+};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
@@ -1282,6 +1285,8 @@ pub(crate) fn compile<'a>(
                 blocks,
                 keep: shape.map_or(keep, |k| &shapes[k].keep[..]),
                 zeros: std::collections::HashMap::new(),
+                fields: SecondaryMap::new(),
+                built: SecondaryMap::new(),
                 pos: 0,
                 next: 0,
                 last: Words::default(),
@@ -1567,6 +1572,11 @@ struct Gen<'a> {
     keep: &'a [bool],
     /// Bits known to be zero of some values (constants, extracted bits, words built by inserts).
     zeros: std::collections::HashMap<Value, u64>,
+    /// Values known to be bits `s .. s + n` of a word `v` in their low bits: `(v, s, n)`.
+    fields: SecondaryMap<Value, Option<(Value, u8, u8)>>,
+    /// Words built from a word `d0` by inserting fields of one word `v`, all moved by the same
+    /// distance `dl` (left when positive): `d0 & !m | v << dl & m` (`insert`).
+    built: SecondaryMap<Value, Option<(Value, Value, i8, u64)>>,
     /// The operation being generated, by its number in [`walk`], and the next number.
     pos: u32,
     next: u32,
@@ -1664,6 +1674,13 @@ impl Gen<'_> {
         }
         #[cfg(debug_assertions)]
         self.gone.remove(&off);
+        // State no later operation of the part reads goes to memory now: in a register it would
+        // wait for the end of the part, spilled to the stack when many do (a commit's copies).
+        if self.state(off) && self.last.get(&off).is_none_or(|&i| i <= self.pos) {
+            self.store(off, v);
+            self.keep_in(off, v, false);
+            return;
+        }
         self.keep_in(off, v, true);
     }
 
@@ -1765,6 +1782,11 @@ impl Gen<'_> {
     /// of `v` from `full` on are zero, so no mask is needed past them.
     fn bits(&mut self, v: &[Value], off: u32, n: u32, full: u32) -> Value {
         let (k, s) = ((off / 64) as usize, off % 64);
+        // Bits of one word: the field they are of, through a field of a field.
+        let field = (s + n <= 64).then(|| match self.fields[v[k]] {
+            Some((w, s0, n0)) if s + n <= u32::from(n0) => (w, s0 + s as u8, n as u8),
+            _ => (v[k], s as u8, n as u8),
+        });
         let mut x = v[k];
         let mut end = 64 * (k as u32 + 1);
         if s != 0 {
@@ -1781,7 +1803,22 @@ impl Gen<'_> {
         if n < 64 {
             self.zeros.insert(x, !mask(n));
         }
+        if x != v[k] || self.fields[x].is_none() {
+            self.fields[x] = field;
+        }
         x
+    }
+
+    /// The value of `v` when it is a constant.
+    fn konst_of(&self, v: Value) -> Option<u64> {
+        let i = self.b.func.dfg.value_def(v).inst()?;
+        match self.b.func.dfg.insts[i] {
+            InstructionData::UnaryImm {
+                opcode: Opcode::Iconst,
+                imm,
+            } => Some(imm.bits() as u64),
+            _ => None,
+        }
     }
 
     /// The bits of `v` known to be zero.
@@ -1799,6 +1836,11 @@ impl Gen<'_> {
             let sh = a - k * 64;
             let m = mask(b - a) << sh;
             let dk = d[k as usize];
+            if let Some(r) = self.merge(dk, x, sh, b - a) {
+                d[k as usize] = r;
+                a = b;
+                continue;
+            }
             let zd = self.zero(dk);
             // Bits known to be zero need no clearing (a word built field by field from 0).
             let keep = if zd & m == m {
@@ -1817,6 +1859,53 @@ impl Gen<'_> {
             d[k as usize] = r;
             a = b;
         }
+    }
+
+    /// `dk` with `n` bits from `sh` taken from `x`, when `x` is a field of a word `v`: one move of
+    /// `v` and one mask, with the fields of `v` that `dk` was built from at the same distance
+    /// (lanes copied lane by lane become a word op).
+    fn merge(&mut self, dk: Value, x: Value, sh: u32, n: u32) -> Option<Value> {
+        let (v, s0, n0) = self.fields[x]?;
+        if u32::from(n0) != n {
+            return None;
+        }
+        let dl = sh as i32 - i32::from(s0);
+        let m = mask(n) << sh;
+        let (d0, mt) = match self.built[dk] {
+            Some((d0, w, l, m2)) if w == v && i32::from(l) == dl => (d0, m | m2),
+            _ => (dk, m),
+        };
+        let zv = self.zero(v);
+        let (t, zt) = match dl {
+            0 => (v, zv),
+            1.. => (
+                self.b.ins().ishl_imm_s(v, i64::from(dl)),
+                zv << dl | mask(dl as u32),
+            ),
+            _ => (
+                self.b.ins().ushr_imm_s(v, i64::from(-dl)),
+                zv >> -dl | !(u64::MAX >> -dl),
+            ),
+        };
+        let t = if zt | mt == !0 {
+            t
+        } else {
+            self.b.ins().band_imm_s(t, mt as i64)
+        };
+        let zd = self.zero(d0);
+        let r = if zd | mt == !0 {
+            t
+        } else {
+            let keep = if zd & mt == mt {
+                d0
+            } else {
+                self.b.ins().band_imm_s(d0, !mt as i64)
+            };
+            self.b.ins().bor(keep, t)
+        };
+        self.zeros.insert(r, (zd | mt) & (zt | !mt));
+        self.built[r] = Some((d0, v, dl as i8, mt));
+        Some(r)
     }
 
     fn bool_of(&mut self, c: Value) -> Value {
@@ -2026,6 +2115,20 @@ impl Gen<'_> {
     fn extend(&mut self, v: &[Value], len: u32, to: u32, signed: bool) -> Vec<Value> {
         let mut out: Vec<Value> = v[..words(len.min(to)) as usize].to_vec();
         if to <= len {
+            self.top(&mut out, to);
+            return out;
+        }
+        // A field of a word, signed, to at most a word: two shifts of the word it is of.
+        if signed
+            && to <= 64
+            && let Some((w, s0, n)) = self.fields[v[0]]
+            && u32::from(n) == len
+        {
+            let t = self
+                .b
+                .ins()
+                .ishl_imm_s(w, i64::from(64 - len - u32::from(s0)));
+            let mut out = vec![self.b.ins().sshr_imm_s(t, i64::from(64 - len))];
             self.top(&mut out, to);
             return out;
         }
@@ -2291,6 +2394,22 @@ impl Gen<'_> {
             }
             Op::VecEq { dst, a, b, len, ne } => {
                 let (x, y) = (self.lds(*a, *len), self.lds(*b, *len));
+                // One element against a literal: the element is the truth value, or its inverse.
+                if *len == 1 {
+                    let one = |g: &Self, v| g.konst_of(v).filter(|k| k & !1 == 0);
+                    if let Some((v, k)) = (one(self, y[0]).map(|k| (x[0], k)))
+                        .or_else(|| one(self, x[0]).map(|k| (y[0], k)))
+                    {
+                        let r = if (k == 1) != *ne {
+                            v
+                        } else {
+                            self.b.ins().bxor_imm_s(v, 1)
+                        };
+                        self.zeros.insert(r, !1);
+                        self.st(*dst, 0, r);
+                        return;
+                    }
+                }
                 let mut d = self.konst(0);
                 for (&x, &y) in x.iter().zip(&y) {
                     let t = self.b.ins().bxor(x, y);

@@ -269,6 +269,11 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - not ``0``
      - unset
      - ``run``
+   * - ``YAVS_NO_ARMS``
+     - Turns the interpreter's arms off: the interpreter calls every subprogram that the optimised code calls (by default it runs some small ones inline where compiled code keeps the call).
+     - not ``0``
+     - unset
+     - ``run``
    * - ``YAVS_NO_MEMO``
      - Turns the optimiser's memoisation pass off.
      - not ``0``

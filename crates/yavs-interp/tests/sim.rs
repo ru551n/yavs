@@ -645,6 +645,131 @@ fn a_callee_flagged_for_native_calls_alone_is_called_through_the_tier() {
     assert_eq!(flags.retiers(), 0);
 }
 
+/// A tier that records the functions the count asked for, and calls `.0` on a native frame once
+/// `.2` is set (`.1` counts those calls).
+struct Asks(
+    FuncId,
+    std::sync::atomic::AtomicU32,
+    std::sync::atomic::AtomicBool,
+    std::sync::Mutex<Vec<FuncId>>,
+);
+
+impl yavs_interp::Tier for Asks {
+    fn run(&self, _: FuncId, _: u32, _: &mut dyn yavs_interp::TierHost) -> Option<u32> {
+        None
+    }
+    fn ready(&self, _: FuncId) -> bool {
+        false
+    }
+    fn callable(&self, f: FuncId) -> bool {
+        f == self.0 && self.2.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn asked(&self, f: FuncId) {
+        self.3.lock().unwrap().push(f);
+    }
+    fn call(
+        &self,
+        f: FuncId,
+        _: &[u64],
+        _: Option<u64>,
+        _: u32,
+        _: &mut dyn yavs_interp::TierHost,
+    ) -> Option<yavs_interp::Called> {
+        (f == self.0).then(|| {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            yavs_interp::Called::Done(0)
+        })
+    }
+}
+
+/// A call the interpreter takes through an arm (`Program::arm`) is counted for the tier as the
+/// call would be, and is made again (here on a native frame) once the tier flagged its callee.
+#[test]
+fn a_call_taken_in_an_arm_is_counted_and_made_once_the_callee_is_flagged() {
+    use std::sync::atomic::Ordering;
+    let mut pb = ProgramBuilder::new();
+    let int = integer(&mut pb);
+    let sq = pb.declare("square", FuncKind::Function, None);
+    let mid = pb.declare("mid", FuncKind::Function, None);
+    let proc_ = pb.declare("p", FuncKind::Process, None);
+    // Each large enough not to be inlined into its caller, `square` small enough for an arm.
+    for (id, callee) in [(sq, None), (mid, Some(sq))] {
+        let mut fb = pb.define(id);
+        let x = fb.param("x", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb, StmtKind::Return);
+        let v = load(&mut fb, AddrSpace::Frame, x, Width::B8);
+        let mut r = v;
+        for _ in 0..30 {
+            r = bin(&mut fb, IntOp::Add, r, v);
+        }
+        if let Some(c) = callee {
+            let args = fb.regs(&[r]);
+            let d = fb.reg(RegTy::I64);
+            fb.emit(Inst::Call {
+                func: c,
+                args,
+                dst: Some(d),
+            });
+            r = bin(&mut fb, IntOp::Add, d, v);
+        }
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(proc_);
+        let n = fb.local("n", int, 8, 8);
+        wait_for(&mut fb, 10 * NS);
+        stmt(&mut fb, StmtKind::Call);
+        let v = load(&mut fb, AddrSpace::Frame, n, Width::B8);
+        let one = fb.int(1);
+        let v1 = bin(&mut fb, IntOp::Add, v, one);
+        store(&mut fb, AddrSpace::Frame, n, v1, Width::B8);
+        let args = fb.regs(&[v1]);
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::Call {
+            func: mid,
+            args,
+            dst: Some(r),
+        });
+        fb.emit(Inst::Br { to: BlockId(0) });
+        fb.finish();
+    }
+    let mut d = Design::new(pb);
+    d.procs = vec![ProcSpec {
+        name: "p",
+        func: proc_,
+        drives: vec![],
+    }];
+    let prog = d.prog.clone();
+    let rt = Runtime::new(d.prog.clone(), Default::default()).unwrap();
+    let tier = std::sync::Arc::new(Asks(
+        sq,
+        Default::default(),
+        Default::default(),
+        Default::default(),
+    ));
+    assert!(rt.set_tier(tier.clone()));
+    let flags = rt.native_flags();
+    flags.arm_count(&prog, 4, 0, 4);
+    let (mut sim, _, _) = d.build_rt(1, rt, |p, _| p);
+    // `mid` is counted out at its fourth call and gets its arm 16 calls later (`ARM_WAIT`).
+    sim.run_until(Time::ns(250)).unwrap();
+    assert!(!prog.arm_sites(mid).is_empty());
+    tier.3.lock().unwrap().clear();
+    flags.set_count(sq, 3);
+    sim.run_until(Time::ns(350)).unwrap();
+    assert!(tier.3.lock().unwrap().contains(&sq), "{:?}", tier.3);
+    assert_eq!(tier.1.load(Ordering::Relaxed), 0);
+    tier.2.store(true, Ordering::Relaxed);
+    flags.set_call(sq);
+    sim.run_until(Time::ns(450)).unwrap();
+    assert!(
+        tier.1.load(Ordering::Relaxed) >= 9,
+        "{}",
+        tier.1.load(Ordering::Relaxed)
+    );
+}
+
 /// The profile's sampler names a function the tier runs on a native frame for an interpreted
 /// caller as itself, compiled, not as its caller (#760).
 #[test]

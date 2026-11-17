@@ -305,14 +305,14 @@ impl<'a> FrameView<'a> {
     }
 
     pub fn func_name(&self, i: usize) -> Option<&'a str> {
-        self.prog.func(self.func(i)?).map(|f| f.name.as_str())
+        self.prog.ifunc(self.func(i)?).map(|f| f.name.as_str())
     }
 
     /// The current statement of frame `i`.
     pub fn stmt(&self, i: usize) -> Option<StmtId> {
         let m = self.m.borrow();
         let f = m.frames.get(i)?;
-        self.prog.func(f.func)?.loc.get(f.pc as usize).copied()
+        self.prog.ifunc(f.func)?.loc.get(f.pc as usize).copied()
     }
 
     /// The locals of frame `i` (parameters and variables the IR describes).
@@ -321,7 +321,7 @@ impl<'a> FrameView<'a> {
         let Some(fr) = m.frames.get(i) else {
             return Vec::new();
         };
-        let Some(f) = self.prog.func(fr.func) else {
+        let Some(f) = self.prog.ifunc(fr.func) else {
             return Vec::new();
         };
         f.locals
@@ -344,7 +344,7 @@ impl<'a> FrameView<'a> {
         let func = self.func(i).ok_or_else(|| format!("no frame {i}"))?;
         let l = self
             .prog
-            .func(func)
+            .ifunc(func)
             .and_then(|f| f.locals.iter().find(|l| l.name == name))
             .ok_or_else(|| format!("no local `{name}` in frame {i}"))?;
         let a = crate::exec::mk_addr(crate::exec::FRAME, i as u32, u64::from(l.slot))

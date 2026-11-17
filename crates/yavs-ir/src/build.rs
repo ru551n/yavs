@@ -259,6 +259,7 @@ impl ProgramBuilder {
             ret_ty: None,
             ret_flat: false,
             opt: Default::default(),
+            armed: Default::default(),
             memo: Default::default(),
             lazy: None,
             fetches: Default::default(),

@@ -56,6 +56,12 @@ pub(crate) mod subcopy;
 pub(crate) use proc_objects::OBJECT_TY;
 
 pub use inline::FwdCache;
+pub(crate) use inline::make_armed as arms;
+
+/// Does the interpreter run some calls through arms (`Program::arm`)? `YAVS_NO_ARMS=1` says no.
+pub fn arms_enabled() -> bool {
+    enabled() && inline::enabled() && inline::arms_enabled() && !keep_variables_on()
+}
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};

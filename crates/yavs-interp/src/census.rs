@@ -81,6 +81,24 @@ pub fn booked_returns() -> Option<u64> {
 }
 
 #[cfg(any(debug_assertions, feature = "op-census"))]
+static ARMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A call taken through an interpreter arm (`Op::Arm`).
+#[inline(always)]
+pub(crate) fn arm_entered() {
+    #[cfg(any(debug_assertions, feature = "op-census"))]
+    ARMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Those calls so far (the work counter `arm_entries`); `None` as `ops_executed`.
+pub fn arm_entries() -> Option<u64> {
+    #[cfg(any(debug_assertions, feature = "op-census"))]
+    return Some(ARMS.load(std::sync::atomic::Ordering::Relaxed));
+    #[cfg(not(any(debug_assertions, feature = "op-census")))]
+    None
+}
+
+#[cfg(any(debug_assertions, feature = "op-census"))]
 static TIER_SKIPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// An entry into compiled code `Machine::tier_go` did not make: the op is no entry of it.

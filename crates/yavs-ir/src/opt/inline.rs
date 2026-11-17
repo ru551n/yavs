@@ -29,6 +29,9 @@
 //! the message is built in the callee's own frame (`make`, `leaf`, `cold_path_clean`;
 //! `YAVS_NO_COLD=1` turns it off).
 
+mod arms;
+
+pub(crate) use arms::{enabled as arms_enabled, make_armed};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -47,6 +50,12 @@ const MAX_MULTI: usize = 60;
 const MAX_BLOCKS: usize = 8;
 /// Bit of a forwarder's level in the cache: made for a call that passes a string it builds.
 const WIDE: u8 = 0x80;
+/// Bit of a forwarder's level in the cache: made for an interpreter arm (`arms.rs`).
+const ARM: u8 = 0x40;
+/// The most instructions and blocks of the body of an interpreter arm (`arms.rs`): the
+/// compiled tiers never see it, so the limits of a body they share do not apply.
+const ARM_MULTI: usize = 96;
+const ARM_BLOCKS: usize = 12;
 /// The most arms of a `Case` that becomes compares.
 const MAX_ARMS: usize = 6;
 /// The most instructions inlining adds to one function, beyond four times its own size.
@@ -139,8 +148,12 @@ fn forwarder(
     callee: FuncId,
     level: u8,
     wide: bool,
+    arm: bool,
 ) -> Option<Arc<Forwarder>> {
-    let key = (callee.0, level | if wide { WIDE } else { 0 });
+    let key = (
+        callee.0,
+        level | if wide { WIDE } else { 0 } | if arm { ARM } else { 0 },
+    );
     if let Some(r) = prog
         .fwd
         .0
@@ -151,7 +164,17 @@ fn forwarder(
         return r.clone();
     }
     // Not under the lock: the optimiser takes the program's other locks.
-    let made = make(prog, callee, level, wide).map(Arc::new);
+    let made = make(prog, callee, level, wide, arm).map(Arc::new);
+    // (A callee not optimised yet is asked again by the next function made with arms.)
+    if arm
+        && made.is_none()
+        && prog
+            .funcs
+            .get(callee)
+            .is_some_and(|r| !matches!(r.opt.get(), Some(Some(_))))
+    {
+        return None;
+    }
     prog.fwd
         .0
         .lock()
@@ -160,14 +183,33 @@ fn forwarder(
     made
 }
 
-fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<Forwarder> {
+fn make(
+    prog: &crate::Program,
+    callee: FuncId,
+    level: u8,
+    wide: bool,
+    arm: bool,
+) -> Option<Forwarder> {
     let raw = prog.funcs.get(callee)?;
+    let (max_multi, max_blocks) = if arm {
+        (ARM_MULTI, ARM_BLOCKS)
+    } else {
+        (MAX_MULTI, MAX_BLOCKS)
+    };
     if let Some(t) = prog.tabs.get(&callee.0)
         && crate::casetab::enabled()
         && !raw.flags.contains(crate::FuncFlags::HAS_COVER)
     {
         return tab_forwarder(prog, callee, t);
     }
+    // An arm takes the callee's optimised copy, the code its calls run, once it has one: a callee
+    // that has not run yet is not optimised for an arm (code run once, at start-up, calls many
+    // that never run), and no other function's version is fixed here.
+    let published = if arm {
+        Some(raw.opt.get()?.as_deref()?)
+    } else {
+        None
+    };
     // Cheap exits before optimising a function: not a small subprogram of the plain kind.
     if !matches!(raw.kind, FuncKind::Function | FuncKind::Procedure)
         || raw.nested
@@ -178,17 +220,23 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
             .params
             .iter()
             .any(|p| p.width != Width::B8 || p.width == Width::Sig)
-        || hot_size(raw.full()) > if wide { 4 } else { 2 } * MAX_MULTI
+        || published.map_or_else(|| hot_size(raw.full()), |o| size(&o.code))
+            > if wide { 4 } else { 2 } * max_multi
     {
         return None;
     }
-    let mut c = super::optimize_body(prog, callee)?;
+    let mut c = if let Some(o) = published {
+        Box::new(o.clone())
+    } else {
+        super::optimize_body(prog, callee)?
+    };
     // The bounds of an array parameter come from the caller's registers, whatever the body does.
-    if super::dopes::enabled() {
+    if super::dopes::enabled() && !arm {
         super::dopes::run_regs(prog, &mut c);
     }
     // (A body without calls has nothing to inline: the common leaf costs no second walk.)
     if level > 0
+        && !arm
         && c.code
             .iter()
             .any(|i| matches!(i, Inst::Call { .. } | Inst::CallProt { .. }))
@@ -196,8 +244,8 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
         run(prog, callee, &mut c, level - 1);
     }
     if c.reg_ty.contains(&RegTy::Sig)
-        || size(&c.code) > 4 * MAX_MULTI
-        || c.blocks.len() > 4 * MAX_BLOCKS
+        || size(&c.code) > 4 * max_multi
+        || c.blocks.len() > 4 * max_blocks
     {
         return None;
     }
@@ -225,7 +273,7 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
     // start, which is the same when nothing on the way has an effect (checked below), and
     // reports from a frame of its own, as the call it replaces did.
     let can_cold = cold_enabled()
-        && leaf(raw.full())
+        && leaf(if arm { &c } else { raw.full() })
         && !raw.flags.contains(crate::FuncFlags::HAS_COVER)
         && (raw.kind == FuncKind::Procedure || raw.kind == FuncKind::Function && !raw.ret_flat);
     let cold_ret = c.code.iter().find_map(|i| match *i {
@@ -388,8 +436,12 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
         .iter()
         .map(|b| b.iter().filter(|e| !is_cov(&e.0)).count())
         .sum();
-    let limit = if kept.len() == 1 { MAX_BODY } else { MAX_MULTI };
-    if total > limit || kept.len() > MAX_BLOCKS || total == 0 {
+    let limit = if kept.len() == 1 && !arm {
+        MAX_BODY
+    } else {
+        max_multi
+    };
+    if total > limit || kept.len() > max_blocks || total == 0 {
         return None;
     }
     // Something must return.
@@ -1444,12 +1496,17 @@ fn run_with(
         // building it (`opt/sink.rs`).
         let wide = || has_cat && builds_string(f, pc, args, obj);
         let fw = if round == Round::Tabs {
-            forwarder(prog, func, 0, false)
+            forwarder(prog, func, 0, false, false)
         } else if wide_only {
-            wide().then(|| forwarder(prog, func, level, true)).flatten()
+            wide()
+                .then(|| forwarder(prog, func, level, true, false))
+                .flatten()
         } else {
-            forwarder(prog, func, level, false)
-                .or_else(|| wide().then(|| forwarder(prog, func, level, true)).flatten())
+            forwarder(prog, func, level, false, false).or_else(|| {
+                wide()
+                    .then(|| forwarder(prog, func, level, true, false))
+                    .flatten()
+            })
         };
         let Some(fw) = fw else {
             continue;

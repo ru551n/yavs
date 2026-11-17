@@ -431,6 +431,120 @@ fn cold_blocks_report_as_calls() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// Calls the interpreter takes through arms (`opt/inline/arms.rs`): reports, call paths and the
+/// trace of a failure inside a method are the ones of the calls, on every tier.
+#[test]
+fn interp_arms_read_as_calls() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli");
+    let tmp = tempdir("interp_arms");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let yavs = |env: &[(&str, &str)], args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never"])
+            .args(&args[..1])
+            .arg("--std=2019")
+            .args(&args[1..])
+            .envs(env.iter().copied())
+            .current_dir(&dir)
+            .output()
+            .expect("run")
+    };
+    assert!(
+        yavs(&[], &["analyze", &lib, "interp_arms.vhd"])
+            .status
+            .success()
+    );
+    let mut tiers = vec![vec!["--tier=interp"]];
+    if cfg!(feature = "clift") {
+        // (With nothing compiled, `--tier-max-size=1`, every call with an arm takes it.)
+        tiers.extend([
+            vec!["--tier=clift"],
+            vec!["--tier=auto"],
+            vec!["--tier=auto", "--tier-max-size=1"],
+        ]);
+    }
+    for bad in ["-gbad=0", "-gbad=1"] {
+        for tier in &tiers {
+            let run = |env: &[(&str, &str)]| {
+                let args = [
+                    &["run", &lib][..],
+                    tier,
+                    &["--no-cache", "interp_arms", bad],
+                ]
+                .concat();
+                let o = yavs(env, &args);
+                let text = String::from_utf8_lossy(&o.stdout).into_owned()
+                    + &String::from_utf8_lossy(&o.stderr);
+                (o.status.code(), text)
+            };
+            let base = run(&[("YAVS_NO_INLINE", "1")]);
+            assert_eq!(run(&[("YAVS_NO_ARMS", "1")]), base, "{bad} {tier:?}");
+            assert_eq!(run(&[]), base, "{bad} {tier:?}");
+            assert!(base.1.contains("interp_arms.vhd:63:GET"), "{}", base.1);
+            assert!(base.1.contains("acc=28059998"), "{}", base.1);
+            if bad.ends_with('1') {
+                assert!(
+                    base.1.contains("index 8 outside of range 0 to 7"),
+                    "{}",
+                    base.1
+                );
+                assert!(
+                    base.1.contains("105 |       set(ref, i, get(ref, i) + i);"),
+                    "{}",
+                    base.1
+                );
+            }
+            // With the compilation cache: three runs in a row, as a test runner makes them.
+            for _ in 0..3 {
+                let args = [&["run", &lib][..], tier, &["interp_arms", bad]].concat();
+                let o = yavs(&[], &args);
+                let text = String::from_utf8_lossy(&o.stdout).into_owned()
+                    + &String::from_utf8_lossy(&o.stderr);
+                assert_eq!((o.status.code(), text), base, "{bad} {tier:?} cached");
+            }
+        }
+    }
+    // The methods run in arms once the tier's count of `sum` and its wait ran out: fewer calls,
+    // and the failing access of `-gbad=1` is made in one (debug builds count; nothing compiles,
+    // every function being above the size limit).
+    if cfg!(debug_assertions) && cfg!(feature = "clift") {
+        let calls = |env: &[(&str, &str)], last: &str| {
+            let o = yavs(
+                &[env, &[("YAVS_COUNTERS", "1")]].concat(),
+                &[
+                    "run",
+                    &lib,
+                    "--tier=auto",
+                    "--tier-max-size=1",
+                    "--threads=1",
+                    "--no-cache",
+                    "interp_arms",
+                    last,
+                ],
+            );
+            let e = String::from_utf8_lossy(&o.stderr).into_owned();
+            let n = |k: &str| {
+                e.lines()
+                    .find_map(|l| l.strip_prefix(k)?.parse::<u64>().ok())
+                    .expect("counter")
+            };
+            (n("counters: calls="), n("counters: arm_entries="))
+        };
+        let (with, without) = (
+            calls(&[], "-gbad=0"),
+            calls(&[("YAVS_NO_ARMS", "1")], "-gbad=0"),
+        );
+        // (The arms come once the count of `sum` ran out and `ARM_WAIT` rounds more.)
+        assert!(with.0 * 3 < without.0 * 2, "{with:?} {without:?}");
+        assert_eq!(without.1, 0);
+        // The last `sum` of `-gbad=1` fails at its last access, past those of `-gbad=0`'s: the
+        // calls of the methods are counted in arms up to it.
+        let (_, entries) = calls(&[], "-gbad=1");
+        assert!(entries > with.1, "{entries} {with:?}");
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// Reports are written in blocks on a pipe, but a diagnostic on the same pipe still comes after
 /// every report that preceded it (#428).
 #[test]

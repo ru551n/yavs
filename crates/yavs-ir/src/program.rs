@@ -236,6 +236,68 @@ impl Program {
         o
     }
 
+    /// The function as the interpreter may run it: [`Program::arm`] once that was made, else
+    /// [`Program::func`]. Every instruction of `func` is at the same pc in both, so a frame of
+    /// either reads its pcs here; this never makes the arms.
+    #[inline(always)]
+    pub fn ifunc(&self, f: FuncId) -> Option<&Func> {
+        match self.funcs.get(f)?.armed.get() {
+            Some(Some(a)) => Some(&a.func),
+            _ => self.func_inline(f),
+        }
+    }
+
+    /// The optimised copy of `f` with the interpreter's arms (`opt/inline/arms.rs`): blocks after
+    /// its last that only the interpreter enters, at the calls [`Program::arm_sites`] lists.
+    /// Made the first time asked, from the optimised copy when that is what `func` hands out
+    /// (not lowered code under elaboration, not a spare); `None` when no call gets an arm.
+    #[cold]
+    pub fn arm(&self, f: FuncId) -> Option<&Func> {
+        let raw = self.funcs.get(f)?;
+        let Some(Some(opt)) = raw.opt.get() else {
+            return None;
+        };
+        if raw.spare {
+            return None;
+        }
+        raw.armed
+            .get_or_init(|| crate::opt::arms(self, f, opt).map(Box::new))
+            .as_deref()
+            .map(|a| &a.func)
+    }
+
+    /// Whether [`Program::arm`] was asked for `f` (with or without arms as the answer).
+    pub fn arm_tried(&self, f: FuncId) -> bool {
+        self.funcs.get(f).is_some_and(|r| r.armed.get().is_some())
+    }
+
+    /// [`Program::arm`] once it was made, else `None`; never makes it.
+    pub fn armed(&self, f: FuncId) -> Option<&Func> {
+        match self.funcs.get(f)?.armed.get() {
+            Some(Some(a)) => Some(&a.func),
+            _ => None,
+        }
+    }
+
+    /// The calls of [`Program::arm`] the interpreter takes through an arm: (pc of the call, the
+    /// arm's first block), by pc.
+    pub fn arm_sites(&self, f: FuncId) -> &[(u32, BlockId)] {
+        match self.funcs.get(f).and_then(|r| r.armed.get()) {
+            Some(Some(a)) => &a.sites,
+            _ => &[],
+        }
+    }
+
+    /// The callee whose body pc `pc` of [`Program::arm`] of `f` is, once the arms were made: the
+    /// tier books the time and looks there to it, as to the call the arm stands for.
+    pub fn arm_owner(&self, f: FuncId, pc: u32) -> Option<FuncId> {
+        let Some(Some(a)) = self.funcs.get(f)?.armed.get() else {
+            return None;
+        };
+        let c = *a.owner.get(pc.checked_sub(a.base)? as usize)?;
+        (c != u32::MAX).then_some(FuncId(c))
+    }
+
     /// Does `f` run as lowered because elaboration-time code asked for it ([`ElabRaw`])?
     pub fn runs_raw(&self, f: FuncId) -> bool {
         self.funcs.get(f).is_some_and(|r| {
@@ -633,6 +695,10 @@ pub struct Func {
     /// lowered).
     #[serde(skip)]
     pub opt: std::sync::OnceLock<Option<Box<Func>>>,
+    /// The optimised copy with the interpreter's arms ([`Program::arm`]), made the first time
+    /// the interpreter asks (`None`: the copy has no arm).
+    #[serde(skip)]
+    pub(crate) armed: std::sync::OnceLock<Option<Box<Armed>>>,
     /// What a call of this function can be memoised on ([`Program::memo_sig`]), worked out the
     /// first time asked.
     #[serde(skip)]
@@ -645,6 +711,17 @@ pub struct Func {
     /// many jumps back it took as lowered ([`ElabRaw`]).
     #[serde(skip)]
     pub(crate) fetches: Fetches,
+}
+
+/// An optimised function with interpreter arms (`opt/inline/arms.rs`, [`Program::arm`]).
+#[derive(Debug, Clone)]
+pub(crate) struct Armed {
+    pub(crate) func: Func,
+    pub(crate) sites: Vec<(u32, BlockId)>,
+    /// The first pc of the arms, and per pc from there the callee an instruction is the body of
+    /// (`u32::MAX`: the caller's code after the call).
+    pub(crate) base: u32,
+    pub(crate) owner: Vec<u32>,
 }
 
 /// [`Program::optimised`]: the functions in the order they were optimised, and how many.
@@ -952,6 +1029,7 @@ impl Func {
             ret_ty: self.ret_ty,
             ret_flat: self.ret_flat,
             opt: Default::default(),
+            armed: Default::default(),
             memo: Default::default(),
             lazy: None,
             fetches: Default::default(),
@@ -998,6 +1076,7 @@ impl Func {
             ret_ty: None,
             ret_flat: false,
             opt: Default::default(),
+            armed: Default::default(),
             memo: Default::default(),
             lazy: None,
             fetches: Default::default(),

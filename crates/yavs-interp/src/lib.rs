@@ -57,7 +57,7 @@ use yavs_std::arith::TimeResolution;
 use yavs_std::types::Revision;
 
 pub use census::{
-    booked_returns, calls, dump as census_dump, ieee_general, implicit_elems_total,
+    arm_entries, booked_returns, calls, dump as census_dump, ieee_general, implicit_elems_total,
     lean_late_calls, ops_executed, tier_skips,
 };
 pub use debug::{
@@ -1622,6 +1622,13 @@ pub struct Runtime {
     pub(crate) expanded: Vec<std::sync::OnceLock<Vec<u8>>>,
     /// Per-function facts, computed on the first call (`pre.rs`).
     pre: Vec<std::sync::OnceLock<pre::Pre>>,
+    /// The facts of a function with interpreter arms (`Program::arm`), made when the tier's count
+    /// of its calls runs out (`counted_out`), and their roots; `any_arms` once one was made.
+    pre_arm: Vec<std::sync::OnceLock<pre::Pre>>,
+    live_arm: Vec<std::sync::OnceLock<roots::LiveRefs>>,
+    any_arms: std::sync::atomic::AtomicBool,
+    /// Per function: the rounds of the count that makes its arms still to run (`arm_counted`).
+    arm_wait: Vec<std::sync::atomic::AtomicU8>,
     pub(crate) limits: Limits,
     pub(crate) revision: Revision,
     pub(crate) resolution: TimeResolution,
@@ -2058,6 +2065,12 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+/// The rounds of the tier's count (less one) a subprogram counts on, once that ran out, before
+/// its arms are made (`Runtime::arm_counted`): building them costs about what a few hundred calls
+/// save, and made at once short tests paid 0.2 to 0.3 percent more instructions for the arms of
+/// functions called little more than the count.
+const ARM_WAIT: u8 = 3;
+
 /// This thread's sampling slot.
 #[inline(always)]
 pub(crate) fn slot() -> &'static std::sync::atomic::AtomicU64 {
@@ -2192,6 +2205,10 @@ impl Runtime {
                 .collect(),
             expanded: (0..prog.consts.len()).map(|_| Default::default()).collect(),
             pre: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
+            pre_arm: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
+            live_arm: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
+            any_arms: std::sync::atomic::AtomicBool::new(false),
+            arm_wait: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             limits: b.limits,
             revision: b.revision,
             resolution: b.resolution,
@@ -2270,6 +2287,11 @@ impl Runtime {
             .resize_with(prog.consts.len(), Default::default);
         self.pre.resize_with(prog.funcs.len(), Default::default);
         self.live.resize_with(prog.funcs.len(), Default::default);
+        self.pre_arm.resize_with(prog.funcs.len(), Default::default);
+        self.live_arm
+            .resize_with(prog.funcs.len(), Default::default);
+        self.arm_wait
+            .resize_with(prog.funcs.len(), Default::default);
         self.sources.add_from(&prog, first, map);
         self.prog = prog;
         Ok(())
@@ -2311,14 +2333,138 @@ impl Runtime {
         true
     }
 
-    /// The facts of function `id` (`f`), computed once.
+    /// The facts of function `id` (`f`, as [`Program::func`] hands it out), computed once.
     #[inline(always)]
     pub(crate) fn pre(&self, id: yavs_ir::FuncId, f: &yavs_ir::Func) -> Option<&pre::Pre> {
         Some(self.pre.get(id.0 as usize)?.get_or_init(|| {
-            let mut p = pre::Pre::new(f, &self.prog, self.prog.runs_raw(id));
+            let mut p = pre::Pre::new(f, &self.prog, self.prog.runs_raw(id), &[]);
             p.native = self.native.flagged(id.0).into();
             p
         }))
+    }
+
+    /// The code of `id` and its facts without interpreter arms, as a root frame runs them.
+    #[inline(always)]
+    pub(crate) fn lean(&self, id: yavs_ir::FuncId) -> Option<(&yavs_ir::Func, &pre::Pre)> {
+        let f = self.prog.func_inline(id)?;
+        Some((f, self.pre(id, f)?))
+    }
+
+    /// The code of `id` and its facts for a frame of it with `nregs` registers: with the
+    /// interpreter's arms when that is their count (a frame keeps the form it was pushed in, and
+    /// the armed form has more registers), else as `Program::func` hands it out.
+    #[inline(always)]
+    pub(crate) fn form(
+        &self,
+        id: yavs_ir::FuncId,
+        nregs: usize,
+    ) -> Option<(&yavs_ir::Func, &pre::Pre)> {
+        if self.any_arms.load(Ordering::Relaxed)
+            && let Some(a) = self.armed_with(id, nregs)
+        {
+            return Some(a);
+        }
+        self.lean(id)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn armed_with(&self, id: yavs_ir::FuncId, nregs: usize) -> Option<(&yavs_ir::Func, &pre::Pre)> {
+        self.armed_form(id).filter(|(_, p)| p.nregs() == nregs)
+    }
+
+    /// The code of `id` with its arms and its facts, once they were made (`make_arms`).
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn armed_form(&self, id: yavs_ir::FuncId) -> Option<(&yavs_ir::Func, &pre::Pre)> {
+        Some((
+            self.prog.armed(id)?,
+            self.pre_arm.get(id.0 as usize)?.get()?,
+        ))
+    }
+
+    /// Arms for `id` (`Program::arm`), now that the tier's count of its calls ran out: the facts
+    /// of the armed form, and the plain form's `Pre::native` set, so that the watching loop's call
+    /// of it looks at them (`callee_watch`).
+    #[cold]
+    #[inline(never)]
+    fn make_arms(&self, id: yavs_ir::FuncId) {
+        let (Some((_, lean)), Some(slot)) = (self.lean(id), self.pre_arm.get(id.0 as usize)) else {
+            return;
+        };
+        if lean.raw || !yavs_ir::opt::arms_enabled() || slot.get().is_some() {
+            return;
+        }
+        let Some(f) = self.prog.arm(id) else {
+            return;
+        };
+        slot.get_or_init(|| {
+            let mut p = pre::Pre::new(f, &self.prog, false, self.prog.arm_sites(id));
+            p.native = self.native.flagged(id.0).into();
+            debug_assert!(
+                lean.frame_like(&p),
+                "arms of `{}` start frames otherwise",
+                f.name
+            );
+            p
+        });
+        self.any_arms.store(true, Ordering::Relaxed);
+        lean.native.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether this run-out of the count of `func` is one of its arms' (`arm_wait`): once the tier's
+    /// count of a subprogram that can have arms ran out, it counts `ARM_WAIT` rounds of one call
+    /// fewer than the tier's count more (so it never stands at the tier's count, which the policy
+    /// reads as "never ran"), and the arms are made when the last runs out: a function called
+    /// little more than the tier's count, or flagged by the tier meanwhile, does not pay for arms
+    /// it would not repay. With a count of 1 the arms are made at once.
+    pub(crate) fn arm_counted(&self, func: FuncId) -> bool {
+        let Some(w) = self.arm_wait.get(func.0 as usize) else {
+            return false;
+        };
+        let n = self.native.armed.load(Ordering::Relaxed);
+        // (Flagged by the tier meanwhile: no arms, and the run-out is the tier's as ever.)
+        let flagged = self.native.flagged(func.0);
+        match w.load(Ordering::Relaxed) {
+            0 => {}
+            _ if flagged => {
+                w.store(0, Ordering::Relaxed);
+                return false;
+            }
+            1 => {
+                w.store(0, Ordering::Relaxed);
+                self.make_arms(func);
+                return true;
+            }
+            r => {
+                w.store(r - 1, Ordering::Relaxed);
+                self.native.set_count(func, n - 1);
+                return true;
+            }
+        }
+        if !flagged
+            && yavs_ir::opt::arms_enabled()
+            && !self.prog.arm_tried(func)
+            && self.prog.funcs.get(func).is_some_and(|f| {
+                matches!(f.kind, FuncKind::Function | FuncKind::Procedure)
+                    && !f.flags.contains(yavs_ir::FuncFlags::MAY_SUSPEND)
+            })
+        {
+            if n > 1 {
+                w.store(ARM_WAIT, Ordering::Relaxed);
+                self.native.set_count(func, n - 1);
+            } else {
+                self.make_arms(func);
+            }
+        }
+        false
+    }
+
+    /// Whether the count of `func` runs for its arms now (`arm_counted`).
+    pub(crate) fn arm_waits(&self, func: FuncId) -> bool {
+        self.arm_wait
+            .get(func.0 as usize)
+            .is_some_and(|w| w.load(Ordering::Relaxed) != 0)
     }
 
     /// The entries of `func` ran out (`NativeFlags::tick`): ask the tier, unless it is a process that
@@ -2328,6 +2474,9 @@ impl Runtime {
     #[cold]
     #[inline(never)]
     pub(crate) fn counted_out(&self, func: FuncId, no_copy: bool) {
+        if self.arm_counted(func) {
+            return;
+        }
         let copies = self.prog.base_of(func) == func && self.prog.specialisable(func);
         if (no_copy || !copies)
             && let Some(t) = self.tier.get()
@@ -2383,16 +2532,23 @@ impl Runtime {
             {
                 p.native.store(true, Ordering::Relaxed);
             }
+            if let Some(p) = self.pre_arm.get(id.0 as usize).and_then(|p| p.get()) {
+                p.native.store(true, Ordering::Relaxed);
+            }
         }
     }
 
     /// The `Handle` and `Ptr` registers live at each safepoint of `id`, computed when first
     /// asked for (`roots::live_refs`).
-    pub(crate) fn live_refs(&self, id: FuncId) -> Option<&roots::LiveRefs> {
-        let f = self.prog.func(id)?;
+    pub(crate) fn live_refs(&self, id: FuncId, nregs: usize) -> Option<&roots::LiveRefs> {
+        let (f, _) = self.form(id, nregs)?;
+        let lean = self
+            .prog
+            .func_inline(id)
+            .is_some_and(|l| std::ptr::eq(l, f));
+        let live = if lean { &self.live } else { &self.live_arm };
         Some(
-            self.live
-                .get(id.0 as usize)?
+            live.get(id.0 as usize)?
                 .get_or_init(|| roots::live_refs(&self.prog, f, heap::STRESS)),
         )
     }
@@ -2586,7 +2742,7 @@ impl Runtime {
             });
         }
         // Every function has a flag now: the facts made so far (`Pre::native`) say so at once.
-        for p in self.pre.iter().filter_map(|p| p.get()) {
+        for p in self.pre.iter().chain(&self.pre_arm).filter_map(|p| p.get()) {
             p.native.store(true, Ordering::Relaxed);
         }
         self.native.any.store(true, Ordering::Release);

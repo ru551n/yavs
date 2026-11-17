@@ -161,7 +161,7 @@ impl Sampler {
         // code is what ran, and an inlined statement still names its own function.
         let line_of = |f: u32, pc: u32| -> Option<(String, usize, String)> {
             let prog = &rt?.prog;
-            let stmt = *prog.func(FuncId(f))?.loc.get(pc as usize)?;
+            let stmt = *prog.ifunc(FuncId(f))?.loc.get(pc as usize)?;
             let info = prog.stmts.get(stmt)?;
             (info.span.end > info.span.start).then_some(())?;
             let file = sources.get(info.span.file);

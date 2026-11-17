@@ -5813,6 +5813,50 @@ Decisions:
   counters. `YAVS_NO_COLD=1` turns it off (fingerprint `cold`). Why: the `validate_*` procedures in front of a verification
   library's array accessors (an assertion with a built message) were calls of about 350 host instructions each, two or three
   per access, and inlining them whole would put the message building into every caller.
+- **The interpreter takes small library calls through arms; the compiled tiers keep the call** (`opt/inline/arms.rs`,
+  `Program::arm`, `Runtime::make_arms`, 2026-11-16). When the tier's count of a function's interpreted calls runs out
+  (`counted_out`, the `--tier=auto` count rule), a function or procedure that cannot suspend counts three rounds more of one
+  call fewer than the count (`Runtime::arm_counted`, `ARM_WAIT`: never at the count itself, which the policy reads as
+  "never ran"; with a count of 1 none) and is then given arms, unless the tier flagged it meanwhile: its optimised
+  copy plus blocks after the last one that no instruction of the copy jumps to, predecoded apart (`Runtime::pre_arm`), where
+  each call with an arm is an `Op::Arm` before the call: a jump to the arm, or the call (below). The wait is because making
+  arms costs about what a few hundred calls save: made at the first run-out, short tests paid 0.2 to 0.3 percent more
+  instructions for arms of functions called little more than the count. An arm is the callee's published optimised copy inlined
+  with larger limits (96 instructions, 12 blocks; its registers new ones, the protected object the first argument),
+  followed by a copy of the rest of the call's block up to the next call with an arm (a jump to that arm) or to the block's
+  own terminator, so every jump of an arm leads into an arm or to a successor of the call's block: definitions, liveness
+  and the roots of a collection hold on it as on the code after the call, and a call made inside an arm is an honest call
+  (its frame waits at a pc of the arm). Constants and addresses defined once are not copied (frames start with them).
+  The tier sees a call taken in an arm as the call: the op at the call (`Op::Arm`) counts the callee's entry as the call does (its count
+  runs out and the tier is asked for it as before), the watching loop's looks and the tier's samples in the callee's part
+  of an arm go to the callee (`Program::arm_owner`), and once the tier has flagged the callee (compiled code, asked for or
+  called on a native frame) the op makes the call instead, so the callee runs compiled as it would without arms. Without
+  that, arms kept running interpreted copies of queue methods that compiled code took over otherwise (one testbench: 59 M
+  interpreted ops without arms, 94 M with). Only callees that already have
+  their optimised copy are taken (making an arm fixes no other function's version: forcing one fixed a function's version
+  while its lowered code still ran under elaboration-time evaluation, a wrong result in a prototype), not callees with a
+  result table or a memo signature, not pure functions, processes or copies. Only the loop of `--tier=auto` that runs
+  without compiled code calls the armed form, through the callee's `Pre::native` it already tests (the plain form's is set,
+  `callee_watch`), so a call of any other function pays nothing; `--tier=interp` has no count and no arms. A frame that leaves the watching
+  loop (to the loop with the tier) or that a return reaches through a lookup runs the plain code at any pc of it (its
+  registers are a prefix) and its arms only at a pc in them; the code that compiled code calls back into reads
+  `Program::func` and looks at the armed form only for a call past the plain code. A frame keeps
+  the form it was pushed in, and the form is read from its register count (the armed form has more, `Runtime::form`).
+  `Program::func`, what the compiled tiers compile, the cache stores and the policy measures, is the same code as without
+  arms, at the same pcs: a frame means the same in both, a frame compiled code made or left reads its registers as a prefix
+  (`TierFrame::nregs` is the count compiled code knows), and the arms' ops are no entry of compiled code
+  (`Code::no_tier`). Inlined instructions keep the callee's statement and inlining chain, so failures, traces, `std.env`
+  call paths and reports read as the call (CLI test `interp_arms_read_as_calls`, cold and with the cache three runs in a
+  row, every tier; perf test `arm_calls`). `YAVS_NO_ARMS=1` turns them off. Why: the accessors of a verification library's
+  pointer table (a protected method of 50 to 70 optimised instructions behind each `integer_vector_ptr` and `string_ptr`
+  access) stay calls by the 60-instruction limit above, which protects compiled code (inlined at every site they made the
+  compile-everything work of a queue testbench 59 percent bigger); an interpreted call costs about as much as such a body,
+  and short tests of that library run interpreted under `--tier=auto`. Measured trade (accepted, 2026-11-17, instructions under `--tier=auto` against
+  main, fresh worlds each prepared by the binary measured, byte-copy A/A): the verification library's short whole runs
+  (queue, message, integer-array, AXI-stream cells) 3 to 8 percent fewer (geomeans cold 0.968, warm 0.969 and 0.937);
+  realbench short tests up to 0.2 percent more (geomean 1.0004 against an A/A of 0.9996), long tests within their A/A,
+  including the two the first rounds of this work lost on (one testbench's queue methods kept interpreted, +1.7 percent,
+  and a host-path lookup, +0.25 percent).
 
 ## Shared offsets must stay memoisable and fusable (yavs-ir `opt/memo.rs`, `opt/share.rs`, yavs-interp `pre.rs`, #534, 2026-10-22)
 

@@ -967,6 +967,26 @@ case!(
         ("ops", Max(11040))
     ]
 );
+// A pointer table's methods taken through interpreter arms once the tier's count of their caller and
+// its wait ran out (`opt/inline/arms.rs`; nothing compiles, every function being above the size
+// limit): 12609 interpreted calls, 27201 without arms (`YAVS_NO_ARMS=1`); 6 ops more per call taken
+// in an arm (the op at the call, the moves of the arguments), but no call.
+#[cfg(feature = "clift")]
+#[test]
+fn arm_calls() {
+    check(
+        "arm_calls",
+        include_str!("perf/arm_calls.vhd"),
+        "acc=15395200",
+        "auto",
+        &["--tier-max-size=1"],
+        &[
+            ("process_runs", Max(1)),
+            ("calls", Max(12990)),
+            ("ops", Max(588800)),
+        ],
+    );
+}
 // The message of a check is built after the branch that reads it: images, lengths and the
 // concatenation stay out of the 270 passing calls (inlining of the check and `opt/sink.rs`).
 case!(sink_msg, "failed=10 acc=14850", &[], [("ops", Max(6214))]);

@@ -105,7 +105,7 @@ impl Machine {
         let mut v = Vec::new();
         for fr in self.frames.iter().rev() {
             let f = prog
-                .func(fr.func)
+                .ifunc(fr.func)
                 .ok_or_else(|| ice(format!("no function {}", fr.func)))?;
             let Some(&loc) = f.loc.get(fr.pc as usize) else {
                 continue;
@@ -118,7 +118,7 @@ impl Machine {
                 // (The instruction's function, then each caller outward with the statement of
                 // the call.)
                 let name = |id| {
-                    prog.func(id)
+                    prog.ifunc(id)
                         .map(|g| g.name.as_str())
                         .ok_or_else(|| ice(format!("no function {id}")))
                 };

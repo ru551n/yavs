@@ -287,16 +287,17 @@ fn watch_tick(rt: &Runtime, func: FuncId, pc: u32) -> bool {
     yavs_kernel::pause_point();
     // A count spent nearly all by looks, not calls: the function runs long loops in a few calls
     // (`NativeFlags::looped`).
-    let ran_out = rt.native.tick(func.0);
-    rt.native.look(func, ran_out);
+    // (In an interpreter arm the look is the callee's, as in the call the arm stands for.)
+    let who = rt.prog.arm_owner(func, pc).unwrap_or(func);
+    let ran_out = rt.native.tick(who.0);
+    // (The run-out of the count of arms, `Runtime::arm_counted`, is not the tier's.)
+    rt.native.look(who, ran_out && !rt.arm_waits(who));
     if ran_out {
-        rt.counted_out(func, true);
+        rt.counted_out(who, true);
     }
     rt.sync_native();
-    crate::slot().store(
-        u64::from(rt.id) << 32 | u64::from(func.0),
-        Ordering::Relaxed,
-    );
+    // (The pc slot keeps the frame's function: a line sample of `--profile` skips a look in an arm.)
+    crate::slot().store(u64::from(rt.id) << 32 | u64::from(who.0), Ordering::Relaxed);
     crate::pc_slot().store(u64::from(func.0) << 32 | u64::from(pc), Ordering::Relaxed);
     rt.native
         .func
@@ -318,15 +319,42 @@ fn book_return(rt: &Runtime, func: FuncId, pc: u32) {
     crate::pc_slot().store(u64::from(func.0) << 32 | u64::from(pc), Ordering::Relaxed);
 }
 
-/// Whether a call of `callee` hands the loop over to the one with the tier: a flag of it is set now
+/// What the watching loop does at a call of a callee whose `Pre::native` is set.
+enum Watch<'a> {
+    /// The tier has code for it, or will have: the loop with the tier makes the call.
+    Retier,
+    /// Call its form with interpreter arms (`Runtime::make_arms`).
+    Armed(&'a Func, &'a pre::Pre),
+    Plain,
+}
+
+/// A call of `callee` hands the loop over to the one with the tier when a flag of it is set now
 /// (`Pre::native` says it had one once) and the tier does not call it on a native frame, which the
 /// loop without the tier does itself (the loop with it costs more per op for the rest of the
-/// activation, #757). Out of line: it runs only for functions the tier has touched, and inlined
-/// its loads cost the loop registers.
+/// activation, #757); a callee with arms is called in that form. Out of line: it runs only for
+/// functions the tier has touched or armed, and inlined its loads cost the loop registers.
 #[cold]
 #[inline(never)]
-fn callee_retier(rt: &Runtime, callee: u32) -> bool {
-    rt.native.flagged(callee) && !rt.native.callable(callee)
+fn callee_watch(rt: &Runtime, callee: u32) -> Watch<'_> {
+    if rt.native.flagged(callee) {
+        return if rt.native.callable(callee) {
+            Watch::Plain
+        } else {
+            Watch::Retier
+        };
+    }
+    // (Each call with an arm makes the call once the tier flagged its callee, `Op::Arm`.)
+    match rt.armed_form(FuncId(callee)) {
+        Some((f, p)) => Watch::Armed(f, p),
+        _ => Watch::Plain,
+    }
+}
+
+/// The call at pc `at` of `cf` past its plain code: in an interpreter arm (`Program::arm`).
+#[cold]
+#[inline(never)]
+fn arm_inst(prog: &Program, cf: FuncId, at: u32) -> Option<&Inst> {
+    prog.ifunc(cf)?.code.get(at as usize)
 }
 
 /// Zeroes the sampling slot when dropped (`Machine::exec_fast`).
@@ -1900,7 +1928,7 @@ impl Machine {
     /// The statement a suspended process stands at: the pc is past the instruction that suspended.
     pub(crate) fn suspended_at(&self) -> Option<StmtId> {
         let fr = self.frames.last()?;
-        let f = self.rt.prog.func(fr.func)?;
+        let f = self.rt.prog.ifunc(fr.func)?;
         f.loc.get((fr.pc as usize).saturating_sub(1)).copied()
     }
 
@@ -1910,7 +1938,7 @@ impl Machine {
             .iter()
             .rev()
             .flat_map(|fr| {
-                let f = self.rt.prog.func(fr.func)?;
+                let f = self.rt.prog.ifunc(fr.func)?;
                 let pc = fr.pc as usize;
                 // A function inlined at this instruction is a frame of its own.
                 Some(
@@ -1953,6 +1981,25 @@ impl Machine {
         } else {
             self.exec::<false>(&mut ctx, base)
         }
+    }
+
+    /// The armed form of frame `k`, when it was pushed with arms (`Runtime::form`).
+    #[cold]
+    #[inline(never)]
+    fn arm_entry<'r>(&self, rt: &'r Runtime, k: usize) -> Option<(&'r Func, &'r pre::Pre)> {
+        let fr = self.frames.get(k)?;
+        rt.armed_form(fr.func)
+            .filter(|(_, p)| p.nregs() == self.nregs_of(k))
+    }
+
+    /// The registers of frame `k` (the top frame's run to the end of the register stack).
+    #[inline(always)]
+    fn nregs_of(&self, k: usize) -> usize {
+        let end = match self.frames.get(k + 1) {
+            Some(n) => n.rbase as usize,
+            None => self.regs.v.len(),
+        };
+        end - self.frames[k].rbase as usize
     }
 
     /// Ask to switch to a copy of the entry function specialised to this machine's instance
@@ -2389,12 +2436,12 @@ impl Machine {
     fn refs_scan(&self, regs: bool, r: &mut heap::Refs) -> Option<()> {
         let prog = &self.rt.prog;
         for (k, fr) in self.frames.iter().enumerate() {
-            let f = prog.func(fr.func)?;
+            let f = prog.ifunc(fr.func)?;
             if !heap::slot_roots(prog, &f.roots, self.fslots(k)?, r) {
                 return None;
             }
             if regs {
-                let live = self.rt.live_refs(fr.func)?;
+                let live = self.rt.live_refs(fr.func, self.nregs_of(k))?;
                 for &reg in live.get(fr.pc)? {
                     let v = *self.regs.v.get(fr.rbase as usize + reg.0 as usize)?;
                     match f.reg_ty.get(reg.0 as usize)? {
@@ -2603,7 +2650,7 @@ impl Machine {
     fn note_words(&self, s: &mut Shape) -> bool {
         let prog = &self.rt.prog;
         for (k, fr) in self.frames.iter().enumerate() {
-            let (Some(f), Some(slots)) = (prog.func(fr.func), self.fslots(k)) else {
+            let (Some(f), Some(slots)) = (prog.ifunc(fr.func), self.fslots(k)) else {
                 return false;
             };
             s.funcs.push(fr.func.0);
@@ -6050,11 +6097,8 @@ impl Machine {
                 .frames
                 .last()
                 .ok_or_else(|| ice_s!("no frame to execute"))?;
-            let f = prog
-                .func(fr.func)
-                .ok_or_else(|| ice_f!("no function {}", fr.func))?;
-            let pre = rt
-                .pre(fr.func, f)
+            let (f, pre) = rt
+                .form(fr.func, self.nregs_of(self.frames.len() - 1))
                 .ok_or_else(|| ice_f!("no function {}", fr.func))?;
             let mut pc = fr.pc as usize;
             loop {
@@ -6297,6 +6341,8 @@ impl Machine {
             if W && let Some(s) = slot {
                 s.store(tag | u64::from(func.0), Ordering::Relaxed);
             }
+            // (A frame with arms runs as this code but in an arm: `run_ops` finds them there,
+            // `arm_entry`.)
             let f = prog
                 .func(func)
                 .ok_or_else(|| ice_f!("no function {func}"))?;
@@ -6368,10 +6414,21 @@ impl Machine {
             }};
         }
         let prog = &*rt.prog;
-        // A frame compiled code left inside a fused op (`TIER_UNWIND`) steps up to the next op.
+        // A frame compiled code left inside a fused op (`TIER_UNWIND`) steps up to the next op. A
+        // frame pushed with arms is in one at a pc past the plain code (`arm_entry`); at any other
+        // pc the plain code runs it as well (its registers are a prefix).
         let pc = self.frames[top].pc as usize;
         let mut k = match code.entry.get(pc) {
             Some(&k) if k != pre::NONE => k as usize,
+            _ if pc >= f.code.len()
+                && let Some((af, ap)) = self.arm_entry(rt, top) =>
+            {
+                (f, code, ops) = (af, &ap.code, &ap.code.ops);
+                match code.entry.get(pc) {
+                    Some(&k) if k != pre::NONE => k as usize,
+                    _ => return Err(ice_f!("pc {pc} of `{}` is no entry of its arms", f.name)),
+                }
+            }
             _ => match self.op_at(prog, f, code, top, pc, ctx)? {
                 Ok((k, _)) => k,
                 Err(flow) => return Ok(flow),
@@ -6453,10 +6510,15 @@ impl Machine {
         // `watch`: a call of a function with compiled code or one to be compiled is made by the
         // loop with the tier (the frame's pc is the call's); one the tier calls on a native frame
         // is made here (`native_tier`).
+        // A callee with arms is called in that form (`callee_watch`): its `Pre::native` is set.
         macro_rules! callee_look {
-            ($callee:expr, $cpre:expr) => {
-                if watch && $cpre.native.load(Ordering::Relaxed) && callee_retier(rt, $callee) {
-                    return Ok(Flow::Retier);
+            ($callee:expr, $cf:ident, $cpre:ident) => {
+                if watch && $cpre.native.load(Ordering::Relaxed) {
+                    match callee_watch(rt, $callee) {
+                        Watch::Retier => return Ok(Flow::Retier),
+                        Watch::Armed(af, ap) => ($cf, $cpre) = (af, ap),
+                        Watch::Plain => {}
+                    }
                 }
             };
         }
@@ -6637,14 +6699,14 @@ impl Machine {
                 let args = yavs_ir::Regs { start, len };
                 let dst = (dst != pre::NONE).then_some(Reg(dst));
                 let cid = FuncId(callee);
-                let cf = prog
+                let mut cf = prog
                     .func(cid)
                     .ok_or_else(|| ice_f!("call of missing function {cid}"))?;
-                let cpre = rt.pre(cid, cf).ok_or_else(|| ice_f!("no function {cid}"))?;
+                let mut cpre = rt.pre(cid, cf).ok_or_else(|| ice_f!("no function {cid}"))?;
                 count_call!(cid);
                 #[cfg(debug_assertions)]
                 t!(self.check_sub_args(prog, f, cid, cf, args));
-                callee_look!(callee, cpre);
+                callee_look!(callee, cf, cpre);
                 // The memo of pure calls answers a repeated call before the call is made, by the
                 // compiled tier or not (out of line: it keeps this loop's frame as it was).
                 if $memo
@@ -7546,6 +7608,20 @@ impl Machine {
                     k += 1;
                 }
                 Op::Br { to } => go!(to),
+                // The tier counts the call as made; once it flagged the callee the call is made.
+                Op::Arm { to, callee } => {
+                    if nat
+                        .get(callee as usize)
+                        .is_some_and(|n| n.load(Ordering::Relaxed) != 0)
+                    {
+                        k += 1;
+                    } else {
+                        count_call!(FuncId(callee));
+                        crate::census::arm_entered();
+                        go!(to);
+                        tick!();
+                    }
+                }
                 Op::Loop { id, to } => {
                     // Iterations the kernel may run before the loop goes back to counting.
                     let mut limit = if watch {
@@ -7630,12 +7706,12 @@ impl Machine {
                     let args = yavs_ir::Regs { start, len };
                     let dst = (dst != pre::NONE).then_some(Reg(dst));
                     let cid = FuncId(callee);
-                    let cf = prog
+                    let mut cf = prog
                         .func(cid)
                         .ok_or_else(|| ice_f!("call of missing function {cid}"))?;
-                    let cpre = rt.pre(cid, cf).ok_or_else(|| ice_f!("no function {cid}"))?;
+                    let mut cpre = rt.pre(cid, cf).ok_or_else(|| ice_f!("no function {cid}"))?;
                     count_call!(cid);
-                    callee_look!(callee, cpre);
+                    callee_look!(callee, cf, cpre);
                     // A function the compiled tier calls on a native frame (`Tier::call`).
                     if let Some(t) = native_tier!(cpre)
                         && rt.native.callable(callee)
@@ -7717,7 +7793,17 @@ impl Machine {
                         .ok_or_else(|| ice_f!("no function {func}"))?
                         .code;
                     ops = &code.ops;
-                    k = entry!(pc)? as usize;
+                    // (A frame with arms runs as this code but at a call in an arm, `arm_entry`.)
+                    k = match code.entry.get(pc as usize) {
+                        Some(&k) if k != pre::NONE => k as usize,
+                        _ => {
+                            let (af, ap) = self.arm_entry(rt, top).ok_or_else(|| {
+                                ice_f!("pc {pc} of `{}` inside a fused operation", f.name)
+                            })?;
+                            (f, code, ops) = (af, &ap.code, &ap.code.ops);
+                            entry!(pc)? as usize
+                        }
+                    };
                     if watch {
                         book_return(rt, func, pc);
                     }
@@ -10275,6 +10361,8 @@ impl Machine {
         tf.inst_len = self.inst.data.len() as u64;
         tf.nsigs = self.inst.sigs.len() as u64;
         tf.regs = self.regs.v.as_mut_ptr().wrapping_add(rbase);
+        // (A frame with interpreter arms has more registers than compiled code knows: compiled
+        // code does not run on it, `Runtime::form`.)
         tf.nregs = (self.regs.v.len() - rbase) as u64;
         tf.stack = self.regs.v.as_ptr();
         tf.max_depth = u64::from(self.rt.limits.max_depth).min(crate::TIER_MAX_DEPTH);
@@ -12175,7 +12263,8 @@ pub struct Host<'a, 'c, 'x> {
     m: &'a mut Machine,
     rt: &'a Runtime,
     prog: &'a Program,
-    /// The top frame's function.
+    /// The top frame's function, as compiled code knows it (`Program::func`: the pcs compiled
+    /// code steps are in it whatever form the interpreter runs the frame in).
     f: &'a Func,
     ctx: &'a mut Option<&'c mut Ctx<'x>>,
     fault: Option<Fault>,
@@ -12201,7 +12290,11 @@ impl Host<'_, '_, '_> {
         for nf in frames {
             let top = m.frames.len() - 1;
             let (cf, at) = (m.frames[top].func, m.frames[top].pc);
-            let (dst, prot) = match prog.func(cf).and_then(|c| c.code.get(at as usize)) {
+            let call = match prog.func(cf).and_then(|c| c.code.get(at as usize)) {
+                Some(i) => Some(i),
+                None => arm_inst(prog, cf, at),
+            };
+            let (dst, prot) = match call {
                 Some(&Inst::Call { dst, .. }) => (dst, None),
                 Some(&Inst::CallProt { dst, obj, .. }) => (dst, Some(obj)),
                 _ => {

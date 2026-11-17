@@ -74,6 +74,26 @@ pub(crate) struct Pre {
 }
 
 impl Pre {
+    /// The facts of the same function with arms (`arms`) start a frame as these do: the same
+    /// preloaded registers and values, the same first pcs (compiled code and `push_native` rely
+    /// on it), on every register and pc these have.
+    /// The registers of a frame these facts start.
+    pub(crate) fn nregs(&self) -> usize {
+        self.init.len()
+    }
+
+    pub(crate) fn frame_like(&self, arms: &Pre) -> bool {
+        let (n, pcs) = (self.preloaded.len(), self.next.len().saturating_sub(1));
+        arms.preloaded.get(..n) == Some(&self.preloaded[..])
+            && arms.init.get(..n) == Some(&self.init[..])
+            && arms
+                .frame
+                .iter()
+                .filter(|&&(r, _)| (r as usize) < n)
+                .eq(self.frame.iter())
+            && arms.next.get(..pcs) == self.next.get(..pcs)
+    }
+
     /// Append the registers of a frame at index `idx` to `stack`: the preloaded registers have
     /// their values, the others are zero.
     /// The collection reads only registers live at a safepoint (#422), so zeros are not
@@ -104,7 +124,14 @@ impl Pre {
 
     /// `budget`: `f` runs as lowered under elaboration-time evaluation, and its jumps back are
     /// counted ([`count_back_edges`]).
-    pub(crate) fn new(f: &Func, prog: &Program, budget: bool) -> Pre {
+    /// `arms`: the calls `f` takes through an interpreter arm ([`Program::arm_sites`]), when `f`
+    /// is [`Program::arm`].
+    pub(crate) fn new(
+        f: &Func,
+        prog: &Program,
+        budget: bool,
+        arms: &[(u32, yavs_ir::BlockId)],
+    ) -> Pre {
         let n = f.reg_ty.len();
         let mut defs = vec![0u8; n];
         for inst in &f.code {
@@ -219,7 +246,7 @@ impl Pre {
                 *n = *t;
             }
         }
-        let mut code = Code::new(f, prog, &skip, &known, &next, &counted, budget);
+        let mut code = Code::new(f, prog, &skip, &known, &next, &counted, budget, arms);
         let params: Box<[(u32, Width)]> = f.params.iter().map(|p| (p.slot, p.width)).collect();
         let pro = prologue(&mut code, &params);
         // The debug loop enters at the prologue, which reads the parameters' slots (#863).
@@ -1010,6 +1037,13 @@ pub(crate) enum Op {
     },
     Br {
         to: u32,
+    },
+    /// A call with an interpreter arm (`yavs_ir::Program::arm`), the op before the call itself:
+    /// counts the call of `callee` for the tier and jumps to the arm at `to`, or goes on to the
+    /// call once the tier has flagged `callee` (compiled code, asked for or called natively).
+    Arm {
+        to: u32,
+        callee: u32,
     },
     /// The entry `Br` to the head `to` of an element loop (`Code::loops[id]`, `elem_loops`): the
     /// iterations but the last may run at once (`Machine::op_loop`), then the jump.
@@ -3337,7 +3371,7 @@ pub struct FusedCopy {
 /// The scalar logic assignments (`ScalarDrive`) and the whole-value ones (`FusedCopy`) of `f`
 /// that the interpreter's predecoder fuses.
 pub fn fused_drives(prog: &Program, f: &Func) -> (Vec<ScalarDrive>, Vec<FusedCopy>) {
-    let pre = Pre::new(f, prog, false);
+    let pre = Pre::new(f, prog, false, &[]);
     let mut out = Vec::new();
     let mut copies = Vec::new();
     for (k, op) in pre.code.ops.iter().enumerate() {
@@ -3538,7 +3572,8 @@ fn targets_mut(op: &mut Op) -> [Option<&mut u32>; 2] {
         Op::Br { to }
         | Op::MoveBr { to, .. }
         | Op::StoreSlotBr { to, .. }
-        | Op::BrBody { to, .. } => [Some(to), None],
+        | Op::BrBody { to, .. }
+        | Op::Arm { to, .. } => [Some(to), None],
         Op::CondBr { t, f, .. }
         | Op::CmpBr { t, f, .. }
         | Op::MoveCondBr { t, f, .. }
@@ -5072,6 +5107,7 @@ fn superops(prog: &Program, ops: &mut [Op], at: &[u32], f: &Func, known: &[Known
 }
 
 impl Code {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         f: &Func,
         prog: &Program,
@@ -5080,6 +5116,7 @@ impl Code {
         next: &[u32],
         counted: &[bool],
         budget: bool,
+        arms: &[(u32, yavs_ir::BlockId)],
     ) -> Code {
         let n = f.code.len();
         // A block start stops a fusion only where something can jump to it: a block that
@@ -5094,6 +5131,9 @@ impl Code {
         let mut all = false;
         mark(yavs_ir::BlockId(0));
         f.body.map(&mut mark);
+        for &(_, b) in arms {
+            mark(b);
+        }
         for (pc, i) in f.code.iter().enumerate() {
             match *i {
                 _ if skip[pc] => {}
@@ -5123,6 +5163,18 @@ impl Code {
                 *s = true;
             }
         }
+        // A call with an arm is an op of its own: a jump to the arm (`yavs_ir::Program::arm`).
+        for &(pc, _) in arms {
+            if let Some(s) = block_start.get_mut(pc as usize) {
+                *s = true;
+            }
+        }
+        let arm_of = |pc: usize| {
+            arms.binary_search_by_key(&(pc as u32), |a| a.0)
+                .ok()
+                .and_then(|k| f.blocks.get(arms[k].1))
+                .map(|b| b.start)
+        };
         // (Lists through the instructions that name them: the optimiser leaves the lists of
         // removed instructions in `operands`, #752.)
         let uses = read_counts(f);
@@ -5174,6 +5226,13 @@ impl Code {
             at.push(pc as u32);
             // The last instruction this op stands for.
             let mut last = pc;
+            // A call with an arm: the jump to the arm, then the call (`Op::Arm`).
+            if let Some(to) = arm_of(pc)
+                && let Inst::Call { func, .. } | Inst::CallProt { func, .. } = f.code[pc]
+            {
+                ops.push(Op::Arm { to, callee: func.0 });
+                at.push(pc as u32);
+            }
             let op = match f.code[pc] {
                 Inst::Stmt => {
                     // Statements in a row end one set of temporaries once.
@@ -6100,6 +6159,16 @@ impl Code {
             &uses,
             known,
         );
+        // The arms are no entry of compiled code, which has none of their pcs.
+        if let Some(lo) = arms
+            .iter()
+            .filter_map(|a| f.blocks.get(a.1))
+            .map(|b| b.start as usize)
+            .min()
+            .and_then(|p| start[p..n].iter().copied().find(|&k| k != NONE))
+        {
+            no_tier.push((lo, ops.len() as u32 - 1));
+        }
         // Disjoint, in order: a search by either end finds the range of an op.
         no_tier.sort_unstable();
         let mut merged: Vec<(u32, u32)> = Vec::new();
@@ -6143,6 +6212,9 @@ impl Code {
                     }
                 }
                 Op::Br { to: t } => to(t).map_or(Op::Step(ir), |t| Op::Br { to: t }),
+                Op::Arm { to: t, callee } => {
+                    to(t).map_or(Op::Br { to: k as u32 + 1 }, |t| Op::Arm { to: t, callee })
+                }
                 Op::StoreSlotBr { src, off, to: t, w } => {
                     to(t).map_or(Op::Step(NONE), |t| Op::StoreSlotBr { src, off, to: t, w })
                 }
@@ -6375,8 +6447,8 @@ mod tests {
         fb.emit(Inst::Br { to: head });
         fb.finish();
         let prog = pb.finish().unwrap();
-        let f = prog.func(p).unwrap();
-        let ops = &Pre::new(f, &prog, false).code.ops;
+        let f = prog.ifunc(p).unwrap();
+        let ops = &Pre::new(f, &prog, false, &[]).code.ops;
         let count = |m: fn(&Op) -> bool| ops.iter().filter(|o| m(o)).count();
         assert_eq!(count(|o| matches!(o, Op::MoveBr { .. })), 0, "{ops:?}");
         // Both jumps back (after the move and alone) are stepped, and the branch reaches the
@@ -6390,8 +6462,8 @@ mod tests {
     fn lean_frame_has_slots_only_when_addressed() {
         for (spare, used) in [(false, false), (true, false), (false, true)] {
             let (prog, id) = depth_with(spare, used);
-            let f = prog.func(id).unwrap();
-            let pre = Pre::new(f, &prog, false);
+            let f = prog.ifunc(id).unwrap();
+            let pre = Pre::new(f, &prog, false, &[]);
             assert!(pre.lean);
             let addressed = f.code.iter().any(
                 |i| matches!(*i, Inst::AddrOf { space: AddrSpace::Frame, off, .. } if off != 0),
@@ -6468,8 +6540,8 @@ mod tests {
     fn lean_covers_by_reference_parameters_and_nested_functions() {
         for (calls, nested) in [(false, false), (false, true), (true, false)] {
             let (prog, id) = by_ref(calls, nested);
-            let f = prog.func(id).unwrap();
-            let pre = Pre::new(f, &prog, false);
+            let f = prog.ifunc(id).unwrap();
+            let pre = Pre::new(f, &prog, false, &[]);
             assert_eq!(pre.lean, !calls, "calls {calls} nested {nested}");
             assert_eq!(pre.nested, nested);
             if pre.lean {
@@ -6577,8 +6649,8 @@ mod tests {
     fn lean_writes_read_descriptors_and_skips_unread_parameters() {
         for how in [DescUse::Len, DescUse::None, DescUse::Copy] {
             let (prog, id) = strlen(how);
-            let f = prog.func(id).unwrap();
-            let pre = Pre::new(f, &prog, false);
+            let f = prog.ifunc(id).unwrap();
+            let pre = Pre::new(f, &prog, false, &[]);
             assert!(!pre.lean, "{how:?}: not by the rule of every call");
             assert_eq!(pre.pro[0], NONE, "{how:?}: the data is not loaded");
             assert_ne!(pre.pro[4], NONE);
@@ -6686,7 +6758,7 @@ mod tests {
         let prog = pb.finish().unwrap();
         // The code as built: the optimiser folds these descriptor reads into registers.
         let f = prog.funcs.get(id).unwrap();
-        let pre = Pre::new(f, &prog, false);
+        let pre = Pre::new(f, &prog, false, &[]);
         assert!(!pre.lean);
         for _ in 1..LATE_AFTER {
             assert_eq!(pre.late(f, &prog), None);
@@ -6700,8 +6772,8 @@ mod tests {
     #[test]
     fn lean_parameter_address_register_is_unset() {
         let (prog, id) = depth();
-        let f = prog.func(id).unwrap();
-        let pre = Pre::new(f, &prog, false);
+        let f = prog.ifunc(id).unwrap();
+        let pre = Pre::new(f, &prog, false, &[]);
         assert!(pre.lean);
         // `finish` numbers the registers afresh: find the register in the code.
         let (def, at) = match f.code[0] {

@@ -1554,6 +1554,32 @@ fn a_z_passed_on_by_a_process_outside_keeps_its_reader_out() {
     }
 }
 
+/// Records holding arrays of records (register-file converters): an inlined function's local of
+/// such a record, filled field by field, one element copied from a run-time index, and a local
+/// with no initial value at its fields' `'left`; against the normal mode at widths 1 to 128.
+#[test]
+fn records_holding_arrays_of_records_equal_the_normal_mode() {
+    let dir = tempdir("cycle-recarrrec");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("recarrrec{w}.vhd"),
+            &with_width(include_str!("cycle/recarrrec.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_recarrrec");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_recarrrec");
+            assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            // `conv` and `other <= ...`; the testbench's `main` stays out.
+            assert!(
+                err.contains("cycle mode: 2 of 3 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// Slices whose bounds come from variables: known values fold (a loop parameter through two
 /// variables, both branches, a `case`, an `inout` formal, a function's locals), unknown ones
 /// do not (branches that differ, a loop that may exit, a state variable), and two variables

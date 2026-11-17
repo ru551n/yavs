@@ -6575,6 +6575,27 @@ impl Lx<'_> {
 
     /// The index ranges of array type `t` under constraint `c` (or the type's own).
     fn arr_dims(&mut self, t: TypeId, c: &Constraint) -> R<Dims> {
+        let (outer, et, ec) = self.arr_outer(t, c)?;
+        let db = self.db;
+        let inner = match &db.types[et].kind {
+            TypeKind::Enum { .. } if yavs_elab::elem_of(db, et) == yavs_kernel::Elem::Logic => {
+                Dims::NONE
+            }
+            TypeKind::Array { .. } => self.arr_dims(et, &ec)?,
+            _ => {
+                return Err(
+                    "an array whose elements are not logic values or arrays of them is not \
+                     supported in cycle mode yet"
+                        .into(),
+                );
+            }
+        };
+        Dims::wrap(outer, inner).ok_or_else(|| "an array nested more than four deep".into())
+    }
+
+    /// The index range of one-dimensional array type `t` under constraint `c` (or the type's
+    /// own), its element type and the element's constraint.
+    fn arr_outer(&mut self, t: TypeId, c: &Constraint) -> R<(Bounds, TypeId, Constraint)> {
         let db = self.db;
         let TypeKind::Array { indexes, elem } = &db.types[t].kind else {
             return Err("an array value of a type that is not an array".into());
@@ -6597,21 +6618,7 @@ impl Lx<'_> {
             Constraint::Array { elem: ec, .. } if !matches!(**ec, Constraint::None) => ec,
             _ => &db.subtypes[*elem].constraint,
         };
-        let et = db.base(*elem);
-        let inner = match &db.types[et].kind {
-            TypeKind::Enum { .. } if yavs_elab::elem_of(db, et) == yavs_kernel::Elem::Logic => {
-                Dims::NONE
-            }
-            TypeKind::Array { .. } => self.arr_dims(et, ec)?,
-            _ => {
-                return Err(
-                    "an array whose elements are not logic values or arrays of them is not \
-                     supported in cycle mode yet"
-                        .into(),
-                );
-            }
-        };
-        Dims::wrap(outer, inner).ok_or_else(|| "an array nested more than four deep".into())
+        Ok((outer, db.base(*elem), ec.clone()))
     }
 
     /// A fresh place of subtype `st` for object `d` (a local of an inlined call).
@@ -6643,6 +6650,23 @@ impl Lx<'_> {
                     fresh: false,
                     leaf: None,
                 }))
+            }
+            TypeKind::Array { elem, .. }
+                if matches!(db.types[db.base(*elem)].kind, TypeKind::Record { .. }) =>
+            {
+                // An array of records: a record of arrays, one per field, as `fields_of` lays
+                // out a signal; the element subtype's own constraint is checked there.
+                let c = &db.subtypes[st].constraint;
+                if matches!(c, Constraint::Array { elem: ec, .. } if !matches!(**ec, Constraint::None))
+                {
+                    return Err(
+                        "an array of records with element constraints is not supported in cycle \
+                         mode yet"
+                            .into(),
+                    );
+                }
+                let (outer, ..) = self.arr_outer(t, c)?;
+                self.layout_fields(outer, *elem, d)
             }
             TypeKind::Array { .. } => {
                 let ds = self.arr_dims(t, &db.subtypes[st].constraint)?;
@@ -6676,14 +6700,90 @@ impl Lx<'_> {
         }
     }
 
+    /// The fields of a fresh array of records of index range `outer` and element subtype `st`,
+    /// each an array over the elements (as `fields_of`).
+    fn layout_fields(&mut self, outer: Bounds, st: SubtypeId, d: DeclId) -> R<Val> {
+        let db = self.db;
+        let t = db.base(st);
+        let (inner, int) = match &db.types[t].kind {
+            TypeKind::Record { elems } => {
+                if matches!(&db.subtypes[st].constraint, Constraint::Record { elems } if !elems.is_empty())
+                {
+                    return Err(
+                        "a record subtype with element constraints is not supported in cycle \
+                         mode yet"
+                            .into(),
+                    );
+                }
+                return (elems.iter())
+                    .map(|el| self.layout_fields(outer, el.subtype, d))
+                    .collect::<R<Vec<_>>>()
+                    .map(Val::Rec);
+            }
+            TypeKind::Enum { lits } if yavs_elab::elem_of(db, t) == yavs_kernel::Elem::Logic => {
+                if self.subtype_bounds(st)?.len() != lits.len() as u64 {
+                    return Err(
+                        "a logic subtype with a range (`X01`, `UX01`, ...) is not supported in \
+                         cycle mode yet"
+                            .into(),
+                    );
+                }
+                (Dims::NONE, None)
+            }
+            TypeKind::Integer | TypeKind::Enum { .. } => {
+                let b = self.subtype_bounds(st)?;
+                let (lo, hi) = b.low_high();
+                let down = b.dir == Direction::Downto;
+                let word = Dims::wrap(WORD, Dims::NONE).expect("one deep");
+                (
+                    word,
+                    Some(IntElem {
+                        lo,
+                        hi,
+                        down,
+                        place: Some((st, d)),
+                    }),
+                )
+            }
+            TypeKind::Array { .. } => (self.arr_dims(t, &db.subtypes[st].constraint)?, None),
+            _ => {
+                return Err(
+                    "a value of a real or physical type is not supported in cycle mode yet".into(),
+                );
+            }
+        };
+        let ds = Dims::wrap(outer, inner).ok_or("an array nested more than four deep")?;
+        let n = ds.b[0].len() * u64::from(ds.elem_len());
+        if n == 0 || n > VEC_MAX {
+            return Err(format!(
+                "a vector of {n} elements (cycle mode takes 1 to 2**26 for now)"
+            ));
+        }
+        let mut p = self.tmp(n as u32);
+        (p.dims, p.fresh, p.obj, p.int) = (ds, false, Some(d), int);
+        Ok(Val::Part(p))
+    }
+
     /// Every leaf of `v` at its start value: logic 0 (`'U'`, counted), an integer its `'left`.
     fn start(&mut self, v: &Val) {
         match v {
             Val::Part(p) => {
-                self.uninit += u64::from(p.len);
+                let left = match p.int {
+                    Some(e) => {
+                        if e.down {
+                            e.hi
+                        } else {
+                            e.lo
+                        }
+                    }
+                    None => {
+                        self.uninit += u64::from(p.len);
+                        0
+                    }
+                };
                 self.ops.push(Op::Lit {
                     dst: p.r,
-                    val: vec![0; words(p.full) as usize].into(),
+                    val: vec![left as u64; words(p.full) as usize].into(),
                 });
             }
             Val::Int(i) => self.ops.push(Op::IntLit {

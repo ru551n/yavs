@@ -1760,6 +1760,29 @@ fn a_right_shift_by_a_known_count_writes_every_word_of_its_target() {
     }
 }
 
+/// Globally static calls on bits and slices of elements of constant arrays, folded from
+/// elaboration's values: an element has its subtype's index range, also when bit-string literals
+/// (`0 to n - 1`) gave it. Elaboration had read them by the literal's range (found by the fuzzer).
+#[test]
+fn calls_on_elements_of_constant_tables_fold_by_the_elements_ranges() {
+    let dir = tempdir("cycle-constcall");
+    analyze(&dir, "constcall.vhd", include_str!("cycle/constcall.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_constcall");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_constcall");
+        assert_eq!(normal.len(), 6, "{t:?} {normal:?}");
+        assert!(
+            normal[0].contains("q1='1' q2='1' q3=B q4=4 c1='1' c2='0' c3=9"),
+            "{normal:?}"
+        );
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 4 of 6 processes run cycle-based"),
+            "{err}"
+        );
+    }
+}
+
 /// Arrays of integers and enumerations in variables, constants and signals.
 #[test]
 fn arrays_of_integers_give_the_same_result() {

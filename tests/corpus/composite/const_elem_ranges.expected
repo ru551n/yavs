@@ -1,0 +1,3 @@
+exit	0
+diag	note	0	0	:const_elem_ranges:u:_p0	port a=F b='1'
+diag	note	0	0	:const_elem_ranges:_p0	C1='1' C2=A s1='1' s2='1' s3=A s4=B s5='1' s6=4 s7='1' s8=01 v=E rt='1''1'

@@ -1673,7 +1673,7 @@ pub(crate) fn compile<'a>(
             FunctionBuilderContext::new(),
         )
     };
-    std::thread::scope(|s| {
+    let helpers = std::thread::scope(|s| {
         let mut helpers = 0;
         let mut cx = new_cx();
         loop {
@@ -1695,10 +1695,13 @@ pub(crate) fn compile<'a>(
                 helpers = helpers.max(n);
             }
             if one(&mut cx).is_none() {
-                break;
+                break helpers;
             }
         }
     });
+    if stats && !order.is_empty() {
+        eprintln!("cycle stats: compiled on {} threads", helpers + 1);
+    }
     if want > 0
         && let Some(t) = &tokens
     {

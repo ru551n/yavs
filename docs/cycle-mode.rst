@@ -313,6 +313,9 @@ A cycle-based process computes with ``0`` and ``1`` only.
 * A metavalue that reaches the region from outside (``'X'``, ``'U'``, ``'W'``, ``'-'``, ``'Z'`` and the like) is read as
   ``0``. ``'1'`` and ``'H'`` read as ``1``, ``'0'`` and ``'L'`` as ``0``. yavs counts the elements read this way and
   prints the count at the end of the run, as in the example above.
+* So a cycle-based process that copies a line another driver pulls up (a released ``'H'``) to a signal the testbench
+  reads gives the testbench ``'1'`` where the normal mode gives ``'H'``. ``to_x01`` makes ``'1'`` of both; a test
+  that compares the signal with ``'1'`` or ``'H'`` directly sees the difference.
 * Everything the region gives back to the kernel is ``'0'`` or ``'1'``. A testbench never sees ``'X'`` or ``'Z'``
   from a cycle-based process. So a process that assigns a metavalue literal (``(others => 'X')`` on invalid data,
   say) to a signal the testbench reads (a process of the top-level unit, or a behavioural one) stays out, and so
@@ -323,6 +326,11 @@ A cycle-based process computes with ``0`` and ``1`` only.
   testbench sees what the normal mode
   gives it. A metavalue literal on a signal only cycle-based processes read is read as ``0``, as are values computed
   from it.
+* An ``'X'`` or ``'U'`` that a process outside the region sets is read as ``0`` as well, also when a cycle-based
+  process copies it on to a signal the testbench reads. Unlike a ``'Z'``, such a copy joins the region, so the
+  testbench sees ``'0'`` where the normal mode gives ``'X'``. A bus model that checks the read data it is handed
+  against an expected ``'X'`` (a read of a location nothing wrote, say) reports "got ``0``, expected ``X``" under
+  ``--cycle``; run such tests in the normal mode.
 * A signal the region reads that nothing drives keeps its start value for the whole run. When that is a metavalue
   (``'U'`` of a ``std_logic`` without an initial value), the normal mode reads it all the time and the region reads
   ``0``. A test that worked only because of the metavalue (a ``valid`` nobody drives, read as "not ``'0'``") then runs
@@ -526,7 +534,10 @@ Checks that stay
 Integer overflow, subtype range checks and array index checks are still made in cycle-based processes. A failure
 stops the run with the same error and exit status as in the normal mode, with the source line, the time and the
 process. A check inside a function or procedure that was inlined also lists the statements it was called from, as the
-normal mode does. ``overflow.vhd`` counts an integer past its largest value:
+normal mode does. With several clocks, the processes of each clock edge run together, one clock after the other:
+when checks of two clocks fail at the same edge, the run stops with that of the clock that runs first, which need
+not be the one the normal mode reports. In the same way a message of a top-level checker on one clock can come before
+the failure of a process on another clock at that edge. ``overflow.vhd`` counts an integer past its largest value:
 
 .. code-block:: text
 

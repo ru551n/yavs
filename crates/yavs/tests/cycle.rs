@@ -227,6 +227,34 @@ fn region_outputs_seen_every_clock_on_events_and_through_local_subprograms() {
     }
 }
 
+/// Owner decision A29 as it stands: an 'X' from a process outside, copied by a member to a signal
+/// the testbench reads, reads as '0' there. A change of this rule changes this test.
+#[test]
+fn an_x_from_outside_copied_by_a_member_reads_as_0() {
+    let dir = tempdir("cycle-xcopy");
+    analyze(&dir, "xcopy.vhd", include_str!("cycle/xcopy.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_xcopy");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_xcopy");
+        let ends = |v: &[String]| {
+            v.iter()
+                .map(|l| l.rsplit(' ').next().unwrap_or("").to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ends(&normal), ["pin='X'", "pin='0'"], "{t:?} {normal:?}");
+        assert_eq!(
+            ends(&cycle),
+            ["pin='0'", "pin='0'"],
+            "{t:?} {cycle:?}\n{err}"
+        );
+        assert!(
+            err.contains("cycle mode: 1 of 4 processes run cycle-based")
+                && err.contains("cycle_xcopy.copy (xcopy.vhd:21)"),
+            "{err}"
+        );
+    }
+}
+
 #[test]
 fn inputs_settled_at_the_next_edge_give_the_same_result() {
     let dir = tempdir("cycle-lazy");

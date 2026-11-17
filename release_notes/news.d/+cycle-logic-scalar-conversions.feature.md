@@ -1,0 +1,1 @@
+Cycle mode takes a logic scalar converted to its own type (`std_ulogic(x)`, `std_logic(x)`), as bus bridges write between port types; a conversion to a range of the type (`X01`) still keeps its process in the event simulation.

@@ -24,9 +24,10 @@ MEMBERS = re.compile(r"(\d+) of (\d+) processes")
 # failure, which cycle mode drops (A12, A21): both runs stop at 1369 us, past "Execution completed.".
 # A new member count is a decision, made in the commit that changes it. NEORV32 3822 -> 3795: the
 # registers with an asynchronous reset in the fan-in of run-count seeds stay out (the reset
-# sequencer making `rstn_sys`, the NEOTRNG ring-oscillator flip-flops).
+# sequencer making `rstn_sys`, the NEOTRNG ring-oscillator flip-flops). 3795 -> 3801: the testbench's
+# `std_ulogic(...)` copies of its pulled-up lines (`twi_sda_i`, `onewire_i`, `smc_di` and three more) join.
 GATE = {
-    "neorv32_dual_full": dict(stop=None, normal=None, cycle=None, members="3795 of 3910"),
+    "neorv32_dual_full": dict(stop=None, normal=None, cycle=None, members="3801 of 3910"),
     "microwatt_coremark_short": dict(stop="1369us", normal=1, cycle=0, members="281 of 418"),
 }
 

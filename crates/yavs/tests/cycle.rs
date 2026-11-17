@@ -1580,6 +1580,32 @@ fn records_holding_arrays_of_records_equal_the_normal_mode() {
     }
 }
 
+/// A logic scalar converted to its own type (`std_logic(x)`, `std_ulogic(x)`) joins; converted to
+/// a range of the type (`X01`), which checks the value, its process stays out. Against the normal
+/// mode at widths 1 to 128.
+#[test]
+fn logic_scalar_conversions_equal_the_normal_mode() {
+    let dir = tempdir("cycle-logicconv");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("logicconv{w}.vhd"),
+            &with_width(include_str!("cycle/logicconv.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_logicconv");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_logicconv");
+            assert_eq!(normal.len(), 24, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 4 of 6 processes run cycle-based"),
+                "{w}: {err}"
+            );
+            assert!(err.contains("cycle_logicconv.checked <= ..."), "{err}");
+        }
+    }
+}
+
 /// Slices whose bounds come from variables: known values fold (a loop parameter through two
 /// variables, both branches, a `case`, an `inout` formal, a function's locals), unknown ones
 /// do not (branches that differ, a loop that may exit, a state variable), and two variables

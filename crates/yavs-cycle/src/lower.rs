@@ -4132,6 +4132,16 @@ impl Lx<'_> {
             Val::Part(p) => {
                 let from = db.exprs[operand].subtype;
                 let qualified = matches!(db.exprs[x].kind, ExprKind::Qualified { .. });
+                // A logic scalar converts only to its own type (`std_ulogic(x)`): the same value,
+                // unless the target is a range of it (`X01`), which checks it.
+                if !qualified
+                    && db.base(to) == db.base(from)
+                    && let TypeKind::Enum { lits } = &db.types[db.base(to)].kind
+                    && yavs_elab::elem_of(db, db.base(to)) == yavs_kernel::Elem::Logic
+                    && self.subtype_bounds(to)?.len() == lits.len() as u64
+                {
+                    return Ok(Val::Part(p));
+                }
                 if !(qualified || self.logic_array(to) && self.logic_array(from)) {
                     return Err("a type conversion that is not between logic vector types".into());
                 }

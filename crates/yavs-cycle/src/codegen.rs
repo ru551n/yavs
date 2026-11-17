@@ -1682,15 +1682,14 @@ pub(crate) fn compile<'a>(
                 let n = tokens.as_ref().map_or(want, |t| t.take(want));
                 // The main thread's stack size: a member's nested code recurses as deep there.
                 for _ in helpers..n {
-                    let spawned = std::thread::Builder::new()
+                    // A thread the system refuses only leaves the work to the others.
+                    let _ = std::thread::Builder::new()
                         .name("yavs-cycle-compile".into())
                         .stack_size(8 << 20)
                         .spawn_scoped(s, || {
                             let mut cx = new_cx();
                             while one(&mut cx).is_some() {}
                         });
-                    // A thread the system refuses only leaves the work to the others.
-                    helpers += usize::from(spawned.is_ok());
                 }
                 helpers = helpers.max(n);
             }

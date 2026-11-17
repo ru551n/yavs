@@ -21,7 +21,7 @@ cycle-based processes are taken out, or the normal run ended on a failure of suc
 (a wrong result: the exit status, the end time, the console or a written file; fails the gate); skipped
 (the normal run does not finish or fails to start). Each test shows how many processes joined the region.
 """
-import argparse, atexit, concurrent.futures as cf, difflib, json, os, random, re, shlex, shutil, subprocess, sys, time
+import argparse, atexit, concurrent.futures as cf, difflib, json, math, os, random, re, shlex, shutil, subprocess, sys, time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -289,8 +289,53 @@ def snapshot(d):
     return {p: (p.stat().st_size, p.stat().st_mtime_ns) for p in d.rglob("*") if p.is_file()} if d.is_dir() else {}
 
 
-def one_run(e, mode, base, a):
-    """Run entry e in `mode` in a copy of its directory; (exit status, stdout, stderr, {written file: path})."""
+# perf stat events of `--count`, user space: what a run costs in cycles next to what it executes.
+EVENTS = {"instructions": "instructions:u", "cycles": "cycles:u", "branch misses": "branch-misses:u",
+          "L1i misses": "L1-icache-load-misses:u", "L1d misses": "L1-dcache-load-misses:u"}
+
+
+def perf_counts(path):
+    """{event name: count} of a `perf stat -x,` file (an event perf could not count is left out)."""
+    names = {v: k for k, v in EVENTS.items()}
+    out = {}
+    for l in Path(path).read_text().splitlines():
+        f = l.split(",")
+        if len(f) > 2 and f[2] in names and f[0].isdigit():
+            out[names[f[2]]] = int(f[0])
+    return out
+
+
+def counted(e, base, a):
+    """`--count`: per mode, `a.count_warmups` uncounted runs and one counted one, without YAVS_CYCLE_STATS (its census
+    is work, and every YAVS_ variable is in the analysis cache's key); {mode: {event: count} or the failure}."""
+    out = {}
+    for mode in ("normal", "cycle"):
+        for _ in range(a.count_warmups):
+            one_run(e, mode, base, a, stats=False)
+        pf = base / f"{mode}.perf"
+        rc = one_run(e, mode, base, a, stats=False, perf=pf)[0]
+        out[mode] = perf_counts(pf) if rc == 0 or rc == a.rcs.get((e["name"], mode)) else {"failed": f"exit status {rc}"}
+    return out
+
+
+def ratio_lines(res):
+    """The summary of `--count`: per event the geometric mean over the tests of cycle over normal, and the totals."""
+    rows = [r["count"] for r in res if r.get("count") and r["members"] and all("failed" not in r["count"][m] for m in ("normal", "cycle"))]
+    if not rows:
+        return ["cycle replay counts: no test with members was counted in both modes"]
+    L = [f"cycle replay counts ({len(rows)} tests with members, cycle over normal: geometric mean of the tests, then the totals):"]
+    for ev in EVENTS:
+        rs = [(c["normal"][ev], c["cycle"][ev]) for c in rows if c["normal"].get(ev) and ev in c["cycle"]]
+        if rs:
+            g = math.exp(sum(math.log(max(y, 1) / x) for x, y in rs) / len(rs))
+            n, c = sum(x for x, _ in rs), sum(y for _, y in rs)
+            L.append(f"  {ev:14} {g:6.3f}   totals {n / 1e6:12.1f} M normal, {c / 1e6:12.1f} M cycle, {c / n:6.3f}")
+    return L
+
+
+def one_run(e, mode, base, a, stats=True, perf=None):
+    """Run entry e in `mode` in a copy of its directory; (exit status, stdout, stderr, {written file: path}). `perf`: count
+    the run (`EVENTS`) into that file."""
     work = base / mode
     shutil.rmtree(work, ignore_errors=True)
     if e.get("dir") and Path(e["dir"]).is_dir():
@@ -309,16 +354,21 @@ def one_run(e, mode, base, a):
     argv = [a.bin, "run", *flag, *[fix(x) for x in e["argv"][2:]]]
     env = {**os.environ, **{k: fix(v) for k, v in e.get("env", {}).items()}, **dict(x.split("=", 1) for x in a.env),
            "YAVS_STD_CACHE": str(a.std)}
-    if mode == "cycle" and a.warm:
+    if mode == "cycle" and a.warm and stats:
         env["YAVS_CYCLE_STATS"] = "1"  # the cache hits; its lines are taken out below
     cmd = shlex.split(a.prefix) + [shutil.which("timeout"), str(a.timeout)]
     if not a.no_sandbox:
         cmd += ["systemd-run", "--user", "--scope", "-q", "-p", f"MemoryMax={a.memory}"]
+    if perf:
+        cmd += ["perf", "stat", "-x,", "-o", str(perf), "-e", ",".join(EVENTS.values())]
     p = subprocess.run(cmd + argv, capture_output=True, text=True, errors="replace", cwd=e["cwd"], env=env, stdin=subprocess.DEVNULL)
     files = {str(f.relative_to(work)): f for f, s in snapshot(work).items() if before.get(f) != s}
     (base / f"{mode}.out").write_text(p.stdout)
     (base / f"{mode}.err").write_text(p.stderr)
     clean = lambda t: masked(t.replace(str(work), "<dir>"))
+    if not stats:
+        return p.returncode, "", "", {}
+    a.rcs[(e["name"], mode)] = p.returncode
     err, hits = cache_hits(p.stderr) if mode == "cycle" and a.warm else (p.stderr, {})
     a.hits[e["name"]] = hits if mode == "cycle" else a.hits.get(e["name"], {})
     return p.returncode, clean(p.stdout), clean(err), files
@@ -353,6 +403,8 @@ def one(e, a):
                 res.update(bucket="differs", why=[w])
             if crc == 124:  # nothing to compare: its output stops where the time ran out
                 res.update(bucket="timeout", why=[f"the cycle run timed out after {a.timeout} s; the normal run did not"])
+            elif a.count:
+                res["count"] = counted(e, base, a)
         if res["bucket"] in ("differs", "timeout"):
             res["dir"] = str(base)
         else:
@@ -360,6 +412,16 @@ def one(e, a):
         return res
     except Exception as ex:  # report, never hide
         return {**res, "bucket": "differs", "why": [f"harness error: {ex!r}"], "dir": str(base)}
+
+
+def count_text(r):
+    c = r.get("count")
+    if not c:
+        return ""
+    if any("failed" in c[m] for m in c):
+        return "; counts: " + ", ".join(f"{m} {c[m]['failed']}" for m in c if "failed" in c[m])
+    f = lambda ev: f"{c['cycle'][ev] / c['normal'][ev]:.2f}" if c["normal"].get(ev) and ev in c["cycle"] else "-"
+    return f"; cycle/normal: instructions {f('instructions')}, cycles {f('cycles')}, branch misses {f('branch misses')}, L1i misses {f('L1i misses')}"
 
 
 # ---------------------------------------------------------------- selftest
@@ -451,6 +513,14 @@ def selftest():
     assert chk["checked"] == 1 and not_warm(chk) is None, chk
     ach = cache_hits("cycle stats: analysis from the cache checked: the same\ncycle stats: 4 functions in 2 ms, 0 from the cache\n")[1]
     assert ach["achecked"] == 1 and not_warm(ach) is not None, ach  # the analysis alone: its code was compiled
+    with tempfile.TemporaryDirectory(dir=D.CACHE.parent if D.CACHE.parent.is_dir() else None) as d:
+        pf = Path(d) / "p"
+        pf.write_text("# started\n\n100,,instructions:u,1,100,,\n50,,cycles:u,1,100,,\n<not counted>,,L1-icache-load-misses:u,0,0,,\n")
+        assert perf_counts(pf) == {"instructions": 100, "cycles": 50}, perf_counts(pf)
+    c = {"normal": {"instructions": 100, "cycles": 50}, "cycle": {"instructions": 50, "cycles": 100}}
+    L = ratio_lines([{"members": 1, "count": c}, {"members": 0, "count": c}])
+    assert "1 tests" in L[0] and "0.500" in L[1] and "2.000" in L[2], L
+    assert "instructions 0.50, cycles 2.00, branch misses -" in count_text({"count": c})
     print("selftest ok")
 
 
@@ -477,6 +547,10 @@ def main():
     ap.add_argument("--warm", action="store_true",
                     help="count the cache hits; a cycle run with members that is not warm differs (with the --libs of an earlier replay)")
     ap.add_argument("--json", type=Path, help="write one JSON result per test to this file")
+    ap.add_argument("--count", action="store_true", help="after the compare, count each test's normal and cycle run with perf stat "
+                    "(instructions, cycles, branch and L1 cache misses, user space; warm-up runs first); pin with --prefix 'tools/claim core --'")
+    ap.add_argument("--count-warmups", type=int, default=2, metavar="N", help="with --count: uncounted runs per mode first (default 2: "
+                    "the cache stores a design on its second run)")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("-v", "--verbose", action="store_true", help="one line per test")
     a = ap.parse_args()
@@ -490,6 +564,8 @@ def main():
         sys.exit("cyclereplay: give one command file (made with --record)")
     if not a.bin or not Path(a.bin).is_file():
         sys.exit(f"cyclereplay: no yavs binary {a.bin!r}: pass --bin or set YAVS_BIN")
+    if a.count and not shutil.which("perf"):
+        sys.exit("cyclereplay: --count needs perf (linux-tools) on PATH")
     MASKS.extend(re.compile(m) for m in a.mask)
     a.bin = str(Path(a.bin).resolve())
     a.deadline = time.time() + a.budget
@@ -502,7 +578,7 @@ def main():
     libs = a.libs.resolve() if a.libs else D.CACHE / "libs"
     if not a.libs:
         atexit.register(shutil.rmtree, libs, ignore_errors=True)  # runs before D.cleanup
-    a.std, a.hits = libs / "std", {}
+    a.std, a.hits, a.rcs = libs / "std", {}, {}
     new = private_libs(todo, libs, a.std, keep=bool(a.libs))
     kept = len(json.loads((libs / "libs.json").read_text())) - len(new) if a.libs else 0
     print(f"cycle replay: {len(new)} libraries copied" + (f" into {libs}, {kept} kept from an earlier replay" if a.libs else ""), flush=True)
@@ -514,7 +590,7 @@ def main():
                 if r["why"][:1] == ["not started: the time budget is spent"]:
                     continue
                 if a.verbose or r["bucket"] in ("differs", "skipped", "timeout"):
-                    print(f"{r['bucket'].upper():10} {r['name']}  [{r['members']}/{r['procs']} in the region] end {r['end']}"
+                    print(f"{r['bucket'].upper():10} {r['name']}  [{r['members']}/{r['procs']} in the region] end {r['end']}" + count_text(r)
                           + (f"\n    " + "\n    ".join(r["why"]) if r["why"] and r["bucket"] != "documented" else ""), flush=True)
                 if r["bucket"] == "differs":
                     print(f"    outputs kept in {r['dir']}", flush=True)
@@ -535,6 +611,8 @@ def main():
         print(f"cycle replay: cache of the {len(hs)} cycle runs with members: {sum(bool(h.get('region')) for h in hs)} took the region from it, "
               f"{sum(bool(h.get('analysis')) for h in hs)} the analysis, {sum(bool(h.get('checked')) for h in hs)} checked the region, "
               f"{sum(h.get('fhits', 0) for h in hs)} of {sum(h.get('funs', 0) for h in hs)} functions")
+    if a.count:
+        print("\n".join(ratio_lines(ran)))
     if not ran:
         print("cyclereplay: nothing was compared")
     sys.exit(1 if c["differs"] or not ran else 0)

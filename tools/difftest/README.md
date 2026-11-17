@@ -183,6 +183,17 @@ the response file of each run), run in the directory the test runner ran in (`--
     YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclereplay.py cmds.jsonl --libs L         # warm, as users run
     YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclereplay.py cmds.jsonl --libs L --warm  # proof it is warm
 
+`--count` measures what the compared tests cost, in cycles next to instructions: after the compare each test runs
+normal and `--cycle` again, `--count-warmups` times uncounted (default 2: the cache stores a design on its second run)
+and once under `perf stat` (user space: instructions, cycles, branch misses, L1 instruction and data cache misses),
+without `YAVS_CYCLE_STATS` (its counts are work, and every `YAVS_` variable is in the analysis cache's key). Each test
+line (`-v`) shows the ratios cycle over normal, the summary the geometric mean of each over the tests with members and
+the totals, and `--json` keeps the counts. Pin the runs with `--prefix 'tools/claim core --'`; a test whose counted run
+ends with another exit status than its compared one is not counted. Report cycles with instructions: the two diverge
+where region code is large or branches unpredictably.
+
+    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclereplay.py cmds.jsonl --libs L --count --prefix 'tools/claim core --' -v
+
 A test runner that has run the tests already needs no second run to record them: any simulator wrapper that
 exits at `run` still leaves each test's response file. The files are copied before each run; files written
 outside the output directory, or relative to the working directory, are not isolated or compared.

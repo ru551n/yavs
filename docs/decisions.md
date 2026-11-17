@@ -2378,7 +2378,7 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   process per conversion (one delta late, unlike the reference simulators). Ordering: the edge
   converts at the part that the level-ordered update worklist reaches last, so the result does
   not depend on which part changed or on the thread count (docs/design/ir.md 4.1).
-- **Impure conversion functions that read signals** (#1166, agent 2026-11-17): a port conversion
+- **Impure conversion functions that read signals** (#1166, agent 2026-11-17; read order owner 2026-11-17): a port conversion
   function may read signals of entity, architecture, block and generate regions by value. The
   function is lowered on its own with those signals as instance-data slots
   (`Lowerer::capture_signals`, `FreeObj::sig`); elaboration finds their kernel parts
@@ -2394,8 +2394,8 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   the result does not depend on port collapsing (`--wave`, `--dap`, `--vhpi` run uncollapsed).
   The references differ there (catalogue `impure-conversion-formal-read-in-port`,
   `impure-conversion-formal-read-resolved`: sim1 sometimes reads the old value of a resolved
-  signal, sim2 of an `in` port); yavs reads the value of the cycle everywhere, owner decision
-  pending. Gaps: a read signal that the other direction of an `inout` association reads, or
+  signal, sim2 of an `in` port); yavs reads the value of the cycle everywhere (owner,
+  2026-11-17: keep the new value). Gaps: a read signal that the other direction of an `inout` association reads, or
   that is the association's own actual, has its value of the last cycle; a part of a composite
   resolved as a whole, or a formal fed through a converted port, is E3008 "not implemented".
   Other uses of such a signal (attributes,

@@ -1775,18 +1775,18 @@ impl Db {
                     a.with_bounds(&want)?
                 };
                 // Composite elements take the element subtype's bounds too (an element of
-                // `(x"01", x"02")` of `std_ulogic_vector(7 downto 0)` is not `0 to 7`). An element
-                // constraint of `st` itself keeps them as they are.
+                // `(x"01", x"02")` of `std_ulogic_vector(7 downto 0)` is not `0 to 7`), with an
+                // element constraint of `st` itself applied (`arr_t(0 to 3)(7 downto 0)`).
                 let crate::types::TypeKind::Array { elem, .. } = self.types[self.base(st)].kind
                 else {
                     return Some(ConstValue::Array(a));
                 };
-                let own = matches!(&self.subtypes[st].constraint,
-                    crate::types::Constraint::Array { elem: ec, .. } if !matches!(**ec, crate::types::Constraint::None));
-                if !own
-                    && !self.types[self.base(elem)].kind.is_scalar()
+                if !self.types[self.base(elem)].kind.is_scalar()
                     && let crate::stat::Elems::Runs(runs) = &mut a.elems
                 {
+                    // ponytail: one element subtype per reference of such a constant; cache it if
+                    // designs with many references show it.
+                    let elem = self.element_subtype(st).unwrap_or(elem);
                     let mut out = Vec::with_capacity(runs.len());
                     for (n, x) in std::mem::take(runs).into_vec() {
                         out.push((n, self.rebound_value(&x, elem)?));

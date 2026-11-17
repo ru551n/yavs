@@ -547,10 +547,11 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         implicit.extend(l.implicit_more.iter().map(|x| x.0));
     }
     stat(|| format!("select: history {} ms", t0.elapsed().as_millis()));
-    // Leaves a process outside may set to 'Z' (no member can: two-state values have none).
-    let mut zsrc: BTreeSet<LeafId> = (0..e.procs.len())
+    // The drivers (process, leaf) of processes outside that may give a 'Z' (no member can:
+    // two-state values have none).
+    let zsrc: BTreeSet<(usize, LeafId)> = (0..e.procs.len())
         .filter(|pi| !taken.contains_key(pi))
-        .flat_map(|pi| z_leaves(db, e, pi))
+        .flat_map(|pi| z_leaves(db, e, pi).into_iter().map(move |l| (pi, l)))
         .collect();
     // Leave out what the set as a whole does not allow yet, until nothing changes.
     loop {
@@ -667,7 +668,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         // metavalue literal, or passes on a 'Z' from outside, to a leaf a process outside reads
         // stays out (the region gives back '0' and '1' only).
         if gone.is_empty() {
-            gone = meta_rule(db, e, &taken, &mut zsrc, &out);
+            gone = meta_rule(db, e, &taken, &zsrc, &out);
         }
         if gone.is_empty() {
             gone = ram_rule(db, e, &taken);
@@ -815,13 +816,14 @@ fn meta_rule(
     db: &Db,
     e: &Elaborated,
     taken: &BTreeMap<usize, (Fit, Body)>,
-    zsrc: &mut BTreeSet<LeafId>,
+    zclaim: &BTreeSet<(usize, LeafId)>,
     out: &[(usize, Why)],
 ) -> Vec<(usize, String)> {
     let reads = |f: &Fit, b: &Body| -> Vec<LeafId> {
         let fit = f.reads.iter().map(|(k, _, _)| LeafId(k as u32));
         b.reads.iter().copied().chain(fit).collect()
     };
+    let zsrc = pass_on_z(db, e, taken, zclaim, out);
     let cands: Vec<(usize, Option<LeafId>)> = (taken.iter())
         .filter_map(|(&pi, (f, b))| {
             let z = reads(f, b).into_iter().find(|l| zsrc.contains(l));
@@ -880,10 +882,6 @@ fn meta_rule(
             ),
             _ => "it assigns a metavalue literal".to_string(),
         };
-        // Outside now, it passes the 'Z' on to what it drives.
-        if z.is_some() {
-            zsrc.extend(all_driven(e, pi));
-        }
         gone.push((
             pi,
             format!(
@@ -894,6 +892,160 @@ fn meta_rule(
         ));
     }
     gone
+}
+
+/// The leaves that may hold a 'Z', from the drivers `claim` that may give one, those of processes
+/// outside that pass one on (every leaf a process drives, when a value it assigns reads such a
+/// leaf or its reads are not known: `value_reads`) and both sides of a port of such a leaf, until nothing changes: a copy of a
+/// tri-state line carries its 'Z'. A leaf resolved by `resolved` holds one only where every
+/// driver of an element may give it. A behavioural process (a bus model, the stimulus) computes
+/// what it drives: it is not followed.
+fn pass_on_z(
+    db: &Db,
+    e: &Elaborated,
+    taken: &BTreeMap<usize, (Fit, Body)>,
+    claim: &BTreeSet<(usize, LeafId)>,
+    out: &[(usize, Why)],
+) -> BTreeSet<LeafId> {
+    let mut zsrc = BTreeSet::new();
+    if claim.is_empty() {
+        return zsrc;
+    }
+    let mut claim = claim.clone();
+    let behav: BTreeSet<usize> = (out.iter())
+        .filter(|(_, w)| matches!(w, Why::Behavioural(_)))
+        .map(|(pi, _)| *pi)
+        .collect();
+    let mut memo = BTreeMap::new();
+    let outside: Vec<(usize, Option<BTreeSet<LeafId>>)> = (0..e.procs.len())
+        .filter(|pi| !taken.contains_key(pi) && !behav.contains(pi))
+        .map(|pi| (pi, value_reads(db, e, pi, &mut memo)))
+        .collect();
+    let mut drivers: BTreeMap<LeafId, Vec<(usize, yavs_kernel::Range)>> = BTreeMap::new();
+    for d in &e.nets.drivers {
+        drivers
+            .entry(d.leaf)
+            .or_default()
+            .push((d.proc.index(), d.range));
+    }
+    let ports: Vec<(LeafId, LeafId)> = (e.nets.ports.iter())
+        .map(|pe| (pe.actual.0, pe.formal.0))
+        .chain(e.nets.conv_ports.iter().flat_map(|cp| {
+            (cp.actual.iter()).flat_map(|a| cp.formal.iter().map(move |f| (a.0, f.0)))
+        }))
+        .collect();
+    let holds = |l: LeafId, claim: &BTreeSet<(usize, LeafId)>| -> bool {
+        let ds = drivers.get(&l).map_or(&[][..], |v| &v[..]);
+        if ds.len() < 2 || !matches!(e.nets.leaf(l).resolution, Some(LeafRes::StdLogic)) {
+            return true;
+        }
+        // The drivers of an element change only where a driver's range starts or ends.
+        let mut at: Vec<u32> = ds.iter().map(|(_, r)| r.offset).collect();
+        at.extend(ds.iter().map(|(_, r)| r.offset + r.len));
+        at.into_iter().any(|x| {
+            let mut on = ds
+                .iter()
+                .filter(|(_, r)| (r.offset..r.offset + r.len).contains(&x));
+            let first = on.next();
+            first.is_some()
+                && first
+                    .into_iter()
+                    .chain(on)
+                    .all(|(pi, _)| claim.contains(&(*pi, l)))
+        })
+    };
+    loop {
+        let n = (zsrc.len(), claim.len());
+        let claimed: BTreeSet<LeafId> = claim.iter().map(|&(_, l)| l).collect();
+        zsrc.extend(claimed.into_iter().filter(|&l| holds(l, &claim)));
+        for (pi, r) in &outside {
+            if r.as_ref()
+                .is_none_or(|r| r.iter().any(|l| zsrc.contains(l)))
+            {
+                claim.extend(all_driven(e, *pi).into_iter().map(|l| (*pi, l)));
+            }
+        }
+        for &(a, f) in &ports {
+            if zsrc.contains(&a) || zsrc.contains(&f) {
+                zsrc.extend([a, f]);
+            }
+        }
+        if (zsrc.len(), claim.len()) == n {
+            return zsrc;
+        }
+    }
+}
+
+/// The leaves the values process `pi` assigns may read: the values of its signal and variable
+/// assignments, not its conditions (`'0' when pad = '0' else '1'` passes on no 'Z'); every leaf
+/// it reads when it calls a procedure, a subprogram that reads a signal itself, or names an
+/// external signal; `None` when its reads are not known.
+fn value_reads(
+    db: &Db,
+    e: &Elaborated,
+    pi: usize,
+    memo: &mut BTreeMap<yavs_sem::DeclId, Option<CallSigs>>,
+) -> Option<BTreeSet<LeafId>> {
+    use yavs_sem::hir::{Rhs, Waveform};
+    fn values<T>(rhs: &Rhs<T>, each: &mut dyn FnMut(&T)) {
+        match rhs {
+            Rhs::Simple(t) => each(t),
+            Rhs::Conditional(alts) => alts.iter().for_each(|(t, _)| each(t)),
+            Rhs::Selected { alts, .. } => alts.iter().for_each(|(t, _)| each(t)),
+        }
+    }
+    let full = proc_reads(db, e, pi, memo)?.0;
+    let p = &e.procs[pi];
+    if p.actual.is_some() {
+        return Some(full);
+    }
+    let mut stmts = vec![p.stmt];
+    deep(db, &db.stmt_children(p.stmt), &mut stmts);
+    let mut vals: Vec<ExprId> = Vec::new();
+    let mut calls = Vec::new();
+    for &s in &stmts {
+        match &db.stmts[s].kind {
+            StmtKind::SignalAssign { rhs, .. } | StmtKind::ConcSignalAssign { rhs, .. } => {
+                values(rhs, &mut |w| {
+                    if let Waveform::Elements(els) = w {
+                        vals.extend(els.iter().filter_map(|el| el.value));
+                    }
+                })
+            }
+            StmtKind::VarAssign { rhs, .. } => values(rhs, &mut |x| vals.push(*x)),
+            StmtKind::ProcCall(_)
+            | StmtKind::ConcProcCall { .. }
+            | StmtKind::Force { .. }
+            | StmtKind::Return(_) => return Some(full),
+            _ => {}
+        }
+        if !stmt_calls(db, s, &mut calls) {
+            return Some(full);
+        }
+    }
+    for (c, _) in &calls {
+        if callee_sigs(db, *c, 0, memo).is_none_or(|sum| !sum.reads.is_empty()) {
+            return Some(full);
+        }
+    }
+    let mut lsps = Vec::new();
+    for x in vals {
+        db.reads(x, &mut lsps);
+    }
+    let mut out = BTreeSet::new();
+    for l in &lsps {
+        match l.root {
+            ObjRoot::Decl(d) => {
+                if let Some(o) = e.signal(p.scope, d) {
+                    let (a, z) = e.nets.obj(o).leaves;
+                    out.extend((a.0..z.0).map(LeafId));
+                }
+            }
+            ObjRoot::External(_) => return Some(full),
+            ObjRoot::ImplicitSignal(_) => {}
+        }
+    }
+    Some(out)
 }
 
 /// The leaves process `pi` may set to `'Z'`: the targets of its signal assignments whose value

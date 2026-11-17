@@ -1512,6 +1512,48 @@ fn arrays_of_records_equal_the_normal_mode_at_widths_around_a_word() {
     }
 }
 
+/// A 'Z' copied by a process that stays out for another reason (a delay) reaches a register the
+/// testbench reads: the register stays out too and the testbench sees the 'Z'; a register of a
+/// line without one joins, and so do one of a line with a pull-up (it never resolves to 'Z') and
+/// one of a copy outside that only tests the line; copies through a variable and `to_x01`, and a
+/// line pulled up on one element only, keep theirs out. Against the normal mode at widths 1 to 128.
+#[test]
+fn a_z_passed_on_by_a_process_outside_keeps_its_reader_out() {
+    let dir = tempdir("cycle-zpass");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("zpass{w}.vhd"),
+            &with_width(include_str!("cycle/zpass.vhd"), w),
+        );
+        for t in tiers() {
+            // Width 1 truncates `k + 3`: the warnings name `clean <= ...`, not a result line.
+            let k = |v: Vec<String>| -> Vec<String> {
+                v.into_iter().filter(|l| l.contains("k=")).collect()
+            };
+            let (normal, _) = run(&dir, &t, "cycle_zpass");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_zpass");
+            let (normal, cycle) = (k(normal), k(cycle));
+            assert_eq!(normal.len(), 8, "{w} {t:?} {normal:?}");
+            assert!(normal.iter().any(|l| l.contains("q=Z")), "{normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 3 of 18 processes run cycle-based"),
+                "{w}: {err}"
+            );
+            // The members, listed as clocked.
+            for m in ["reg_r", "reg_p", "reg_c"] {
+                let row = format!("cycle_zpass.{m} (zpass");
+                assert!(
+                    err.lines()
+                        .any(|l| l.contains(&row) && l.trim_end().ends_with("clocked")),
+                    "{err}"
+                );
+            }
+        }
+    }
+}
+
 /// Slices whose bounds come from variables: known values fold (a loop parameter through two
 /// variables, both branches, a `case`, an `inout` formal, a function's locals), unknown ones
 /// do not (branches that differ, a loop that may exit, a state variable), and two variables

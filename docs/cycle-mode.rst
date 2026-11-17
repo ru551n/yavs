@@ -315,8 +315,10 @@ A cycle-based process computes with ``0`` and ``1`` only.
   from a cycle-based process. So a process that assigns a metavalue literal (``(others => 'X')`` on invalid data,
   say) to a signal the testbench reads (a process of the top-level unit, or a behavioural one) stays out, and so
   does one that passes on to such a signal a signal a process outside sets to ``'Z'`` in its own statements, or
-  that such a process passes on (a copy of a tri-state line; a ``'Z'`` made in a
-  called subprogram or given by a generic is not seen): the testbench sees what the normal mode
+  that any process outside but a behavioural one passes on in a value it assigns (a copy of a tri-state line, also
+  one that stays out for another reason, such as a delay; a line another driver pulls up never holds a ``'Z'``; a
+  ``'Z'`` made in a called subprogram, given by a generic or passed on by a behavioural process is not seen): the
+  testbench sees what the normal mode
   gives it. A metavalue literal on a signal only cycle-based processes read is read as ``0``, as are values computed
   from it.
 * A signal the region reads that nothing drives keeps its start value for the whole run. When that is a metavalue

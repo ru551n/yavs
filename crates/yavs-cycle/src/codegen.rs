@@ -1286,6 +1286,8 @@ pub(crate) fn compile<'a>(
                 keep: shape.map_or(keep, |k| &shapes[k].keep[..]),
                 zeros: std::collections::HashMap::new(),
                 fields: SecondaryMap::new(),
+                born: SecondaryMap::new(),
+                piece: 0,
                 built: SecondaryMap::new(),
                 pos: 0,
                 next: 0,
@@ -1315,9 +1317,11 @@ pub(crate) fn compile<'a>(
                 } else {
                     g.write_back();
                 }
-                // What is in memory now: state, and what the next part of the member reads.
+                // What is in memory now: state, and what the next part of the member reads; a
+                // value is handed on through at most `CARRY` pieces.
+                g.piece += 1;
                 g.cache = (g.cache.iter())
-                    .filter(|(o, _)| g.state(**o))
+                    .filter(|(o, (v, _))| g.state(**o) && g.piece - g.born[*v] < CARRY)
                     .map(|(&o, &(v, _))| (o, (v, false)))
                     .collect();
             }
@@ -1544,6 +1548,10 @@ enum Pend {
 /// `BIG` operations: in a large piece the register allocator's work grows with the values live at
 /// once, while a small piece with many words (a record copied whole) runs faster with them all.
 const CACHE_MAX: usize = 256;
+/// Most pieces a value in a register is handed on through: the register allocator's work grows
+/// with the length of what is live (rtl_ff, 4096 one-bit members reading the words of one
+/// vector: 64 pieces cost 8 percent more compile than 16, which reload a word every 16 members).
+const CARRY: u32 = 16;
 const CACHE_BIG: usize = 16;
 const BIG: usize = 500;
 
@@ -1577,6 +1585,9 @@ struct Gen<'a> {
     /// Words built from a word `d0` by inserting fields of one word `v`, all moved by the same
     /// distance `dl` (left when positive): `d0 & !m | v << dl & m` (`insert`).
     built: SecondaryMap<Value, Option<(Value, Value, i8, u64)>>,
+    /// The piece a value entered the registers in, plus one, and the pieces generated so far.
+    born: SecondaryMap<Value, u32>,
+    piece: u32,
     /// The operation being generated, by its number in [`walk`], and the next number.
     pos: u32,
     next: u32,
@@ -1696,6 +1707,9 @@ impl Gen<'_> {
                 self.store(o, v);
             }
             self.cache.clear();
+        }
+        if self.born[v] == 0 {
+            self.born[v] = self.piece + 1;
         }
         self.cache.insert(off, (v, dirty));
     }

@@ -1844,7 +1844,7 @@ impl Lx<'_> {
                 }
                 (Val::Part(p), Choice::Expr(x)) => {
                     let Some(c) = self.fold(*x) else {
-                        return Err(bug("a `case` choice that is not known during elaboration"));
+                        return Err("a `case` choice that is not known during elaboration".into());
                     };
                     let t = self.db.base(self.db.exprs[*x].subtype);
                     let (codes, _) = self.codes(t, &c)?;

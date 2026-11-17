@@ -3054,10 +3054,11 @@ impl Cx<'_> {
                     return out(codes::TESTBENCH, span, "a method of a protected object");
                 }
                 let info = self.callee(c.callee);
-                // Analysis rejects a call that can wait in a process with a sensitivity list
-                // (E1801); one without is behavioural when it calls one (`waits_behavioural`).
+                // In a process with a sensitivity list: analysis rejects it (E1801) only when it
+                // sees the body; one in a package body analysed apart fails at run time.
                 if info.waits {
-                    return bug(
+                    return out(
+                        codes::WAIT,
                         span,
                         format!("a call of `{}`, which waits", db.decls[c.callee].name),
                     );

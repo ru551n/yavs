@@ -6214,6 +6214,11 @@ fn rare_reasons_are_named_in_the_report_and_under_strict() {
                     "E4133",
                     "a memory read outside the region: rare_a_tb.dut.imem",
                 ),
+                (
+                    "dut.call_wait",
+                    "E4110",
+                    "a call of `pause_if`, which waits",
+                ),
             ],
         ),
         (
@@ -6335,6 +6340,11 @@ fn rare_reasons_are_named_in_the_report_and_under_strict() {
                     "dut.choice_len",
                     "E4101",
                     "a `case` choice of another length than the selector",
+                ),
+                (
+                    "dut.sel <= ...",
+                    "E4101",
+                    "a `case` choice that is not known during elaboration",
                 ),
                 // The top-level unit's checkers stay in the event kernel.
                 (

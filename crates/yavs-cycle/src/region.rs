@@ -714,8 +714,9 @@ fn differs(e: &Elaborated, f: &Fit, b: &Body) -> Option<String> {
         None => f.reset.is_empty(),
     };
     if !shape || !reset {
-        return Some(lower::bug(
-            "the two passes of yavs read the process's shape, clock or reset differently",
+        return Some(format!(
+            "{}the two passes of yavs read the process's shape, clock or reset differently",
+            lower::BUG
         ));
     }
     let (l, x) = (b.rparts.iter()).find_map(|&(l, lo, n)| {
@@ -723,10 +724,12 @@ fn differs(e: &Elaborated, f: &Fit, b: &Body) -> Option<String> {
             .first_missing(u64::from(l.0), lo, lo + n)
             .map(|x| (l, x))
     })?;
-    Some(lower::bug(&format!(
-        "a read of element {x} of {} that the first pass of yavs missed",
+    // Reached (2026-11-17) by a call with a mode view in a concurrent statement: no assertion.
+    Some(format!(
+        "{}a read of element {x} of {} that the first pass of yavs missed",
+        lower::BUG,
         e.leaf_name(l)
-    )))
+    ))
 }
 
 /// The dependence analysis of the fitting processes.

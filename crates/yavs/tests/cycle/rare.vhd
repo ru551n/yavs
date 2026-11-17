@@ -11,6 +11,7 @@ package rare_pkg is
     impure function get return integer;
   end protected;
   shared variable psv : integer := 0;
+  procedure pause_if (go : boolean);
 end package;
 
 package body rare_pkg is
@@ -26,6 +27,12 @@ package body rare_pkg is
       return n;
     end function;
   end protected body;
+  procedure pause_if (go : boolean) is
+  begin
+    if go then
+      wait for 1 ns;
+    end if;
+  end procedure;
 end package body;
 
 library ieee;
@@ -134,6 +141,12 @@ begin
       imem(to_integer(ad(6 downto 0))) <= to_integer(unsigned(a));
     end if;
   end process;
+  call_wait : process (clk)
+  begin
+    if rising_edge(clk) then
+      pause_if(false);
+    end if;
+  end process;
   reader : process
   begin
     wait for 10 ns;
@@ -159,6 +172,7 @@ architecture rtl of rare_b is
   type ia is array (0 to 3) of integer;
   type ib is array (0 to 3) of natural;
   type st_t is (st0, st1, st2, st3);
+  signal sel : std_ulogic;
   type out_t is array (1 to 40) of std_ulogic_vector(7 downto 0);
   signal ob : out_t;
   signal x01s : X01;
@@ -367,6 +381,7 @@ begin
       end case;
     end if;
   end process;
+  with unsigned(a) select sel <= '1' when to_unsigned(42, 8), '0' when others;
   q <= ob(1);
 end architecture;
 

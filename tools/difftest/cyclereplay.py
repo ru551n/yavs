@@ -91,9 +91,9 @@ def private_libs(todo, root, std):
             if not m or (own and (m.group(2) + "/").startswith(own + "/")):
                 continue
             src = m.group(2).rstrip("/")
+            if not Path(src).is_dir():
+                continue  # a mapped library the run may not use: nothing to write into
             if src not in copies:
-                if not Path(src).is_dir():
-                    sys.exit(f"cyclereplay: {e['name']}: library directory {src} does not exist")
                 copies[src] = dst = root / f"{len(copies)}_{Path(src).name}"
                 shutil.copytree(src, dst, symlinks=True, ignore=shutil.ignore_patterns("yavs-cache"))
             e["argv"][i] = m.group(1) + str(copies[src])

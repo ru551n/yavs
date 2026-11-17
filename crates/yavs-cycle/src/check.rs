@@ -1465,6 +1465,7 @@ impl Cx<'_> {
     fn fold_shared(&mut self, x: ExprId) -> Option<Rc<ConstValue>> {
         let db = self.db;
         if let ExprKind::Obj(d) = db.exprs[x].kind
+            && matches!(&db.decls[d].kind, DeclKind::Object(o) if o.class == ObjClass::Constant)
             && db.value(x).is_none()
             && !self.frames.last().is_some_and(|f| f.contains_key(&d))
             && !self.opaque.contains(&d)

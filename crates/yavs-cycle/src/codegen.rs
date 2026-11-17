@@ -42,6 +42,8 @@ pub(crate) struct Code {
     _module: JITModule,
     /// By [`Fun`]: what it runs, in order.
     entries: [Vec<Run>; 3],
+    /// The edge's own steps in parts: a part runs when one of its words is not 0 (none: always).
+    edge_parts: Vec<(Vec<u32>, std::ops::Range<usize>)>,
     /// The words each loop group drives: (first, count), and where [`Run::Save`] copies them.
     groups: Vec<(Vec<(u32, u32)>, u32)>,
     /// The words the code addresses.
@@ -120,6 +122,9 @@ pub(crate) enum Step {
     /// The next `n` steps that are not guards run behind guard `g` (in functions of their own),
     /// with checks or without.
     Guard(usize, bool, usize),
+    /// The edge's steps after it, up to the next gate, run only when one of these words is not 0
+    /// (edge classes' words; none: always).
+    Gate(Vec<u32>),
 }
 
 /// One compiled body for several members whose code is the same but for where their words lie:
@@ -180,7 +185,11 @@ impl Code {
     ) -> Result<(), u32> {
         let mark = mark.filter(|m| m.iter().zip(&self.every[..]).any(|(m, e)| e & !m != 0));
         if f == Fun::Edge {
-            self.steps(img, &self.entries[1], None, guards)?;
+            for (ws, r) in &self.edge_parts {
+                if ws.is_empty() || ws.iter().any(|&w| img[w as usize] != 0) {
+                    self.steps(img, &self.entries[1][r.clone()], None, guards)?;
+                }
+            }
         }
         match f {
             Fun::Init => self.steps(img, &self.entries[2], None, guards),
@@ -978,6 +987,7 @@ pub(crate) fn compile<'a>(
     let mut tables: Vec<Box<[usize]>> = Vec::new();
     let mut runs: [Vec<Pend>; 3] = Default::default();
     let mut settle_units: Vec<Vec<u32>> = Vec::new();
+    let mut edge_parts = Vec::new();
     for (f, (what, steps)) in [("settle", settle), ("edge", edge), ("init", init)]
         .into_iter()
         .enumerate()
@@ -1002,6 +1012,8 @@ pub(crate) fn compile<'a>(
             cur_units.clear();
         };
         let mut eunits: Vec<Vec<u32>> = Vec::new();
+        // The edge's gates: each one's words and the first step after it.
+        let mut gates: Vec<(&[u32], usize)> = vec![(&[], 0)];
         // The guards open: each one's place, what it is and the steps it still covers.
         let mut open: Vec<(usize, usize, bool, usize)> = Vec::new();
         for (si, st) in steps.iter().enumerate() {
@@ -1068,6 +1080,17 @@ pub(crate) fn compile<'a>(
                     eunits.push(Vec::new());
                     continue;
                 }
+                Step::Gate(w) => {
+                    flush(
+                        &mut funs,
+                        &mut cur,
+                        &mut cur_units,
+                        &mut runs[f],
+                        &mut eunits,
+                    );
+                    gates.push((w, runs[f].len()));
+                    continue;
+                }
                 Step::Save(g) => {
                     flush(
                         &mut funs,
@@ -1126,6 +1149,13 @@ pub(crate) fn compile<'a>(
         if f == 0 {
             settle_units = eunits;
         }
+        if f == 1 {
+            let n = runs[f].len();
+            edge_parts = (gates.iter().enumerate())
+                .map(|(k, &(w, a))| (w.to_vec(), a..gates.get(k + 1).map_or(n, |g| g.1)))
+                .filter(|(_, r)| !r.is_empty())
+                .collect();
+        }
     }
     // Per shape, per block: the block whose base it is addressed from and the distance to it, the
     // same in every instance (an instance's signals lie in one order: a body needs few bases).
@@ -1176,6 +1206,7 @@ pub(crate) fn compile<'a>(
             .map(|f| (format!("cycle_{}_{name}", f.0), f.3.is_some()))
             .collect(),
         runs,
+        edge_parts,
         groups,
         words,
         tables,
@@ -1440,9 +1471,13 @@ fn finish(
     for (i, _) in settle_units.iter().enumerate().filter(|x| !x.1.is_empty()) {
         every[i / 64] |= 1 << (i % 64);
     }
+    if (plan.edge_parts.iter()).any(|(ws, _)| ws.iter().any(|&w| w as usize >= words)) {
+        return Err("an edge gate's word does not fit the image".into());
+    }
     Ok(Code {
         _module: module,
         entries,
+        edge_parts: plan.edge_parts,
         groups: plan.groups,
         words,
         tables: plan.tables,
@@ -1468,6 +1503,8 @@ pub(crate) struct CodePlan {
     /// Per function: its symbol, and whether it is a shape's body (with a table).
     funs: Vec<(String, bool)>,
     runs: [Vec<Pend>; 3],
+    /// [`Code::edge_parts`].
+    edge_parts: Vec<(Vec<u32>, std::ops::Range<usize>)>,
     groups: Vec<(Vec<(u32, u32)>, u32)>,
     words: usize,
     tables: Vec<Box<[usize]>>,

@@ -3840,8 +3840,9 @@ fn members_skipped_on_unchanged_inputs_give_the_same_result() {
 /// The settle at an edge runs only what the clocked members of the classes that had one, and the
 /// inputs read, reach (`edgecone.vhd`): clocks with logic of their own, logic two clocks share,
 /// edges in one delta, a gated clock, a register that keeps its value, a memory written on one
-/// clock and read into another's logic, resets made by a register of another clock and from
-/// outside. Against the normal mode at widths 1 to 128: with the tests' checks, with every settle
+/// clock and read into another's logic and outside, resets made by a register of another clock and
+/// from outside, reports of two clocks in one delta (in process order). Against the normal mode at
+/// widths 1 to 128: with the tests' checks, with every settle
 /// compared with one of every step (`YAVS_CYCLE_SKIP_CHECK=full`), and with neither.
 #[test]
 fn an_edge_settles_only_what_the_classes_that_had_one_reach() {
@@ -3871,8 +3872,10 @@ fn an_edge_settles_only_what_the_classes_that_had_one_reach() {
         let want = format!(" a={} {} {} ", hex(1), hex(ones), hex(ones));
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_edgecone");
-            assert_eq!(normal.len(), 120, "{w} {t:?} {normal:?}");
-            assert!(normal[4].contains(&want), "{want}\n{}", normal[4]);
+            let mon: Vec<&String> = normal.iter().filter(|l| l.contains("t=")).collect();
+            assert_eq!(mon.len(), 120, "{w} {t:?} {normal:?}");
+            assert!(mon[4].contains(&want), "{want}\n{}", mon[4]);
+            assert!(normal.len() > 130, "{w}: the reports of pna, pnc and pnd");
             for env in envs {
                 let mut env = env.to_vec();
                 env.push(("YAVS_CYCLE_STATS", "1"));
@@ -3888,12 +3891,12 @@ fn an_edge_settles_only_what_the_classes_that_had_one_reach() {
                 let packed = env.contains(&("YAVS_CYCLE_GUARD", ""));
                 assert!(ran < all || packed, "{all} {ran} {env:?}\n{err}");
                 assert!(
-                    err.contains("cycle mode: 22 of 26 processes run cycle-based"),
+                    err.contains("cycle mode: 26 of 30 processes run cycle-based"),
                     "{w}: {err}"
                 );
                 for name in [
                     "pa", "pb", "psa", "psb", "pk", "pkq", "pq", "pg", "pw", "pr", "psy", "ph",
-                    "ph2", "ppa", "ppb",
+                    "ph2", "ppa", "ppb", "pna", "pnc", "pnd", "pw2",
                 ] {
                     let (section, _) = row(&err, &format!("cycle_edgecone.{name}"));
                     assert_eq!(section, "cycle-based:", "{name}\n{err}");

@@ -109,7 +109,12 @@ pub(crate) struct RamWrite {
     pub w: u32,
     pub left: i64,
     pub down: bool,
+    /// The edge class of its member ([`NO_CLASS`]: every class).
+    pub class: u32,
 }
+
+/// [`RamWrite::class`] of a member that runs at every edge.
+pub(crate) const NO_CLASS: u32 = u32::MAX;
 
 impl RamWrite {
     /// The elements of the kernel signal the write changed (it passed its index check).
@@ -182,31 +187,31 @@ fn or_into(m: &mut [u64], s: &[(u32, u64)]) {
     }
 }
 
-/// For each cone of `cones` and each edge class: the spans (bits) holding words the steps of the
-/// cone write (`run_words`, by step), and for a class also what its clocked members write.
+/// For each cone of members (`cones`, bit sets over the members) and each edge class's (its clocked
+/// members and those they reach): the spans (bits) holding words those members write
+/// (`member_words`), and for a class also the memories its members write (`rams`: the classes of
+/// each memory output's writes; bit `spans.len()` on).
 pub(crate) fn span_marks(
     spans: &[Span],
-    run_words: &[Vec<(u32, u32)>],
+    member_words: &[Vec<(u32, u32)>],
     cones: &[Box<[u64]>],
-    class_cones: &[Box<[u64]>],
-    class_words: &[Vec<(u32, u32)>],
+    class_members: &[Box<[u64]>],
+    rams: &[Vec<u32>],
 ) -> (Vec<Sparse>, Vec<Sparse>) {
-    let n = spans.len().div_ceil(64);
-    let set = |m: &mut [u64], ws: &[(u32, u32)]| {
-        for &(w, c) in ws {
-            let (w, z) = (w as usize, (w + c) as usize);
-            let mut j = spans.partition_point(|sp| sp.words.end <= w);
-            while j < spans.len() && spans[j].words.start < z {
-                m[j / 64] |= 1 << (j % 64);
-                j += 1;
-            }
-        }
-    };
-    let by_step: Vec<Vec<u64>> = (run_words.iter())
+    let n = (spans.len() + rams.len()).div_ceil(64);
+    // Per member: the spans it writes.
+    let by_member: Vec<Vec<u32>> = (member_words.iter())
         .map(|ws| {
-            let mut m = vec![0; n];
-            set(&mut m, ws);
-            m
+            let mut v = Vec::new();
+            for &(w, c) in ws {
+                let (w, z) = (w as usize, (w + c) as usize);
+                let mut j = spans.partition_point(|sp| sp.words.end <= w);
+                while j < spans.len() && spans[j].words.start < z {
+                    v.push(j as u32);
+                    j += 1;
+                }
+            }
+            v
         })
         .collect();
     let of_cone = |cone: &[u64]| -> Vec<u64> {
@@ -216,7 +221,9 @@ pub(crate) fn span_marks(
             while w != 0 {
                 let i = 64 * k + w.trailing_zeros() as usize;
                 w &= w - 1;
-                m.iter_mut().zip(&by_step[i]).for_each(|(a, b)| *a |= b);
+                for &j in &by_member[i] {
+                    m[j as usize / 64] |= 1 << (j % 64);
+                }
             }
         }
         m
@@ -228,25 +235,36 @@ pub(crate) fn span_marks(
             .collect()
     };
     let chunks = cones.iter().map(|c| sparse(of_cone(c))).collect();
-    let classes = (class_cones.iter().zip(class_words))
-        .map(|(c, ws)| {
+    let classes = (class_members.iter().enumerate())
+        .map(|(k, c)| {
             let mut m = of_cone(c);
-            set(&mut m, ws);
+            for (j, cs) in rams.iter().enumerate() {
+                if cs.iter().any(|&x| x == k as u32 || x == NO_CLASS) {
+                    let b = spans.len() + j;
+                    m[b / 64] |= 1 << (b % 64);
+                }
+            }
             sparse(m)
         })
         .collect();
     (chunks, classes)
 }
 
-/// Order `outs` by their first word, the memories last, and join the others of adjacent or shared
-/// words into spans; the length of the copy they need.
+/// Words a span grows to by joining adjacent outputs (outputs sharing a word always join).
+const SPAN_MAX: usize = 8;
+
+/// Order `outs` by their first word, the memories last, and join the others of shared words, and
+/// of adjacent words up to [`SPAN_MAX`], into spans; the length of the copy they need.
 pub(crate) fn spans(outs: &mut [Out]) -> (Vec<Span>, usize) {
     outs.sort_by_key(|o| (!o.ram.is_empty(), o.words().start, o.range.offset));
     let mut v: Vec<Span> = Vec::new();
     for (i, o) in outs.iter().enumerate().filter(|(_, o)| o.ram.is_empty()) {
         let w = o.words();
         match v.last_mut() {
-            Some(sp) if w.start <= sp.words.end => {
+            Some(sp)
+                if w.start < sp.words.end
+                    || w.start == sp.words.end && w.end - sp.words.start <= SPAN_MAX =>
+            {
                 sp.words.end = sp.words.end.max(w.end);
                 sp.outs.end = i + 1;
             }
@@ -313,6 +331,8 @@ pub(crate) struct RegionProc {
     pub buf: Vec<u8>,
     /// `YAVS_CYCLE_STATS=1`: how often each member's inputs were unchanged.
     pub stats: bool,
+    /// With `stats`: export and import counts since the last wake ([`EX_NAMES`]).
+    pub ex: [u64; EX_N],
     /// With `stats`: the chunks the last import read.
     pub read_now: Vec<usize>,
     /// Per input chunk (`chunk_cone`, an index into `cones`): the steps of the settle a change of
@@ -346,7 +366,27 @@ pub(crate) struct Stats {
     /// Over the wakes with an edge and those without: the operations of the settle's members, and
     /// of those the mark lets run.
     pub settled: [[u64; 2]; 2],
+    /// Export and import counts ([`EX_NAMES`]).
+    pub ex: [u64; EX_N],
 }
+
+/// What [`Stats::ex`] counts.
+pub(crate) const EX_NAMES: [&str; EX_N] = [
+    "exports",
+    "spans in all",
+    "spans touched",
+    "span words compared",
+    "spans changed",
+    "outputs in changed spans",
+    "outputs compared alone",
+    "outputs driven",
+    "memory writes exported",
+    "imports",
+    "image groups written",
+    "chunk counts compared",
+    "chunks read",
+];
+pub(crate) const EX_N: usize = 13;
 
 impl Stats {
     /// One wake that runs code: the edges of each class, and the members the mark lets run.
@@ -380,6 +420,9 @@ impl Drop for Stats {
         );
         for (name, n) in &self.classes {
             eprintln!("cycle stats: edge class {name}: {n} edges");
+        }
+        for (name, n) in EX_NAMES.iter().zip(self.ex) {
+            eprintln!("cycle stats: {name}: {n}");
         }
         for (k, what) in ["with an edge", "without an edge"].iter().enumerate() {
             let [all, run] = self.settled[k];
@@ -481,6 +524,10 @@ impl RegionProc {
                         continue;
                     }
                     g.seen = w;
+                    if self.stats {
+                        self.ex[10] += 1;
+                        self.ex[11] += u64::from(g.n);
+                    }
                     ctx.image(id)
                 }
                 None => None,
@@ -508,6 +555,10 @@ impl RegionProc {
         }
         if metas != 0 {
             self.metas.inputs.fetch_add(metas, Ordering::Relaxed);
+        }
+        if self.stats {
+            self.ex[9] += 1;
+            self.ex[12] += self.read_now.len() as u64;
         }
         if self.check {
             self.check_import(ctx)?;
@@ -549,7 +600,52 @@ impl RegionProc {
                 ))));
             }
         }
+        let first = self.spans.last().map_or(0, |sp| sp.outs.end);
+        for (m, o) in self.outs[first..].iter().enumerate() {
+            let b = self.spans.len() + m;
+            if self.touched[b / 64] >> (b % 64) & 1 == 0
+                && o.ram.iter().any(|wr| self.img[wr.flag] != 0)
+            {
+                return Err(ctx.error(ErrorKind::Internal(format!(
+                    "cycle mode: memory {:?} was written by a class that had no edge (YAVS_CYCLE_SKIP_CHECK)",
+                    o.driver
+                ))));
+            }
+        }
         Ok(())
+    }
+
+    /// `YAVS_CYCLE_STATS`: what this export compares and drives, counted before it does.
+    #[cold]
+    fn census(&mut self) {
+        let ex = &mut self.ex;
+        ex[0] += 1;
+        ex[1] += self.spans.len() as u64;
+        for (j, sp) in self.spans.iter().enumerate() {
+            let n = sp.words.len();
+            if self.touched[j / 64] >> (j % 64) & 1 == 0 {
+                continue;
+            }
+            ex[2] += 1;
+            ex[3] += n as u64;
+            if self.img[sp.words.clone()] == self.shadow[sp.sh..sp.sh + n] {
+                continue;
+            }
+            ex[4] += 1;
+            for o in &self.outs[sp.outs.clone()] {
+                let w = o.words();
+                let at = sp.sh + w.start - sp.words.start;
+                ex[5] += 1;
+                if w.len() == 1 || self.img[w.clone()] != self.shadow[at..at + w.len()] {
+                    ex[6] += 1;
+                    ex[7] += u64::from(!o.driven(&self.img));
+                }
+            }
+        }
+        let first = self.spans.last().map_or(0, |sp| sp.outs.end);
+        for o in &self.outs[first..] {
+            ex[8] += o.ram.iter().filter(|wr| self.img[wr.flag] != 0).count() as u64;
+        }
     }
 
     /// Drive every output whose value differs from what was driven last (all of them the first
@@ -559,8 +655,13 @@ impl RegionProc {
         let all = !std::mem::replace(&mut self.exported, true);
         if all {
             self.touched.fill(!0);
-        } else if self.code.full_check.is_some() {
-            self.untouched(ctx)?;
+        } else {
+            if self.code.full_check.is_some() {
+                self.untouched(ctx)?;
+            }
+            if self.stats {
+                self.census();
+            }
         }
         // Only the spans a step run since the last export writes, 64 at a time.
         let (mut j, end) = (0, self.spans.len());
@@ -597,8 +698,13 @@ impl RegionProc {
             );
         }
         let mut written: Vec<usize> = Vec::new();
+        // The memories, bits `spans.len()` on: those of the classes that had an edge.
         let first = self.spans.last().map_or(0, |sp| sp.outs.end);
-        for o in &mut self.outs[first..] {
+        for (m, o) in self.outs[first..].iter_mut().enumerate() {
+            let b = end + m;
+            if self.touched[b / 64] >> (b % 64) & 1 == 0 {
+                continue;
+            }
             let slot = o.slot as usize;
             if !o.ram.is_empty() && !all {
                 // A memory: the 64-element words its writes of this wake touched, each driven once.
@@ -852,11 +958,12 @@ impl RegionProc {
     }
 }
 
-/// `a == b` for slices of one length, a loop for a few words (no call of `memcmp`).
+/// `a == b` for slices of one length, for a few words the differences or-ed without a branch
+/// (mostly equal; no call of `memcmp`).
 #[inline(always)]
 fn same(a: &[u64], b: &[u64]) -> bool {
     if a.len() <= 8 {
-        a.iter().zip(b).all(|(x, y)| x == y)
+        a.iter().zip(b).fold(0, |d, (x, y)| d | (x ^ y)) == 0
     } else {
         a == b
     }
@@ -971,6 +1078,9 @@ impl Process for RegionProc {
                 }
                 st.wakes += 1;
                 st.edges += u64::from(edge);
+                for (a, b) in st.ex.iter_mut().zip(std::mem::take(&mut self.ex)) {
+                    *a += b;
+                }
                 st.count(&self.img, &self.clocks, &self.mark, edge);
             }
             if edge {

@@ -3,7 +3,8 @@
 -- and cb (14 ns) from one process, cg gated from ca in the kernel: logic of one clock alone, logic
 -- two clocks share, a register that keeps its value, a memory written on ca and read into cb's
 -- logic, a reset made by a register of cb for registers of ca, and a synchroniser reset from
--- outside. A monitor prints every register half a nanosecond after each step of the clocks.
+-- outside. A monitor prints every register, and the memories (one written on cb alone), half a
+-- nanosecond after each step of the clocks; reports of ca and cc in one delta come in process order.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -18,8 +19,8 @@ architecture a of cycle_edgecone is
   signal ra, ya, za, rb, yb, zb, x, sa, sb, k, kk, kq, q, yq, qz, gq, g2, gz : word := (others => '0');
   signal rd, rq, h, h2 : word := (others => '0');
   type mem_t is array (0 to 4096) of word;
-  signal mem : mem_t := (others => (others => '0'));
-  signal wa, ri : natural range 0 to 4096 := 0;
+  signal mem, mem2 : mem_t := (others => (others => '0'));
+  signal wa, ri, wb2 : natural range 0 to 4096 := 0;
   signal rs1, rs2, rs3 : std_ulogic := '0';
   -- One word with an input field and a field a register of cb drives.
   type pair_t is record
@@ -121,6 +122,14 @@ begin
     end if;
   end process;
   rd <= mem(ri);
+  -- A memory written on cb alone, read outside.
+  pw2 : process (cb)
+  begin
+    if rising_edge(cb) then
+      mem2(wb2) <= rb;
+      wb2 <= (wb2 + 1) mod 4097;
+    end if;
+  end process;
   ppb : process (cb)
   begin
     if rising_edge(cb) then
@@ -168,6 +177,31 @@ begin
       h2 <= h2 + ra;
     end if;
   end process;
+  -- Reports of two classes in one delta, in process order.
+  pna : process (ca)
+  begin
+    if rising_edge(ca) then
+      if ra < 3 then
+        report "na=" & std_ulogic'image(ra(0));
+      end if;
+    end if;
+  end process;
+  pnc : process (cc)
+  begin
+    if rising_edge(cc) then
+      if ra < 3 then
+        report "nc=" & std_ulogic'image(q(0));
+      end if;
+    end if;
+  end process;
+  pnd : process (ca)
+  begin
+    if rising_edge(ca) then
+      if ra < 3 then
+        report "nd=" & std_ulogic'image(h(0));
+      end if;
+    end if;
+  end process;
   main : process
   begin
     wait for 3 ns;
@@ -195,7 +229,8 @@ begin
         & " k=" & to_hstring(kq) & " q=" & to_hstring(q) & " " & to_hstring(qz) & " g=" & to_hstring(gz) & " "
         & to_hstring(gq) & " m=" & to_hstring(rq) & " h=" & to_hstring(h) & " " & to_hstring(h2)
         & " r=" & std_ulogic'image(rs2) & std_ulogic'image(rs3) & " p=" & to_hstring(two.b) & " "
-        & to_hstring(twa);
+        & to_hstring(twa) & " w=" & to_hstring(mem(ri))
+        & " " & to_hstring(mem2((wb2 + 4096) mod 4097));
       wait for 1 ns;
     end loop;
     wait;

@@ -2847,6 +2847,70 @@ fn force_is_outside_the_subset() {
     assert!(r.contains("E4116 ") && r.ends_with("(force.vhd:9)"), "{r}");
 }
 
+/// A force keeps out only the drivers of what it can force (`tests/cycle/forcescope.vhd`): a
+/// force in a unit the design does not instantiate or a package procedure nobody calls keeps
+/// nothing out; one through an external name in a process or a package procedure keeps the
+/// forced register out while members read the forced value (forced and released in the delta of
+/// an edge and between edges); a forced clock copy keeps its register on the copy, and a forced
+/// clock its own delta class; a force of a signal parameter keeps every process out. Against the
+/// normal mode at widths 1 to 128.
+#[test]
+fn forces_keep_out_only_the_drivers_of_what_they_force() {
+    let dir = tempdir("cycle-force-scope");
+    let fdir = tempdir("cycle-force-formal");
+    for w in [1, 63, 64, 65, 128] {
+        let src = with_width(include_str!("cycle/forcescope.vhd"), w);
+        analyze(&dir, &format!("forcescope{w}.vhd"), &src);
+        analyze(&fdir, &format!("forcescope{w}.vhd"), &src);
+        analyze(
+            &fdir,
+            &format!("forcescopef{w}.vhd"),
+            &with_width(include_str!("cycle/forcescopef.vhd"), w),
+        );
+        let cases: [(&Path, &str, &[&str], usize, &str); 4] = [
+            (&dir, "fsc_ext_tb", &[], 16, "5 of 9"),
+            (&dir, "fsc_pkg_tb", &[], 16, "5 of 9"),
+            (&dir, "fsc_dclk_tb", &["--stop-time=40ns"], 6, "2 of 7"),
+            (&fdir, "fsc_formal_tb", &[], 16, "0 of 9"),
+        ];
+        for (d, top, flags, n, members) in cases {
+            for t in tiers() {
+                let (normal, _) = run(d, &[&t[..], flags].concat(), top);
+                let (cycle, err) = run(d, &[&t[..], flags, &["--cycle"]].concat(), top);
+                assert_eq!(normal.len(), n, "{w} {top} {t:?} {normal:?}");
+                assert_eq!(cycle, normal, "width {w} {top} {t:?}\n{err}");
+                assert!(
+                    err.contains(&format!("cycle mode: {members} processes run cycle-based")),
+                    "{w} {top}: {err}"
+                );
+            }
+        }
+    }
+    for top in ["fsc_ext_tb", "fsc_pkg_tb"] {
+        let report = verdicts(&dir, top);
+        let (_, r) = row(&report, &format!("{top}.dut.p_mid"));
+        assert!(
+            r.contains(&format!(
+                "E4128 a signal forced elsewhere in the design: {top}.dut.mid"
+            )),
+            "{r}"
+        );
+        for p in ["p_q", "p_r", "mid2 <= ...", "mo <= ...", "m2o <= ..."] {
+            let (s, r) = row(&report, &format!("{top}.dut.{p}"));
+            assert_eq!(s, "cycle-based:", "{r}");
+        }
+    }
+    let report = verdicts(&dir, "fsc_dclk_tb");
+    let (_, r) = row(&report, "fsc_dclk_tb.mid <= ...");
+    assert!(r.contains("E4130 "), "{r}");
+    let report = verdicts(&fdir, "fsc_formal_tb");
+    let (_, r) = row(&report, "fsc_formal_tb.dut.p_q");
+    assert!(
+        r.contains("E4128 `force` or `release` in the design"),
+        "{r}"
+    );
+}
+
 /// Processes that would give another result if cycle mode took them: they stay out, and the
 /// run equals the normal mode.
 const WRONG_IF_TAKEN: &str = "\
@@ -6054,7 +6118,7 @@ fn cycle_strict_gives_each_code_with_what_where_why_and_fix() {
         }
         strict_snapshot(code, &err);
     }
-    // A force anywhere in the design: E4116 at the force, E4128 for every other process.
+    // A force in the design: E4116 at the force, E4128 for the driver of what it forces.
     let dir = tempdir("cycle-strict-force");
     analyze(
         &dir,

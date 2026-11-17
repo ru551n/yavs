@@ -651,7 +651,7 @@ Cycle mode (E4 and W4)
    * - _`E4127`
      - A process outside the cycle region reads the history of a signal this process drives: ``'active``, ``'last_active``, ``'last_event``, ``'last_value``, ``'transaction``, ``'stable``, ``'quiet`` or ``'delayed``, directly or in a subprogram it calls (an edge test such as ``rising_edge`` is not history here).
    * - _`E4128`
-     - The design uses ``force`` or ``release`` somewhere.
+     - A ``force`` or ``release`` the design can run (in a process, or in a subprogram a process calls) changes a signal this process drives, which cycle-based code would not see, so the process stays in the event kernel; members that only read the forced signal still join.
    * - _`E4129`
      - Combinational logic (or a register with an asynchronous reset) feeds a process outside the region whose result depends on the delta cycles its inputs change in: one that keeps a value from its previous run (a latch, a variable read before it is assigned, a combinational loop), has an incomplete sensitivity list, or stays out for another reason.
    * - _`E4130`

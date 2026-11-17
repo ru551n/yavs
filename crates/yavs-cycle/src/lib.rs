@@ -242,8 +242,8 @@ pub mod codes {
         (
             FORCED,
             "`force` or `release` elsewhere in the design",
-            "yavs does not combine `force` and `release` with cycle-based code yet, so no process runs cycle-based in a design that uses them",
-            "run with `--cycle` to keep the whole design in the event simulation, or drive the signal from the testbench instead of forcing it",
+            "a `force` or `release` the design can run changes a signal this process drives, which cycle-based code would not see; when yavs cannot tell which signal a force changes (a signal parameter), it keeps every process in the event simulation",
+            "run with `--cycle` to leave this process in the event simulation, or drive the signal from the testbench instead of forcing it; force a signal through an external name or by name rather than through a signal parameter",
             true,
         ),
         (

@@ -246,7 +246,8 @@ body. A signal needs one source: one process drives each element of it.
      - E4138, E4139.
    * - Drives part of a signal whose other elements a process outside the region drives, a signal that also gets
        a value from a port connection or a constant, or a memory written in its reset branch, at fixed and
-       run-time indices both, or read outside the region; or the design uses ``force`` or ``release`` anywhere
+       run-time indices both, or read outside the region; or drives a signal a ``force`` or ``release`` of the design can change
+       (every process, when the force names a signal parameter)
      - E4134, E4135, E4133, E4128: limitations of yavs.
    * - Compares with a metavalue literal (``= 'U'``), has a ``while`` loop, or another construct cycle mode cannot
        take *yet*
@@ -799,7 +800,9 @@ design: the process is fine for the normal mode, and ``--cycle`` leaves it in th
      - A process outside the region reads the history of a signal this process drives
      - Let the reader keep its own copy, or use an edge test.
    * - E4128
-     - ``force`` or ``release`` anywhere in the design: no process joins
+     - A ``force`` or ``release`` the design can run changes a signal this process drives (one that names a
+       signal parameter keeps every process out); forces in units the design does not instantiate, and in
+       subprograms nothing calls, do not count
      - Limitation. Drive the signal from the testbench instead, or use ``--cycle``.
    * - E4129
      - Logic feeding a process outside the region whose result depends on delta cycles (the second marker

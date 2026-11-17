@@ -624,7 +624,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E4128",
-        "The design uses `force` or `release` somewhere. yavs does not combine them with cycle-based code yet, so no process runs cycle-based in such a design; under `--cycle-strict` every process below the top-level unit that would otherwise join is an error that points at the force. A limitation of yavs: drive the signal from the testbench instead of forcing it, or run with `--cycle`.",
+        "A `force` or `release` the design can run (in a process, or in a subprogram a process calls) changes a signal this process drives, which cycle-based code would not see, so the process stays in the event kernel; members that only read the forced signal still join. A force whose target yavs cannot tell (a signal parameter) keeps every process out. Forces in units the design does not instantiate and in subprograms nothing calls do not count. Under `--cycle-strict` each such process below the top-level unit is an error that points at the force. A limitation of yavs: drive the signal from the testbench instead of forcing it, or run with `--cycle`.",
     ),
     (
         "E4129",

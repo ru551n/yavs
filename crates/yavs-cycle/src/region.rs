@@ -847,26 +847,21 @@ fn stat(what: impl FnOnce() -> String) {
 pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
     let t0 = std::time::Instant::now();
     let (fits, mut out, groups, checked) = subset(db, e);
-    let copies = if exact_clocks().unwrap_or(true) {
+    let forced = forced(db, e);
+    let mut copies = if exact_clocks().unwrap_or(true) {
         Copies::new()
     } else {
         clock_copies(db, e)
     };
+    // A forced element is no copy of its source (A32).
+    copies.retain(|k, _| !forced.has(k.0));
     stat(|| format!("select: subset done {} ms", t0.elapsed().as_millis()));
     let mut nfits = fits.len();
     let mut taken: BTreeMap<usize, (Fit, Body)> = BTreeMap::new();
     let pspan = |pi: usize| db.stmts[e.procs[pi].stmt].span;
     for (pi, f) in fits {
-        if let Some(&s) = db.facts().forces.first() {
-            let r = Reason::new(
-                crate::codes::FORCED,
-                pspan(pi),
-                "`force` or `release` in the design",
-            );
-            out.push((
-                pi,
-                Why::NotYet(r.also(db.stmts[s].span, "the design forces a signal here")),
-            ));
+        if let Some(r) = forced.reason(db, e, pi, pspan(pi)) {
+            out.push((pi, Why::NotYet(r)));
             continue;
         }
         // Developers bisecting a difference: `YAVS_CYCLE_EXCLUDE=a,b` keeps the processes whose
@@ -1114,7 +1109,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             gone = pulse_rule(db, e, &taken);
         }
         if gone.is_empty() {
-            gone = cross_delta(db, e, &taken, &out);
+            gone = cross_delta(db, e, &taken, &out, &forced);
         }
         stat(|| format!("select: cross {} ms", t0.elapsed().as_millis()));
         if gone.is_empty() {
@@ -1633,7 +1628,11 @@ const DELTA1: usize = usize::MAX - 1;
 
 /// When the edges of `c`'s element come within a time step: in a delta class (`DELTA0`,
 /// `DELTA1`) when every driver's process makes them there, else the clock's element alone.
-fn delta_key(db: &Db, e: &Elaborated, c: &Clock) -> (bool, usize, u32) {
+fn delta_key(db: &Db, e: &Elaborated, c: &Clock, forced: &Forced) -> (bool, usize, u32) {
+    // A force gives a clock edges in deltas its drivers do not tell.
+    if forced.has(c.leaf) {
+        return (false, c.leaf.index(), c.elem);
+    }
     let ps: BTreeSet<usize> = (e.nets.drivers.iter())
         .filter(|d| d.leaf == c.leaf && d.range.offset <= c.elem && c.elem < d.range.end())
         .map(|d| d.proc.index())
@@ -1859,6 +1858,7 @@ fn cross_delta(
     e: &Elaborated,
     taken: &BTreeMap<usize, (Fit, Body)>,
     out: &[(usize, Why)],
+    forced: &Forced,
 ) -> Vec<(usize, Reason)> {
     let behavioural: BTreeSet<usize> = (out.iter())
         .filter(|(_, w)| matches!(w, Why::Behavioural(_)))
@@ -1907,7 +1907,7 @@ fn cross_delta(
     let mut bit: BTreeMap<(LeafId, u32), u64> = BTreeMap::new();
     for c in clocks {
         bit.entry((c.leaf, c.elem)).or_insert_with(|| {
-            let k = delta_key(db, e, &c);
+            let k = delta_key(db, e, &c, forced);
             let g = keys.iter().position(|x| *x == k).unwrap_or_else(|| {
                 keys.push(k);
                 names.push(c);
@@ -3458,6 +3458,141 @@ fn shared_rule(db: &Db, e: &Elaborated, fits: &BTreeMap<usize, Fit>) -> Vec<(usi
         }
     }
     gone
+}
+
+/// What the forces and releases the design can run keep out (E4128).
+enum Forced {
+    /// A force whose targets are not known: every process.
+    All(StmtId),
+    /// The leaves forced, each with one force of it: their drivers.
+    Leaves(BTreeMap<LeafId, StmtId>),
+}
+
+impl Forced {
+    /// The leaf may be forced.
+    fn has(&self, l: LeafId) -> bool {
+        match self {
+            Forced::All(_) => true,
+            Forced::Leaves(m) => m.contains_key(&l),
+        }
+    }
+
+    fn reason(&self, db: &Db, e: &Elaborated, pi: usize, span: yavs_diag::Span) -> Option<Reason> {
+        let (text, s) = match self {
+            Forced::All(s) => ("`force` or `release` in the design".to_string(), *s),
+            Forced::Leaves(m) => {
+                let (l, s) = (e.procs[pi].drivers.iter())
+                    .find_map(|&d| m.get_key_value(&e.nets.drivers[d].leaf))?;
+                (
+                    format!(
+                        "a signal forced elsewhere in the design: {}",
+                        e.leaf_name(*l)
+                    ),
+                    *s,
+                )
+            }
+        };
+        let r = Reason::new(crate::codes::FORCED, span, text);
+        Some(r.also(db.stmts[s].span, "the design forces a signal here"))
+    }
+}
+
+/// The forces and releases the elaborated design can run (in a process, or in a subprogram a
+/// process calls) and what they keep out. A force whose target is a signal parameter or a name
+/// not placed in the design keeps every process out; a call the scan cannot follow makes every
+/// force count. Members read a forced signal from the kernel like any input.
+fn forced(db: &Db, e: &Elaborated) -> Forced {
+    use yavs_sem::decl::{DeclKind, ObjRole};
+    let facts = db.facts();
+    let mut leaves = BTreeMap::new();
+    if facts.forces.is_empty() {
+        return Forced::Leaves(leaves);
+    }
+    let all: BTreeSet<StmtId> = facts.forces.iter().copied().collect();
+    // Every statement the processes can run, through the subprograms they call.
+    let (mut seen, mut stmts, mut exprs, mut ok) = (BTreeSet::new(), Vec::new(), Vec::new(), true);
+    for p in &e.procs {
+        exprs.extend(p.actual.as_ref().map(|a| a.expr));
+        deep(db, &[p.stmt], &mut stmts);
+        if let StmtKind::Process { scope, .. } = &db.stmts[p.stmt].kind {
+            decl_exprs(db, *scope, &mut exprs);
+        }
+    }
+    let mut reached = BTreeSet::new();
+    loop {
+        for x in std::mem::take(&mut exprs) {
+            let mut later = Vec::new();
+            db.walk_expr(x, &mut |y| {
+                if let ExprKind::Call { callee, .. } = &db.exprs[y].kind {
+                    ok &= follow(db, *callee, &mut seen, &mut stmts, &mut later);
+                }
+            });
+            exprs.append(&mut later);
+        }
+        if let Some(s) = stmts.pop() {
+            if all.contains(&s) {
+                reached.insert(s);
+            }
+            db.stmt_exprs(s, &mut |x, _| exprs.push(x));
+            if let StmtKind::ProcCall(c) | StmtKind::ConcProcCall { call: c, .. } =
+                &db.stmts[s].kind
+            {
+                ok &= follow(db, c.callee, &mut seen, &mut stmts, &mut exprs);
+            }
+        } else if exprs.is_empty() {
+            break;
+        }
+    }
+    stat(|| {
+        format!(
+            "forces: {} in the design, {} reached, every call followed: {ok}",
+            all.len(),
+            reached.len()
+        )
+    });
+    if !ok {
+        reached = all;
+    }
+    // The signal objects of each declaration and external name, in every instance.
+    let mut objs: BTreeMap<yavs_sem::DeclId, Vec<yavs_elab::ObjId>> = BTreeMap::new();
+    let mut ext: BTreeMap<yavs_sem::ids::ExternalId, Vec<yavs_elab::ObjId>> = BTreeMap::new();
+    for (&(_, d), &o) in &e.sigs {
+        objs.entry(d).or_default().push(o);
+        if let Some(x) = db.external_alias(d) {
+            ext.entry(x).or_default().push(o);
+        }
+    }
+    for &s in &reached {
+        let (StmtKind::Force { target, .. } | StmtKind::Release { target, .. }) = &db.stmts[s].kind
+        else {
+            return Forced::All(s);
+        };
+        if target.lsps.is_empty() {
+            return Forced::All(s);
+        }
+        for l in &target.lsps {
+            let os = match l.root {
+                ObjRoot::Decl(d)
+                    if !matches!(&db.decls[d].kind,
+                        DeclKind::Object(o) if o.role == ObjRole::Param) =>
+                {
+                    objs.get(&d)
+                }
+                ObjRoot::External(x) => ext.get(&x),
+                _ => None,
+            };
+            let Some(os) = os else {
+                return Forced::All(s);
+            };
+            for &o in os {
+                let (a, z) = e.nets.obj(o).leaves;
+                for k in a.0..z.0 {
+                    leaves.entry(LeafId(k)).or_insert(s);
+                }
+            }
+        }
+    }
+    Forced::Leaves(leaves)
 }
 
 /// Add the statements of subprogram `f` to `stmts` once (a body of the design); false for one the

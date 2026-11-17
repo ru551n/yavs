@@ -1,0 +1,1 @@
+Cycle mode: a `force` or `release` keeps out only the processes driving the signals it can change; forces in units the design does not instantiate or in subprograms nothing calls no longer keep every process in the event simulation.

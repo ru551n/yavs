@@ -1,5 +1,6 @@
 -- `--cycle-strict` with a `force` in the design (E4116 for the forcing process, E4128 for the
--- others): a file of its own, since a force anywhere in the analysed design keeps every process out.
+-- driver of the forced signal): a file of its own, so that no other design of `strict.vhd` runs
+-- with it.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -11,9 +12,9 @@ begin
   f : process (a)
   begin
     if a = '1' then
-      q <= force '1';
+      r <= force '1';
     else
-      q <= release;
+      r <= release;
     end if;
   end process;
   reg : process (clk)

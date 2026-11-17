@@ -1236,8 +1236,8 @@ pub(crate) fn compile<'a>(
                 #[cfg(debug_assertions)]
                 gone: Default::default(),
             };
-            // Each piece starts from memory: the words it keeps in registers are few, and a
-            // branch saves and forgets only those.
+            // A piece starts from memory and the words the piece before left in registers that
+            // it reads (memory holds them too): one function runs its pieces one after the other.
             for (p, more) in ops {
                 g.cap = if weight(p) > BIG {
                     CACHE_BIG
@@ -1246,6 +1246,8 @@ pub(crate) fn compile<'a>(
                 }
                 .min(cache_cap());
                 g.live_in(p, more.clone());
+                let reads = &g.last;
+                g.cache.retain(|off, _| reads.contains_key(off));
                 for op in p.iter() {
                     g.op(op);
                 }
@@ -1255,8 +1257,11 @@ pub(crate) fn compile<'a>(
                 } else {
                     g.write_back();
                 }
-                g.cache.clear();
-                g.zeros.clear();
+                // What is in memory now: state, and what the next part of the member reads.
+                g.cache = (g.cache.iter())
+                    .filter(|(o, _)| g.state(**o))
+                    .map(|(&o, &(v, _))| (o, (v, false)))
+                    .collect();
             }
             let zero = g.b.ins().iconst(I32, 0);
             g.b.ins().return_(&[zero]);

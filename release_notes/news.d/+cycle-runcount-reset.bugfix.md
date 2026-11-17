@@ -1,1 +1,0 @@
-Under `--cycle`, a register with an asynchronous reset stays in the event simulation when it feeds a process whose result depends on how often it runs (one whose sensitivity list leaves out logic it reads): with a reset made by another register the normal mode changes it twice in one time step, and that process saw a value the region never showed.

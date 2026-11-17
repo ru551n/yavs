@@ -1,1 +1,0 @@
-Cycle mode runs logic between clocks that it can show change in the same delta cycle: clocks made by assignments with a delay, and clocks made by clock processes that wait for a time, when both are known when the design is elaborated.

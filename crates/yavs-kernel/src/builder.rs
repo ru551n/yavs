@@ -274,8 +274,6 @@ impl Builder {
         self.signals[s.0 as usize].float = true;
     }
 
-    /// Keep no byte codes for `s`: no process reads a single element of it, so refreshing a code
-    /// per changed element costs more than it saves (#734). Reads still work, from the planes.
     /// Let a change of `s` that nothing can see happen without an event (cycle mode, for the
     /// signals its region drives): kept by `SimControl::new` only for a lean register that keeps
     /// no history and has no reader the kernel skips idle processes by, and used while nothing
@@ -287,6 +285,8 @@ impl Builder {
         }
     }
 
+    /// Keep no byte codes for `s`: no process reads a single element of it, so refreshing a code
+    /// per changed element costs more than it saves (#734). Reads still work, from the planes.
     pub fn no_codes(&mut self, s: SignalId) {
         if let Some((s, _)) = self.chk(s.into()) {
             self.signals[s.0 as usize].set_no_codes();

@@ -1,1 +1,0 @@
-Cycle mode (`yavs run --cycle`) runs designs with several clocks and memories faster: the end of each clock edge copies the registers' new values in a few large blocks and tests only the memory writes of the clocks that had an edge.

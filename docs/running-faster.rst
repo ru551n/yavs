@@ -97,8 +97,8 @@ Cycle mode
 ----------
 
 ``--cycle`` runs the synchronous RTL of a design as compiled code evaluated once per clock edge, and gives up some
-detail for it (two-state values, no reports from the design's own processes). It is opt-in and not in a release
-yet: :doc:`cycle-mode`.
+detail for it (two-state values, no reports from the design's own processes). It is opt-in and experimental
+(its options may change): :doc:`cycle-mode`.
 
 Finding where the time goes
 ---------------------------

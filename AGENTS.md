@@ -55,7 +55,7 @@ ownership, commit identity, shared-host limits) do not apply to them.
 | `crates/yavs-lint` | `yavs lint`: rules over the analysed HIR, certainty classes, configuration, waivers, reports |
 | `crates/yavs-rt` | The runtime of the compiled tier: tier-up policy (`auto`), host functions of compiled code (`rt`), native-frame loop, run-to-run profile, perf map. Called `yavs-llvm` until 2026-11-10 (the LLVM tier it was named for was removed on 2026-11-08) |
 | `crates/yavs-clift` | Cranelift tier (#481), behind the `clift` feature (off by default; the compiled tier of the release archives), on the runtime of `yavs-rt` |
-| `crates/yavs-cycle` | Cycle mode (`yavs run --cycle`): a region of processes on a static schedule, compiled with Cranelift (side branch) |
+| `crates/yavs-cycle` | Cycle mode (`yavs run --cycle`): a region of processes on a static schedule, compiled with Cranelift (experimental) |
 | `crates/yavs` | The `yavs` binary |
 | `lib/` | Vendored IEEE std/ieee sources (2008, 2019), patched only via `tools/derive_libs.py` |
 | `tests/diag/` | Rendered-diagnostic snapshots; `tests/diag/sem/` negative suite with `-- expect:` headers |

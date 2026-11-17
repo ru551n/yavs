@@ -1,1 +1,0 @@
-Cycle mode keeps logic between registers of clocks whose edges come in different delta cycles out of the region also when the path passes through a process outside the region, a register outside it or a port, and keeps out logic that computes a clock from signals the region drives, so such registers sample the values the normal mode gives them.

@@ -1,1 +1,0 @@
-Cycle mode runs calls of functions given records of constants, such as fixed-point formats, whose locals are sized by functions of those records (before: "a value that is not known during elaboration").

@@ -16927,3 +16927,18 @@ the next run".
   copied-from-words ones (built and measured: no fewer instructions on a loop of in-place vector operations, so not
   worth the entries it removes); a dedicated put for the copied-from-words `LCopy` of a constant count (not built).
 - **Measured**: in `docs/STATUS.md` "In-place `ieee` vector results written without zeroing first".
+
+## Cycle mode on `main`, experimental (`crates/yavs-cycle`, owner decisions R1 to R4, 2026-11-18)
+
+- **Merged into `main` by a merge commit** once its gates passed on a trial merge (CI on Linux and Windows, a
+  normal-mode comparison of instructions on the bench designs and real designs, binary size). Its commits stay
+  reachable for bisecting.
+- **Experimental:** the user guide page, the `--help` texts and the release notes say that its options, codes and
+  the designs it accepts may change in a later release without a deprecation period.
+- **`yavs-cycle` and Cranelift are unconditional dependencies of `yavs`**, no cargo feature: a build without
+  `--features clift` compiles Cranelift too.
+- **Normal-mode start-up costs accepted:** the hooks it needs in elaboration and the kernel cost a little start-up
+  work in every run (under 2 percent of the instructions of an elaboration on the measured designs).
+- The design decisions of the mode itself (what joins the region, the two-state contract, what is dropped, the
+  cache) are the owner decisions A1 to A40 in `crates/yavs-cycle/AGENTS.md` section 3, and the user-visible ones are
+  in `docs/cycle-mode.rst`.

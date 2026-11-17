@@ -1,1 +1,0 @@
-Under `--cycle`, a register whose asynchronous reset another register makes stays in the event simulation when its output is the clock or the asynchronous reset of another process: the normal mode can change it at a clock edge and again a delta later, and that short pulse resets or clocks the other process, which the cycle-based code did not show.

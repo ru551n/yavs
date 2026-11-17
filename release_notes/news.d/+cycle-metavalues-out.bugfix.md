@@ -1,1 +1,0 @@
-Cycle mode (`yavs run --cycle`) with `--cycle-exact-meta`: a process that assigns a metavalue literal, or passes on a `'Z'`, to a signal a process outside the region reads stays in the event simulation, so the testbench sees the metavalue; signals the region reads that nothing drives and that start with a metavalue are named at the start of the run and in the report.

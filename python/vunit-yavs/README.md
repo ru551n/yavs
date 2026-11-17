@@ -73,6 +73,8 @@ with its default, one thread. An explicit `--threads` in `yavs.sim_flags` comes 
 
 ## Cycle mode
 
+Cycle mode is experimental: the option, its values and what yavs gives up under it may change in a later release.
+
 ```python
 vu.set_sim_option("yavs.cycle", "on")                                       # every test
 vu.library("lib").test_bench("tb_counter").set_sim_option("yavs.cycle", "strict")  # one testbench; also per test or configuration

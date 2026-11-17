@@ -44,7 +44,7 @@ as ``--name=value``.
        idle cores) (:doc:`running-faster`). Not passed to ``elab``. A ``--tier-compile`` in ``yavs.sim_flags``
        wins.
    * - ``yavs.cycle``
-     - ``yavs run --cycle`` or ``--cycle-strict``: ``"off"`` (the default), ``"on"`` (the processes that fit run cycle-based,
+     - Experimental. ``yavs run --cycle`` or ``--cycle-strict``: ``"off"`` (the default), ``"on"`` (the processes that fit run cycle-based,
        the rest stays in the event kernel; the test output gets the line ``cycle mode: N of M processes run
        cycle-based``, shown with ``-v`` for a passing test) or ``"strict"`` (the same, but a clocked or combinational process below the top-level unit that does
        not fit is an error that lists them all). Set it per library, testbench, test or configuration. Cycle-based

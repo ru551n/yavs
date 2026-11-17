@@ -703,7 +703,7 @@ Compiled tiers: Cranelift
      - ``1`` in a debug build, else ``0``
      - ``run``
    * - ``YAVS_CYCLE_CACHE_CHECK``
-     - ``1``: a run that finds the analysis of its cycle region (``--cycle``), the region as it was built or its machine code in the compilation cache makes them again and stops with an internal error when they differ from the cached ones (to test the cache).
+     - For testing only. ``1``: a run that finds the analysis of its cycle region (``--cycle``), the region as it was built or its machine code in the compilation cache makes them again and stops with an internal error when they differ from the cached ones (to test the cache).
      - ``1``
      - unset
      - ``run``
@@ -713,7 +713,7 @@ Compiled tiers: Cranelift
      - ``256``
      - ``run``
    * - ``YAVS_CYCLE_CHECKS``
-     - ``off``: the code of a cycle region (``--cycle``) leaves out its integer overflow and range checks and clamps an index chosen at run time into its array, to measure what the checks cost. Results are wrong where a check would have failed. ``all``: the checks, and after the processes of a loop group (processes reading through one another what they drive) one more run of each, which must change nothing; a change stops the run with an internal error (a debug build does this unless the value is ``on``). ``on``: the checks without that run, also in a debug build (for the tests).
+     - Developers and tests. ``off``: the code of a cycle region (``--cycle``) leaves out its integer overflow and range checks and clamps an index chosen at run time into its array, to measure what the checks cost. Results are wrong where a check would have failed. ``all``: the checks, and after the processes of a loop group (processes reading through one another what they drive) one more run of each, which must change nothing; a change stops the run with an internal error (a debug build does this unless the value is ``on``). ``on``: the checks without that run, also in a debug build (for the tests).
      - ``off``, ``on``, ``all``
      - checks on
      - ``run``
@@ -728,12 +728,12 @@ Compiled tiers: Cranelift
      - the count of ``--threads`` (1 unless given), at most the CPUs the run may use
      - ``run``
    * - ``YAVS_CYCLE_DISASM``
-     - Prints the machine code of the functions of a cycle region (``--cycle``) on standard error. They are compiled, not taken from the compilation cache.
+     - Developers: prints the machine code of the functions of a cycle region (``--cycle``) on standard error. They are compiled, not taken from the compilation cache.
      - any value
      - unset
      - ``run``
    * - ``YAVS_CYCLE_EDGE_OUTPUTS``
-     - ``1``, an experiment: a cycle region (``--cycle``) settles and drives its outputs only at clock edges and at changes of asynchronous resets, so a process outside sees a change of an output that follows an input combinationally only after the next edge. Results can differ from the normal mode's; for developers measuring what that costs and gains.
+     - Developers: ``1``, an experiment: a cycle region (``--cycle``) settles and drives its outputs only at clock edges and at changes of asynchronous resets, so a process outside sees a change of an output that follows an input combinationally only after the next edge. Results can differ from the normal mode's; for developers measuring what that costs and gains.
      - ``1``
      - unset
      - ``run``
@@ -768,12 +768,12 @@ Compiled tiers: Cranelift
      - only processes large enough to repay the comparison
      - ``run``
    * - ``YAVS_CYCLE_IMPORT_CHECK``
-     - ``1``: a cycle region (``--cycle``), which reads only the inputs that changed since its last wake, reads all of them again after each wake and stops with an internal error if one differs.
+     - For testing only. ``1``: a cycle region (``--cycle``), which reads only the inputs that changed since its last wake, reads all of them again after each wake and stops with an internal error if one differs.
      - ``1``
      - unset
      - ``run``
    * - ``YAVS_CYCLE_SKIP_CHECK``
-     - ``1``: a cycle region (``--cycle``) runs every process it would skip because the values it reads did not change since its last run, and stops with an internal error if that run changes what the process drives. ``full``: also runs each of the region's runs a second time on a copy with no process skipped (at a clock edge every one, not only those the edge's clocks and the changed inputs reach), and stops with an internal error if a signal, a variable or an output differs. Another value is error E4104.
+     - For testing only. ``1``: a cycle region (``--cycle``) runs every process it would skip because the values it reads did not change since its last run, and stops with an internal error if that run changes what the process drives. ``full``: also runs each of the region's runs a second time on a copy with no process skipped (at a clock edge every one, not only those the edge's clocks and the changed inputs reach), and stops with an internal error if a signal, a variable or an output differs. Another value is error E4104.
      - ``1``, ``full``
      - unset
      - ``run``

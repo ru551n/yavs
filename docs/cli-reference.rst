@@ -499,23 +499,23 @@ Arguments:
 
 .. option:: --cycle
 
-   Cycle mode: the processes that can run cycle-based (clocked and combinational ones in what it supports) run as one region on a static schedule with compiled code; the rest stays in the event kernel. One line on standard error says how many processes joined; ``--cycle-report`` lists them all, with reasons. The asserts and reports of cycle-based processes below the top-level unit are not evaluated; those of the top-level unit are, at the clock edge in compiled code or with their process in the event kernel, so the checks of a testbench run as in the normal mode (a checker entity instantiated below the top joins and loses them). Not with a debug session, ``--wave``, ``--cov``, ``--vhpi``, ``--surfer`` or ``--activity`` (E4102). The strict form is ``--cycle-strict``, given instead of this option.
+   Cycle mode, experimental (its options and results may change in a later release): the processes that can run cycle-based (clocked and combinational ones in what it supports) run as one region on a static schedule with compiled code; the rest stays in the event kernel. One line on standard error says how many processes joined; ``--cycle-report`` lists them all, with reasons. The asserts and reports of cycle-based processes below the top-level unit are not evaluated; those of the top-level unit are, at the clock edge in compiled code or with their process in the event kernel, so the checks of a testbench run as in the normal mode (a checker entity instantiated below the top joins and loses them). Not with a debug session, ``--wave``, ``--cov``, ``--vhpi``, ``--surfer`` or ``--activity`` (E4102). The strict form is ``--cycle-strict``, given instead of this option.
 
    Cannot be combined with ``--cycle-strict``.
 
 .. option:: --cycle-strict
 
-   Cycle mode in its strict form, instead of ``--cycle``: the same selection, but a process below the top-level design unit that is not behavioural and cannot run cycle-based is an error, and the run stops before simulation. Each error names the construct that is not supported, points at its statement, and says why and how to fix it, with the code of the reason (E4110 to E4139; E4101 for what yavs does not implement yet); one error per statement lists the processes it keeps out, sorted by file and line, at most 40.
+   Cycle mode in its strict form, experimental, instead of ``--cycle``: the same selection, but a process below the top-level design unit that is not behavioural and cannot run cycle-based is an error, and the run stops before simulation. Each error names the construct that is not supported, points at its statement, and says why and how to fix it, with the code of the reason (E4110 to E4139; E4101 for what yavs does not implement yet); one error per statement lists the processes it keeps out, sorted by file and line, at most 40.
 
 .. option:: --cycle-report, --cycle-report=FILE
 
-   Analyse the design for cycle mode and print the region report to standard error, or with FILE write it there: the summary, the processes that stay in the event kernel grouped by reason (most common first), the asserts and reports cycle mode does not evaluate, the clocks, the loop groups, the boundary and the cycle-based processes. Nothing is compiled or simulated; the exit status is 0. Given instead of ``--cycle`` and ``--cycle-strict``. An unwritable FILE is E4103, before any work.
+   Analyse the design for cycle mode (experimental) and print the region report to standard error, or with FILE write it there: the summary, the processes that stay in the event kernel grouped by reason (most common first), the asserts and reports cycle mode does not evaluate, the clocks, the loop groups, the boundary and the cycle-based processes. Nothing is compiled or simulated; the exit status is 0. Given instead of ``--cycle`` and ``--cycle-strict``. An unwritable FILE is E4103, before any work.
 
    Cannot be combined with ``--cycle``, ``--cycle-strict``.
 
 .. option:: --cycle-exact-meta
 
-   With ``--cycle``, ``--cycle-strict`` or ``--cycle-report``: keep the exact metavalue rules. By default a metavalue (``'U'``, ``'X'``, ``'Z'``, ...) reaching the region is read as ``0`` and no process stays out for one; with this option a process that would hide a metavalue from the testbench (it assigns a metavalue literal to a signal the testbench reads, or passes on a ``'Z'`` from outside) stays in the event kernel, so the testbench sees what the normal mode gives it. A failed check's message then also gives its values, as in the normal mode.
+   With ``--cycle``, ``--cycle-strict`` or ``--cycle-report`` (experimental): keep the exact metavalue rules. By default a metavalue (``'U'``, ``'X'``, ``'Z'``, ...) reaching the region is read as ``0`` and no process stays out for one; with this option a process that would hide a metavalue from the testbench (it assigns a metavalue literal to a signal the testbench reads, or passes on a ``'Z'`` from outside) stays in the event kernel, so the testbench sees what the normal mode gives it. A failed check's message then also gives its values, as in the normal mode.
 
 .. option:: --tier=interp|auto|clift|clift-auto
 

@@ -24,6 +24,7 @@ yavs is a VHDL simulator written in Rust, for VHDL-1993, 2008 and 2019.
 - [Live waveforms](https://yavs.readthedocs.io/en/latest/waveforms.html): [The Surfer waveform viewer](https://surfer-project.org/) follows the run and the debugger's stops. FST files for any viewer.
 - [Sane error messages, Rust style](https://yavs.readthedocs.io/en/latest/troubleshooting.html)
 - [Coverage](https://yavs.readthedocs.io/en/latest/coverage.html): from statements to condition combinations, with HTML and Cobertura reports and a CI gate.
+- [Cycle mode](https://yavs.readthedocs.io/en/latest/cycle-mode.html), experimental: `yavs run --cycle` runs the clocked and combinational RTL of a design as compiled code once per clock edge, for long runs of synchronous designs.
 - [Static analysis](https://yavs.readthedocs.io/en/latest/lint.html): `yavs lint` reports what can be proved wrong before a simulation.
 - [VHPI](https://yavs.readthedocs.io/en/latest/vhpi.html): plugins and C functions called from VHDL.
 - [Platforms](https://yavs.readthedocs.io/en/latest/getting-started.html#installation): Linux x86_64, Linux aarch64 and Windows x86_64, one archive with nothing else to install.

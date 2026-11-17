@@ -1,1 +1,0 @@
-Cycle mode (`yavs run --cycle`) runs loops that test the same condition for every element, such as a register file written bit by bit, with one branch for the condition instead of one per element, which a processor predicts far better; and the first run of a design with very large processes (an AES round unrolled into tens of thousands of operations) starts several times faster.

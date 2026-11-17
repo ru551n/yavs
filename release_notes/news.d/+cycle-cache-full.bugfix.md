@@ -1,1 +1,0 @@
-A compilation cache that has reached its entry limit no longer makes every new entry cost a scan of the whole directory: a cycle-mode design of tens of thousands of compiled functions, which did not finish in minutes with the cache on, now runs as fast as with `--no-cache`, and a design with more functions than the cache holds is not cached.

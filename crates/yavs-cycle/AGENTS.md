@@ -1,7 +1,8 @@
 # AGENTS.md: yavs-cycle
 
 Read the root `AGENTS.md` first. This file is for an agent about to change `crates/yavs-cycle`.
-Cycle mode lives on the side branch `Lukas-mode` only, milestone by milestone; this is milestone
+Cycle mode is on `main` since the merge of 2026-11-18 and presented as experimental (owner decision R3, 2026-11-18); it was
+built on the side branch `Lukas-mode`, milestone by milestone; this is milestone
 4a: two-state values, the types, expressions and statements of RTL (`numeric_std`, `case`, nested
 arrays, enumerations, concurrent assignments, `wait until` processes, asynchronous resets, unrolled
 loops), and the bench RTL designs of `tools/bench/designs` inside the region.

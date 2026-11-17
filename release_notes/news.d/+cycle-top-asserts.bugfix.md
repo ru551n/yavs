@@ -1,1 +1,0 @@
-Under `--cycle`, the asserts and reports of the top-level unit's processes are evaluated, with their messages, severities and effect on the exit status: a testbench checker clocked by the design runs cycle-based and still checks, where it used to pass without checking.

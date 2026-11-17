@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- New sim option `yavs.cycle` (`"off"`, `"on"`, `"strict"`), experimental like cycle mode itself: runs the test with
+  `yavs run --cycle` or `--cycle-strict`; a test that also has coverage, a debug session or waves fails before yavs
+  starts and says why.
 - The token server is on by default, at any `-p`, with one slot for each CPU the run may use (not `-p`): the CPUs no
   test uses are lent to the simulations, which run with `--threads=auto`. A test slot keeps its CPU for one second
   after its test ends, so its next test finds it free, and the slots of workers out of tests are lent in the tail.

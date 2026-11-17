@@ -6,12 +6,17 @@ the testbench in the ordinary event simulation. You turn it on per run with ``--
 It trades some of the simulator's detail for speed, and this page lists what it trades, so that you can decide
 whether your tests can live with it.
 
-.. note::
+.. warning::
 
-   Cycle mode is new and opt-in. It is developed on a side branch of the source repository and is
-   not in any release yet, so you need a build from that branch. The set of designs it accepts is still growing: a
-   process it cannot take yet simply stays in the event simulation (see :ref:`cycle-report`), and the list in this
-   page is the behaviour of the branch at the time of writing.
+   Cycle mode is **experimental**. It is opt-in, and nothing changes without ``--cycle``. Its options
+   (``--cycle``, ``--cycle-strict``, ``--cycle-report``, ``--cycle-exact-meta``, the vunit-yavs sim option
+   ``yavs.cycle``), its error codes, the processes it accepts and what it gives up may change in a later release
+   without a deprecation period. The set of designs it accepts is still growing: a process it cannot take yet simply
+   stays in the event simulation (see :ref:`cycle-report`).
+
+   Please `report <https://github.com/ru551n/yavs/issues>`__ a test that passes without ``--cycle`` and fails or
+   ends differently with it, beyond what this page lists, and an internal error (``E9999``). Attach the design or
+   the smallest part of it that shows the difference, the command line and the output of ``--cycle-report``.
 
 .. contents:: On this page
    :local:

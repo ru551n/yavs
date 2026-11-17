@@ -1,1 +1,0 @@
-Cycle mode (`yavs run --cycle`): a message made while a constant is evaluated (`** Warning: (init): ...`) appears once, as in the normal mode, also when every process of the constant's region runs cycle-based; it appeared twice, or not at all.

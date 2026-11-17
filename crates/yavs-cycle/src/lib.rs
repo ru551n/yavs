@@ -773,7 +773,8 @@ fn built(
     let looped: std::collections::BTreeSet<usize> = (sel.loops.iter())
         .flat_map(|l| sel.settle[l.at.clone()].iter().copied())
         .collect();
-    let mut by_key: std::collections::HashMap<ShapeKey, Vec<usize>> = Default::default();
+    let mut by_key: std::collections::HashMap<ShapeKey, Vec<usize>, codegen::KeyBuild> =
+        Default::default();
     for (k, (_, b)) in sel.members.iter().enumerate() {
         // A member with memory writes kept back for the commit keeps its own code.
         if !looped.contains(&k)
@@ -2038,7 +2039,8 @@ fn defer(
 /// within signals), as distinct shapes; the operations one body per shape would compile, also
 /// counting only shapes of at least some size; the largest shapes by operations times instances.
 fn shapes(db: &Db, e: &Elaborated, sel: &region::Selection, next: &BTreeMap<u32, u32>) {
-    let mut by: std::collections::HashMap<ShapeKey, (usize, usize, usize)> = Default::default();
+    let mut by: std::collections::HashMap<ShapeKey, (usize, usize, usize), codegen::KeyBuild> =
+        Default::default();
     for (pi, b) in &sel.members {
         let key = shape_key(b, next);
         let w: usize = b.ops.iter().map(codegen::weight_of).sum();

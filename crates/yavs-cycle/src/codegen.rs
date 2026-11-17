@@ -514,11 +514,15 @@ fn fun_key(isa: &str, head: &[i64], parts: &[Part<'_>]) -> Option<Key> {
         parts.iter().rposition(|p| !empty(p)).map_or(0, |i| i + 1),
     );
     let mut last_empty = false;
+    // One buffer for every part's bytes.
+    let mut buf = Vec::new();
     for p @ (ops, later) in &parts[lo..hi.max(lo)] {
         if std::mem::replace(&mut last_empty, empty(p)) && empty(p) {
             continue;
         }
-        b.part(&postcard::to_allocvec(&**ops).ok()?);
+        buf.clear();
+        buf = postcard::to_extend(&**ops, buf).ok()?;
+        b.part(&buf);
         let mut w: Vec<i32> = later.iter().flat_map(|l| l.keys().copied()).collect();
         w.sort_unstable();
         w.insert(0, i32::from(later.is_some()));
@@ -676,6 +680,47 @@ impl std::hash::Hasher for WordHash {
         self.write_u64(u64::from(n as u32));
     }
 }
+
+/// A cheap hash of composite keys the code generator makes itself (shapes, `lib.rs`): each word
+/// mixed into the state, unlike [`WordHash`], which keeps the last one only.
+#[derive(Default)]
+pub(crate) struct KeyHash(u64);
+
+impl std::hash::Hasher for KeyHash {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, b: &[u8]) {
+        for c in b.chunks(8) {
+            let mut w = [0u8; 8];
+            w[..c.len()].copy_from_slice(c);
+            self.write_u64(u64::from_le_bytes(w));
+        }
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0.rotate_left(5) ^ n).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+
+    fn write_u8(&mut self, n: u8) {
+        self.write_u64(u64::from(n));
+    }
+
+    fn write_u32(&mut self, n: u32) {
+        self.write_u64(u64::from(n));
+    }
+
+    fn write_i64(&mut self, n: i64) {
+        self.write_u64(n as u64);
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.write_u64(n as u64);
+    }
+}
+
+pub(crate) type KeyBuild = std::hash::BuildHasherDefault<KeyHash>;
 
 /// A part of a piece: its operations and, when its member goes on in the next part, the words
 /// the later parts read (scratch words among them are live at the part's end).

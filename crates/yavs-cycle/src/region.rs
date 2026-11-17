@@ -1013,31 +1013,113 @@ fn out_reads(f: &Fit) -> impl Iterator<Item = LeafId> + '_ {
         .map(|k| LeafId(k as u32))
 }
 
-/// The process every driver of `c`'s element belongs to when that process assigns without
-/// delay and has one wait (a clock model making a pair): the clocks it makes have their edges in
-/// one delta. Else the clock's element alone.
+/// The delta class of a clock with its edges in the first delta of their time step (every
+/// assignment to it made with a delay above zero) and of one with its edges in the second (made
+/// by clock models that wait for a time above zero and assign without delay).
+const DELTA0: usize = usize::MAX;
+const DELTA1: usize = usize::MAX - 1;
+
+/// When the edges of `c`'s element come within a time step: in a delta class (`DELTA0`,
+/// `DELTA1`) when every driver's process makes them there, else the clock's element alone.
 fn delta_key(db: &Db, e: &Elaborated, c: &Clock) -> (bool, usize, u32) {
-    let mut ps = (e.nets.drivers.iter())
+    let ps: BTreeSet<usize> = (e.nets.drivers.iter())
         .filter(|d| d.leaf == c.leaf && d.range.offset <= c.elem && c.elem < d.range.end())
-        .map(|d| d.proc.index());
-    if let Some(p) = ps.next()
-        && ps.all(|q| q == p)
-        && one_step(db, e, p)
+        .map(|d| d.proc.index())
+        .collect();
+    if !ps.is_empty() && ps.iter().all(|&p| delayed_only(db, e, p)) {
+        return (true, DELTA0, 0);
+    }
+    if let [p] = ps.iter().copied().collect::<Vec<_>>()[..]
+        && let Some(timeout) = one_step(db, e, p)
     {
-        return (true, p, 0);
+        // A wait of 0 ns would resume it in a later delta: then only its own clocks share it.
+        let k = if positive_time(db, e, p, timeout) {
+            DELTA1
+        } else {
+            p
+        };
+        return (true, k, 0);
     }
     (false, c.leaf.index(), c.elem)
 }
 
-/// Every activation of process `pi` starts at the first delta of a time step and assigns
-/// without delay: one `wait for` (beside any `wait;`), no procedure call (it might wait), no
-/// `after`. ponytail: a `wait for` lasting 0 ns would resume it in a later delta; clock models do
-/// not, a run-time test of the delta would close it.
-fn one_step(db: &Db, e: &Elaborated, pi: usize) -> bool {
-    use yavs_sem::hir::{Delay, Rhs, Waveform};
+/// The time of `x` when elaboration knows it is above zero.
+fn positive_time(db: &Db, e: &Elaborated, pi: usize, x: ExprId) -> bool {
+    check::const_value(
+        db,
+        e,
+        &e.procs[pi],
+        Default::default(),
+        &mut Default::default(),
+        x,
+    )
+    .is_some_and(|v| matches!(v, yavs_sem::stat::ConstValue::Phys(t) if t > 0))
+}
+
+/// Every signal assignment of process `pi` (not a port actual's) is made with delays above zero
+/// that elaboration knows, so the signals it drives change only in the first delta of a time
+/// step whenever the process runs; no procedure call, `force` or `release` (they might assign).
+fn delayed_only(db: &Db, e: &Elaborated, pi: usize) -> bool {
+    use yavs_sem::hir::{Rhs, Waveform};
     let p = &e.procs[pi];
     if p.actual.is_some() {
         return false;
+    }
+    // Transport or inertial, every transaction lies in a later time step.
+    let delayed = |rhs: &Rhs<Waveform>| {
+        waveforms(rhs).iter().all(|w| match w {
+            Waveform::Elements(els) => els.iter().all(|el| {
+                el.value.is_some() && el.after.is_some_and(|a| positive_time(db, e, pi, a))
+            }),
+            Waveform::Unaffected => true,
+        })
+    };
+    let mut all = Vec::new();
+    match &db.stmts[p.stmt].kind {
+        StmtKind::ConcSignalAssign {
+            guarded: false,
+            rhs,
+            ..
+        } => return delayed(rhs),
+        StmtKind::Process { body, .. } => deep(db, body, &mut all),
+        _ => return false,
+    }
+    let mut any = false;
+    for s in all {
+        match &db.stmts[s].kind {
+            StmtKind::SignalAssign { rhs, .. } => {
+                if !delayed(rhs) {
+                    return false;
+                }
+                any = true;
+            }
+            StmtKind::ProcCall(_) | StmtKind::Force { .. } | StmtKind::Release { .. } => {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    any
+}
+
+/// The waveforms of an assignment's right-hand side.
+fn waveforms(rhs: &yavs_sem::hir::Rhs<yavs_sem::hir::Waveform>) -> Vec<&yavs_sem::hir::Waveform> {
+    use yavs_sem::hir::Rhs;
+    match rhs {
+        Rhs::Simple(w) => vec![w],
+        Rhs::Conditional(a) => a.iter().map(|x| &x.0).collect(),
+        Rhs::Selected { alts, .. } => alts.iter().map(|x| &x.0).collect(),
+    }
+}
+
+/// Every activation of process `pi` starts at the first delta of a time step and assigns
+/// without delay: one `wait for` (beside any `wait;`), no procedure call (it might wait), no
+/// `after`; its timeout.
+fn one_step(db: &Db, e: &Elaborated, pi: usize) -> Option<ExprId> {
+    use yavs_sem::hir::{Delay, Waveform};
+    let p = &e.procs[pi];
+    if p.actual.is_some() {
+        return None;
     }
     let StmtKind::Process {
         sensitivity: Sensitivity::None,
@@ -1045,38 +1127,36 @@ fn one_step(db: &Db, e: &Elaborated, pi: usize) -> bool {
         ..
     } = &db.stmts[p.stmt].kind
     else {
-        return false;
+        return None;
     };
     let mut all = Vec::new();
     deep(db, body, &mut all);
-    let mut waits = 0;
+    let mut waits = Vec::new();
     for s in all {
         match &db.stmts[s].kind {
             StmtKind::Wait {
                 on,
                 until: None,
                 timeout,
-            } if on.is_empty() => waits += usize::from(timeout.is_some()),
-            StmtKind::Wait { .. } => return false,
-            StmtKind::ProcCall(_) => return false,
+            } if on.is_empty() => waits.extend(*timeout),
+            StmtKind::Wait { .. } => return None,
+            StmtKind::ProcCall(_) => return None,
             StmtKind::SignalAssign { delay, rhs, .. } => {
-                let ws: Vec<&Waveform> = match rhs {
-                    Rhs::Simple(w) => vec![w],
-                    Rhs::Conditional(a) => a.iter().map(|x| &x.0).collect(),
-                    Rhs::Selected { alts, .. } => alts.iter().map(|x| &x.0).collect(),
-                };
-                let timed = ws.iter().any(|w| match w {
+                let timed = waveforms(rhs).iter().any(|w| match w {
                     Waveform::Elements(els) => els.len() != 1 || els[0].after.is_some(),
                     Waveform::Unaffected => false,
                 });
                 if !matches!(delay, Delay::Default) || timed {
-                    return false;
+                    return None;
                 }
             }
             _ => {}
         }
     }
-    waits == 1
+    match waits[..] {
+        [t] => Some(t),
+        _ => None,
+    }
 }
 
 /// Members that would hand the region's settled value where the normal mode samples one that
@@ -1114,8 +1194,21 @@ fn cross_delta(
         return Vec::new();
     }
     const TOP: u64 = 1 << 63;
+    // A register of the second delta class may sample what those of the first make: they
+    // change after it has. Beyond 63 groups, the shared top bit differs from everything.
+    let class = |k: usize| match keys.iter().position(|x| *x == (true, k, 0)) {
+        Some(g) if g < 63 => 1u64 << g,
+        _ => 0,
+    };
+    let (early, late) = (class(DELTA0), class(DELTA1));
+    let bits = |m: u64| (0..64).map(|i| 1u64 << i).filter(move |b| m & b != 0);
     let differ = |t: u64, f: u64| {
-        t != 0 && f != 0 && (t | f).count_ones() + u32::from((t | f) & TOP != 0) > 1
+        if (t | f) & TOP != 0 && t != 0 && f != 0 {
+            return Some((t, f));
+        }
+        bits(t)
+            .flat_map(|a| bits(f).map(move |b| (a, b)))
+            .find(|&(a, b)| a != b && !(a == late && b == early))
     };
     // Registers by clock group, and what registers of each group read.
     let mut reg: BTreeMap<LeafId, u64> = BTreeMap::new();
@@ -1194,14 +1287,7 @@ fn cross_delta(
         let f = (ws.iter())
             .map(|w| feeds.get(w).copied().unwrap_or(0))
             .fold(0, |a, b| a | b);
-        if differ(t, f) {
-            let lo = |m: u64| m.isolate_lowest_one();
-            let a = lo(t);
-            let (from, to) = match (f & !a, lo(t & !a)) {
-                (0, 0) => (a, a),
-                (0, b) => (b, a),
-                (g, _) => (a, lo(g)),
-            };
+        if let Some((from, to)) = differ(t, f) {
             gone.push((*pi, format!(
                 "it computes, from registers on {}, a value a register on {} samples, whose edges \
                  may come in a later delta of the same time step: the normal mode samples it \

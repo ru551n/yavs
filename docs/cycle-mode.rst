@@ -208,6 +208,15 @@ body. A signal needs one source: one process drives each element of it.
        process would see other values or run another number of times.
    * - Shares a signal element with another process, or the signal has a resolution function of its own
      - E4124.
+   * - Is combinational logic between the registers of two clocks whose edges may come in different delta
+       cycles of one time step (a clock copied by an assignment comes one delta cycle after its source). The edges
+       of clocks made by assignments with a delay (``clk <= not clk after 5 ns;``) all come in the first delta
+       cycle of their time step, and those of clocks made by clock processes that wait for a time and assign
+       without a delay in the second, when yavs knows the delays and times when the design is elaborated:
+       logic between clocks of one of these kinds joins, and so does logic that registers of the second kind
+       feed and registers of the first kind sample
+     - E4101. The normal mode samples such logic before its new value arrives; the region would hand over the
+       settled value.
    * - Is clocked in a form that is not one of those above, or uses a clock made inside the region
      - E4123, E4125.
    * - Compares with a metavalue literal (``= 'U'``), assigns one to a signal the testbench reads, passes on a

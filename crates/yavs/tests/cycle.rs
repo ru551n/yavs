@@ -2487,7 +2487,7 @@ fn several_clocks_and_crossings_give_the_same_result() {
         assert_eq!(cycle, normal, "{t:?}\n{err}");
         assert!(
             err.contains(
-                "cycle mode: 12 of 19 processes run cycle-based, on the rising edge of \
+                "cycle mode: 13 of 19 processes run cycle-based, on the rising edge of \
                  cycle_clocks.c2 and the rising edge of cycle_clocks.c1 and the falling edge of \
                  cycle_clocks.c1 and the rising edge of cycle_clocks.c3 and the rising edge of \
                  cycle_clocks.cg and the rising edge of cycle_clocks.cu (`'event` form) and the \
@@ -2503,6 +2503,7 @@ fn several_clocks_and_crossings_give_the_same_result() {
             "cycle_clocks.s <= ...",
             "cycle_clocks.p3",
             "cycle_clocks.pw",
+            "cycle_clocks.t <= ...",
             "cycle_clocks.p4",
             "cycle_clocks.pg",
             "cycle_clocks.pgs",
@@ -2512,16 +2513,15 @@ fn several_clocks_and_crossings_give_the_same_result() {
         for (name, section) in sections(&err, &names) {
             assert_eq!(section, "cycle-based:", "{name}\n{err}");
         }
-        // The logic between c1 and the clocks whose edges may come in another delta stays in the
-        // kernel (with it in the region, `gs` differs).
-        for name in ["cycle_clocks.t <= ...", "cycle_clocks.u <= ..."] {
-            let (section, line) = row(&err, name);
-            assert_eq!(
-                section, "in the subset, not implemented in cycle mode yet:",
-                "{err}"
-            );
-            assert!(line.contains("may come in a later delta"), "{line}");
-        }
+        // The logic between c1 and the clock gated in the kernel, whose edges come a delta later,
+        // stays in the kernel (with it in the region, `gs` differs); `t`, between c1 and c3 of two
+        // clock processes waiting for known times, joins (their edges share a delta).
+        let (section, line) = row(&err, "cycle_clocks.u <= ...");
+        assert_eq!(
+            section, "in the subset, not implemented in cycle mode yet:",
+            "{err}"
+        );
+        assert!(line.contains("may come in a later delta"), "{line}");
     }
 }
 
@@ -4160,6 +4160,54 @@ fn parts_of_elements_chosen_at_run_time_equal_the_normal_mode() {
             "{w}: {err}"
         );
     }
+}
+
+/// Clocks whose edges come in a known delta of their time step (made with a delay: the first;
+/// by clock processes waiting for a time: the second) share an edge group with logic between
+/// their registers, logic of the second kind's registers sampled by the first kind's joins, and
+/// the other direction stays out; against the normal mode at widths 1 to 128. A clock process
+/// whose timeout elaboration does not know (here 0 ns every other time) keeps its own group.
+#[test]
+fn clocks_of_a_known_delta_share_their_logic() {
+    let dir = tempdir("cycle-deltacls");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("deltacls{w}.vhd"),
+            &with_width(include_str!("cycle/deltacls.vhd"), w),
+        );
+        for t in tiers() {
+            // Width 1 truncates in `numeric_std`: the warnings of members are not made (A6).
+            let k = |v: Vec<String>| -> Vec<String> {
+                v.into_iter().filter(|l| l.contains("k=")).collect()
+            };
+            let (normal, _) = run(&dir, &t, "cycle_deltacls");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_deltacls");
+            let (normal, cycle) = (k(normal), k(cycle));
+            assert_eq!(normal.len(), 24, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 12 of 19 processes run cycle-based")
+                    && err.contains(
+                        "it computes, from registers on cycle_deltacls.ca, a value a register on \
+                         cycle_deltacls.cc samples"
+                    ),
+                "{w}: {err}"
+            );
+        }
+    }
+    let (normal, _) = run(&dir, &[], "cycle_deltazero");
+    let (cycle, err) = run(&dir, &["--cycle"], "cycle_deltazero");
+    assert_eq!(normal.len(), 1, "{normal:?}");
+    assert_eq!(cycle, normal, "{err}");
+    assert!(
+        err.contains("cycle mode: 2 of 7 processes run cycle-based")
+            && err.contains(
+                "it computes, from registers on cycle_deltazero.cc, a value a register on \
+                 cycle_deltazero.cz samples"
+            ),
+        "{err}"
+    );
 }
 
 /// `numeric_std` shifts and rotations by a count chosen at run time, of any width (a byte

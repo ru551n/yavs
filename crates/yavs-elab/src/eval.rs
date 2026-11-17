@@ -1874,13 +1874,22 @@ impl Model {
     }
 }
 
-/// `v` under the bounds of `shape` (LRM 5.3.2.2): the arrays at the top and in the fields of
-/// records; `None` when a length differs.
+/// `v` under the bounds of `shape` (LRM 5.3.2.2): arrays at the top, in record fields and in array
+/// elements (an element of `(others => x"5A")` is `7 downto 0`, not `0 to 7`); `None` when a length
+/// at the top differs (an element of another length stays, for E2115 to name).
 fn rebound(v: &Val, shape: &Shape) -> Option<Val> {
     match (v, shape) {
-        (Val::Array(a), Shape::Array { dims, .. }) => {
+        (Val::Array(a), Shape::Array { dims, elem, .. }) => {
             let want: Vec<_> = dims.iter().map(|b| (b.left, b.dir, b.right)).collect();
-            a.with_bounds(&want).map(Val::Array)
+            let mut a = a.with_bounds(&want)?;
+            if matches!(**elem, Shape::Array { .. } | Shape::Record { .. })
+                && let Elems::Runs(runs) = &mut a.elems
+            {
+                *runs = (std::mem::take(runs).into_vec().into_iter())
+                    .map(|(n, x)| (n, rebound(&x, elem).unwrap_or(x)))
+                    .collect();
+            }
+            Some(Val::Array(a))
         }
         (Val::Record(vs), Shape::Record { fields, .. }) if vs.len() == fields.len() => vs
             .iter()

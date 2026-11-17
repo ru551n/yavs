@@ -1769,10 +1769,31 @@ impl Db {
                     };
                     want.push((r.left, r.dir, r.right));
                 }
-                if *a.bounds == *want {
-                    return Some(v.clone());
+                let mut a = if *a.bounds == *want {
+                    a.clone()
+                } else {
+                    a.with_bounds(&want)?
+                };
+                // Composite elements take the element subtype's bounds too (an element of
+                // `(x"01", x"02")` of `std_ulogic_vector(7 downto 0)` is not `0 to 7`). An element
+                // constraint of `st` itself keeps them as they are.
+                let crate::types::TypeKind::Array { elem, .. } = self.types[self.base(st)].kind
+                else {
+                    return Some(ConstValue::Array(a));
+                };
+                let own = matches!(&self.subtypes[st].constraint,
+                    crate::types::Constraint::Array { elem: ec, .. } if !matches!(**ec, crate::types::Constraint::None));
+                if !own
+                    && !self.types[self.base(elem)].kind.is_scalar()
+                    && let crate::stat::Elems::Runs(runs) = &mut a.elems
+                {
+                    let mut out = Vec::with_capacity(runs.len());
+                    for (n, x) in std::mem::take(runs).into_vec() {
+                        out.push((n, self.rebound_value(&x, elem)?));
+                    }
+                    *runs = out.into();
                 }
-                Some(ConstValue::Array(a.with_bounds(&want)?))
+                Some(ConstValue::Array(a))
             }
             ConstValue::Record(vs) => {
                 let mut out = Vec::with_capacity(vs.len());

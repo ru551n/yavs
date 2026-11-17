@@ -636,9 +636,10 @@ longer than the time the faster simulation saves.
 
 Both are kept in the compilation cache of the work library (``yavs-cache/cycle`` next to the library,
 :doc:`on-disk`): the analysis (which processes run cycle-based, and their code before it is compiled) and the
-compiled machine code. A later run of the same design takes the analysis from the cache and links the code: its
-start-up is close to that of a run without ``--cycle``: shorter on some designs (half of it on a large accelerator
-whose region is most of the design), up to a third longer on others. In a test suite the test cases of one design therefore analyse
+compiled machine code, and the region as it was built from them. A later run of the same design takes the region from
+the cache and links the code: its start-up is close to or below that of a run without ``--cycle`` (half of it on a large
+accelerator whose region is most of the design). ``--cycle-strict`` and ``--cycle-report`` take the analysis and
+build the region from it. In a test suite the test cases of one design therefore analyse
 and compile the region once: a top-level generic counts only when the elaboration or the analysis reads its value, so
 a test runner's configuration string, which only the testbench reads while it runs, does not keep two test cases
 apart. An edited file, a generic that is read with another value, other options or ``YAVS_`` environment variables,

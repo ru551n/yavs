@@ -18,11 +18,42 @@ use crate::lower::Check;
 /// it), the member process and its name.
 pub type Site = (Check, Vec<yavs_diag::Span>, usize, String);
 
+/// The check sites of a region; from the cache as their encoding, decoded when a check first
+/// fails or a note first fires (most runs have neither).
+pub(crate) struct Sites {
+    bytes: Vec<u8>,
+    sites: std::sync::OnceLock<Vec<Site>>,
+}
+
+impl Sites {
+    pub(crate) fn new(sites: Vec<Site>) -> Sites {
+        Sites {
+            bytes: Vec::new(),
+            sites: sites.into(),
+        }
+    }
+
+    /// From their encoding (postcard).
+    pub(crate) fn lazy(bytes: Vec<u8>) -> Sites {
+        Sites {
+            bytes,
+            sites: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Site `i`; `None` also for an encoding that does not decode.
+    pub(crate) fn get(&self, i: usize) -> Option<&Site> {
+        let all =
+            (self.sites).get_or_init(|| postcard::from_bytes(&self.bytes).unwrap_or_default());
+        all.get(i)
+    }
+}
+
 /// A kernel range read into the image: its words `slot`, from element `lo` there, `len`
 /// elements; or, for a byte signal (`bytes` 1, 4 or 8, else 0), `len` integers, one per word,
 /// the last element of the range in word `slot` (the image keeps arrays from the right, the
 /// kernel's byte signals from the left).
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Read {
     pub r: SigRef,
     pub slot: u32,
@@ -37,7 +68,7 @@ pub(crate) struct Read {
 /// The input chunks of a group of kernel signals, `RegionProc::chunks[at .. at + n]`, and the
 /// kernel image (`ImageKind::Count`, one item per chunk) that counts the updates that changed
 /// each.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct InSig {
     pub spec: ImageSpec,
     pub at: u32,
@@ -68,7 +99,7 @@ pub(crate) struct Out {
 /// A write of a memory kept back to the commit (`lib.rs` `defer`): its flag word (set when it
 /// happened in this wake, cleared by the export), its index word, and where it writes (the
 /// operands of its `IndexWrite`).
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RamWrite {
     pub flag: usize,
     pub idx: usize,
@@ -266,7 +297,7 @@ pub(crate) struct RegionProc {
     pub waits: Vec<SigRef>,
     pub started: bool,
     /// The checks of the code by site: what they say, and the member process and its name.
-    pub checks: Arc<Vec<Site>>,
+    pub checks: Arc<Sites>,
     /// The first of the two words a failed check stores its operands in.
     pub err: usize,
     /// The log of the notes that fired in a run (`Op::Note`): its first word and how many it

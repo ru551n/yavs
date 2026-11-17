@@ -96,7 +96,7 @@ pub struct IdleRead {
 /// nor the reset condition true would only evaluate them and suspend again, so the kernel
 /// leaves the process suspended (`Config::edge_triggers`). Edges as the IEEE 1164 functions
 /// define them: `'event`, and the value and `'last_value` through `To_X01`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EdgeTrigger {
     pub signal: SignalId,
     pub elem: u32,

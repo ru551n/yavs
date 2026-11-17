@@ -75,6 +75,7 @@ pub(crate) struct Code {
 /// last run (its outputs are then what that run left): those words (first, count), where their
 /// copy from the last run starts, a word saying what the last run was (0 none, 1 without checks,
 /// 2 with), and the words it drives (for `YAVS_CYCLE_SKIP_CHECK`).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Guard {
     pub name: String,
     pub ins: Vec<(u32, u32)>,
@@ -848,6 +849,48 @@ fn span(op: &Op) -> u32 {
     }
 }
 
+/// The target of the region's code (the host, with `YAVS_CYCLE_FLAGS`) and a module for it, with
+/// the target's name: its triple and flags, the key of the code in the cache.
+fn module() -> Result<(JITModule, String), String> {
+    let mut flags = settings::builder();
+    let set = |f: &mut settings::Builder, k: &str, v: &str| f.set(k, v).map_err(|e| e.to_string());
+    set(&mut flags, "opt_level", "speed")?;
+    set(
+        &mut flags,
+        "enable_verifier",
+        if cfg!(debug_assertions) {
+            "true"
+        } else {
+            "false"
+        },
+    )?;
+    // Developers: `YAVS_CYCLE_FLAGS=name=value,...` sets more Cranelift flags (to measure them).
+    if let Some(v) = std::env::var_os("YAVS_CYCLE_FLAGS") {
+        for kv in v.to_string_lossy().split(',').filter(|kv| !kv.is_empty()) {
+            let (k, v) = kv
+                .split_once('=')
+                .ok_or("YAVS_CYCLE_FLAGS takes name=value pairs")?;
+            set(&mut flags, k, v)?;
+        }
+    }
+    let isa = cranelift_native::builder()
+        .map_err(|e| e.to_string())?
+        .finish(settings::Flags::new(flags))
+        .map_err(|e| e.to_string())?;
+    let isa_id = (isa.isa_flags().iter())
+        .fold(format!("{} {}", isa.triple(), isa.flags()), |a, v| {
+            format!("{a} {v}")
+        });
+    let jb = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+    Ok((JITModule::new(jb), isa_id))
+}
+
+/// The name of the target the region's code is made for ([`module`]).
+pub(crate) fn isa_id() -> Option<String> {
+    static ID: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    ID.get_or_init(|| module().ok().map(|m| m.1)).clone()
+}
+
 /// Compile the trigger functions: the settle as steps, the edge's own pieces (the settle follows
 /// them) and the initialisation's, each piece needing nothing from another but memory (the
 /// bodies of members; a member longer than `CHUNK` operations is cut into parts, `cut`, which hand
@@ -875,43 +918,11 @@ pub(crate) fn compile<'a>(
     err: u32,
     log: (u32, u32),
     name: &str,
-) -> Result<Code, String> {
+) -> Result<(Code, CodePlan, Option<crate::store::Blob>), String> {
     let words = keep.len();
-    let mut flags = settings::builder();
-    let set = |f: &mut settings::Builder, k: &str, v: &str| f.set(k, v).map_err(|e| e.to_string());
-    set(&mut flags, "opt_level", "speed")?;
-    set(
-        &mut flags,
-        "enable_verifier",
-        if cfg!(debug_assertions) {
-            "true"
-        } else {
-            "false"
-        },
-    )?;
-    // Developers: `YAVS_CYCLE_FLAGS=name=value,...` sets more Cranelift flags (to measure them).
-    if let Some(v) = std::env::var_os("YAVS_CYCLE_FLAGS") {
-        for kv in v.to_string_lossy().split(',').filter(|kv| !kv.is_empty()) {
-            let (k, v) = kv
-                .split_once('=')
-                .ok_or("YAVS_CYCLE_FLAGS takes name=value pairs")?;
-            set(&mut flags, k, v)?;
-        }
-    }
-    let isa = cranelift_native::builder()
-        .map_err(|e| e.to_string())?
-        .finish(settings::Flags::new(flags))
-        .map_err(|e| e.to_string())?;
-    // The region's code whole from the cache (`store`): no function body is built.
-    let isa_id = (isa.isa_flags().iter())
-        .fold(format!("{} {}", isa.triple(), isa.flags()), |a, v| {
-            format!("{a} {v}")
-        });
-    let jb = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-    let mut module = JITModule::new(jb);
+    let (mut module, _) = module()?;
     let ptr = module.target_config().pointer_type();
     let checks = checks_on();
-    let perf = std::env::var_os("YAVS_CLIFT_PERFMAP").is_some();
     // The functions to compile (label, parts, whether checks exit), the loop bodies first; and
     // what each trigger function runs, a function by its index. A part says whether its member
     // goes on in the next one (`cut`).
@@ -964,11 +975,6 @@ pub(crate) fn compile<'a>(
         .collect();
     // What each trigger function runs: a function by its index, a function of a shared body
     // with its table and first site, or a step of the runner.
-    enum Pend {
-        Fn(usize),
-        Shared(usize, u32, u32),
-        Run(Run),
-    }
     let mut tables: Vec<Box<[usize]>> = Vec::new();
     let mut runs: [Vec<Pend>; 3] = Default::default();
     let mut settle_units: Vec<Vec<u32>> = Vec::new();
@@ -1058,7 +1064,7 @@ pub(crate) fn compile<'a>(
                         &mut eunits,
                     );
                     open.push((runs[f].len(), *g, *checked, *n));
-                    runs[f].push(Pend::Run(Run::Guard(*g, 0, *checked)));
+                    runs[f].push(Pend::Guard(*g, 0, *checked));
                     eunits.push(Vec::new());
                     continue;
                 }
@@ -1070,7 +1076,7 @@ pub(crate) fn compile<'a>(
                         &mut runs[f],
                         &mut eunits,
                     );
-                    runs[f].push(Pend::Run(Run::Save(*g)));
+                    runs[f].push(Pend::Save(*g));
                     eunits.push(Vec::new());
                 }
                 Step::Same(g) => {
@@ -1081,7 +1087,7 @@ pub(crate) fn compile<'a>(
                         &mut runs[f],
                         &mut eunits,
                     );
-                    runs[f].push(Pend::Run(Run::Same(*g)));
+                    runs[f].push(Pend::Same(*g));
                     eunits.push(Vec::new());
                 }
             }
@@ -1098,7 +1104,7 @@ pub(crate) fn compile<'a>(
                     &mut eunits,
                 );
                 let n = runs[f].len() - at - 1;
-                runs[f][at] = Pend::Run(Run::Guard(g, n, checked));
+                runs[f][at] = Pend::Guard(g, n, checked);
                 // A guard is in the settle's units of what it covers.
                 let mut u: Vec<u32> = eunits[at + 1..].concat();
                 u.sort_unstable();
@@ -1161,24 +1167,40 @@ pub(crate) fn compile<'a>(
     let mut hits = 0;
     let t0 = std::time::Instant::now();
     let mut ids = Vec::new();
-    let (blob, check) = crate::store::code_get(&isa_id);
-    let blob = blob.filter(|b| b.len() == funs.len());
-    let take = blob.as_ref().filter(|_| !check && !disasm);
+    let (blob, check) = crate::store::code_get();
+    let take = blob.filter(|b| b.len() == funs.len() && !check && !disasm);
     // What this compile made, for the cache (none when a function needs relocations).
     let mut made: Option<crate::store::Blob> = Some(Vec::new());
-    for (k, (sym, ops, checked, shape)) in funs.iter().enumerate() {
+    let plan = CodePlan {
+        funs: (funs.iter())
+            .map(|f| (format!("cycle_{}_{name}", f.0), f.3.is_some()))
+            .collect(),
+        runs,
+        groups,
+        words,
+        tables,
+        guards,
+        settle_units,
+        signal_words,
+        log_count: log.0 as usize,
+        full_check: std::env::var_os("YAVS_CYCLE_SKIP_CHECK")
+            .is_some_and(|v| v == "full")
+            .then(|| {
+                let mut v: Vec<(u32, u32)> = Vec::new();
+                for (w, _) in keep.iter().enumerate().filter(|x| *x.1) {
+                    match v.last_mut() {
+                        Some(x) if x.0 + x.1 == w as u32 => x.1 += 1,
+                        _ => v.push((w as u32, 1)),
+                    }
+                }
+                v
+            }),
+        settle_outs: Vec::new(),
+    };
+    for (k, (_, ops, checked, shape)) in funs.iter().enumerate() {
         let t = std::time::Instant::now();
-        let sym = format!("cycle_{sym}_{name}");
-        let mut sig = module.make_signature();
-        sig.params.push(AbiParam::new(ptr));
-        if shape.is_some() {
-            sig.params.push(AbiParam::new(ptr));
-        }
-        sig.returns.push(AbiParam::new(I32));
-        let id = module
-            .declare_function(&sym, Linkage::Local, &sig)
-            .map_err(|e| e.to_string())?;
-        if let Some(b) = take {
+        let (id, sym, sig) = declare(&mut module, &plan.funs[k])?;
+        if let Some(b) = &take {
             let (align, bytes) = &b[k];
             module
                 .define_function_bytes(id, *align, bytes, &[])
@@ -1298,20 +1320,6 @@ pub(crate) fn compile<'a>(
         ids.push((id, sym, bytes));
     }
     module.finalize_definitions().map_err(|e| e.to_string())?;
-    if take.is_none()
-        && let Some(m) = made
-    {
-        match &blob {
-            Some(b) if check && *b != m => {
-                return Err(
-                    "YAVS_CYCLE_CACHE_CHECK: the region's code in the cache differs from a new compile"
-                        .into(),
-                );
-            }
-            Some(_) => {}
-            None => crate::store::code_put(&isa_id, &m),
-        }
-    }
     if stats {
         eprintln!(
             "cycle stats: {} functions in {} ms, {hits} from the cache",
@@ -1319,30 +1327,102 @@ pub(crate) fn compile<'a>(
             t0.elapsed().as_millis()
         );
     }
+    let code = finish(module, ids, plan.clone())?;
+    Ok((code, plan, made.filter(|_| take.is_none())))
+}
+
+/// Declare function `f` of a plan (its symbol, whether it is a shape's body) in `module`.
+fn declare(
+    module: &mut JITModule,
+    f: &(String, bool),
+) -> Result<(FuncId, String, cranelift_codegen::ir::Signature), String> {
+    let ptr = module.target_config().pointer_type();
+    let mut sig = module.make_signature();
+    sig.params.push(AbiParam::new(ptr));
+    if f.1 {
+        sig.params.push(AbiParam::new(ptr));
+    }
+    sig.returns.push(AbiParam::new(I32));
+    let id = module
+        .declare_function(&f.0, Linkage::Local, &sig)
+        .map_err(|e| e.to_string())?;
+    Ok((id, f.0.clone(), sig))
+}
+
+/// The region's functions of `plan` from their machine code `blob` (the cache): no function body
+/// is built.
+pub(crate) fn from_blob(plan: CodePlan, blob: &crate::store::Blob) -> Result<Code, String> {
+    if blob.len() != plan.funs.len() {
+        return Err("the region's code in the cache does not fit its plan".into());
+    }
+    let t0 = std::time::Instant::now();
+    let (mut module, _) = module()?;
+    let mut ids = Vec::new();
+    for (f, (align, bytes)) in plan.funs.iter().zip(blob) {
+        let (id, sym, _) = declare(&mut module, f)?;
+        module
+            .define_function_bytes(id, *align, bytes, &[])
+            .map_err(|e| format!("{e:?}"))?;
+        ids.push((id, sym, bytes.len() as u32));
+    }
+    module.finalize_definitions().map_err(|e| e.to_string())?;
+    if std::env::var_os("YAVS_CYCLE_STATS").is_some() {
+        eprintln!(
+            "cycle stats: {} functions in {} ms, {} from the cache",
+            ids.len(),
+            t0.elapsed().as_millis(),
+            ids.len()
+        );
+    }
+    finish(module, ids, plan)
+}
+
+/// The code of `plan` once its functions `ids` (with their symbols and sizes) are in `module`.
+fn finish(
+    module: JITModule,
+    ids: Vec<(FuncId, String, u32)>,
+    plan: CodePlan,
+) -> Result<Code, String> {
+    let words = plan.words;
     let addr = |id: FuncId| module.get_finalized_function(id);
-    if perf {
+    if std::env::var_os("YAVS_CLIFT_PERFMAP").is_some() {
         for (id, sym, bytes) in &ids {
             yavs_rt::perfmap::append(addr(*id) as usize, *bytes as usize, sym);
         }
     }
+    let fun = |k: usize| -> Result<*const u8, String> {
+        Ok(addr(
+            ids.get(k)
+                .ok_or("a step names a function the plan lacks")?
+                .0,
+        ))
+    };
     let mut entries: [Vec<Run>; 3] = Default::default();
-    for (f, rs) in runs.iter().enumerate() {
+    for (f, rs) in plan.runs.iter().enumerate() {
         entries[f] = (rs.iter())
-            .map(|r| match *r {
-                // SAFETY: a function of signature `fn(ptr) -> u32` defined above.
-                Pend::Fn(k) => {
-                    Run::Fn(unsafe { std::mem::transmute::<*const u8, Entry>(addr(ids[k].0)) })
-                }
-                // SAFETY: a function of a shape, `fn(ptr, ptr) -> u32`, defined above.
-                Pend::Shared(k, t, s) => Run::Shared(
-                    unsafe { std::mem::transmute::<*const u8, SharedEntry>(addr(ids[k].0)) },
-                    t,
-                    s,
-                ),
-                Pend::Run(r) => r,
+            .map(|r| {
+                Ok(match *r {
+                    // SAFETY: a function of signature `fn(ptr) -> u32` (`declare`).
+                    Pend::Fn(k) if !plan.funs[k].1 => {
+                        Run::Fn(unsafe { std::mem::transmute::<*const u8, Entry>(fun(k)?) })
+                    }
+                    // SAFETY: a function of a shape, `fn(ptr, ptr) -> u32` (`declare`).
+                    Pend::Shared(k, t, s) if plan.funs[k].1 && (t as usize) < plan.tables.len() => {
+                        Run::Shared(
+                            unsafe { std::mem::transmute::<*const u8, SharedEntry>(fun(k)?) },
+                            t,
+                            s,
+                        )
+                    }
+                    Pend::Save(g) => Run::Save(g),
+                    Pend::Same(g) => Run::Same(g),
+                    Pend::Guard(g, n, c) => Run::Guard(g, n, c),
+                    _ => return Err("a step of another signature than its function".to_string()),
+                })
             })
-            .collect();
+            .collect::<Result<_, String>>()?;
     }
+    let guards = plan.guards;
     if guards.iter().any(|g| {
         let end = |v: &[(u32, u32)]| v.iter().map(|&(w, c)| (w + c) as usize).max().unwrap_or(0);
         let n: u32 = g.ins.iter().map(|x| x.1).sum();
@@ -1353,7 +1433,9 @@ pub(crate) fn compile<'a>(
     }) {
         return Err("a guard's words do not fit the image".into());
     }
+    let stats = std::env::var_os("YAVS_CYCLE_STATS").is_some();
     let counts = stats.then(|| guards.iter().map(|_| Default::default()).collect());
+    let settle_units = plan.settle_units;
     let mut every = vec![0u64; settle_units.len().div_ceil(64)];
     for (i, _) in settle_units.iter().enumerate().filter(|x| !x.1.is_empty()) {
         every[i / 64] |= 1 << (i % 64);
@@ -1361,32 +1443,59 @@ pub(crate) fn compile<'a>(
     Ok(Code {
         _module: module,
         entries,
-        groups,
+        groups: plan.groups,
         words,
-        tables,
+        tables: plan.tables,
         guards,
         settle_units,
         every: every.into_boxed_slice(),
-        signal_words,
-        settle_outs: Vec::new(),
-        log_count: log.0 as usize,
+        signal_words: plan.signal_words,
+        settle_outs: plan.settle_outs,
+        log_count: plan.log_count,
         skip_check: std::env::var_os("YAVS_CYCLE_SKIP_CHECK")
             .is_some_and(|v| v == "1" || v == "full"),
-        full_check: std::env::var_os("YAVS_CYCLE_SKIP_CHECK")
-            .is_some_and(|v| v == "full")
-            .then(|| {
-                let mut v: Vec<(u32, u32)> = Vec::new();
-                for (w, _) in keep.iter().enumerate().filter(|x| *x.1) {
-                    match v.last_mut() {
-                        Some(x) if x.0 + x.1 == w as u32 => x.1 += 1,
-                        _ => v.push((w as u32, 1)),
-                    }
-                }
-                v
-            }),
+        full_check: plan.full_check,
         counts,
         stale: Default::default(),
     })
+}
+
+/// What [`compile`] made besides the machine code: the functions, what each trigger function
+/// runs and the run-time data of the code. Kept with the machine code in the cache, it makes the
+/// region's code again without a function body built ([`from_blob`]).
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CodePlan {
+    /// Per function: its symbol, and whether it is a shape's body (with a table).
+    funs: Vec<(String, bool)>,
+    runs: [Vec<Pend>; 3],
+    groups: Vec<(Vec<(u32, u32)>, u32)>,
+    words: usize,
+    tables: Vec<Box<[usize]>>,
+    guards: Vec<Guard>,
+    settle_units: Vec<Vec<u32>>,
+    signal_words: usize,
+    log_count: usize,
+    full_check: Option<Vec<(u32, u32)>>,
+    /// `YAVS_CYCLE_SKIP_CHECK`: set by the caller ([`Code::settle_outs`]).
+    pub settle_outs: Vec<Vec<(u32, u32)>>,
+}
+
+impl CodePlan {
+    /// How many functions the region has.
+    pub(crate) fn functions(&self) -> usize {
+        self.funs.len()
+    }
+}
+
+/// A step of a trigger function as [`CodePlan`] keeps it: a function by its index, a function of a
+/// shared body with its table and first site, or a step of the runner ([`Run`]).
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+enum Pend {
+    Fn(usize),
+    Shared(usize, u32, u32),
+    Save(usize),
+    Same(usize),
+    Guard(usize, usize, bool),
 }
 
 /// Most words a piece keeps in registers at once (`Gen::keep_in`), and for a piece of more than

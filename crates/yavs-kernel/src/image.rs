@@ -12,7 +12,7 @@ use crate::signal::{Range, Signal, SignalId};
 use crate::value::Buf;
 
 /// How a leaf lies in an image.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ImageKind {
     /// One logic element: its code less the bias, little endian in the leaf's bytes.
     Code(u8),
@@ -29,7 +29,7 @@ pub enum ImageKind {
 }
 
 /// One leaf instance: elements `k .. k + len` of `sig`, at `voff .. voff + vsize` of the image.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ImageItem {
     pub sig: SignalId,
     pub k: u32,
@@ -40,7 +40,7 @@ pub struct ImageItem {
 }
 
 /// What an image holds. Equal specs share one image, whichever process asked.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ImageSpec {
     pub size: u32,
     pub items: Box<[ImageItem]>,

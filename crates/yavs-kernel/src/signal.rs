@@ -18,7 +18,9 @@ use yavs_logic::Block;
 use yavs_logic::wide::{nmask, put_block};
 
 /// Stable id of a signal: its index in creation (elaboration) order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct SignalId(pub u32);
 
 /// Stable id of a driver.
@@ -26,7 +28,7 @@ pub struct SignalId(pub u32);
 pub struct DriverId(pub u32);
 
 /// A contiguous run of elements: `offset .. offset + len`. May be empty (null ranges).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Range {
     pub offset: u32,
     pub len: u32,
@@ -63,7 +65,7 @@ impl Range {
 }
 
 /// A whole signal or a sub-element range of it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SigRef {
     pub signal: SignalId,
     pub range: Option<Range>,

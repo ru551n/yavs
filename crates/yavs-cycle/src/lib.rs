@@ -88,7 +88,8 @@ pub enum Mode {
 
 /// What cycle mode decided for a design: the region report and the region to build.
 pub struct Plan {
-    /// The region report: what joined and what stays in the event kernel, with reasons.
+    /// The region report: what joined and what stays in the event kernel, with reasons
+    /// ([`Mode::Report`] only, else empty).
     pub report: String,
     /// One line for `--cycle`: how many processes joined (ends with a newline).
     pub summary: String,
@@ -179,7 +180,43 @@ fn at(db: &Db, span: yavs_diag::Span) -> String {
 /// reason, all of them listed. Under [`Mode::Report`] only the report is made, nothing is
 /// compiled.
 pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>> {
-    let sel = store::select(db, e)?;
+    let sel = match store::select(db, e)? {
+        store::Got::Sel(sel) => *sel,
+        // `--cycle` on a hit: the region as it was built, its code as it was compiled.
+        store::Got::Built(f) if mode == Mode::Run => {
+            let (mut b, sites, blob) = *f;
+            let (metas, reporter) = (Arc::new(Metas::default()), Reporter::default());
+            let code = codegen::from_blob(std::mem::take(&mut b.code), &blob).map_err(|m| {
+                vec![
+                    Diagnostic::error("E9999", format!("cycle mode cannot load its region: {m}"))
+                        .with_note("this is a bug in yavs"),
+                ]
+            })?;
+            return Ok(Plan {
+                report: String::new(),
+                summary: std::mem::take(&mut b.summary),
+                region: Some(finish(
+                    e,
+                    b,
+                    rt::Sites::lazy(sites),
+                    code,
+                    metas.clone(),
+                    reporter.clone(),
+                )),
+                metas,
+                reporter,
+            });
+        }
+        store::Got::Built(_) => {
+            return Err(vec![
+                Diagnostic::error(
+                    "E9999",
+                    "cycle mode's analysis cache: a built region for a report",
+                )
+                .with_note("this is a bug in yavs"),
+            ]);
+        }
+    };
     let label = |pi: usize| e.hier.proc_label(&e.procs[pi], yavs_elab::Case::Lrm);
     if mode == Mode::Strict {
         let errs: Vec<Diagnostic> = (sel.out.iter())
@@ -216,7 +253,6 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
             return Err(errs);
         }
     }
-    let mut report = String::new();
     let total = e.procs.len();
     let head = format!(
         "cycle mode: {} of {total} processes run cycle-based",
@@ -225,8 +261,8 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
     // Inputs nothing drives that start with a metavalue: the normal mode reads that metavalue
     // for the whole run, the region 0. Counted on the summary line: a run that differs this way
     // may never end.
-    let undriven: Vec<String> = (region::undriven_metas(e).intersection(&sel.inputs))
-        .map(|&l| e.leaf_name(l))
+    let undriven: Vec<LeafId> = (region::undriven_metas(e).intersection(&sel.inputs))
+        .copied()
         .collect();
     let mut tail = Vec::new();
     if total > sel.members.len() {
@@ -242,7 +278,55 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
     } else {
         format!("{head}, {} (see --cycle-report)\n", tail.join(", "))
     };
-    report.push_str(&head);
+    let metas = Arc::new(Metas::default());
+    // The region report only for `--cycle-report`: its names and source lines cost a run.
+    if mode == Mode::Report || sel.members.is_empty() {
+        return Ok(Plan {
+            report: match mode {
+                Mode::Report => report(db, e, &sel, &head, &undriven),
+                _ => String::new(),
+            },
+            summary,
+            region: None,
+            metas,
+            reporter: Reporter::default(),
+        });
+    }
+    let reporter = Reporter::default();
+    let region = build(db, e, sel, &summary, metas.clone(), reporter.clone()).map_err(|m| {
+        vec![
+            Diagnostic::error(
+                "E9999",
+                format!("cycle mode cannot compile its region: {m}"),
+            )
+            .with_note("this is a bug in yavs"),
+        ]
+    })?;
+    store::built()?;
+    Ok(Plan {
+        report: String::new(),
+        summary,
+        region: Some(region),
+        metas,
+        reporter,
+    })
+}
+
+/// The region report of `sel` (`--cycle-report`): what joined and what stays in the event kernel,
+/// with reasons; `head` its first line, `undriven` the inputs nothing drives that start with a
+/// metavalue.
+fn report(
+    db: &Db,
+    e: &Elaborated,
+    sel: &region::Selection,
+    head: &str,
+    undriven: &[LeafId],
+) -> String {
+    let label = |pi: usize| e.hier.proc_label(&e.procs[pi], yavs_elab::Case::Lrm);
+    let undriven: Vec<String> = undriven.iter().map(|&l| e.leaf_name(l)).collect();
+    let total = e.procs.len();
+    let mut report = String::new();
+    report.push_str(head);
     let edges: Vec<String> = (sel.clocks.iter())
         .map(|c| {
             format!(
@@ -393,15 +477,8 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
             l.procs * l.k as usize
         );
     }
-    let metas = Arc::new(Metas::default());
     if sel.members.is_empty() {
-        return Ok(Plan {
-            report,
-            summary,
-            region: None,
-            metas,
-            reporter: Reporter::default(),
-        });
+        return report;
     }
     let name = |l: &LeafId| e.leaf_name(*l);
     let _ = writeln!(
@@ -455,43 +532,34 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
     for (name, what) in &members {
         let _ = writeln!(report, "    {name:<w$}  {what}");
     }
-    if mode == Mode::Report {
-        return Ok(Plan {
-            report,
-            summary,
-            region: None,
-            metas,
-            reporter: Reporter::default(),
-        });
-    }
-    let reporter = Reporter::default();
-    let region = build(db, e, sel, metas.clone(), reporter.clone()).map_err(|m| {
-        vec![
-            Diagnostic::error(
-                "E9999",
-                format!("cycle mode cannot compile its region: {m}"),
-            )
-            .with_note("this is a bug in yavs"),
-        ]
-    })?;
-    store::built()?;
-    Ok(Plan {
-        report,
-        summary,
-        region: Some(region),
-        metas,
-        reporter,
-    })
+    report
 }
 
-/// Lay out the image, schedule and compile the region, and make its kernel process.
+/// Lay out the image, schedule and compile the region, and make its kernel process; keep what
+/// was built with its machine code when the selection is cached (`store::keep_built`).
 fn build(
     db: &Db,
     e: &Elaborated,
     sel: region::Selection,
+    summary: &str,
     metas: Arc<Metas>,
     reporter: Reporter,
 ) -> Result<Region, String> {
+    let (mut b, code, made) = built(db, e, &sel, summary)?;
+    drop(sel);
+    store::keep_built(&b, made)?;
+    let sites = rt::Sites::new(std::mem::take(&mut b.checks));
+    Ok(finish(e, b, sites, code, metas, reporter))
+}
+
+/// Lay out the image, schedule and compile the region: what its kernel process is made from,
+/// its code, and the machine code this compile made (for the cache).
+fn built(
+    db: &Db,
+    e: &Elaborated,
+    sel: &region::Selection,
+    summary: &str,
+) -> Result<(Built, codegen::Code, Option<store::Blob>), String> {
     let nets = &e.nets;
     let ksig = |l: LeafId| nets.loc[l.index()].signal.0;
     // A kernel signal of logic elements: its length; a byte signal (integers or enumerations): a
@@ -559,7 +627,7 @@ fn build(
     let mut init_fn: Vec<codegen::Step> = Vec::new();
     // Per next-state signal, with several classes: the edge words of the classes whose clocked
     // members write it. Its copies run after an edge of one of them only (twice when two had one).
-    let named = named_sigs(&sel);
+    let named = named_sigs(sel);
     let mut writers: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
     for (k, (_, b)) in sel.members.iter().enumerate() {
         if !several || b.kind != Kind::Clocked {
@@ -692,7 +760,7 @@ fn build(
     };
     let stats = std::env::var_os("YAVS_CYCLE_STATS").is_some();
     if stats {
-        shapes(db, e, &sel, &next);
+        shapes(db, e, sel, &next);
     }
     // One body per shape: members of `SHARE_MIN` operations or more, not in a loop group, whose
     // code is the same but for where their words lie; a combinational member's settle body, a
@@ -1130,7 +1198,7 @@ fn build(
         })
         .collect();
     let (settle, units): (Vec<codegen::Step>, Vec<u32>) = settle.into_iter().unzip();
-    let mut code = codegen::compile(
+    let (mut code, mut plan, made) = codegen::compile(
         &settle,
         &units,
         &edge,
@@ -1147,7 +1215,7 @@ fn build(
     )?;
     if code.skip_check {
         // The whole blocks of the signals each step's members write.
-        code.settle_outs = (code.settle_units.iter())
+        plan.settle_outs = (code.settle_units.iter())
             .map(|us| {
                 let ks = std::cell::RefCell::new(BTreeSet::new());
                 for &u in us {
@@ -1169,10 +1237,9 @@ fn build(
                     .collect()
             })
             .collect();
+        code.settle_outs = plan.settle_outs.clone();
     }
-    let code = Arc::new(code);
-    let (cone, class_cones) = cones(&sel, nets, &code.settle_units, &named);
-    let class_cones = Arc::new(class_cones);
+    let (cone, class_cones) = cones(sel, nets, &code.settle_units, &named);
     if stats {
         // The settle steps each edge class's clocked members reach: an edge runs only those and
         // the steps its inputs reach.
@@ -1239,18 +1306,11 @@ fn build(
                 bytes: b,
                 now: now.contains(&l),
             };
-            let name = if stats {
-                format!("{} ({}:{})", e.leaf_name(l), part.offset, part.len)
-            } else {
-                String::new()
-            };
-            chunks.push((read, nets.kpart(l, part).1, (name, l)));
+            chunks.push((read, nets.kpart(l, part).1, (l, part.offset, part.len)));
         }
     }
     let (mut chunks, mut ins) = (Vec::new(), Vec::new());
-    let mut chunk_names: Vec<String> = Vec::new();
-    let mut chunk_leaves: Vec<LeafId> = Vec::new();
-    let import_check = std::env::var_os("YAVS_CYCLE_IMPORT_CHECK").is_some_and(|v| v == "1");
+    let mut chunk_at: Vec<(LeafId, u32, u32)> = Vec::new();
     // One image per group of input signals of about `IMAGE_CHUNKS` chunks: a wake asks each
     // group's write count, and compares the chunk counts only of a group that was written.
     let mut items: Vec<yavs_kernel::ImageItem> = Vec::new();
@@ -1269,8 +1329,7 @@ fn build(
         }
         for c in rs {
             chunks.push(c.0);
-            chunk_names.push(c.2.0);
-            chunk_leaves.push(c.2.1);
+            chunk_at.push(c.2);
         }
         if items.len() >= IMAGE_CHUNKS || groups.peek().is_none() {
             let n = items.len() as u32;
@@ -1348,40 +1407,34 @@ fn build(
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    let outputs = sel.outputs.clone();
     let names: BTreeMap<usize, String> = (checks.iter())
         .map(|(_, _, pi)| (*pi, e.hier.proc_label(&e.procs[*pi], yavs_elab::Case::Lrm)))
         .collect();
-    let checks: Arc<Vec<rt::Site>> = Arc::new(
-        checks
-            .into_iter()
-            .map(|(c, at, pi)| (c, at, pi, names[&pi].clone()))
-            .collect(),
-    );
+    let checks: Vec<rt::Site> = checks
+        .into_iter()
+        .map(|(c, at, pi)| (c, at, pi, names[&pi].clone()))
+        .collect();
     // The reports of the calls members fold, by member (A22).
-    let reports: Arc<Vec<(usize, u8, String)>> = Arc::new(
-        (sel.members.iter())
-            .flat_map(|(pi, b)| b.reports.iter().map(|(s, t)| (*pi, *s, t.clone())))
-            .collect(),
-    );
+    let reports: Vec<(usize, u8, String)> = (sel.members.iter())
+        .flat_map(|(pi, b)| b.reports.iter().map(|(s, t)| (*pi, *s, t.clone())))
+        .collect();
     let sig_bytes: BTreeMap<u32, u32> = cur.keys().map(|&k| (k, bytes(k))).collect();
     let sig_len: BTreeMap<u32, u32> = (cur.keys())
         .map(|&k| (k, nets.signal_len(yavs_kernel::SignalId(k))))
         .collect();
-    let words = n as usize;
     // Per input chunk: the steps of the settle a change of it can reach.
     let (cones, chunk_cone) = {
         let mut by_leaf: BTreeMap<LeafId, u32> = BTreeMap::new();
         let mut cones: Vec<Box<[u64]>> = Vec::new();
-        let chunk_cone: Vec<u32> = (chunk_leaves.iter())
-            .map(|&l| {
+        let chunk_cone: Vec<u32> = (chunk_at.iter())
+            .map(|&(l, _, _)| {
                 *by_leaf.entry(l).or_insert_with(|| {
                     cones.push(cone(l));
                     cones.len() as u32 - 1
                 })
             })
             .collect();
-        (Arc::new(cones), Arc::new(chunk_cone))
+        (cones, chunk_cone)
     };
     // The image words each member writes, of each settle step and of each class's clocked
     // members: the export compares only the outputs among them that a wake's steps can change.
@@ -1397,55 +1450,161 @@ fn build(
         v
     };
     let mut by_member: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
-    let run_words: Arc<Vec<Vec<(u32, u32)>>> = Arc::new(
-        (code.settle_units.iter())
-            .map(|us| {
-                (us.iter())
-                    .flat_map(|&u| {
-                        by_member
-                            .entry(u)
-                            .or_insert_with(|| wrote(u as usize))
-                            .clone()
-                    })
-                    .collect()
-            })
-            .collect(),
-    );
-    let class_words: Arc<Vec<Vec<(u32, u32)>>> = Arc::new(
-        (0..sel.clocks.len())
-            .map(|c| {
-                let mut v = Vec::new();
-                for (k, (_, b)) in sel.members.iter().enumerate() {
-                    let class = b
-                        .clock
-                        .and_then(|x| sel.clocks.iter().position(|&y| y == x));
-                    if b.kind == Kind::Clocked && class.is_none_or(|x| x == c) {
-                        v.extend(wrote(k));
-                    }
+    let run_words: Vec<Vec<(u32, u32)>> = (code.settle_units.iter())
+        .map(|us| {
+            (us.iter())
+                .flat_map(|&u| {
+                    by_member
+                        .entry(u)
+                        .or_insert_with(|| wrote(u as usize))
+                        .clone()
+                })
+                .collect()
+        })
+        .collect();
+    let class_words: Vec<Vec<(u32, u32)>> = (0..sel.clocks.len())
+        .map(|c| {
+            let mut v = Vec::new();
+            for (k, (_, b)) in sel.members.iter().enumerate() {
+                let class = b
+                    .clock
+                    .and_then(|x| sel.clocks.iter().position(|&y| y == x));
+                if b.kind == Kind::Clocked && class.is_none_or(|x| x == c) {
+                    v.extend(wrote(k));
                 }
-                v
+            }
+            v
+        })
+        .collect();
+    let mut members: Vec<usize> = sel.members.iter().map(|m| m.0).collect();
+    members.sort_unstable();
+    let built = Built {
+        name: format!("{}.cycle_region", label),
+        members,
+        trigger,
+        quiet,
+        summary: summary.to_string(),
+        code: plan,
+        outputs: sel.outputs.clone(),
+        decls,
+        cur,
+        sig_bytes,
+        sig_len,
+        ram_writes,
+        run_words,
+        cones,
+        class_cones,
+        class_words,
+        words: n as usize,
+        init,
+        all,
+        chunks,
+        ins,
+        clocks,
+        clocks_only,
+        waits,
+        checks,
+        err: err as usize,
+        log: (log as usize, notes as usize),
+        reports,
+        uninit,
+        chunk_cone,
+        chunk_at,
+        class_names: (sel.clocks.iter())
+            .map(|c| {
+                let edge = if c.rising { "rising" } else { "falling" };
+                format!("{edge} {}", e.leaf_name(c.leaf))
             })
             .collect(),
-    );
+        ops: (sel.members.iter())
+            .map(|(_, b)| b.ops.iter().map(codegen::weight_of).sum::<usize>() as u64)
+            .collect(),
+    };
+    Ok((built, code, made))
+}
+
+/// What building a region gives besides its machine code, kept with the code in the analysis
+/// cache (`store`): a warm run makes the region from it without the members' operations.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct Built {
+    name: String,
+    members: Vec<usize>,
+    trigger: Option<EdgeTrigger>,
+    quiet: Vec<u32>,
+    /// The summary line of `--cycle` ([`Plan::summary`]).
+    summary: String,
+    pub(crate) code: codegen::CodePlan,
+    outputs: BTreeSet<LeafId>,
+    decls: Vec<LeafId>,
+    cur: BTreeMap<u32, u32>,
+    sig_bytes: BTreeMap<u32, u32>,
+    sig_len: BTreeMap<u32, u32>,
+    ram_writes: BTreeMap<u32, Vec<rt::RamWrite>>,
+    run_words: Vec<Vec<(u32, u32)>>,
+    cones: Vec<Box<[u64]>>,
+    class_cones: Vec<Box<[u64]>>,
+    class_words: Vec<Vec<(u32, u32)>>,
+    words: usize,
+    init: Vec<(u32, u64)>,
+    all: Vec<rt::Read>,
+    chunks: Vec<rt::Read>,
+    ins: Vec<rt::InSig>,
+    clocks: Vec<(yavs_kernel::SigRef, u8, usize)>,
+    clocks_only: bool,
+    waits: Vec<yavs_kernel::SigRef>,
+    /// Kept apart in the cache (`store`), decoded only when a check fails ([`rt::Sites`]).
+    #[serde(skip)]
+    pub(crate) checks: Vec<rt::Site>,
+    err: usize,
+    log: (usize, usize),
+    reports: Vec<(usize, u8, String)>,
+    uninit: u64,
+    chunk_cone: Vec<u32>,
+    /// Per input chunk: its leaf and elements (the names of `YAVS_CYCLE_STATS`).
+    chunk_at: Vec<(LeafId, u32, u32)>,
+    /// `YAVS_CYCLE_STATS`: the name of each edge class, the operations of each member.
+    class_names: Vec<String>,
+    ops: Vec<u64>,
+}
+
+/// The region of `b` with check sites `sites` running `code`: its kernel process made from `b`
+/// alone.
+fn finish(
+    e: &Elaborated,
+    b: Built,
+    sites: rt::Sites,
+    code: codegen::Code,
+    metas: Arc<Metas>,
+    reporter: Reporter,
+) -> Region {
+    let stats = std::env::var_os("YAVS_CYCLE_STATS").is_some();
+    let import_check = std::env::var_os("YAVS_CYCLE_IMPORT_CHECK").is_some_and(|v| v == "1");
+    let code = Arc::new(code);
+    let class_cones = Arc::new(b.class_cones);
     let mark_words = code.settle_units.len().div_ceil(64);
     if stats {
         *metas.stats.lock().expect("not poisoned") = Some(rt::Stats {
             wakes: 0,
             edges: 0,
-            chunks: chunk_names.iter().map(|n| (n.clone(), 0)).collect(),
+            chunks: (b.chunk_at.iter())
+                .map(|&(l, o, n)| (format!("{} ({o}:{n})", e.leaf_name(l)), 0))
+                .collect(),
             code: code.clone(),
-            classes: (sel.clocks.iter())
-                .map(|c| {
-                    let edge = if c.rising { "rising" } else { "falling" };
-                    (format!("{edge} {}", e.leaf_name(c.leaf)), 0)
-                })
-                .collect(),
-            ops: (sel.members.iter())
-                .map(|(_, b)| b.ops.iter().map(codegen::weight_of).sum::<usize>() as u64)
-                .collect(),
+            classes: b.class_names.into_iter().map(|n| (n, 0)).collect(),
+            ops: b.ops,
             settled: [[0; 2]; 2],
         });
     }
+    let (outputs, decls, cur) = (b.outputs, b.decls, b.cur);
+    let (sig_bytes, sig_len, ram_writes) = (b.sig_bytes, b.sig_len, b.ram_writes);
+    let (run_words, class_words) = (b.run_words, b.class_words);
+    let (all, chunks, ins, clocks, waits) = (b.all, b.chunks, b.ins, b.clocks, b.waits);
+    let (words, init, clocks_only, err, log, uninit) =
+        (b.words, b.init, b.clocks_only, b.err, b.log, b.uninit);
+    let checks = Arc::new(sites);
+    let reports = Arc::new(b.reports);
+    let cones = Arc::new(b.cones);
+    let chunk_cone = Arc::new(b.chunk_cone);
     let make: yavs_elab::RegionMake = Arc::new(move |ds: &[RegionDriver]| {
         // One export per kernel driver with an exported leaf: its range of the signal's words.
         let mut outs: BTreeMap<u32, rt::Out> = BTreeMap::new();
@@ -1498,8 +1657,8 @@ fn build(
             waits: waits.clone(),
             started: false,
             checks: checks.clone(),
-            err: err as usize,
-            log: (log as usize, notes as usize),
+            err,
+            log,
             reporter: reporter.clone(),
             reports: reports.clone(),
             metas: metas.clone(),
@@ -1516,15 +1675,13 @@ fn build(
             stats,
         }) as Box<dyn yavs_kernel::Process>)
     });
-    let mut members: Vec<usize> = sel.members.iter().map(|m| m.0).collect();
-    members.sort_unstable();
-    Ok(Region {
-        name: format!("{}.cycle_region", label),
-        members,
-        trigger,
-        quiet,
+    Region {
+        name: b.name,
+        members: b.members,
+        trigger: b.trigger,
+        quiet: b.quiet,
         make,
-    })
+    }
 }
 
 /// For a leaf the region reads from outside: the steps of the settle (`settle_units`, as a bit
@@ -1652,8 +1809,8 @@ fn named_sigs(sel: &region::Selection) -> Vec<[BTreeSet<u32>; 2]> {
 type GuardSpec = (String, Vec<(u32, u32)>, Vec<(u32, u32)>);
 
 /// An input chunk while the inputs are grouped: its read, its range of the kernel signal, its
-/// name (`YAVS_CYCLE_STATS`) and leaf.
-type InChunk = (rt::Read, Range, (String, LeafId));
+/// leaf and elements.
+type InChunk = (rt::Read, Range, (LeafId, u32, u32));
 
 /// Operations a combinational member has at least for a guard (`codegen::Guard`), which also
 /// needs it to read no more words than it has operations: a smaller member costs less to run than

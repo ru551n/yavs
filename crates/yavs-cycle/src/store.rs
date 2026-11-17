@@ -21,8 +21,8 @@ const INDEX: &str = "cyc3i";
 /// generics of its own (a case name) would otherwise write an analysis and the region's code,
 /// megabytes each, per test case, and push the code its test cases share out of the store.
 const PER_DESIGN: usize = 16;
-/// Of the payload's encoding: changed with any type of `Selection`.
-const FORMAT: &str = "1";
+/// Of the payload's encoding: changed with any type of `Selection` or `Built`.
+const FORMAT: &str = "2";
 /// Environment variables that change nothing the analysis gives (the test runner's token server
 /// differs per invocation; the others print or count).
 const ENV_SKIP: &[&str] = &[
@@ -99,14 +99,66 @@ struct Setup {
     /// The `-g` overrides, in order (the last of a name wins).
     overrides: Vec<(String, String)>,
     check: bool,
+    /// A hit may give the built region whole (`--cycle`: no report, no errors need the
+    /// selection).
+    fast: bool,
 }
 
 /// What the hook found, for `select`.
 enum Found {
     /// The selection from the cache, its payload, the generics its index named and its key.
     Hit(Box<Selection>, Vec<u8>, u64, Key),
+    /// The region built, with its machine code (`fast`).
+    Fast(Box<Fast>),
     /// Not in the cache: the key's parts, to store it under.
     Miss(Vec<u8>, Key),
+}
+
+/// A region from the cache: what `build` made, its check sites (their encoding) and the machine
+/// code of its functions.
+pub(crate) type Fast = (crate::Built, Vec<u8>, Blob);
+
+/// The entry of a built region: its parts, each with its length before it; the machine code as
+/// bytes, not as a sequence (postcard decodes those a byte at a time).
+fn encode(b: &crate::Built, blob: &Blob) -> Option<Vec<u8>> {
+    let mut v = Vec::new();
+    let mut put = |x: &[u8]| {
+        v.extend((x.len() as u64).to_le_bytes());
+        v.extend(x);
+    };
+    put(&postcard::to_allocvec(b).ok()?);
+    put(&postcard::to_allocvec(&b.checks).ok()?);
+    put(&(blob.len() as u64).to_le_bytes());
+    for (align, code) in blob {
+        put(&align.to_le_bytes());
+        put(code);
+    }
+    Some(v)
+}
+
+fn decode(mut e: &[u8]) -> Option<Fast> {
+    let mut take = || -> Option<&[u8]> {
+        let n = u64::from_le_bytes(e.get(..8)?.try_into().ok()?) as usize;
+        let x = e.get(8..8usize.checked_add(n)?)?;
+        e = &e[8 + n..];
+        Some(x)
+    };
+    let word = |x: &[u8]| Some(u64::from_le_bytes(x.try_into().ok()?));
+    let b: crate::Built = postcard::from_bytes(take()?).ok()?;
+    let sites = take()?.to_vec();
+    let n = word(take()?)?;
+    let mut blob = Vec::new();
+    for _ in 0..n {
+        let align = word(take()?)?;
+        blob.push((align, take()?.to_vec()));
+    }
+    Some((b, sites, blob))
+}
+
+/// What the analysis gives `plan`: the selection, or on a hit of `--cycle` the region built.
+pub(crate) enum Got {
+    Sel(Box<Selection>),
+    Built(Box<Fast>),
 }
 
 // ponytail: one design per process, as the compilation cache of the region's code.
@@ -121,31 +173,65 @@ static CODE: Mutex<Option<(Store, Key, bool)>> = Mutex::new(None);
 /// no function body built.
 pub(crate) type Blob = Vec<(u64, Vec<u8>)>;
 
-fn code_key(k: &Key, isa: &str) -> Key {
-    let mut b = KeyBuilder::new("cyc3c");
-    b.text(&k.hex()).text(cranelift_codegen::VERSION).text(isa);
-    b.finish()
+/// The region built from the selection of key `k` and its machine code: postcard of [`Fast`],
+/// for the code's target.
+const BUILT: &str = "cyc3c";
+
+fn code_key(k: &Key) -> Option<Key> {
+    let mut b = KeyBuilder::new(BUILT);
+    b.text(&k.hex())
+        .text(cranelift_codegen::VERSION)
+        .text(&crate::codegen::isa_id()?);
+    Some(b.finish())
+}
+
+/// The region built from the selection of `k`, whole and fitting its code.
+fn fast_get(s: &Store, k: &Key) -> Option<Box<Fast>> {
+    let e = s.get(BUILT, &code_key(k)?)?;
+    let f = decode(&e)?;
+    (f.2.len() == f.0.code.functions()).then(|| Box::new(f))
 }
 
 /// The region's code from the cache, and whether a new compile must be compared with it
 /// (`YAVS_CYCLE_CACHE_CHECK`).
-pub(crate) fn code_get(isa: &str) -> (Option<Blob>, bool) {
+pub(crate) fn code_get() -> (Option<Blob>, bool) {
     let c = CODE.lock().unwrap_or_else(PoisonError::into_inner);
     let Some((s, k, check)) = c.as_ref() else {
         return (None, false);
     };
-    let b = (s.get("cyc3c", &code_key(k, isa))).and_then(|e| postcard::from_bytes(&e).ok());
-    (b, *check)
+    (fast_get(s, k).map(|f| f.2), *check)
 }
 
-/// Keep the region's code (nothing when the selection is not cached).
-pub(crate) fn code_put(isa: &str, b: &Blob) {
+/// Keep the region `b` with the machine code `made` compiled now (nothing when the selection is
+/// not cached, or when the code took the cached machine code). `YAVS_CYCLE_CACHE_CHECK`: what is
+/// in the cache must be what was built and compiled now.
+pub(crate) fn keep_built(b: &crate::Built, made: Option<Blob>) -> Result<(), String> {
     let c = CODE.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some((s, k, _)) = c.as_ref()
-        && let Ok(p) = postcard::to_allocvec(b)
-    {
-        s.put("cyc3c", &code_key(k, isa), &p);
+    let Some((s, k)) = c.as_ref().map(|c| (&c.0, &c.1)) else {
+        return Ok(());
+    };
+    let check = c.as_ref().is_some_and(|c| c.2);
+    let Some(key) = code_key(k) else {
+        return Ok(());
+    };
+    let now = made.as_ref().and_then(|m| encode(b, m));
+    match (s.get(BUILT, &key), now) {
+        (Some(e), now) if check => {
+            if now.as_deref() != Some(&e[..]) {
+                return Err(
+                    "YAVS_CYCLE_CACHE_CHECK: the region in the cache differs from the one built now"
+                        .into(),
+                );
+            }
+            stat(|| "region from the cache checked: the same".into());
+        }
+        (None, Some(p)) => {
+            s.put(BUILT, &key, &p);
+            stat(|| format!("region stored ({} bytes)", p.len()));
+        }
+        _ => {}
     }
+    Ok(())
 }
 
 /// Keep the analysis in the cycle store of library directory `lib` (`None`: no cache). `part`
@@ -155,6 +241,7 @@ pub fn analysis_cache(
     lib: Option<&Path>,
     part: Vec<u8>,
     overrides: Vec<(String, String)>,
+    run: bool,
 ) -> Option<ValuesHook> {
     *FOUND.lock().unwrap_or_else(PoisonError::into_inner) = None;
     let setup = lib.map(|l| Setup {
@@ -162,6 +249,8 @@ pub fn analysis_cache(
         part,
         overrides,
         check: std::env::var_os("YAVS_CYCLE_CACHE_CHECK").is_some_and(|v| v == "1"),
+        // `YAVS_CYCLE_DISASM` prints the code it compiles.
+        fast: run && std::env::var_os("YAVS_CYCLE_DISASM").is_none(),
     });
     let on = setup.is_some();
     *SETUP.lock().unwrap_or_else(PoisonError::into_inner) = setup;
@@ -255,6 +344,13 @@ fn look(db: &Db, reads: &GenericReads) -> bool {
         .and_then(|ix| Some(u64::from_le_bytes(ix.get(..8)?.try_into().ok()?)))
         .and_then(|extra| {
             let k2 = key(KIND, &b, db, reads, &s.overrides, reads.walk | extra);
+            // The region built whole; else the selection, to build it from.
+            if let Some(f) = (s.fast && !s.check)
+                .then(|| fast_get(&s.store, &k2))
+                .flatten()
+            {
+                return Some(Found::Fast(f));
+            }
             let p = s.store.get(KIND, &k2)?;
             let sel: Selection = postcard::from_bytes(&p).ok()?;
             Some(Found::Hit(Box::new(sel), p.to_vec(), extra, k2))
@@ -264,8 +360,9 @@ fn look(db: &Db, reads: &GenericReads) -> bool {
     skip
 }
 
-/// The selection of `e`: from the cache when the hook found it, else made (and stored).
-pub(crate) fn select(db: &Db, e: &Elaborated) -> Result<Selection, Vec<Diagnostic>> {
+/// The selection of `e`: from the cache when the hook found it, else made (and stored); on a hit
+/// of `--cycle` the region built.
+pub(crate) fn select(db: &Db, e: &Elaborated) -> Result<Got, Vec<Diagnostic>> {
     let found = FOUND.lock().unwrap_or_else(PoisonError::into_inner).take();
     // From here on nothing elaborates: natives need no test.
     yavs_interp::watch_outside(false);
@@ -279,6 +376,11 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Result<Selection, Vec<Diagnosti
     };
     if e.generic_reads.skipped {
         return match found {
+            Some(Found::Fast(f)) => {
+                stat(|| "analysis from the cache".into());
+                stat(|| "region from the cache".into());
+                Ok(Got::Built(f))
+            }
             Some(Found::Hit(sel, _, _, k2)) => {
                 stat(|| "analysis from the cache".into());
                 code(&k2);
@@ -290,7 +392,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Result<Selection, Vec<Diagnosti
                 {
                     watch::resume();
                 }
-                Ok(*sel)
+                Ok(Got::Sel(sel))
             }
             _ => Err(ice(
                 "the value passes were left out without a cached analysis",
@@ -341,9 +443,17 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Result<Selection, Vec<Diagnosti
                 *CODE.lock().unwrap_or_else(PoisonError::into_inner) =
                     Some((s.store.clone(), k2, s.check));
                 stat(|| {
+                    // Each generic with the first part that read it.
                     let names: Vec<String> = (reads.decls.iter().enumerate())
                         .filter(|(i, _)| *i >= watch::MAX || (reads.walk | extra) >> i & 1 == 1)
-                        .map(|(_, &d)| db.decls[d].name.to_string())
+                        .map(|(i, &d)| {
+                            let by = match i {
+                                i if i >= watch::MAX || reads.walk >> i & 1 == 1 => "walk",
+                                i if reads.values >> i & 1 == 1 => "value passes",
+                                _ => "selection",
+                            };
+                            format!("{} ({by})", db.decls[d].name)
+                        })
                         .collect();
                     format!(
                         "analysis stored ({} bytes), its key holds the generics {}",
@@ -359,7 +469,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Result<Selection, Vec<Diagnosti
         }
         _ => {}
     }
-    Ok(sel)
+    Ok(Got::Sel(Box::new(sel)))
 }
 
 fn ice(m: &str) -> Vec<Diagnostic> {

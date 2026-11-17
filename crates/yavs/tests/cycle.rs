@@ -3284,9 +3284,12 @@ fn acached(dir: &Path, env: &[(&str, &str)], flags: &[&str]) -> (String, String,
             .find(|l| l.contains(what))
             .map_or(String::new(), |l| l.to_string())
     };
+    let cache: Vec<&str> = (err.lines())
+        .filter(|l| l.contains("cycle stats: analysis") || l.contains("cycle stats: region"))
+        .collect();
     (
         line(&out, "cnt="),
-        line(&err, "cycle stats: analysis"),
+        cache.join("\n"),
         line(&err, " functions in "),
     )
 }
@@ -3329,18 +3332,45 @@ fn the_analysis_from_the_cache_gives_the_same_result() {
     let (got, a, _) = acached(&dir, &[], &["--cycle"]);
     assert_eq!(got, want);
     assert!(
-        a.contains(stored) && a.contains("generics W, L, F, K"),
+        a.contains(stored)
+            && a.contains("generics W (walk), L (walk), F (value passes), K (selection)"),
         "{a}"
     );
     assert!(!a.contains("TAG"), "{a}");
     let (got, a, f) = acached(&dir, &[], &["--cycle"]);
     assert_eq!(got, want);
     assert!(a.contains(hit), "a warm run: {a}");
+    assert!(a.contains("region from the cache"), "a warm run: {a}");
     assert!(f.contains("from the cache"), "{f}");
     let check = [("YAVS_CYCLE_CACHE_CHECK", "1")];
     let (got, a, _) = acached(&dir, &check, &["--cycle"]);
     assert_eq!(got, want);
-    assert!(a.contains("checked: the same"), "{a}");
+    assert!(
+        a.contains("analysis from the cache checked: the same"),
+        "{a}"
+    );
+    assert!(a.contains("region from the cache checked: the same"), "{a}");
+    // `--cycle-strict` builds the region from the selection in the cache, with its code.
+    let (got, a, f) = acached(&dir, &[], &["--cycle-strict"]);
+    assert_eq!(got, want);
+    assert!(a.contains(hit) && !a.contains("region from"), "strict: {a}");
+    assert!(f.contains("from the cache"), "strict: {f}");
+    // The built region damaged alone: the selection in the cache builds it again.
+    for p in entries()
+        .into_iter()
+        .filter(|p| p.to_string_lossy().contains("cyc3c-"))
+    {
+        std::fs::write(&p, b"damaged").expect("damage");
+    }
+    let (got, a, _) = acached(&dir, &[], &["--cycle"]);
+    assert_eq!(got, want);
+    assert!(
+        a.contains(hit) && !a.contains("region from"),
+        "damaged region: {a}"
+    );
+    let (got, a, _) = acached(&dir, &[], &["--cycle"]);
+    assert_eq!(got, want);
+    assert!(a.contains("region from the cache"), "rebuilt region: {a}");
 
     // Read by nothing before the run: the same analysis.
     let (got, a, _) = acached(&dir, &[], &["--cycle", "-gTAG=y"]);

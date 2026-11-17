@@ -1552,6 +1552,7 @@ fn prepare(
             (!c.no_cache && !work.is_empty()).then(|| std::path::Path::new(work)),
             part.into_bytes(),
             c.generics.clone(),
+            !a.cycle_strict && a.cycle_report.is_none(),
         )
     });
     let (mut out, db, e) = elaborate(

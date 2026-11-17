@@ -17,6 +17,10 @@ use crate::region::{self, Selection};
 /// selection read besides the walk's.
 const KIND: &str = "cyc3";
 const INDEX: &str = "cyc3i";
+/// At most this many analyses are kept per design (K1): a test bench whose every test case reads
+/// generics of its own (a case name) would otherwise write an analysis and the region's code,
+/// megabytes each, per test case, and push the code its test cases share out of the store.
+const PER_DESIGN: usize = 16;
 /// Of the payload's encoding: changed with any type of `Selection`.
 const FORMAT: &str = "1";
 /// Environment variables that change nothing the analysis gives (the test runner's token server
@@ -324,10 +328,14 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Result<Selection, Vec<Diagnosti
             code(&k2);
         }
         (Some(Found::Miss(b, k1)), Some(s)) => {
+            let k2 = key(KIND, &b, db, reads, &s.overrides, reads.walk | extra);
             if yavs_interp::outside_calls() > 0 || reads.reported {
                 stat(|| "analysis not cached: the value passes read outside or reported".into());
+            } else if s.store.sightings(KIND, &k1, &k2) > PER_DESIGN {
+                stat(|| {
+                    format!("analysis not cached: {PER_DESIGN} analyses of this design are kept")
+                });
             } else if let Ok(p) = postcard::to_allocvec(&sel) {
-                let k2 = key(KIND, &b, db, reads, &s.overrides, reads.walk | extra);
                 s.store.put(KIND, &k2, &p);
                 s.store.put(INDEX, &k1, &extra.to_le_bytes());
                 *CODE.lock().unwrap_or_else(PoisonError::into_inner) =

@@ -3261,6 +3261,18 @@ fn the_analysis_from_the_cache_gives_the_same_result() {
         assert!(a.contains(hit), "{what}, warm: {a}");
     }
 
+    // At most 16 analyses per design: `K` read by the selection makes another one each time.
+    let mut last = String::new();
+    for k in 10..=30 {
+        let flags = ["--cycle".to_string(), format!("-gK={k}")];
+        let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
+        last = acached(&dir, &[], &flags).1;
+    }
+    assert!(
+        last.contains("16 analyses of this design are kept"),
+        "{last}"
+    );
+
     // An edited dependency.
     analyze(
         &dir,

@@ -606,7 +606,8 @@ and compile the region once: a top-level generic counts only when the elaboratio
 a test runner's configuration string, which only the testbench reads while it runs, does not keep two test cases
 apart. An edited file, a generic that is read with another value, other options or ``YAVS_`` environment variables,
 or another yavs build make new entries. A design whose elaboration reads a file, an environment variable, the clock or
-foreign code keeps no analysis in the cache (its functions are still cached one by one). The size of the store is
+foreign code keeps no analysis in the cache (its functions are still cached one by one), and a design keeps at most
+16 analyses: a testbench whose every test case reads generics of its own (a case name) shares only the functions. The size of the store is
 limited (16384 entries, 512 MiB; a region of more functions than that keeps its code as a whole only), and
 ``yavs cache clean --work=NAME:PATH`` empties it. ``--no-cache`` makes a run neither read nor write it, so such a run
 analyses and compiles every time.

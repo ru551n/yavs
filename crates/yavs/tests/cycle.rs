@@ -2314,6 +2314,48 @@ fn a_reset_with_a_constant_in_an_and_folds() {
     }
 }
 
+/// A recursion elaboration does not bound is inlined to the cap (`DEPTH_MAX`) and stays out, on an
+/// 8 MiB stack, the usual size of the main thread: an unoptimised build overflowed it at a cap
+/// of 32 (its frames are about ten times larger; it caps at 12).
+#[cfg(unix)]
+#[test]
+fn a_recursion_to_the_inlining_cap_fits_an_8_mib_stack() {
+    let dir = tempdir("cycle-depth");
+    analyze(
+        &dir,
+        "depth.vhd",
+        "library ieee;\nuse ieee.std_logic_1164.all;\nuse ieee.numeric_std.all;\n\
+         entity cycle_depth is end entity;\narchitecture a of cycle_depth is\n\
+         \x20 function fact (n : natural) return natural is\n  begin\n    if n = 0 then\n\
+         \x20     return 1;\n    end if;\n    return (n * fact(n - 1)) mod 256;\n  end function;\n\
+         \x20 signal clk : std_ulogic := '0';\n  signal ad : unsigned(2 downto 0) := \"000\";\n\
+         \x20 signal o : std_ulogic_vector(7 downto 0);\nbegin\n\
+         \x20 p : process (clk)\n  begin\n    if rising_edge(clk) then\n\
+         \x20     o <= std_ulogic_vector(to_unsigned(fact(to_integer(ad)), 8));\n\
+         \x20   end if;\n  end process;\nend architecture;\n",
+    );
+    let o = Command::new("sh")
+        .current_dir(&dir)
+        .env("YAVS_STD_CACHE", "off")
+        .args(["-c", "ulimit -s 8192 && exec \"$0\" \"$@\""])
+        .arg(env!("CARGO_BIN_EXE_yavs"))
+        .args([
+            "run",
+            "--work=work:lib",
+            "--no-cache",
+            "--cycle-report",
+            "cycle_depth",
+        ])
+        .output()
+        .expect("run yavs");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{:?}: {err}", o.status);
+    assert!(
+        err.contains("E4101 calls of `fact` nested more than "),
+        "{err}"
+    );
+}
+
 /// A logical right shift by a count known during elaboration (of 1, 63, 64, 65, 100 and the width
 /// less one) gives zeros above the bits that remain, also into a signal or variable that held
 /// another value in the same run: the region wrote only the words of the remaining bits.

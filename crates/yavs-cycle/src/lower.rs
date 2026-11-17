@@ -1015,8 +1015,9 @@ fn merge_guarded(saved: Vec<Jump>, rest: Vec<Jump>) -> Vec<Jump> {
     out
 }
 
-/// Most calls inlined into one another.
-const DEPTH_MAX: usize = 32;
+/// Most calls inlined into one another: each level takes about 360 KiB of stack in an
+/// unoptimised build (8 MiB fit about 21 levels there) and a tenth of that when optimised.
+const DEPTH_MAX: usize = if cfg!(unoptimised) { 12 } else { 32 };
 
 /// Why an assert or report of a top-level process outside a clock edge is not evaluated in
 /// region code: the region settles once per wake where the normal mode runs the process at

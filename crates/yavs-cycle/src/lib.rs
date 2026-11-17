@@ -1609,6 +1609,18 @@ fn finish(
     let class_cones = Arc::new(b.class_cones);
     let mark_words = code.settle_units.len().div_ceil(64);
     if stats {
+        let ops: Vec<u64> = b.ops;
+        let mut steps_of = vec![0u32; ops.len()];
+        for &u in code.settle_units.iter().flatten() {
+            steps_of[u as usize] += 1;
+        }
+        let own = (code.settle_units.iter())
+            .map(|us| {
+                let (one, shared): (Vec<u32>, Vec<u32>) =
+                    us.iter().partition(|&&u| steps_of[u as usize] == 1);
+                (one.iter().map(|&u| ops[u as usize]).sum(), shared)
+            })
+            .collect();
         *metas.stats.lock().expect("not poisoned") = Some(rt::Stats {
             wakes: 0,
             edges: 0,
@@ -1617,7 +1629,13 @@ fn finish(
                 .collect(),
             code: code.clone(),
             classes: b.class_names.into_iter().map(|n| (n, 0)).collect(),
-            ops: b.ops,
+            all: (steps_of.iter().zip(&ops))
+                .filter(|x| *x.0 > 0)
+                .map(|x| x.1)
+                .sum(),
+            own,
+            seen: vec![u64::MAX; ops.len()],
+            ops,
             settled: [[0; 2]; 2],
             ex: [0; rt::EX_N],
         });

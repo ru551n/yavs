@@ -368,6 +368,12 @@ pub(crate) struct Stats {
     pub settled: [[u64; 2]; 2],
     /// Export and import counts ([`EX_NAMES`]).
     pub ex: [u64; EX_N],
+    /// The operations of every member of the settle; per step those of its members no other step
+    /// has, and its members other steps have too, which count once per wake through the wake that
+    /// last counted each (`seen`).
+    pub all: u64,
+    pub own: Vec<(u64, Vec<u32>)>,
+    pub seen: Vec<u64>,
 }
 
 /// What [`Stats::ex`] counts.
@@ -394,21 +400,33 @@ impl Stats {
         for (c, &(_, _, w)) in self.classes.iter_mut().zip(clocks) {
             c.1 += img[w];
         }
-        let units = &self.code.settle_units;
-        let mut all = std::collections::BTreeSet::new();
-        let mut run = std::collections::BTreeSet::new();
-        for (i, us) in units.iter().enumerate() {
-            all.extend(us);
-            if mark[i / 64] >> (i % 64) & 1 == 1 {
-                run.extend(us);
+        let wake = self.wakes;
+        // A mark that holds every step runs them all (`Code::run_as`).
+        let run = if (mark.iter().zip(&self.code.every[..])).all(|(m, e)| e & !m == 0) {
+            self.all
+        } else {
+            let mut run = 0;
+            for (j, &m) in mark.iter().enumerate() {
+                let mut m = m;
+                while m != 0 {
+                    let i = 64 * j + m.trailing_zeros() as usize;
+                    m &= m - 1;
+                    let Some((n, shared)) = self.own.get(i) else {
+                        continue;
+                    };
+                    run += n;
+                    for &u in shared {
+                        if std::mem::replace(&mut self.seen[u as usize], wake) != wake {
+                            run += self.ops[u as usize];
+                        }
+                    }
+                }
             }
-        }
-        let ops = |s: &std::collections::BTreeSet<&u32>| -> u64 {
-            s.iter().map(|&&u| self.ops[u as usize]).sum()
+            run
         };
         let k = usize::from(!edge);
-        self.settled[k][0] += ops(&all);
-        self.settled[k][1] += ops(&run);
+        self.settled[k][0] += self.all;
+        self.settled[k][1] += run;
     }
 }
 
@@ -1052,7 +1070,9 @@ impl Process for RegionProc {
         }
         // Without an edge, only a change something outside can see before the next edge is
         // settled now (with no input changed the settle would give what it gave last).
-        self.read_now.clear();
+        if self.stats {
+            self.read_now.clear();
+        }
         let (any, now) = self.import(ctx)?;
         if edge || now {
             self.pending = false;

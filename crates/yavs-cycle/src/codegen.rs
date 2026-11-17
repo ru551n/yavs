@@ -55,7 +55,7 @@ pub(crate) struct Code {
     /// none always runs.
     pub(crate) settle_units: Vec<Vec<u32>>,
     /// The steps with units, as a mark: a mark that holds them all runs the settle unmarked.
-    every: Box<[u64]>,
+    pub(crate) every: Box<[u64]>,
     /// The words of the region's signals, the first ones of the image (`YAVS_CYCLE_SKIP_CHECK`).
     signal_words: usize,
     /// With `YAVS_CYCLE_SKIP_CHECK`: per step of the settle, the words its members drive.

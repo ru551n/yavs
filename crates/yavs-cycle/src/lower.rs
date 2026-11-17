@@ -507,6 +507,16 @@ impl Op {
         d: &dyn Fn(Ref) -> Ref,
         site: &dyn Fn(u32) -> u32,
     ) -> Op {
+        // An `If` maps its branches without cloning them first: a clone at every level of
+        // nested `If`s was quadratic in the depth (a 33 844-operation AES round).
+        if let Op::If { cond, then, else_ } = self {
+            let m = |ops: &Vec<Op>| ops.iter().map(|op| op.map(s, d, site)).collect();
+            return Op::If {
+                cond: s(*cond),
+                then: m(then),
+                else_: m(else_),
+            };
+        }
         let mut o = self.clone();
         match &mut o {
             Op::Copy { dst, src, .. }
@@ -586,12 +596,7 @@ impl Op {
                 *idx = s(*idx);
                 *x = site(*x);
             }
-            Op::If { cond, then, else_ } => {
-                *cond = s(*cond);
-                for op in then.iter_mut().chain(else_.iter_mut()) {
-                    *op = op.map(s, d, site);
-                }
-            }
+            Op::If { .. } => {}
             Op::Note { site: x, args } => {
                 *x = site(*x);
                 for a in args {

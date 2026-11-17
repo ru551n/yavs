@@ -3480,6 +3480,40 @@ fn cached(dir: &Path, env: &[(&str, &str)], flags: &[&str]) -> (String, usize, u
     )
 }
 
+/// Functions compiled on several threads are those of one thread: a run on four threads gives the
+/// result of one, and the cache check of a run on one thread finds every entry it left the same;
+/// `--threads` sets the count, and a warm run takes every function.
+#[test]
+fn functions_compiled_on_several_threads_are_those_of_one() {
+    let dir = tempdir("cycle-par");
+    analyze(&dir, "cache.vhd", include_str!("cycle/cache.vhd"));
+    let obj = dir.join("lib").join("yavs-cache");
+    // Members cut into parts of a few operations: many functions.
+    let one = [("YAVS_CYCLE_CHUNK", "5"), ("YAVS_CYCLE_THREADS", "1")];
+    let (want, n, _) = cached(&dir, &one, &["--cycle", "--no-cache"]);
+    assert!(n >= 4, "{n} functions");
+    let four = [("YAVS_CYCLE_CHUNK", "5"), ("YAVS_CYCLE_THREADS", "4")];
+    let (got, n4, hits) = cached(&dir, &four, &["--cycle"]);
+    assert_eq!((&got, n4, hits), (&want, n, 0), "four threads, cold");
+    let check = [
+        ("YAVS_CYCLE_CHUNK", "5"),
+        ("YAVS_CYCLE_THREADS", "1"),
+        ("YAVS_CYCLE_CACHE_CHECK", "1"),
+    ];
+    let (got, _, hits) = cached(&dir, &check, &["--cycle"]);
+    assert_eq!(
+        (&got, hits),
+        (&want, 0),
+        "one thread, every function checked"
+    );
+    std::fs::remove_dir_all(&obj).expect("empty the cache");
+    let chunk = [("YAVS_CYCLE_CHUNK", "5")];
+    let (got, _, hits) = cached(&dir, &chunk, &["--cycle", "--threads=4"]);
+    assert_eq!((&got, hits), (&want, 0), "--threads=4, cold");
+    let (got, _, hits) = cached(&dir, &chunk, &["--cycle", "--threads=4"]);
+    assert_eq!((&got, hits), (&want, n), "--threads=4, warm");
+}
+
 /// The machine code of the region in the work library's compilation cache: a second run takes
 /// every function from it and prints the same; another generic, another source line, other
 /// checks and another build of yavs each compile again what changed; damaged entries are

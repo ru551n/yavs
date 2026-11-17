@@ -693,6 +693,17 @@ fn parts(ops: &[Op]) -> Vec<Part<'_>> {
     out
 }
 
+/// [`parts`] of operations made here.
+fn owned_parts(ops: Vec<Op>) -> Vec<Part<'static>> {
+    if weight(&ops) <= chunk() {
+        return vec![(Cow::Owned(ops), None)];
+    }
+    parts(&ops)
+        .into_iter()
+        .map(|(p, l)| (Cow::Owned(p.into_owned()), l))
+        .collect()
+}
+
 /// Every word `ops` read, with the operation reading it, numbered in pre-order from `pos` (an
 /// `If`, then its `then` and `else` operations): the order [`Gen::op`] generates them in.
 fn walk(ops: &[Op], pos: &mut u32, f: &mut impl FnMut(u32, i32)) {
@@ -847,6 +858,207 @@ fn cut(ops: &[Op], max: usize) -> Vec<Vec<Op>> {
         out.push(cur);
     }
     out
+}
+
+/// `ops` (one member's) with consecutive `If`s on equal conditions joined: an `If` whose condition
+/// the operations just before it compute (its chain) the same way as the chain of the `If` before
+/// it, from words that `If`'s branches do not write, joins that `If`'s branches and its chain
+/// goes, when no other code reads what the chain wrote and none of it holds state. An unrolled
+/// `for` loop testing one condition per element was a branch per element, each mispredicted
+/// when the condition changed (a register file's write per bit).
+fn join_ifs(ops: &[Op], keep: &[bool]) -> Vec<Op> {
+    let mut reads: Words<u32> = Words::default();
+    walk(ops, &mut 0, &mut |_, w| *reads.entry(w).or_default() += 1);
+    join_level(ops, keep, &reads)
+}
+
+/// The byte offset of the one word `op` writes, when it is a chain operation: no check, no
+/// branch, no memory addressed at run time.
+fn chain_dst(op: &Op) -> Option<i32> {
+    let pure = matches!(
+        op,
+        Op::Copy { .. }
+            | Op::Lit { .. }
+            | Op::IntLit { .. }
+            | Op::Gate { .. }
+            | Op::Not { .. }
+            | Op::Extract { .. }
+            | Op::VecEq { .. }
+            | Op::VCmp { .. }
+            | Op::IntCmp { .. }
+            | Op::Reduce { .. }
+            | Op::ToInt { .. }
+    );
+    if !pure || span(op) != 1 {
+        return None;
+    }
+    let d = std::cell::Cell::new(0);
+    op.map(
+        &|r| r,
+        &|r| {
+            d.set(word(r));
+            r
+        },
+        &|x| x,
+    );
+    Some(d.get())
+}
+
+fn join_level(ops: &[Op], keep: &[bool], reads: &Words<u32>) -> Vec<Op> {
+    let mut out: Vec<Op> = Vec::with_capacity(ops.len());
+    // The `If` last put out, its chain (in `out`, before it) and the words the chain reads that
+    // it did not write itself.
+    let mut last: Option<(usize, usize, Vec<i32>)> = None;
+    // The first `If` at or after each place.
+    let mut next_if = vec![usize::MAX; ops.len() + 1];
+    for k in (0..ops.len()).rev() {
+        next_if[k] = if matches!(ops[k], Op::If { .. }) {
+            k
+        } else {
+            next_if[k + 1]
+        };
+    }
+    let mut i = 0;
+    while i < ops.len() {
+        // An `If` at `j` whose chain starts at `i`: the operations before it, each writing a word a
+        // later one of them or the condition reads.
+        let j = Some(next_if[i]).filter(|&j| {
+            let Some(Op::If { cond, .. }) = ops.get(j) else {
+                return false;
+            };
+            let mut need = vec![word(*cond)];
+            let mut a = j;
+            while a > i {
+                match chain_dst(&ops[a - 1]) {
+                    Some(d) if need.contains(&d) => {
+                        reads_of(&ops[a - 1], &mut need);
+                        a -= 1;
+                    }
+                    _ => break,
+                }
+            }
+            a == i
+        });
+        let (Some(j), Some((at, n, ext))) = (j, last.as_ref()) else {
+            // Not a chain and an `If`, or no `If` before it: put out as it is.
+            if let Some(j) = j {
+                out.extend_from_slice(&ops[i..j]);
+                let Op::If { cond, then, else_ } = &ops[j] else {
+                    unreachable!()
+                };
+                last = Some((out.len(), j - i, chain_ext(&ops[i..j], word(*cond))));
+                out.push(Op::If {
+                    cond: *cond,
+                    then: then.clone(),
+                    else_: else_.clone(),
+                });
+                i = j + 1;
+            } else {
+                out.push(ops[i].clone());
+                last = None;
+                i += 1;
+            }
+            continue;
+        };
+        let (at, n) = (*at, *n);
+        let joined = (|| {
+            if j - i != n {
+                return None;
+            }
+            let Op::If {
+                cond: c0,
+                then: t0,
+                else_: e0,
+            } = &out[at]
+            else {
+                unreachable!()
+            };
+            let Op::If { cond, then, else_ } = &ops[j] else {
+                unreachable!()
+            };
+            // The words the earlier chain wrote, and this chain's in the same places.
+            let old: Vec<i32> = out[at - n..at]
+                .iter()
+                .map(|o| chain_dst(o).unwrap())
+                .collect();
+            let new: Vec<i32> = ops[i..j].iter().map(|o| chain_dst(o).unwrap()).collect();
+            let to: Words<i32> = new.iter().copied().zip(old.iter().copied()).collect();
+            let back = |r: Ref| match to.get(&word(r)) {
+                Some(&o) => Ref::Loc(o as u32 / 8),
+                None => r,
+            };
+            let same = (out[at - n..at].iter().zip(&ops[i..j]))
+                .all(|(a, b)| &b.map(&back, &back, &|x| x) == a)
+                && back(*cond) == *c0;
+            let clean = |body: &[Op], ws: &[i32]| ws.iter().all(|&w| !writes(body, w / 8));
+            let walk_count = |body: &[Op], w: i32| {
+                let mut c = 0;
+                walk(body, &mut 0, &mut |_, x| c += u32::from(x == w));
+                c
+            };
+            // Every read of what this chain writes is in it or in its `If`.
+            let only_here = (new.iter()).all(|&w| {
+                !kept(keep, w) && reads.get(&w).copied().unwrap_or(0) == walk_count(&ops[i..=j], w)
+            });
+            let ok = same
+                && only_here
+                && clean(t0, ext)
+                && clean(e0, ext)
+                && clean(t0, &old)
+                && clean(e0, &old)
+                && clean(then, &new)
+                && clean(else_, &new);
+            ok.then(|| {
+                let m = |b: &[Op]| {
+                    b.iter()
+                        .map(|o| o.map(&back, &back, &|x| x))
+                        .collect::<Vec<_>>()
+                };
+                (m(then), m(else_))
+            })
+        })();
+        match joined {
+            Some((t, e)) => {
+                if let Op::If { then, else_, .. } = &mut out[at] {
+                    then.extend(t);
+                    else_.extend(e);
+                }
+                i = j + 1;
+            }
+            None => last = None,
+        }
+    }
+    // Then inside the branches.
+    for op in &mut out {
+        if let Op::If { then, else_, .. } = op {
+            *then = join_level(then, keep, reads);
+            *else_ = join_level(else_, keep, reads);
+        }
+    }
+    out
+}
+
+/// The words `op` reads (`reads`), added to `need`.
+fn reads_of(op: &Op, need: &mut Vec<i32>) {
+    reads(op, &mut |off, n| {
+        need.extend((0..n as i32).map(|k| off + 8 * k))
+    });
+}
+
+/// The words a chain (and the condition `cond`) reads that the chain did not write before.
+fn chain_ext(chain: &[Op], cond: i32) -> Vec<i32> {
+    let mut made: Vec<i32> = Vec::new();
+    let mut ext = Vec::new();
+    for op in chain {
+        let mut r = Vec::new();
+        reads_of(op, &mut r);
+        ext.extend(r.into_iter().filter(|w| !made.contains(w)));
+        made.extend(chain_dst(op));
+    }
+    if !made.contains(&cond) {
+        ext.push(cond);
+    }
+    ext
 }
 
 /// Whether an operation of `ops` may write word `c`.
@@ -1070,7 +1282,7 @@ pub(crate) fn compile<'a>(
             };
             match st {
                 Step::Ops(p) => {
-                    cur.extend(parts(p));
+                    cur.extend(owned_parts(join_ifs(p, keep)));
                     cur_units.extend(&unit);
                 }
                 Step::Call(b) => {
@@ -3034,6 +3246,100 @@ impl Gen<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An unrolled loop's `if idx = 0 then if en then q(b) <= d(b)`: bit `b` of word 1 from word
+    /// 2, with its chain in words from `t`.
+    fn bit_if(t: u32, b: u32, idx: u32) -> Vec<Op> {
+        let l = Ref::Loc;
+        vec![
+            Op::IntLit { dst: l(t), v: 0 },
+            Op::ToInt {
+                dst: l(t + 1),
+                a: l(idx),
+                len: 7,
+                signed: false,
+            },
+            Op::IntCmp {
+                op: crate::lower::Cmp::Eq,
+                dst: l(t + 2),
+                a: l(t + 1),
+                b: l(t),
+            },
+            Op::If {
+                cond: l(t + 2),
+                then: vec![
+                    Op::Extract {
+                        dst: l(t + 3),
+                        src: l(3),
+                        lo: 0,
+                        len: 1,
+                        full: 1,
+                    },
+                    Op::If {
+                        cond: l(t + 3),
+                        then: vec![
+                            Op::Extract {
+                                dst: l(t + 4),
+                                src: l(2),
+                                lo: b,
+                                len: 1,
+                                full: 64,
+                            },
+                            Op::Insert {
+                                dst: l(1),
+                                src: l(t + 4),
+                                lo: b,
+                                len: 1,
+                            },
+                        ],
+                        else_: vec![],
+                    },
+                ],
+                else_: vec![],
+            },
+        ]
+    }
+
+    fn ifs(ops: &[Op]) -> usize {
+        ops.iter()
+            .map(|o| match o {
+                Op::If { then, else_, .. } => 1 + ifs(then) + ifs(else_),
+                _ => 0,
+            })
+            .sum()
+    }
+
+    #[test]
+    fn consecutive_ifs_on_one_condition_join() {
+        let keep = vec![false; 64];
+        let ops: Vec<Op> = (0..4).flat_map(|b| bit_if(10 + 5 * b, b, 4)).collect();
+        let j = join_ifs(&ops, &keep);
+        // One outer `If` with one inner `If` holding the four copies, one chain left.
+        assert_eq!((ifs(&ops), ifs(&j), j.len()), (8, 2, 4), "{j:?}");
+        // A branch writing what the condition reads keeps them apart.
+        let mut w = bit_if(10, 0, 4);
+        if let Op::If { then, .. } = &mut w[3] {
+            then.push(Op::Lit {
+                dst: Ref::Loc(4),
+                val: vec![1].into(),
+            });
+        }
+        w.extend(bit_if(15, 1, 4));
+        assert_eq!(ifs(&join_ifs(&w, &keep)), 4);
+        // Another index, a chain word that holds state or that is read later: apart too.
+        let other: Vec<Op> = [bit_if(10, 0, 4), bit_if(15, 1, 5)].concat();
+        assert_eq!(ifs(&join_ifs(&other, &keep)), 4);
+        let mut kept = keep.clone();
+        kept[17] = true;
+        assert_eq!(ifs(&join_ifs(&ops[..8], &kept)), 4);
+        let mut late = ops[..8].to_vec();
+        late.push(Op::Copy {
+            dst: Ref::Loc(5),
+            src: Ref::Loc(17),
+            len: 1,
+        });
+        assert_eq!(ifs(&join_ifs(&late, &keep)), 4);
+    }
 
     /// The settle's machine code of one copy into word 2, for an image whose word 2 holds state
     /// or not, from the store in `lib` when given.

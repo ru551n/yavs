@@ -843,9 +843,9 @@ impl RegionProc {
         }
         o.wide.resize(nw, 0);
         buf.clear();
-        for j in 0..nw {
+        for (j, slot) in o.wide.iter_mut().enumerate() {
             let x = word_at(w, lo + 64 * j as u32, len - 64 * j as u32);
-            o.wide[j] = x;
+            *slot = x;
             let m = mask((len - 64 * j as u32).min(64));
             for p in [x, m, 0, 0] {
                 buf.extend_from_slice(&p.to_le_bytes());

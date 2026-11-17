@@ -538,6 +538,9 @@ pub struct Elaborated {
     pub no_codes: Vec<bool>,
     /// Signal objects by (scope, declaration).
     pub sigs: std::collections::HashMap<(ScopeId, yavs_sem::DeclId), ObjId>,
+    /// The signals of packages by declaration, made from `sigs` when first asked
+    /// ([`Elaborated::signal`]).
+    pub pkg_sigs: std::sync::OnceLock<std::collections::HashMap<yavs_sem::DeclId, ObjId>>,
     /// The declarative regions (yavs-sem scopes) of each elaborated scope, in elaboration
     /// order: an instance's entity then architecture, a block's or generate's own. Processes
     /// have none (their statement names their scope). VHPI lists declarations from it (#269).
@@ -623,13 +626,22 @@ impl Elaborated {
             }
             cur = self.hier.scope(s).parent;
         }
-        // A package signal is visible from every region (#183).
-        self.sigs
-            .iter()
-            .find(|((s, x), _)| {
-                *x == d && matches!(self.hier.scope(*s).kind, ScopeKind::Package { .. })
-            })
-            .map(|(_, &o)| o)
+        // A package signal is visible from every region (#183); of a package elaborated more than
+        // once, the first scope's.
+        let pkg = self.pkg_sigs.get_or_init(|| {
+            let mut m: std::collections::HashMap<yavs_sem::DeclId, (ScopeId, ObjId)> =
+                Default::default();
+            for (&(s, x), &o) in &self.sigs {
+                if matches!(self.hier.scope(s).kind, ScopeKind::Package { .. }) {
+                    let e = m.entry(x).or_insert((s, o));
+                    if s < e.0 {
+                        *e = (s, o);
+                    }
+                }
+            }
+            m.into_iter().map(|(x, (_, o))| (x, o)).collect()
+        });
+        pkg.get(&d).copied()
     }
 
     /// The bounds of the range of a type or subtype declaration whose left bound is `left`,

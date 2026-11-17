@@ -772,6 +772,7 @@ pub(crate) fn elaborate(
         generic_reads: reads,
         loud_consts,
         sigs: e.m.sigs,
+        pkg_sigs: Default::default(),
         regions: e.m.regions,
         var_ports: e.m.var_ports,
         ext_vars: e.m.ext_vars,

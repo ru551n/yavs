@@ -1,0 +1,1 @@
+Expressions that chain thousands of operators (`a & b & c & ...`, as generated test vectors and tables are often written) now analyse, elaborate and run: analysis had crashed with a stack overflow at about 4000 operators.

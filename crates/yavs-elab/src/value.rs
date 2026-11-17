@@ -804,7 +804,7 @@ impl Locator<'_> {
 
 use yavs_diag::Diagnostic;
 use yavs_sem::decl::Body;
-use yavs_sem::hir::{Actual, AggAssoc, AggBounds, Choice, ExprKind};
+use yavs_sem::hir::{Actual, AggAssoc, AggBounds, Arg, Choice, ExprKind};
 use yavs_sem::implicit::Family;
 use yavs_sem::types::{Constraint, TypeKind};
 use yavs_sem::{Db, ExprId};
@@ -831,6 +831,32 @@ fn fails(db: &Db, e: ExprId, why: String) -> Box<Diagnostic> {
         format!("evaluation fails during elaboration: {why}"),
         "here",
     )
+}
+
+/// The operands of `e` when it is a call of a predefined `&`.
+fn cat_operands(db: &Db, e: ExprId) -> Option<(ExprId, ExprId)> {
+    let ExprKind::Call { callee, args, .. } = &db.exprs[e].kind else {
+        return None;
+    };
+    let Some(Body::Implicit(op)) = db.decls[*callee].kind.subprogram().map(|s| &s.body) else {
+        return None;
+    };
+    match (op.family, &args[..]) {
+        (
+            Family::Cat,
+            [
+                Arg {
+                    actual: Actual::Expr(l),
+                    ..
+                },
+                Arg {
+                    actual: Actual::Expr(r),
+                    ..
+                },
+            ],
+        ) => Some((*l, *r)),
+        _ => None,
+    }
 }
 
 fn is_composite(db: &Db, e: ExprId) -> bool {
@@ -1268,18 +1294,33 @@ impl Model {
                 v => (None, vec![v]),
             })
         };
-        let (lb, mut xs) = piece(self, l)?;
-        let (rb, ys) = piece(self, r)?;
-        let n = (xs.len() + ys.len()) as u64;
-        let b = match (lb, rb) {
-            (Some(lb), Some(rb)) if lb.is_empty() => rb,
-            (Some(lb), _) if !lb.is_empty() => span(lb.left, lb.dir, n),
-            _ => {
-                let (left, dir) = self.index_start(db, e, 0, scope)?;
-                span(left, dir, n)
-            }
-        };
-        xs.extend(ys);
+        // A chain `a & b & c & ...` nests to the left: its levels are joined in this loop, from
+        // the innermost out, so a long chain neither recurses nor copies its prefix per level.
+        let mut levels = vec![(e, r)];
+        let mut l = l;
+        while db.exprs[l].value.is_none()
+            && db.base(db.exprs[l].subtype) == rt
+            && let Some((ll, lr)) = cat_operands(db, l)
+        {
+            levels.push((l, lr));
+            l = ll;
+        }
+        let (mut lb, mut xs) = piece(self, l)?;
+        for &(e, r) in levels.iter().rev() {
+            let (rb, ys) = piece(self, r)?;
+            let n = (xs.len() + ys.len()) as u64;
+            let b = match (lb, rb) {
+                (Some(lb), Some(rb)) if lb.is_empty() => rb,
+                (Some(lb), _) if !lb.is_empty() => span(lb.left, lb.dir, n),
+                _ => {
+                    let (left, dir) = self.index_start(db, e, 0, scope)?;
+                    span(left, dir, n)
+                }
+            };
+            xs.extend(ys);
+            lb = Some(b);
+        }
+        let b = lb.expect("the loop ran at least once");
         Ok(make(&[b], xs))
     }
 

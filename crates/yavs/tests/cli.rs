@@ -986,6 +986,62 @@ fn run_snapshot(name: &str, code: i32) {
     }
 }
 
+/// Chains of thousands of operators (`a & b & c & ...`, nested to the left) analyse, elaborate
+/// and run: the predefined `&` of a process and of a signal's initial value, and a declared `+`
+/// (found by the cycle mode fuzzer: the analyser overflowed its stack at about 3800 levels).
+#[test]
+fn long_operator_chains() {
+    const N: usize = 8000;
+    let cat = |f: &dyn Fn(usize) -> String| (0..N).map(f).collect::<Vec<_>>().join(" & ");
+    let hex = cat(&|i| format!("to_hstring(q({}))", i % 4));
+    let init = cat(&|i| format!("to_hstring(k({}))", i % 4));
+    // A declared operator's chain is shorter: lowering still recurses per call (about 3900 levels).
+    const M: usize = 1000;
+    let sum = (0..M).map(|_| "u").collect::<Vec<_>>().join(" + ");
+    let src = format!(
+        "library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+entity chains is end;
+architecture a of chains is
+  type mem is array (0 to 3) of std_logic_vector(7 downto 0);
+  constant k : mem := (x\"01\", x\"23\", x\"45\", x\"67\");
+  signal q : mem := (x\"89\", x\"AB\", x\"CD\", x\"EF\");
+  signal h : string(1 to {}) := {init};
+  signal u : unsigned(15 downto 0) := to_unsigned(3, 16);
+begin
+  process
+    variable s : string(1 to {});
+  begin
+    s := {hex};
+    report \"s \" & s(1 to 8) & s({} to {}) & \" h \" & h(1 to 8) & \" sum \" & to_string(to_integer({sum}));
+    wait;
+  end process;
+end;",
+        2 * N,
+        2 * N,
+        2 * N - 7,
+        2 * N
+    );
+    let tmp = tempdir("chains");
+    let file = tmp.join("chains.vhd");
+    std::fs::write(&file, src).expect("write");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let yavs = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never"])
+            .args(args)
+            .output()
+            .expect("run")
+    };
+    let a = yavs(&["analyze", &lib, file.to_str().expect("utf-8")]);
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    let r = yavs(&["run", &lib, "chains"]);
+    let err = String::from_utf8_lossy(&r.stderr);
+    assert!(r.status.success(), "{err}");
+    let out = String::from_utf8_lossy(&r.stdout);
+    let want = format!("s 89ABCDEF89ABCDEF h 01234567 sum {}", 3 * M);
+    assert!(out.contains(&want), "{out}{err}");
+}
+
 /// A second analyze into the same library keeps both files; a read-only library fails cleanly.
 #[test]
 fn library_recorded_and_read_only() {

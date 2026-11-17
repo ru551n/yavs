@@ -78,6 +78,21 @@ impl Db {
         if let Some(c) = self.memo.get(&key) {
             return c.clone();
         }
+        // A long operator chain (`a & b & c & ...`) nests to the left: take its left operands
+        // from the bottom up, so the recursion below stays one level deep.
+        let mut spine = Vec::new();
+        let mut x = e;
+        while let ast::ExprKind::Binary { left, .. } = &x.kind
+            && !self
+                .memo
+                .contains_key(&(&**left as *const ast::Expr as usize))
+        {
+            spine.push(&**left);
+            x = left;
+        }
+        for &l in spine.iter().rev() {
+            self.cands(scope, l);
+        }
         let c = self.cands_uncached(scope, e);
         self.memo.insert(key, c.clone());
         c

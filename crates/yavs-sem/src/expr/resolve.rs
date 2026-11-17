@@ -19,6 +19,41 @@ use super::names::NameRes;
 /// Most candidate labels on one "no matching overload" diagnostic (8.3).
 const MAX_CANDIDATE_LABELS: usize = 8;
 
+/// What `resolve_head` leaves to the loop in `resolve`.
+enum Head<'a> {
+    Done(ExprId),
+    Left(Frame<'a>),
+}
+
+impl From<ExprId> for Head<'_> {
+    fn from(id: ExprId) -> Self {
+        Head::Done(id)
+    }
+}
+
+/// A binary operator waiting for its left operand.
+struct Frame<'a> {
+    left: &'a ast::Expr,
+    left_st: crate::ids::SubtypeId,
+    /// The context `left` replaced, when it is the operand of a declared operator.
+    saved_top: Option<Option<(usize, crate::ids::SubtypeId)>>,
+    operands: [&'a ast::Expr; 2],
+    op: OpHead,
+    span: Span,
+    i: Interp,
+    exp: Expected,
+}
+
+/// The callee of an operator call and what its arguments need.
+struct OpHead {
+    callee: DeclId,
+    pre: rustc_hash::FxHashMap<usize, ExprId>,
+    formals: smallvec::SmallVec<[crate::ids::SubtypeId; 2]>,
+    ret: crate::ids::SubtypeId,
+    implicit: bool,
+    stat: Staticness,
+}
+
 impl Db {
     /// Resolve one complete context (LRM 12.5) where the value is not required
     /// at analysis time: static overflow is warning `W1401` (Q5).
@@ -496,12 +531,38 @@ impl Db {
 
     /// Select the interpretation of `e` that fits `exp` and build its HIR.
     pub(crate) fn resolve(&mut self, scope: ScopeId, e: &ast::Expr, exp: Expected) -> ExprId {
+        // The left operands of an operator chain (`a & b & c & ...`, nested to the left) are
+        // resolved in this loop, not by recursion, so a long chain fits the stack.
+        let mut frames = Vec::new();
+        let (mut e, mut exp) = (e, exp);
+        let mut id = loop {
+            match self.resolve_head(scope, e, exp) {
+                Head::Done(id) => break id,
+                Head::Left(f) => {
+                    (e, exp) = (f.left, Expected::Type(self.base(f.left_st)));
+                    frames.push(f);
+                }
+            }
+        };
+        while let Some(f) = frames.pop() {
+            if let Some(saved) = f.saved_top {
+                self.top_context = saved;
+            }
+            let call = self.operator_call(scope, f.op, &f.operands, f.span, Some(id));
+            id = self.implicit_conv(call, f.i, f.exp);
+        }
+        id
+    }
+
+    /// `resolve` up to the left operand of a binary operator, which is left to the caller's
+    /// loop.
+    fn resolve_head<'a>(&mut self, scope: ScopeId, e: &'a ast::Expr, exp: Expected) -> Head<'a> {
         if let ast::ExprKind::Paren(inner) = &e.kind {
-            return self.resolve(scope, inner, exp);
+            return Head::Done(self.resolve(scope, inner, exp));
         }
         // With a type from context, each alternative is checked against it: precise errors.
         if let (ast::ExprKind::Conditional(alts), Expected::Type(t)) = (&e.kind, exp) {
-            return self.conditional(scope, e, alts, t);
+            return self.conditional(scope, e, alts, t).into();
         }
         let cs = self.cands(scope, e);
         match cs {
@@ -519,7 +580,7 @@ impl Db {
                         && matches!(&self.types[t].kind, TypeKind::Array { indexes, .. } if indexes.len() == 1)
                         && crate::expr::literal::literal_expr(self, scope, l, t).is_err()
                     {
-                        return self.poison_expr();
+                        return self.poison_expr().into();
                     }
                     let what = class_name(e);
                     let tn = self.type_name(t);
@@ -596,7 +657,7 @@ impl Db {
             },
             CandSet::Types(is) => {
                 if is.iter().any(|i| i.ty == self.poison.ty) {
-                    return self.build_any(scope, e, is[0], exp);
+                    return self.build_any(scope, e, is[0], exp).into();
                 }
                 let mut best: smallvec::SmallVec<[(Interp, u32); 4]> = smallvec::SmallVec::new();
                 for i in &is {
@@ -608,28 +669,66 @@ impl Db {
                     }
                 }
                 if exp == Expected::Condition && best.is_empty() && !is.is_empty() {
-                    return self.implicit_condition(scope, e, &is);
+                    return self.implicit_condition(scope, e, &is).into();
                 }
                 let Some(min) = best.iter().map(|(_, c)| *c).min() else {
                     self.no_interp(scope, e, exp, &is);
-                    return self.poison_expr();
+                    return self.poison_expr().into();
                 };
                 best.retain(|(_, c)| *c == min);
                 if best.len() > 1 && self.prefer_explicit(e, &mut best).is_err() {
-                    return self.poison_expr();
+                    return self.poison_expr().into();
                 }
                 if best.len() > 1 {
                     self.ambiguous(e, &best.iter().map(|b| b.0).collect::<Vec<_>>());
-                    return self.poison_expr();
+                    return self.poison_expr().into();
                 }
-                self.build_any(scope, e, best[0].0, exp)
+                let i = best[0].0;
+                if let ast::ExprKind::Binary { left, right, .. } = &e.kind {
+                    let op = match self.operator_head(scope, i, &[left, right], e.span) {
+                        Ok(op) => op,
+                        Err(id) => return Head::Done(self.implicit_conv(id, i, exp)),
+                    };
+                    if !op.pre.contains_key(&0) {
+                        let left_st = op.formals[0];
+                        // A declared operator's formal is a context for the operand
+                        // (`resolve_in`), until the operand is resolved.
+                        let saved_top = (!op.implicit).then(|| {
+                            let mut top = &**left;
+                            while let ast::ExprKind::Paren(inner) = &top.kind {
+                                top = inner;
+                            }
+                            self.top_context
+                                .replace((top as *const ast::Expr as usize, left_st))
+                        });
+                        return Head::Left(Frame {
+                            left,
+                            left_st,
+                            saved_top,
+                            operands: [&**left, &**right],
+                            op,
+                            span: e.span,
+                            i,
+                            exp,
+                        });
+                    }
+                    let call = self.operator_call(scope, op, &[left, right], e.span, None);
+                    return Head::Done(self.implicit_conv(call, i, exp));
+                }
+                self.build_any(scope, e, i, exp)
             }
         }
+        .into()
     }
 
     /// Build the chosen interpretation and insert the implicit conversion (2.8).
     fn build_any(&mut self, scope: ScopeId, e: &ast::Expr, i: Interp, exp: Expected) -> ExprId {
         let id = self.build(scope, e, i);
+        self.implicit_conv(id, i, exp)
+    }
+
+    /// `id`, built as interpretation `i`, with the implicit conversion to `exp` (2.8).
+    fn implicit_conv(&mut self, id: ExprId, i: Interp, exp: Expected) -> ExprId {
         let target = match exp {
             Expected::Type(t) => t,
             _ => return id,
@@ -801,12 +900,27 @@ impl Db {
         operands: &[&ast::Expr],
         span: Span,
     ) -> ExprId {
+        match self.operator_head(scope, i, operands, span) {
+            Ok(op) => self.operator_call(scope, op, operands, span, None),
+            Err(id) => id,
+        }
+    }
+
+    /// The callee of operator interpretation `i` and its formals; `Err` with the poison
+    /// expression when it has none.
+    fn operator_head(
+        &mut self,
+        scope: ScopeId,
+        i: Interp,
+        operands: &[&ast::Expr],
+        span: Span,
+    ) -> Result<OpHead, ExprId> {
         let Via::Call(d) = i.via else {
-            return self.poison_expr();
+            return Err(self.poison_expr());
         };
         let callee = self.entity(d);
         if self.decls[callee].kind.subprogram().is_none() {
-            return self.poison_expr();
+            return Err(self.poison_expr());
         }
         // A user operator with anonymous parameter types goes to its instance for the
         // operands' types (#308).
@@ -814,36 +928,64 @@ impl Db {
             operands.iter().map(|o| Some(*o)).collect();
         let Some((callee, pre)) = self.implicit_instance_of(scope, callee, &actuals, span, span)
         else {
-            return self.poison_expr();
+            return Err(self.poison_expr());
         };
         let Some(s) = self.decls[callee].kind.subprogram() else {
-            return self.poison_expr();
+            return Err(self.poison_expr());
         };
-        let formals: smallvec::SmallVec<[crate::ids::SubtypeId; 2]> =
-            s.params.iter().map(|p| p.subtype).collect();
+        let formals = s.params.iter().map(|p| p.subtype).collect();
         let ret = s.ret.unwrap_or(self.poison.subtype);
         let implicit = matches!(s.body, crate::decl::Body::Implicit(_));
         // 9.4.3: a pure function call with globally static actuals is globally static
         // (sem folds only the implicit operations, so user calls never become locally static).
         let pure = matches!(s.kind, crate::decl::SubprogramKind::Function { pure: true });
-        let mut stat = if implicit {
+        let stat = if implicit {
             Staticness::Locally
         } else if pure {
             Staticness::Globally
         } else {
             Staticness::None
         };
+        Ok(OpHead {
+            callee,
+            pre,
+            formals,
+            ret,
+            implicit,
+            stat,
+        })
+    }
+
+    /// The call of operator `op` on `operands`; `first`, when given, is the first operand
+    /// already resolved.
+    fn operator_call(
+        &mut self,
+        scope: ScopeId,
+        op: OpHead,
+        operands: &[&ast::Expr],
+        span: Span,
+        first: Option<ExprId>,
+    ) -> ExprId {
+        let OpHead {
+            callee,
+            pre,
+            formals,
+            ret,
+            implicit,
+            mut stat,
+        } = op;
         let mut hargs: smallvec::SmallVec<[Arg; 2]> = smallvec::SmallVec::new();
         for (k, (o, f)) in operands.iter().zip(formals).enumerate() {
-            let id = match pre.get(&k) {
-                Some(&id) => id,
+            let id = match (pre.get(&k), first) {
+                (Some(&id), _) => id,
+                (None, Some(id)) if k == 0 => id,
                 // The formal of a declared operator is a context, like a function's; a
                 // predefined one's is the type alone (lrm-checks L170).
-                None if implicit => {
+                (None, _) if implicit => {
                     let t = self.base(f);
                     self.resolve(scope, o, Expected::Type(t))
                 }
-                None => self.resolve_in(scope, o, f),
+                (None, _) => self.resolve_in(scope, o, f),
             };
             stat = stat.min(self.exprs[id].stat);
             hargs.push(Arg {

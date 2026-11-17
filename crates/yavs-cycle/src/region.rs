@@ -2030,6 +2030,67 @@ fn delta_seeds(
     out: &[(usize, Why)],
     checked: &BTreeSet<usize>,
 ) -> Vec<(usize, &'static str)> {
+    // A register outside on a clock whose edges may come a delta after the first one of their
+    // time step samples combinational logic fed by registers of another clock class: the region
+    // settles that logic in the delta it exports it, the normal mode a delta or more later.
+    let mut drivers: BTreeMap<LeafId, Vec<usize>> = BTreeMap::new();
+    for d in &e.nets.drivers {
+        drivers.entry(d.leaf).or_default().push(d.proc.index());
+    }
+    let key = |pi: usize| {
+        e.procs[pi].trigger.as_ref().map(|t| {
+            let c = Clock {
+                leaf: t.leaf,
+                elem: t.elem,
+                rising: t.rising,
+                legacy: t.legacy,
+            };
+            delta_key(db, e, &c)
+        })
+    };
+    let mut memo = BTreeMap::new();
+    let mut late = |pi: usize| {
+        let Some(k) = key(pi) else { return false };
+        if k == (true, DELTA0, 0) {
+            return false;
+        }
+        let Some((reads, _)) = proc_reads(db, e, pi, &mut memo) else {
+            return true;
+        };
+        // Its clock's timing is the key; only what it samples is followed.
+        let clk = e.procs[pi].trigger.as_ref().map(|t| t.leaf);
+        let mut work: Vec<LeafId> = reads.into_iter().filter(|l| Some(*l) != clk).collect();
+        let (mut seen, mut procs) = (BTreeSet::new(), BTreeSet::new());
+        while let Some(l) = work.pop() {
+            if !seen.insert(l) {
+                continue;
+            }
+            for &d in drivers.get(&l).into_iter().flatten() {
+                if d == pi || !procs.insert(d) {
+                    continue;
+                }
+                if edge_only(db, e, d) {
+                    // A register on the same clock class changes after the reader has sampled;
+                    // one without a trigger is taken as another class.
+                    if key(d) != Some(k) {
+                        return true;
+                    }
+                    continue;
+                }
+                if out
+                    .iter()
+                    .any(|(x, w)| *x == d && matches!(w, Why::Behavioural(_)))
+                {
+                    continue;
+                }
+                match proc_reads(db, e, d, &mut memo) {
+                    Some((r, _)) => work.extend(r),
+                    None => return true,
+                }
+            }
+        }
+        false
+    };
     (out.iter())
         .filter_map(|(pi, w)| {
             let how = match w {
@@ -2038,6 +2099,12 @@ fn delta_seeds(
                 Why::Subset(r) if r.code == crate::codes::LOOP => {
                     "it is in a combinational loop, which keeps a value of an earlier run"
                 }
+                _ if edge_only(db, e, *pi) && late(*pi) => {
+                    "it is a register on a clock whose edges may come a delta after those of \
+                     registers on other clocks that feed it through combinational logic"
+                }
+                // ponytail: an edge-only process without a trigger (a sensitivity list with
+                // edge tests) is taken as early; find its clock if the fuzzer shows one.
                 _ if checked.contains(pi) || edge_only(db, e, *pi) => return None,
                 _ if plain_assignment(db, e, *pi) => return None,
                 Why::Behavioural(_) => return None,

@@ -5441,3 +5441,27 @@ fn a_negative_known_count_of_a_shift_function_fails_as_in_the_normal_mode() {
         }
     }
 }
+
+/// A register outside the region on a clock a member makes (a divider) samples a combinational
+/// output of the region in the delta the clock edge arrives: the normal mode's new value comes a
+/// delta later, so that logic stays in the event kernel (found by the fuzzer). A register output
+/// sampled the same way is right in both modes.
+#[test]
+fn a_register_on_a_clock_the_region_makes_samples_its_logic_before_it_settles() {
+    let dir = tempdir("cycle-dclkreg");
+    analyze(&dir, "dclkreg.vhd", include_str!("cycle/dclkreg.vhd"));
+    for w in [1, 63, 64, 65, 128] {
+        let g = format!("-gW={w}");
+        for t in tiers() {
+            let t = [&t[..], &[&g[..]]].concat();
+            let (normal, _) = run(&dir, &t, "cycle_dclkreg");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_dclkreg");
+            assert_eq!(normal.len(), 40, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 1 of 5 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}

@@ -208,8 +208,9 @@ body. A signal needs one source: one process drives each element of it.
        l;``), or, below the top-level unit, a process that drives a signal and has an incomplete sensitivity
        list or that cycle mode could not show keeps no value (a process with a ``'Z'`` and a variable, for
        example). A concurrent assignment with a final ``else`` that reads nothing it drives and stays out for
-       its ``'Z'`` or its ``after`` alone does not count, nor does a process that acts at clock edges alone.
-       Testbench code (the top-level unit, and a monitor that drives no signal) sees the settled values
+       its ``'Z'`` or its ``after`` alone does not count, nor does a process that acts at clock edges alone,
+       unless its clock's edges may come a delta cycle after those of the registers that feed it through such
+       logic (a clock a register of the design divides, or one a process outside makes from another). Testbench code (the top-level unit, and a monitor that drives no signal) sees the settled values
        earlier, as described below
      - E4101. The region settles such logic in one delta cycle where the normal mode takes several, so that
        process would see other values or run another number of times.

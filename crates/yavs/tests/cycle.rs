@@ -5252,3 +5252,44 @@ fn conditions_elaboration_evaluated_prune_alike() {
         }
     }
 }
+
+/// A `numeric_std` shift function given a negative count known during elaboration stops the
+/// normal mode at the call; its process stays out and both modes stop with one error, at widths 1
+/// to 128 (cycle mode shifted the other way and exited 0). With a count of 1 it joins.
+#[test]
+fn a_negative_known_count_of_a_shift_function_fails_as_in_the_normal_mode() {
+    let dir = tempdir("cycle-shiftneg");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("shiftneg{w}.vhd"),
+            &with_width(include_str!("cycle/shiftneg.vhd"), w),
+        );
+        for t in tiers() {
+            let mut shown = Vec::new();
+            for mode in [None, Some("--cycle")] {
+                let mut args = vec!["run", "--work=work:lib", "--no-cache"];
+                args.extend(&t);
+                args.extend(mode);
+                args.push("cycle_shiftneg");
+                let o = yavs(&dir, &args);
+                let err = String::from_utf8_lossy(&o.stderr).into_owned();
+                assert_eq!(o.status.code(), Some(1), "{w} {t:?} {mode:?}: {err}");
+                assert!(
+                    err.contains("value -1 outside of NATURAL range"),
+                    "{w} {t:?} {mode:?}: {err}"
+                );
+                shown.push(err[err.find("error[").expect("an error")..].to_string());
+            }
+            assert_eq!(shown[0], shown[1], "{w} {t:?}");
+            let one = [&t[..], &["-gk=1"]].concat();
+            let (normal, _) = run(&dir, &one, "cycle_shiftneg");
+            let (cycle, err) = run(&dir, &[&one[..], &["--cycle"]].concat(), "cycle_shiftneg");
+            assert_eq!((normal.len(), &cycle), (1, &normal), "{w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 1 of 3 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}

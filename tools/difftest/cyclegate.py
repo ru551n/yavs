@@ -74,6 +74,9 @@ CYCLE_TESTS = {
     "skip.vhd": [("cycle_skip", "", None)],
     "ram.vhd": [("cycle_ram", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
     "slices.vhd": [("cycle_slices", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
+    "shiftop.vhd": [("cycle_shiftop", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
+    "qualrec.vhd": [("cycle_qualrec", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
+    "elabcall.vhd": [("cycle_elabcall", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
 }
 
 

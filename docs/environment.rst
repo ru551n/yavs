@@ -701,6 +701,11 @@ Compiled tiers: Cranelift
      - ``1``
      - unset
      - ``run``
+   * - ``YAVS_CYCLE_REGS``
+     - Developers: the most words of a cycle region (``--cycle``) that its compiled code keeps in registers at once (default 256, 16 in a function of more than 500 operations); past that the changed ones go to memory. A small value sends almost every word through memory, to test the code that does it.
+     - a whole number of at least 1
+     - ``256``
+     - ``run``
    * - ``YAVS_CYCLE_CHECKS``
      - ``off``: the code of a cycle region (``--cycle``) leaves out its integer overflow and range checks and clamps an index chosen at run time into its array, to measure what the checks cost. Results are wrong where a check would have failed. ``all``: the checks, and after the processes of a loop group (processes reading through one another what they drive) one more run of each, which must change nothing; a change stops the run with an internal error (a debug build does this unless the value is ``on``). ``on``: the checks without that run, also in a debug build (for the tests).
      - ``off``, ``on``, ``all``

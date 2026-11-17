@@ -46,6 +46,7 @@ CYCLE_TESTS = {
     "cmpcount.vhd": [("cycle_cmpcount", "", None)],
     "consts.vhd": [("cycle_consts", "", None)],
     "constelem.vhd": [("cycle_constelem", "", lambda s, w=w: pats(s, w)) for w in (1, 64, 65)],
+    "elempart.vhd": [("cycle_elempart", "", lambda s, w=w: W.sub(str(w), s)) for w in (64, 65, 128)],
     "export.vhd": [("cycle_export", "", None)],
     "fsmrec.vhd": [("cycle_fsmrec", "", None)],
     "handshake.vhd": [("cycle_handshake", "", None)],

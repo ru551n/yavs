@@ -1455,6 +1455,14 @@ fn numeric_operations_equal_the_normal_mode_at_widths_around_a_word() {
                 "{w}: {err}"
             );
         }
+        // One word in registers at a time: every operation's words through memory, and the
+        // temporaries no later operation reads dropped unstored (`YAVS_CYCLE_REGS`).
+        let (normal, _) = run(&dir, &["--tier=interp"], "cycle_ops2");
+        let flags = ["--tier=interp", "--cycle"];
+        for cap in ["1", "2"] {
+            let (cycle, err) = run_vars(&dir, &flags, "cycle_ops2", &[("YAVS_CYCLE_REGS", cap)]);
+            assert_eq!(cycle, normal, "width {w}, {cap} words in registers\n{err}");
+        }
     }
 }
 
@@ -2825,9 +2833,11 @@ fn members_cut_into_several_functions_give_the_same_result() {
         .map(str::trim)
         .collect();
     assert_eq!(failure.len(), 2, "{nerr}");
-    for chunk in [None, Some("7")] {
+    // The last also with two words in registers at a time (`YAVS_CYCLE_REGS`).
+    for (chunk, cap) in [(None, None), (Some("7"), None), (Some("7"), Some("2"))] {
         let mut env = vec![("YAVS_CYCLE_STATS", "1")];
         env.extend(chunk.map(|c| ("YAVS_CYCLE_CHUNK", c)));
+        env.extend(cap.map(|c| ("YAVS_CYCLE_REGS", c)));
         let (out, err, rc) = run_env(&dir, &env, &["--tier=interp", "--cycle"], "cycle_cut");
         assert_eq!(rc, 0, "{chunk:?}: {err}");
         assert_eq!(lines(&out), normal, "{chunk:?}");
@@ -2879,9 +2889,11 @@ fn instances_of_one_shape_share_a_body_and_others_do_not() {
         .collect();
     assert_eq!(failure.len(), 2, "{nerr}");
     assert!(failure[1].ends_with("cycle_share.u1.p"), "{nerr}");
-    for chunk in [None, Some("7")] {
+    // The last also with two words in registers at a time (`YAVS_CYCLE_REGS`).
+    for (chunk, cap) in [(None, None), (Some("7"), None), (Some("7"), Some("2"))] {
         let mut env = vec![("YAVS_CYCLE_STATS", "1")];
         env.extend(chunk.map(|c| ("YAVS_CYCLE_CHUNK", c)));
+        env.extend(cap.map(|c| ("YAVS_CYCLE_REGS", c)));
         let (out, err, rc) = run_env(&dir, &env, &["--tier=interp", "--cycle"], "cycle_share");
         assert_eq!(rc, 0, "{chunk:?}: {err}");
         assert_eq!(lines(&out), normal, "{chunk:?}");
@@ -4034,6 +4046,30 @@ fn attributes_of_elements_chosen_at_run_time_equal_the_normal_mode() {
                 "{w}: {err}"
             );
         }
+    }
+}
+
+/// Parts of elements chosen at run time (`elempart.vhd`): the low byte and all but the top bit of an
+/// element read, the low byte of another written, where elements start on words (64, 128) and where
+/// they do not (65).
+#[test]
+fn parts_of_elements_chosen_at_run_time_equal_the_normal_mode() {
+    let dir = tempdir("cycle-elempart");
+    for w in [64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("elempart{w}.vhd"),
+            &with_width(include_str!("cycle/elempart.vhd"), w),
+        );
+        let (normal, _) = run(&dir, &["--tier=interp"], "cycle_elempart");
+        let flags = ["--tier=interp", "--cycle"];
+        let (cycle, err) = run(&dir, &flags, "cycle_elempart");
+        assert_eq!(normal.len(), 12, "{w} {normal:?}");
+        assert_eq!(cycle, normal, "width {w}\n{err}");
+        assert!(
+            err.contains("cycle mode: 3 of 4 processes run cycle-based"),
+            "{w}: {err}"
+        );
     }
 }
 

@@ -12,8 +12,9 @@
 #![allow(unsafe_code)]
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::{Mutex, PoisonError};
 
 use cranelift_codegen::incremental_cache::CacheKvStore;
@@ -495,6 +496,26 @@ fn define(
     Ok(hit)
 }
 
+/// For `n` blocks of a shared body, given every instance's table (the byte offset of each block):
+/// per block the first block whose distance from it is the same in every instance, with that
+/// distance in bytes (itself and 0 when none is).
+fn base_blocks<'t>(
+    n: usize,
+    tables: impl Iterator<Item = &'t [usize]> + Clone,
+) -> Vec<(usize, i32)> {
+    let mut out: Vec<(usize, i32)> = Vec::with_capacity(n);
+    for j in 0..n {
+        let dist = |r: usize, t: &[usize]| i32::try_from(t[j] as i64 - t[r] as i64).ok();
+        let found = (0..j).filter(|&r| out[r].0 == r).find_map(|r| {
+            let mut ts = tables.clone();
+            let d = dist(r, ts.next()?)?;
+            ts.all(|t| dist(r, t) == Some(d)).then_some((r, d))
+        });
+        out.push(found.unwrap_or((j, 0)));
+    }
+    out
+}
+
 /// Ones in the low `len` bits.
 pub(crate) fn mask(len: u32) -> u64 {
     if len >= 64 { !0 } else { (1u64 << len) - 1 }
@@ -551,17 +572,179 @@ fn chunk() -> usize {
     })
 }
 
-/// A piece as parts of about `CHUNK` operations each, each but the last with `true` (its member
-/// goes on in the next part); see [`cut`].
-fn parts(ops: &[Op]) -> Vec<(Cow<'_, [Op]>, bool)> {
+/// A map keyed by word offsets, with a cheap hash (the keys are the code generator's own).
+type Words<V> = HashMap<i32, V, std::hash::BuildHasherDefault<WordHash>>;
+
+#[derive(Default)]
+struct WordHash(u64);
+
+impl std::hash::Hasher for WordHash {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, b: &[u8]) {
+        for &x in b {
+            self.write_u64(u64::from(x) ^ self.0.rotate_left(8));
+        }
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        let x = n.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        self.0 = x ^ (x >> 29);
+    }
+
+    fn write_i32(&mut self, n: i32) {
+        self.write_u64(u64::from(n as u32));
+    }
+}
+
+/// A part of a piece: its operations and, when its member goes on in the next part, the words
+/// the later parts read (scratch words among them are live at the part's end).
+type Part<'a> = (Cow<'a, [Op]>, Option<Rc<Words<()>>>);
+
+/// Most words in registers at once: [`CACHE_MAX`], or fewer with `YAVS_CYCLE_REGS` (developers:
+/// a small value flushes the registers every few words, to test the code that does it).
+fn cache_cap() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("YAVS_CYCLE_REGS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(CACHE_MAX)
+    })
+}
+
+/// A piece as parts of about `CHUNK` operations each; see [`cut`].
+fn parts(ops: &[Op]) -> Vec<Part<'_>> {
     if weight(ops) <= chunk() {
-        return vec![(Cow::Borrowed(ops), false)];
+        return vec![(Cow::Borrowed(ops), None)];
     }
     let ps = cut(ops, chunk());
-    let n = ps.len();
-    (ps.into_iter().enumerate())
-        .map(|(i, p)| (Cow::Owned(p), i + 1 < n))
-        .collect()
+    let mut later: Option<Rc<Words<()>>> = None;
+    let mut out: Vec<Part<'_>> = Vec::new();
+    for p in ps.into_iter().rev() {
+        let mut next = later.as_deref().cloned().unwrap_or_default();
+        walk(&p, &mut 0, &mut |_, w| {
+            next.insert(w, ());
+        });
+        out.push((Cow::Owned(p), later.take()));
+        later = Some(Rc::new(next));
+    }
+    out.reverse();
+    out
+}
+
+/// Every word `ops` read, with the operation reading it, numbered in pre-order from `pos` (an
+/// `If`, then its `then` and `else` operations): the order [`Gen::op`] generates them in.
+fn walk(ops: &[Op], pos: &mut u32, f: &mut impl FnMut(u32, i32)) {
+    for op in ops {
+        let i = *pos;
+        *pos += 1;
+        reads(op, &mut |off, n| {
+            for k in 0..n {
+                f(i, off + 8 * k as i32);
+            }
+        });
+        if let Op::If { then, else_, .. } = op {
+            walk(then, pos, f);
+            walk(else_, pos, f);
+        }
+    }
+}
+
+/// The words the code of `op` reads (not those of an `If`'s branches): byte offset and words.
+/// Every `Gen::ld` of the operation and every word it addresses at run time must be in it, or a
+/// scratch word it reads is taken for dead before.
+fn reads(op: &Op, f: &mut impl FnMut(i32, u32)) {
+    // `n` words of `x` from its word `k0`.
+    let mut r = |x: &Ref, k0: u32, n: u32| f(word(*x) + 8 * k0 as i32, n);
+    match op {
+        Op::Lit { .. } | Op::IntLit { .. } => {}
+        Op::Copy { src, len, .. } => r(src, 0, words(*len)),
+        Op::Ext { src, from, .. } => r(src, 0, words(*from)),
+        Op::Blend { dst, src, mask } => {
+            for (k, &m) in mask.iter().enumerate().filter(|m| *m.1 != 0) {
+                r(src, k as u32, 1);
+                if m != !0 {
+                    r(dst, k as u32, 1);
+                }
+            }
+        }
+        Op::Gate { a, b, len, .. }
+        | Op::Add { a, b, len, .. }
+        | Op::Mul { a, b, len, .. }
+        | Op::VecEq { a, b, len, .. }
+        | Op::VCmp { a, b, len, .. } => {
+            r(a, 0, words(*len));
+            r(b, 0, words(*len));
+        }
+        Op::Not { a, len, .. } | Op::Reduce { a, len, .. } => r(a, 0, words(*len)),
+        Op::Extract { src, lo, len, .. } => r(src, lo / 64, (lo + len - 1) / 64 - lo / 64 + 1),
+        Op::Insert { dst, src, lo, len } => {
+            r(src, 0, words(*len));
+            r(dst, lo / 64, (lo + len - 1) / 64 - lo / 64 + 1);
+        }
+        Op::Cat {
+            hi,
+            lo,
+            lo_len,
+            len,
+            ..
+        } => {
+            r(lo, 0, words(*lo_len));
+            r(hi, 0, words(len - lo_len));
+        }
+        Op::VDiv { a, b, .. } | Op::IntCmp { a, b, .. } | Op::Int { a, b, .. } => {
+            r(a, 0, 1);
+            r(b, 0, 1);
+        }
+        Op::Shift { a, n, .. } => {
+            r(a, 0, 1);
+            r(n, 0, 1);
+        }
+        Op::Range { a, .. } | Op::ToInt { a, .. } | Op::FromInt { a, .. } | Op::Splat { a, .. } => {
+            r(a, 0, 1)
+        }
+        Op::Select { c, a, b, len, .. } => {
+            r(c, 0, 1);
+            r(a, 0, words(*len));
+            r(b, 0, words(*len));
+        }
+        // The array in memory, the word after it too (`Gen::spill`).
+        Op::IndexRead {
+            src,
+            lo,
+            n,
+            stride,
+            idx,
+            ..
+        } => {
+            r(idx, 0, 1);
+            r(src, lo / 64, (lo + n * stride).div_ceil(64) - lo / 64 + 1);
+        }
+        Op::IndexWrite {
+            dst,
+            src,
+            lo,
+            n,
+            stride,
+            w,
+            idx,
+            ..
+        } => {
+            r(src, 0, words(*w));
+            r(idx, 0, 1);
+            r(dst, lo / 64, (lo + n * stride).div_ceil(64) - lo / 64 + 1);
+        }
+        Op::Note { args, .. } => {
+            for (a, n) in args {
+                r(a, 0, *n);
+            }
+        }
+        Op::If { cond, .. } => r(cond, 0, 1),
+    }
 }
 
 /// `ops` as consecutive parts of about `max` operations: run one after the other, through
@@ -733,16 +916,16 @@ pub(crate) fn compile<'a>(
     // what each trigger function runs, a function by its index. A part says whether its member
     // goes on in the next one (`cut`).
     // A function: label, parts, whether checks exit, the shape it is a body of.
-    type Fn<'a> = (String, Vec<(Cow<'a, [Op]>, bool)>, bool, Option<usize>);
+    type Fn<'a> = (String, Vec<Part<'a>>, bool, Option<usize>);
     let mut funs: Vec<Fn<'_>> = Vec::new();
     // Parts packed into functions of about `CHUNK` operations; returns the functions made.
     let pack = |funs: &mut Vec<Fn<'a>>,
                 what: &str,
-                ps: Vec<(Cow<'a, [Op]>, bool)>,
+                ps: Vec<Part<'a>>,
                 checked: bool,
                 shape: Option<usize>| {
         let first = funs.len();
-        let mut cur: Vec<(Cow<'a, [Op]>, bool)> = Vec::new();
+        let mut cur: Vec<Part<'a>> = Vec::new();
         let mut w = 0;
         for (p, more) in ps {
             let pw = weight(&p);
@@ -793,11 +976,11 @@ pub(crate) fn compile<'a>(
         .into_iter()
         .enumerate()
     {
-        let mut cur: Vec<(Cow<'a, [Op]>, bool)> = Vec::new();
+        let mut cur: Vec<Part<'a>> = Vec::new();
         // The settle's units (`compile`'s `units`) of the parts in `cur`, and of each step made.
         let mut cur_units: Vec<u32> = Vec::new();
         let flush = |funs: &mut Vec<Fn<'a>>,
-                     cur: &mut Vec<(Cow<'a, [Op]>, bool)>,
+                     cur: &mut Vec<Part<'a>>,
                      cur_units: &mut Vec<u32>,
                      runs: &mut Vec<Pend>,
                      eunits: &mut Vec<Vec<u32>>| {
@@ -938,9 +1121,33 @@ pub(crate) fn compile<'a>(
             settle_units = eunits;
         }
     }
+    // Per shape, per block: the block whose base it is addressed from and the distance to it, the
+    // same in every instance (an instance's signals lie in one order: a body needs few bases).
+    let mut inst: Vec<Vec<usize>> = vec![Vec::new(); shapes.len()];
+    for r in runs.iter().flatten() {
+        if let Pend::Shared(k, t, _) = *r
+            && let Some(sh) = funs[k].3
+            && !inst[sh].contains(&(t as usize))
+        {
+            inst[sh].push(t as usize);
+        }
+    }
+    let based: Vec<Vec<(usize, i32)>> = (inst.iter().enumerate())
+        .map(|(sh, ts)| base_blocks(shapes[sh].blocks.len(), ts.iter().map(|&t| &tables[t][..])))
+        .collect();
     // Developers: `YAVS_CYCLE_STATS=1` prints each function's operations, Cranelift instructions,
     // machine code bytes and compile time.
     let stats = std::env::var_os("YAVS_CYCLE_STATS").is_some();
+    if stats {
+        for (sh, b) in based.iter().enumerate() {
+            let n = (b.iter().enumerate()).filter(|&(j, x)| x.0 == j).count();
+            eprintln!(
+                "cycle stats: shape {sh}: {} blocks from {n} bases, {} instances",
+                b.len(),
+                inst[sh].len()
+            );
+        }
+    }
     // Developers: `YAVS_CYCLE_DISASM=1` prints the machine code of each function (compiled, never
     // taken from the cache).
     let disasm = std::env::var_os("YAVS_CYCLE_DISASM").is_some();
@@ -994,11 +1201,19 @@ pub(crate) fn compile<'a>(
             let mut blocks = Vec::new();
             if let Some(k) = shape {
                 let tbl = b.block_params(blk)[1];
+                let mut at: Vec<Value> = Vec::new();
                 for (j, &(v, _)) in shapes[*k].blocks.iter().enumerate() {
-                    let off = b
-                        .ins()
-                        .load(ptr, MemFlagsData::trusted(), tbl, 8 * j as i32);
-                    blocks.push((v as i32 * 8, b.ins().iadd(base, off)));
+                    let (r, d) = based[*k][j];
+                    let a = if r == j {
+                        let off = b
+                            .ins()
+                            .load(ptr, MemFlagsData::trusted(), tbl, 8 * j as i32);
+                        b.ins().iadd(base, off)
+                    } else {
+                        at[r]
+                    };
+                    at.push(a);
+                    blocks.push((v as i32 * 8, a, d));
                 }
             }
             let mut g = Gen {
@@ -1014,6 +1229,12 @@ pub(crate) fn compile<'a>(
                 blocks,
                 keep: shape.map_or(keep, |k| &shapes[k].keep[..]),
                 zeros: std::collections::HashMap::new(),
+                pos: 0,
+                next: 0,
+                last: Words::default(),
+                later: None,
+                #[cfg(debug_assertions)]
+                gone: Default::default(),
             };
             // Each piece starts from memory: the words it keeps in registers are few, and a
             // branch saves and forgets only those.
@@ -1022,12 +1243,14 @@ pub(crate) fn compile<'a>(
                     CACHE_BIG
                 } else {
                     CACHE_MAX
-                };
+                }
+                .min(cache_cap());
+                g.live_in(p, more.clone());
                 for op in p.iter() {
                     g.op(op);
                 }
                 // A member that goes on in the next part leaves its scratch words there too.
-                if *more {
+                if more.is_some() {
                     g.spill_all();
                 } else {
                     g.write_back();
@@ -1186,12 +1409,24 @@ struct Gen<'a> {
     cache: BTreeMap<i32, (Value, bool)>,
     /// Most words in `cache` at once, for the piece being generated.
     cap: usize,
-    /// A shared body: the first virtual byte offset of each block and the block's address, in
-    /// order; a word's address is from the last block at or below it (`at`).
-    blocks: Vec<(i32, Value)>,
+    /// A shared body: the first virtual byte offset of each block, the address of the block it is
+    /// addressed from and the distance to it, in order; a word's address is from the last block at
+    /// or below it (`at`).
+    blocks: Vec<(i32, Value, i32)>,
     keep: &'a [bool],
     /// Bits known to be zero of some values (constants, extracted bits, words built by inserts).
     zeros: std::collections::HashMap<Value, u64>,
+    /// The operation being generated, by its number in [`walk`], and the next number.
+    pos: u32,
+    next: u32,
+    /// Per word the part reads: the last operation reading it (a scratch word is dead after it,
+    /// unless a later part reads it, `later`).
+    last: Words<u32>,
+    later: Option<Rc<Words<()>>>,
+    /// Debug builds: scratch words dropped from registers unstored as dead, which no code may
+    /// read from memory before writing them again.
+    #[cfg(debug_assertions)]
+    gone: std::collections::HashSet<i32>,
 }
 
 impl Gen<'_> {
@@ -1201,10 +1436,57 @@ impl Gen<'_> {
         }
     }
 
+    /// The reads of part `p`, which the parts after it read `later` of.
+    fn live_in(&mut self, p: &[Op], later: Option<Rc<Words<()>>>) {
+        self.last.clear();
+        walk(p, &mut 0, &mut |i, w| {
+            self.last.insert(w, i);
+        });
+        (self.pos, self.next) = (0, 0);
+        self.later = later;
+        #[cfg(debug_assertions)]
+        self.gone.clear();
+    }
+
+    /// Whether word `off` may still be read: state, read by a later part, or by this operation
+    /// or a later one (a word past the image is no state).
+    fn live(&self, off: i32) -> bool {
+        self.state(off) || self.last.get(&off).is_some_and(|&i| i >= self.pos)
+    }
+
+    /// Whether word `off` must outlive the part: state, or read by a later part.
+    fn state(&self, off: i32) -> bool {
+        self.keep.get(off as usize / 8).is_some_and(|&k| k)
+            || self.later.as_ref().is_some_and(|l| l.contains_key(&off))
+    }
+
+    /// Word `off` is dead: out of the registers, never stored.
+    fn drop_dead(&mut self, off: i32) {
+        if let Some((_, d)) = self.cache.remove(&off) {
+            #[cfg(debug_assertions)]
+            if d {
+                self.gone.insert(off);
+            }
+            let _ = d;
+        }
+    }
+
+    /// Debug builds: words `off ..` (`n`) are read from memory, so none may be a dropped one.
+    fn read_memory(&self, off: i32, n: u32) {
+        #[cfg(debug_assertions)]
+        for k in 0..n as i32 {
+            assert!(
+                !self.gone.contains(&(off + 8 * k)),
+                "cycle mode: the code reads a scratch word it took for dead (this is a bug in yavs)"
+            );
+        }
+        let _ = (off, n);
+    }
+
     /// The address of the word at byte offset `off`: a base and an offset from it.
     fn at(&self, off: i32) -> (Value, i32) {
-        match self.blocks.iter().rev().find(|(v, _)| *v <= off) {
-            Some(&(v, b)) => (b, off - v),
+        match self.blocks.iter().rev().find(|(v, ..)| *v <= off) {
+            Some(&(v, b, d)) => (b, off - v + d),
             None => (self.base, off),
         }
     }
@@ -1215,6 +1497,7 @@ impl Gen<'_> {
         if let Some(&(v, _)) = self.cache.get(&off) {
             return v;
         }
+        self.read_memory(off, 1);
         let (a, o) = self.at(off);
         let v = self.b.ins().load(I64, MemFlagsData::trusted(), a, o);
         self.keep_in(off, v, false);
@@ -1223,7 +1506,14 @@ impl Gen<'_> {
 
     /// Word `k` of `r` is `v` from here on; memory follows at `write_back` or `spill`.
     fn st(&mut self, r: Ref, k: u32, v: Value) {
-        self.keep_in(word(r) + k as i32 * 8, v, true);
+        let off = word(r) + k as i32 * 8;
+        if !self.live(off) {
+            self.drop_dead(off);
+            return;
+        }
+        #[cfg(debug_assertions)]
+        self.gone.remove(&off);
+        self.keep_in(off, v, true);
     }
 
     /// Word `off` in a register. Past `cap` words every changed one goes to memory and the cache
@@ -1261,7 +1551,7 @@ impl Gen<'_> {
     /// Every changed word into memory, scratch ones too.
     fn spill_all(&mut self) {
         let dirty: Vec<(i32, Value)> = (self.cache.iter())
-            .filter(|(_, (_, d))| *d)
+            .filter(|&(&off, (_, d))| *d && self.live(off))
             .map(|(&off, &(v, _))| (off, v))
             .collect();
         for (off, v) in dirty {
@@ -1274,12 +1564,14 @@ impl Gen<'_> {
     fn spill(&mut self, r: Ref, k0: u32, k1: u32) {
         for k in k0..=k1 {
             let off = word(r) + k as i32 * 8;
-            if let Some((v, d)) = self.cache.get_mut(&off)
-                && *d
-            {
-                *d = false;
-                let v = *v;
-                self.store(off, v);
+            match self.cache.get_mut(&off) {
+                Some((v, d)) if *d => {
+                    *d = false;
+                    let v = *v;
+                    self.store(off, v);
+                }
+                Some(_) => {}
+                None => self.read_memory(off, 1),
             }
         }
     }
@@ -1288,6 +1580,8 @@ impl Gen<'_> {
     fn forget(&mut self, r: Ref, k0: u32, k1: u32) {
         for k in k0..=k1 {
             self.cache.remove(&(word(r) + k as i32 * 8));
+            #[cfg(debug_assertions)]
+            self.gone.remove(&(word(r) + k as i32 * 8));
         }
     }
 
@@ -1479,8 +1773,31 @@ impl Gen<'_> {
         w.is_power_of_two() && w <= 64 && lo.is_multiple_of(w) && stride.is_multiple_of(w)
     }
 
-    /// The `w` bits of `r` from the run-time bit `bit` (memory holds them, see `spill`).
-    fn dyn_read(&mut self, r: Ref, bit: Value, w: u32, one_word: bool) -> Vec<Value> {
+    /// Whether every field at a bit `lo + k * stride` starts a word.
+    fn word_aligned(lo: u32, stride: u32) -> bool {
+        lo.is_multiple_of(64) && stride.is_multiple_of(64)
+    }
+
+    /// The `w` bits of `r` from the run-time bit `bit` (memory holds them, see `spill`); `whole`:
+    /// `bit` is a multiple of 64, so each word is one load.
+    fn dyn_read(&mut self, r: Ref, bit: Value, w: u32, one_word: bool, whole: bool) -> Vec<Value> {
+        if whole {
+            let (a, _) = self.bit_addr(r, bit);
+            return (0..words(w))
+                .map(|j| {
+                    let mut x = self
+                        .b
+                        .ins()
+                        .load(I64, MemFlagsData::trusted(), a, 8 * j as i32);
+                    let n = (w - 64 * j).min(64);
+                    if n < 64 {
+                        x = self.b.ins().band_imm_s(x, mask(n) as i64);
+                        self.zeros.insert(x, !mask(n));
+                    }
+                    x
+                })
+                .collect();
+        }
         (0..words(w))
             .map(|j| {
                 let b = if j == 0 {
@@ -1507,8 +1824,25 @@ impl Gen<'_> {
             .collect()
     }
 
-    /// The `w` bits `v` into `r` from the run-time bit `bit`, in memory.
-    fn dyn_write(&mut self, r: Ref, bit: Value, w: u32, v: &[Value], one_word: bool) {
+    /// The `w` bits `v` into `r` from the run-time bit `bit`, in memory; `whole`: as in
+    /// `dyn_read`, a full word is one store.
+    fn dyn_write(&mut self, r: Ref, bit: Value, w: u32, v: &[Value], one_word: bool, whole: bool) {
+        if whole {
+            let (a, _) = self.bit_addr(r, bit);
+            for (j, &x) in v.iter().enumerate() {
+                let n = (w - 64 * j as u32).min(64);
+                let o = 8 * j as i32;
+                let x = if n < 64 {
+                    let w0 = self.b.ins().load(I64, MemFlagsData::trusted(), a, o);
+                    let keep = self.b.ins().band_imm_s(w0, !mask(n) as i64);
+                    self.b.ins().bor(keep, x)
+                } else {
+                    x
+                };
+                self.b.ins().store(MemFlagsData::trusted(), x, a, o);
+            }
+            return;
+        }
         for (j, &x) in v.iter().enumerate() {
             let b = if j == 0 {
                 bit
@@ -1639,7 +1973,23 @@ impl Gen<'_> {
         (a, s)
     }
 
+    /// Operation `op`; then the scratch words it read last are dropped from the registers, so no
+    /// dead word is ever in them (one written that no later operation reads is not put there).
     fn op(&mut self, op: &Op) {
+        let i = self.next;
+        (self.pos, self.next) = (i, i + 1);
+        self.emit(op);
+        reads(op, &mut |off, n| {
+            for k in 0..n as i32 {
+                let w = off + 8 * k;
+                if self.last.get(&w) == Some(&i) && !self.state(w) {
+                    self.drop_dead(w);
+                }
+            }
+        });
+    }
+
+    fn emit(&mut self, op: &Op) {
         match op {
             Op::Copy { dst, src, len } => {
                 let v = self.lds(*src, *len);
@@ -1856,7 +2206,13 @@ impl Gen<'_> {
                 let end = lo + n * stride;
                 // The word after the value too: an element may reach into it.
                 self.spill(*src, lo / 64, end.div_ceil(64));
-                let v = self.dyn_read(*src, bit, *w, Self::aligned(*lo, *stride, *w));
+                let v = self.dyn_read(
+                    *src,
+                    bit,
+                    *w,
+                    Self::aligned(*lo, *stride, *w),
+                    Self::word_aligned(*lo, *stride),
+                );
                 self.sts(*dst, &v);
             }
             Op::IndexWrite {
@@ -1878,7 +2234,14 @@ impl Gen<'_> {
                 let (k0, k1) = (lo / 64, (lo + n * stride).div_ceil(64));
                 self.spill(*dst, k0, k1);
                 self.forget(*dst, k0, k1);
-                self.dyn_write(*dst, bit, *w, &v, Self::aligned(*lo, *stride, *w));
+                self.dyn_write(
+                    *dst,
+                    bit,
+                    *w,
+                    &v,
+                    Self::aligned(*lo, *stride, *w),
+                    Self::word_aligned(*lo, *stride),
+                );
             }
             Op::Select { dst, c, a, b, len } => {
                 let c = self.ld(*c, 0);
@@ -2141,6 +2504,11 @@ impl Gen<'_> {
             }
             Op::If { cond, then, else_ } => {
                 let c = self.ld(*cond, 0);
+                // A condition read here last is dead now: not stored before the branch.
+                let w = word(*cond);
+                if self.last.get(&w) == Some(&self.pos) && !self.state(w) {
+                    self.drop_dead(w);
+                }
                 let (t, e, j): (CBlock, CBlock, CBlock) = (
                     self.b.create_block(),
                     self.b.create_block(),
@@ -2148,7 +2516,7 @@ impl Gen<'_> {
                 );
                 // Memory holds every word before the branches; each starts from the words in
                 // registers, stores what it changed before the join, and the join reads those
-                // from memory again.
+                // from memory again. (Dead words are not in registers: see `Gen::op`.)
                 let dirty: Vec<(i32, Value)> = (self.cache.iter_mut())
                     .filter(|(_, (_, d))| *d)
                     .map(|(&off, (v, d))| {
@@ -2202,11 +2570,22 @@ impl Gen<'_> {
         self.b.ins().select(fix, ry, r)
     }
 
-    /// Whether `x` is outside `lo ..= hi`.
+    /// Whether `x` is outside `lo ..= hi`: `x - lo` above `hi - lo`, unsigned (one compare).
     fn outside(&mut self, x: Value, lo: i64, hi: i64) -> Value {
-        let a = self.b.ins().icmp_imm_s(IntCC::SignedLessThan, x, lo);
-        let b = self.b.ins().icmp_imm_s(IntCC::SignedGreaterThan, x, hi);
-        self.b.ins().bor(a, b)
+        let i8 = cranelift_codegen::ir::types::I8;
+        if lo > hi {
+            return self.b.ins().iconst(i8, 1);
+        }
+        let span = hi.wrapping_sub(lo);
+        if span == -1 {
+            return self.b.ins().iconst(i8, 0);
+        }
+        let d = if lo == 0 {
+            x
+        } else {
+            self.b.ins().iadd_imm_s(x, lo.wrapping_neg())
+        };
+        self.b.ins().icmp_imm_s(IntCC::UnsignedGreaterThan, d, span)
     }
 
     /// `x op y` in `lo ..= hi`, the result type: a failed check stores both operands.

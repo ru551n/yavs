@@ -3176,7 +3176,7 @@ fn instances_of_one_shape_share_a_body_and_others_do_not() {
 
 /// Asserts and reports of the top-level unit (A19): the clocked ones evaluated at the edge in
 /// region code (a checker failing with severity error, a passing one, one checking in a called
-/// procedure, one formatting vectors of `W` elements, logic values, a boolean, integers and
+/// procedure, one right after a `wait until`, one formatting vectors of `W` elements, logic values, a boolean, integers and
 /// enumerations, a variable changed after its report), the concurrent assert and the
 /// combinational report in the event kernel; every message, its time and process, and the exit
 /// status are the normal mode's, also when a checker of severity failure ends the run. Not an
@@ -3215,6 +3215,7 @@ fn asserts_and_reports_of_the_top_level_unit_are_evaluated() {
             "q 12 not below 12",
             "q is 9",
             "q is 6",
+            "q is 5 at the edge",
             "fmt ",
             "n=4 ",
             "Assertion violation.",
@@ -3233,7 +3234,7 @@ fn asserts_and_reports_of_the_top_level_unit_are_evaluated() {
                 assert_eq!((c, &out), (code, &normal), "{w} {flags:?}\n{err}");
                 // The design below the top and the clocked checkers.
                 assert!(
-                    err.contains("cycle mode: 7 of 12 processes run cycle-based"),
+                    err.contains("cycle mode: 8 of 13 processes run cycle-based"),
                     "{w} {mode}: {err}"
                 );
                 let (c, out, err) = go(&flags, "cycle_topstop");
@@ -5157,6 +5158,97 @@ fn metavalues_the_testbench_reads_are_kept() {
                     "{p}: {rep}"
                 );
             }
+        }
+    }
+}
+
+/// The shift operators of `numeric_std` and `std_logic_1164` (`srl` of `signed` logical, a
+/// negative count known here the other way, bits of results by index in their own ranges) join,
+/// in a combinational process and a register, against the normal mode at widths 1 to 128 and
+/// counts from 0 past twice the width; one whose count may be negative at run time stays out.
+#[test]
+fn shift_operators_equal_the_normal_mode() {
+    let dir = tempdir("cycle-shiftop");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("shiftop{w}.vhd"),
+            &with_width(include_str!("cycle/shiftop.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_shiftop");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_shiftop");
+            assert_eq!(normal.len() as u32, 2 * w + 4, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 2 of 4 processes run cycle-based")
+                    && err.contains("may be negative"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
+/// Qualified record aggregates (`r_t'(...)`, a nested one, as a register's value and an operand
+/// of `=`) join, against the normal mode at widths 1 to 128; one whose integer field may leave
+/// its subtype stays out, and where it does (generic `fail`) both modes stop with one error.
+#[test]
+fn qualified_record_aggregates_equal_the_normal_mode() {
+    let dir = tempdir("cycle-qualrec");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("qualrec{w}.vhd"),
+            &with_width(include_str!("cycle/qualrec.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_qualrec");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_qualrec");
+            assert_eq!(normal.len(), 21, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 3 of 5 processes run cycle-based")
+                    && err.contains("may lie outside their subtypes"),
+                "{w}: {err}"
+            );
+            let mut shown = Vec::new();
+            for mode in [None, Some("--cycle")] {
+                let mut args = vec!["run", "--work=work:lib", "--no-cache", "-gfail=true"];
+                args.extend(&t);
+                args.extend(mode);
+                args.push("cycle_qualrec");
+                let o = yavs(&dir, &args);
+                let err = String::from_utf8_lossy(&o.stderr).into_owned();
+                assert_eq!(o.status.code(), Some(1), "{w} {t:?} {mode:?}: {err}");
+                shown.push(err[err.find("error[").expect("an error")..].to_string());
+            }
+            assert_eq!(shown[0], shown[1], "{w} {t:?}");
+        }
+    }
+}
+
+/// Conditions elaboration evaluated whose arguments the folds do not know themselves prune their
+/// branch in the subset checker and the lowering alike, so their processes join (the lowering
+/// read the pruned branch and the cross-check kept them out), against the normal mode at widths
+/// 1 to 128.
+#[test]
+fn conditions_elaboration_evaluated_prune_alike() {
+    let dir = tempdir("cycle-elabcall");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("elabcall{w}.vhd"),
+            &with_width(include_str!("cycle/elabcall.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_elabcall");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_elabcall");
+            assert_eq!(normal.len(), 10, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 2 of 3 processes run cycle-based"),
+                "{w}: {err}"
+            );
         }
     }
 }

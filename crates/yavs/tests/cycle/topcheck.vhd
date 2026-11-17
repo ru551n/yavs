@@ -1,7 +1,7 @@
 -- Asserts and reports in processes of the top-level unit (A19), `W` replaced by a width: the
 -- clocked ones are evaluated at the clock edge in region code (a checker failing with severity
 -- error, one passing, one checking in a called procedure, one formatting values of several kinds,
--- a variable changed after its report); the concurrent assert, the combinational report and a
+-- a variable changed after its report, an assert right after a wait); the concurrent assert, the combinational report and a
 -- checker of a signal the testbench drives stay in the event kernel. `cycle_topstop` ends on a checker of severity failure.
 library ieee;
 use ieee.std_logic_1164.all;
@@ -102,6 +102,12 @@ begin
     end if;
     n := n + 100;
     assert n /= 104 severity note;
+  end process;
+  -- An assert right after the wait reads a signal the design drives.
+  chk4 : process
+  begin
+    wait until rising_edge(clk);
+    assert q /= 5 report "q is 5 at the edge" severity note;
   end process;
   assert q /= 9 report "q is 9" severity note;
   rep : process (q)

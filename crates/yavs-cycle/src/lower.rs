@@ -88,6 +88,15 @@ pub(crate) enum Arith {
     Rem,
 }
 
+/// What a shift's count may be: known during elaboration only, a `NATURAL`, or an operator's
+/// `INTEGER` (a negative count reverses the shift).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Count {
+    Static,
+    Natural,
+    Integer,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ShiftK {
     Sll,
@@ -3814,9 +3823,10 @@ impl Lx<'_> {
             let Actual::Expr(ax) = a.actual else {
                 return false;
             };
-            (sp.params.get(usize::from(a.formal)))
-                .zip(self.fold(ax))
-                .is_some_and(|(p, c)| fits(p.subtype, &c).is_some())
+            (sp.params.get(usize::from(a.formal))).is_some_and(|p| {
+                crate::check::takes_any(db, p.subtype)
+                    || self.fold(ax).is_some_and(|c| fits(p.subtype, &c).is_some())
+            })
         });
         self.probing.set(was);
         fits(sp.ret?, v).filter(|_| ok)
@@ -4194,8 +4204,49 @@ impl Lx<'_> {
                     ..i
                 }))
             }
+            // A record of its own type without element constraints: the value itself, when every
+            // field provably lies in its element subtype (no check message to match).
+            v @ Val::Rec(_)
+                if db.base(to) == db.base(db.exprs[operand].subtype)
+                    && matches!(db.subtypes[to].constraint, Constraint::None) =>
+            {
+                self.fits_fields(&v, to)?;
+                Ok(v)
+            }
             Val::Rec(_) => Err("a conversion of a record".into()),
             Val::Null(ds) => self.rebound_null(ds, to),
+        }
+    }
+
+    /// `v` lies in subtype `st` without a check: integer fields by their known ranges, logic
+    /// vectors by their length, records field by field; anything else is not implemented yet.
+    fn fits_fields(&mut self, v: &Val, st: SubtypeId) -> R<()> {
+        let db = self.db;
+        let no = || Err("a qualified record whose fields may lie outside their subtypes".into());
+        match (v, &db.types[db.base(st)].kind) {
+            (Val::Rec(fs), TypeKind::Record { elems }) if fs.len() == elems.len() => {
+                for (f, el) in fs.iter().zip(elems.iter()) {
+                    self.fits_fields(f, el.subtype)?;
+                }
+                Ok(())
+            }
+            (Val::Int(i), _) => match int_bounds(db, st) {
+                Some((lo, hi)) if i.lo >= lo && i.hi <= hi => Ok(()),
+                _ => no(),
+            },
+            (Val::Part(p), TypeKind::Array { .. }) if self.logic_array(st) && p.dims.n <= 1 => {
+                match &db.subtypes[st].constraint {
+                    Constraint::None | Constraint::Array { dims: None, .. } => Ok(()),
+                    _ if self.subtype_bounds(st)?.len() == u64::from(p.len) => Ok(()),
+                    _ => no(),
+                }
+            }
+            (Val::Part(p), TypeKind::Enum { lits })
+                if p.len == 1 && self.subtype_bounds(st)?.len() == lits.len() as u64 =>
+            {
+                Ok(())
+            }
+            _ => no(),
         }
     }
 
@@ -4844,6 +4895,61 @@ impl Lx<'_> {
         })
     }
 
+    /// A shift or rotation call `f(a, n)`: by a count known here (a negative one of an operator
+    /// reverses it), or chosen at run time where it is a `NATURAL` (the functions) or an
+    /// operator's `INTEGER` whose range starts at 0 or above.
+    fn shift_call(&mut self, args: &[yavs_sem::hir::Arg], k: ShiftK, count: Count) -> R<Val> {
+        let [a, n] = args else {
+            return Err("a shift with an unexpected number of arguments".into());
+        };
+        let a = self.arg(a)?;
+        let a = self.part(a)?;
+        if a.len == 0 {
+            return Err("a shift or rotation of a null array".into());
+        }
+        let Actual::Expr(nx) = n.actual else {
+            return Err("a count that is not given".into());
+        };
+        if let Ok(n) = self.static_int(nx) {
+            // A `NATURAL` count below 0 fails the call in the normal mode; `-n` of the most
+            // negative integer overflows there.
+            if n < 0 && count != Count::Integer || n <= i64::from(i32::MIN) {
+                return Err("a shift by a negative count known during elaboration".into());
+            }
+            return Ok(Val::Part(self.static_shift(k, a, n)));
+        }
+        if count == Count::Static {
+            return Err(
+                "a shift by a count chosen at run time of this operation is not supported in \
+                 cycle mode yet"
+                    .into(),
+            );
+        }
+        let n = self.expr(nx)?;
+        let n = self.int(n)?;
+        if count == Count::Integer && n.lo < 0 {
+            return Err(
+                "a shift operator by a count chosen at run time that may be negative is not \
+                 supported in cycle mode yet"
+                    .into(),
+            );
+        }
+        self.natural(n);
+        if a.len > 64 {
+            return Ok(Val::Part(self.wide_shift(k, a, n)));
+        }
+        let ra = self.whole(a);
+        let t = self.tmp(a.len);
+        self.ops.push(Op::Shift {
+            k,
+            dst: t.r,
+            a: ra,
+            len: a.len,
+            n: n.r,
+        });
+        Ok(Val::Part(t))
+    }
+
     /// A shift or rotation of `p` (any width) by the integer `n`, at least 0: `p` beside itself,
     /// zeros or its sign, read `p.len` elements wide from a position chosen at run time.
     fn wide_shift(&mut self, k: ShiftK, p: Part, n: IntV) -> Part {
@@ -5383,6 +5489,29 @@ impl Lx<'_> {
                             _ => {}
                         }
                     }
+                    // The shift operators of these packages (their bodies: the functions, a
+                    // negative count the other way; `srl` of `signed` logical). Results
+                    // `n - 1 downto 0`, of `std_logic_1164` `1 to n`.
+                    let sk = match decl.name.key().as_str() {
+                        "\"sll\"" => Some(ShiftK::Sll),
+                        "\"srl\"" => Some(ShiftK::Srl),
+                        "\"rol\"" => Some(ShiftK::Rol),
+                        "\"ror\"" => Some(ShiftK::Ror),
+                        _ => None,
+                    };
+                    let m = sp.mangled.as_str();
+                    if let Some(k) = sk {
+                        let ranged: fn(Val) -> Val = if m.starts_with("ieee.std_logic_1164.") {
+                            one_to_n
+                        } else if m.starts_with("ieee.numeric_std.")
+                            || m.starts_with("ieee.numeric_bit.")
+                        {
+                            down_to_0
+                        } else {
+                            return not_yet();
+                        };
+                        return self.shift_call(args, k, Count::Integer).map(ranged);
+                    }
                     // The logical operators of `numeric_bit` (and `numeric_std`) on its vectors,
                     // which have no native key: the gates of their elements.
                     let numeric = ["ieee.numeric_bit.", "ieee.numeric_std."]
@@ -5704,43 +5833,8 @@ impl Lx<'_> {
                         });
                         Ok(down_to_0(Val::Part(t)))
                     }
-                    I::Shift(s) | I::ShiftFn(s) => {
-                        let [a, n] = args else {
-                            return Err("a shift with an unexpected number of arguments".into());
-                        };
-                        let a = self.arg(a)?;
-                        let a = self.part(a)?;
-                        let Actual::Expr(nx) = n.actual else {
-                            return Err("a count that is not given".into());
-                        };
-                        if let Ok(k) = self.static_int(nx) {
-                            return Ok(Val::Part(self.static_shift(shift(s), a, k)));
-                        }
-                        // A count chosen at run time: `NATURAL` (the functions).
-                        if !matches!(op, I::ShiftFn(_)) {
-                            return Err(
-                                "a shift by a count chosen at run time of an operator is not \
-                                 supported in cycle mode yet"
-                                    .into(),
-                            );
-                        }
-                        let n = self.expr(nx)?;
-                        let n = self.int(n)?;
-                        self.natural(n);
-                        if a.len > 64 {
-                            return Ok(Val::Part(self.wide_shift(shift(s), a, n)));
-                        }
-                        let ra = self.whole(a);
-                        let t = self.tmp(a.len);
-                        self.ops.push(Op::Shift {
-                            k: shift(s),
-                            dst: t.r,
-                            a: ra,
-                            len: a.len,
-                            n: n.r,
-                        });
-                        Ok(Val::Part(t))
-                    }
+                    I::Shift(s) => self.shift_call(args, shift(s), Count::Static),
+                    I::ShiftFn(s) => self.shift_call(args, shift(s), Count::Natural),
                     I::Neg | I::Abs => {
                         let a = {
                             let v = one(self)?;

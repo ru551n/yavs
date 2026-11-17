@@ -237,6 +237,38 @@ fn bounded_in(
 
 /// An expression whose folded value is an object's or a call's, so of its subtype: `bounded`
 /// gives it that subtype's index ranges.
+/// Whether every value of the type of subtype `st` lies in it: an array of no index
+/// constraint, an enumeration of all its literals. Elaboration's evaluation of a call checks no
+/// argument against its formal, so the folds take its value only when each fits (`call_fits`).
+pub(crate) fn takes_any(db: &Db, st: SubtypeId) -> bool {
+    match &db.types[db.base(st)].kind {
+        TypeKind::Array { .. } => matches!(
+            db.subtypes[st].constraint,
+            Constraint::None | Constraint::Array { dims: None, .. }
+        ),
+        TypeKind::Enum { lits } => db.static_bounds(st).is_some_and(|(l, _, r)| {
+            l.as_int() == Some(0) && r.as_int() == Some(lits.len() as i64 - 1)
+        }),
+        _ => false,
+    }
+}
+
+/// Scalar `v` lies in subtype `st` (its static range).
+fn scalar_fits(db: &Db, st: SubtypeId, v: &ConstValue) -> bool {
+    let (Some((l, dir, r)), Some(v)) = (db.static_bounds(st), v.as_int()) else {
+        return false;
+    };
+    let (Some(l), Some(r)) = (l.as_int(), r.as_int()) else {
+        return false;
+    };
+    let (lo, hi) = if dir == Direction::Downto {
+        (r, l)
+    } else {
+        (l, r)
+    };
+    (lo..=hi).contains(&v)
+}
+
 pub(crate) fn named(k: &ExprKind) -> bool {
     matches!(
         k,
@@ -775,6 +807,16 @@ impl Cx<'_> {
                 !msg
             })
             .collect();
+        // Those of the top-level unit are evaluated (A19): what they read counts, as in `stmt`.
+        if self.top {
+            let mut lsps = Vec::new();
+            for &s in body.iter().filter(|s| !kept.contains(s)) {
+                db.stmt_exprs(s, &mut |x, _| db.reads(x, &mut lsps));
+            }
+            let mut reads = std::mem::take(&mut self.reads);
+            self.lsps_into(&lsps, &mut reads);
+            self.reads = reads;
+        }
         if matches!(sens, Sensitivity::None) {
             return self.wait_form(&kept);
         }
@@ -1564,12 +1606,27 @@ impl Cx<'_> {
             return Some(v.clone());
         }
         // A globally static call of a pure function elaboration evaluated for this process
-        // without a report (a `while` loop over a string generic): its scalar value. The lowering
-        // folds it too, or evaluates the call itself with its checks.
+        // without a report (a `while` loop over a string generic): its scalar value, under the
+        // lowering's rule (`lower::call_fits`): elaboration checks no argument's or result's
+        // subtype, so each must fit, or take any value of its type (`takes_any`).
         if self.frames.is_empty()
             && let Some(rc) = e.region_calls.get(&(self.p.scope, x))
             && rc.reports.is_empty()
             && let Some(v @ (ConstValue::Int(_) | ConstValue::Enum(_))) = &rc.val
+            && let ExprKind::Call { callee, args, .. } = &db.exprs[x].kind
+            && let Some(sp) = db.decls[*callee].kind.subprogram()
+            && sp.ret.is_some_and(|r| scalar_fits(db, r, v))
+            && args.iter().all(|a| {
+                let (&Actual::Expr(ax), Some(p)) =
+                    (&a.actual, sp.params.get(usize::from(a.formal)))
+                else {
+                    return false;
+                };
+                takes_any(db, p.subtype)
+                    || self
+                        .fold(ax)
+                        .is_some_and(|c| scalar_fits(db, p.subtype, &c))
+            })
         {
             return Some(v.clone());
         }

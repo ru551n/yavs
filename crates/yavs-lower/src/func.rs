@@ -2363,7 +2363,11 @@ fn process(
     );
     let w = if has_wait {
         fx.stmt_start(StmtKind::Implicit, st.span);
-        fx.wait_on(&sens)
+        let edge = match &st.kind {
+            HStmt::ConcAssert { cond, .. } => fx.assert_edge(*cond),
+            _ => Ok(()),
+        };
+        edge.and_then(|()| fx.wait_on(&sens))
             .map(|()| fx.emit(Inst::Suspend { resume: 0 }))
     } else {
         Ok(())

@@ -25,6 +25,18 @@
 | `yavs lint` | all rule classes, `--facts`, reports, configuration, waivers (#895): `crates/yavs-lint`, `crates/yavs/src/lint.rs`, `docs/lint.rst`, `--yavs-lint` in `vunit-yavs`, problem matcher `$yavs` in VS Code; pinned in `crates/yavs/tests/lint.rs`. `file_list` in the configuration reads the files to check; every unknown key, rule id and rule group in the configuration or waiver file is E0134, all listed in one run, and the four YAML files yavs reads (these two, the coverage exclusion file and `cov --config`) are checked against declared schemas by one reader, `yavs_diag::yaml`, so a configuration written for a style tool needs its style settings removed first (#895). Rule ids of analysis (lint_006, lint_782) stay nameable and report nothing. Definite findings on the corpora and the realbench designs are confirmed real (#895); known noise of the advisory rules: see the issues linked there. lint_720 follows statements (#989); the rules beyond the definite class were compared with the source project's tests (#1002, `docs/decisions.md`), with `rtl:` and `testbench:` rule blocks and a heuristic for what a testbench is. |
 | M5, M10 | M5 in progress, partial (#143; what works and what does not is in `docs/vhpi.md`): the `vhpi_*` export surface (#266), `yavs run --vhpi` (#267), the hierarchy (#269), values and types (#270), puts (#271), callbacks (#272), foreign models (#274, #330, #357) and plusargs (#298) are done, `crates/yavs-vhpi`, coverage in `docs/vhpi.md`; cocotb 2.1.0's own simulator regression passes on yavs (`tools/cocotb/run.py`, 78 of 78 jobs, 43 of them run VHDL tests, at 1 and 4 threads, run in the `conformance` CI workflow, #122); M10 (the graphical debugger) is dropped: `yavs-gui` was built (slices G1 #388 and G2 #399, 2026-10-19) and removed again with `yavs run --gui` and its release files (maintainer, 2026-10-29; #871 closed 2026-10-31; `docs/plan.md` M10); the DAP server slices made for it (#396, #397, #398) were closed 2026-10-30 and DAP clients cover debugging. Corrected 2026-11-14: this row described the GUI as in progress) |
 
+### Edge waits through user `"and"`, `std_logic_1164` gates and concurrent assertions (2026-11-17)
+
+`Inst::WaitEdge` now also covers `wait until s2m.ready and m2s.valid and rising_edge(clk)` written with a user
+`"and"(std_ulogic, boolean)` whose body is `return (l = '1') and r;`, conditions with record fields and scalar
+`std_logic_1164` gates left of the edge (`(rvalid and rready) = '1' and rising_edge(aclk)`), and the equivalent processes
+of concurrent assertions `assert not (rising_edge(clk) and ...)` (`docs/decisions.md` "Edge waits through user and, gates
+and concurrent assertions"). Tests: `tests/corpus/delta/wait_edge_user_and`, `delta/assert_edge` (identical to sim1 and
+sim2, also the user operators and assertion forms that must keep waking), work-counter design `wait_edge_forms`. On a large
+board boot testbench 2.3 percent fewer process runs, instructions 0.993 under `--tier=auto` and 0.997 in the interpreter;
+two accelerator testbenches level to 0.994. Realbench (38 tests, interpreter and auto): instruction geometric mean 1.00 in
+both. Not verified: cycles at night (daytime cycles were noise), Windows and aarch64.
+
 ### Impure conversion functions that read signals in port maps (#1166, 2026-11-17)
 
 A conversion function in a port map that reads signals of the instantiating region (`b => f(x)`, `f` impure reading

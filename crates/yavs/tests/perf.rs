@@ -1312,6 +1312,16 @@ case!(
     ]
 );
 
+// Edge waits through a user "and" that is the boolean `and`, through `std_logic_1164` gates and
+// in a concurrent assertion `assert not (rising_edge(clk) and ...)` resume only on the edge
+// (7761 process runs without).
+case!(
+    wait_edge_forms,
+    "fields=40",
+    &[],
+    [("process_runs", Max(4560)), ("wakes", Max(4550)),]
+);
+
 /// Processes of instances with their own generics switch to copies specialised to their instance
 /// data (`docs/design/specialisation.md`): the same report, fewer ops, three copies for the six
 /// processes (the iterations of a generate and the instances with equal generics share one).

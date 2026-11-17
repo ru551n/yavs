@@ -231,6 +231,8 @@ const PASS: &[&str] = &[
     "held/held_reject",
     "held/held_transaction",
     "delta/wait_edge",
+    "delta/wait_edge_user_and",
+    "delta/assert_edge",
     "env/assert_clear_exit",
     "env/file_ops_2019",
     "env/assert_count_cycles",

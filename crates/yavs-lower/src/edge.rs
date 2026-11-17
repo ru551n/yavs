@@ -2,9 +2,10 @@
 //! LLVM tier and any later backend implement. The shapes are `Db::edge_shape` (the same ones
 //! the elaborator makes edge triggers of), and the level of a `wait until` (below).
 
-use yavs_ir::{EdgeKind, Inst, Reg, RegTy};
-use yavs_sem::ExprId;
-use yavs_sem::hir::{Actual, ExprKind, Lsp, ObjRoot};
+use yavs_ir::{EdgeKind, Inst, Reg, RegTy, ieee};
+use yavs_sem::decl::Designator;
+use yavs_sem::hir::{Actual, ExprKind, Lsp, ObjRoot, StmtKind};
+use yavs_sem::{DeclId, ExprId, SubtypeId};
 
 use crate::func::Fx;
 use crate::{R, ty};
@@ -78,8 +79,25 @@ impl Fx<'_, '_> {
         else {
             return None;
         };
-        if !db.decls[*callee].implicit || db.decls[*callee].name.key().as_str() != "\"and\"" {
+        if db.decls[*callee].name.key().as_str() != "\"and\"" {
             return None;
+        }
+        if !db.decls[*callee].implicit {
+            // A user `"and"` that is boolean `and` (`user_and`): its boolean operand may hold the
+            // edge; both operands are evaluated, so the other one must only read.
+            let b = self.user_and(*callee)?;
+            let mut found = None;
+            for a in args {
+                let Actual::Expr(x) = a.actual else {
+                    return None;
+                };
+                if a.formal == b {
+                    found = self.edge_conjunct(x);
+                } else if !self.only_reads(x) {
+                    return None;
+                }
+            }
+            return found;
         }
         for a in args {
             let Actual::Expr(x) = a.actual else {
@@ -95,9 +113,78 @@ impl Fx<'_, '_> {
         None
     }
 
-    /// Whether evaluating `e` has no effect and cannot fail: names, constants and predefined
-    /// relations and logic on them. A user function may report or keep state, `ieee` ones warn on
-    /// metavalues, an index or arithmetic may fail.
+    /// The boolean formal of the user function `callee` when its body is exactly
+    /// `return (l = '1') and r;` (operands either way round) on an unconstrained `std_ulogic`
+    /// `l` and a BOOLEAN `r`: pure, no effect, false whenever `r` is false.
+    fn user_and(&self, callee: DeclId) -> Option<u16> {
+        use yavs_sem::decl::{Body, SubprogramKind};
+        use yavs_sem::implicit::Family as F;
+        use yavs_sem::stat::ConstValue;
+        use yavs_sem::types::Constraint;
+        let db = self.db;
+        let sp = db.decls[callee].kind.subprogram()?;
+        let Body::Hir { scope, stmts } = &sp.body else {
+            return None;
+        };
+        let ([l, r], SubprogramKind::Function { pure: true }) = (&*sp.params, sp.kind) else {
+            return None;
+        };
+        let plain = |p: &yavs_sem::decl::Param| {
+            p.default.is_none() && matches!(db.subtypes[p.subtype].constraint, Constraint::None)
+        };
+        let boolean = |st: SubtypeId| Some(db.base(st)) == db.well_known.boolean;
+        let ret = sp.ret.is_some_and(|st| {
+            boolean(st) && matches!(db.subtypes[st].constraint, Constraint::None)
+        });
+        if !ret || sp.impure_reads || !plain(l) || !plain(r) || db.scopes[*scope].order.len() != 2 {
+            return None;
+        }
+        let boolean = |p: &yavs_sem::decl::Param| boolean(p.subtype);
+        let logic = |p: &yavs_sem::decl::Param| db.is_std_ulogic(db.base(p.subtype));
+        let (lp, bp, b) = match (logic(l) && boolean(r), boolean(l) && logic(r)) {
+            (true, _) => (l, r, 1),
+            (_, true) => (r, l, 0),
+            _ => return None,
+        };
+        // The body's own declaration of parameter `p`.
+        let is_param = |e: ExprId, p: &yavs_sem::decl::Param| match db.exprs[e].kind {
+            ExprKind::Obj(d) => {
+                db.decls[d].scope == *scope
+                    && matches!(db.decls[d].name, Designator::Ident(i) if i.key == p.name.key)
+            }
+            _ => false,
+        };
+        let implicit2 = |e: ExprId, fam: F| -> Option<[ExprId; 2]> {
+            let ExprKind::Call { callee, args, .. } = &db.exprs[e].kind else {
+                return None;
+            };
+            let Body::Implicit(op) = &db.decls[*callee].kind.subprogram()?.body else {
+                return None;
+            };
+            let [x, y] = &**args else { return None };
+            match (op.family == fam, &x.actual, &y.actual) {
+                (true, Actual::Expr(x), Actual::Expr(y)) => Some([*x, *y]),
+                _ => None,
+            }
+        };
+        let [stmt] = &**stmts else { return None };
+        let StmtKind::Return(Some(e)) = &db.stmts[*stmt].kind else {
+            return None;
+        };
+        let [x, y] = implicit2(*e, F::And)?;
+        let is_one = |e: ExprId| {
+            implicit2(e, F::Eq).is_some_and(|[u, v]| {
+                let one = |c: ExprId| matches!(db.value(c), Some(ConstValue::Enum(3)));
+                is_param(u, lp) && one(v) || one(u) && is_param(v, lp)
+            })
+        };
+        (is_param(x, bp) && is_one(y) || is_one(x) && is_param(y, bp)).then_some(b)
+    }
+
+    /// Whether evaluating `e` has no effect and cannot fail: names, record fields, constants, predefined
+    /// relations and logic and the scalar `std_logic_1164` gates and `not` (table lookups) on
+    /// them. A user function may report or keep state, other `ieee` ones warn on metavalues, an
+    /// index or arithmetic may fail.
     fn only_reads(&self, e: ExprId) -> bool {
         use yavs_sem::decl::Body;
         use yavs_sem::implicit::Family as F;
@@ -106,20 +193,47 @@ impl Fx<'_, '_> {
         db.walk_expr(e, &mut |x| {
             ok &= db.exprs[x].value.is_some()
                 || match &db.exprs[x].kind {
-                    ExprKind::Obj(_) | ExprKind::Const(_) => true,
+                    // A field of a record value cannot fail (a dereference is its own node).
+                    ExprKind::Obj(_) | ExprKind::Const(_) | ExprKind::Field { .. } => true,
                     ExprKind::Call { callee, .. } => {
                         db.decls[*callee].kind.subprogram().is_some_and(|sp| {
                             matches!(&sp.body, Body::Implicit(op) if matches!(
                                 op.family,
                                 F::Eq | F::Neq | F::Lt | F::Le | F::Gt | F::Ge | F::And | F::Or
                                     | F::Nand | F::Nor | F::Xor | F::Xnor | F::Not
-                            ))
+                            )) || matches!(
+                                ieee::native_symbol(sp.mangled.as_str())
+                                    .as_deref()
+                                    .and_then(ieee::symbol_key)
+                                    .and_then(ieee::parse),
+                                Some(ieee::Op::Gate(_) | ieee::Op::Not)
+                            )
                         })
                     }
                     _ => false,
                 };
         });
         ok
+    }
+
+    /// `assert not (<edge conjuncts>)` (LRM 11.5): nothing to report in any cycle without that
+    /// edge, so the wait of its equivalent process may resume it only on the edge.
+    pub fn assert_edge(&mut self, cond: ExprId) -> R<()> {
+        let db = self.db;
+        if let ExprKind::Call {
+            callee,
+            args,
+            method_of: None,
+            ..
+        } = &db.exprs[cond].kind
+            && db.decls[*callee].implicit
+            && db.decls[*callee].name.key().as_str() == "\"not\""
+            && let [a] = &**args
+            && let Actual::Expr(x) = a.actual
+        {
+            self.wait_edge(x)?;
+        }
+        Ok(())
     }
 
     /// The level `x = '1'` / `'0'` of a `wait until` that waits on `x` alone and is resumed by

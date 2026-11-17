@@ -1,0 +1,92 @@
+exit	0
+diag	note	5000000	0	:wait_edge_user_and:n1	n1 1 at 5000000 fs clk '1'
+diag	note	5000000	0	:wait_edge_user_and:n3	bit and evaluated
+diag	note	5000000	0	:wait_edge_user_and:n4	reporting and evaluated
+diag	note	10000000	0	:wait_edge_user_and:n3	bit and evaluated
+diag	note	10000000	0	:wait_edge_user_and:n4	reporting and evaluated
+diag	note	12000000	0	:wait_edge_user_and:n1	n1 2 at 12000000 fs clk '0'
+diag	note	12000000	0	:wait_edge_user_and:n2	n2 1 at 12000000 fs ready '1'
+diag	note	13000000	0	:wait_edge_user_and:n3	bit and evaluated
+diag	note	14000000	0	:wait_edge_user_and:n4	reporting and evaluated
+diag	note	15000000	0	:wait_edge_user_and:p1	p1 1 at 15000000 fs
+diag	note	15000000	0	:wait_edge_user_and:p4	p4 1 at 15000000 fs
+diag	note	15000000	0	:wait_edge_user_and:n1	n1 3 at 15000000 fs clk '1'
+diag	note	15000000	0	:wait_edge_user_and:n3	bit and evaluated
+diag	note	15000000	0	:wait_edge_user_and:n3	n3 1 at 15000000 fs
+diag	note	15000000	0	:wait_edge_user_and:n4	reporting and evaluated
+diag	note	15000000	0	:wait_edge_user_and:n4	n4 1 at 15000000 fs
+diag	note	20000000	0	:wait_edge_user_and:p2	p2 1 at 20000000 fs
+diag	note	20000000	0	:wait_edge_user_and:n1	n1 4 at 20000000 fs clk '0'
+diag	note	20000000	0	:wait_edge_user_and:n2	n2 2 at 20000000 fs ready '1'
+diag	note	20000000	0	:wait_edge_user_and:n3	bit and evaluated
+diag	note	20000000	0	:wait_edge_user_and:n4	reporting and evaluated
+diag	note	21000000	0	:wait_edge_user_and:n4	reporting and evaluated
+diag	note	25000000	0	:wait_edge_user_and:p1	p1 2 at 25000000 fs
+diag	note	25000000	0	:wait_edge_user_and:p4	p4 2 at 25000000 fs
+diag	note	25000000	0	:wait_edge_user_and:p5	p5 1 at 25000000 fs
+diag	note	25000000	0	:wait_edge_user_and:n4	reporting and evaluated
+diag	note	25000000	0	:wait_edge_user_and:n4	n4 2 at 25000000 fs
+diag	note	25000000	0	:wait_edge_user_and:p6	p6 1 at 25000000 fs
+diag	note	25000000	0	:wait_edge_user_and:n1	n1 5 at 25000000 fs clk '1'
+diag	note	25000000	0	:wait_edge_user_and:n3	bit and evaluated
+diag	note	25000000	0	:wait_edge_user_and:n3	n3 2 at 25000000 fs
+diag	note	26000000	0	:wait_edge_user_and:n3	bit and evaluated
+diag	note	30000000	0	:wait_edge_user_and:n3	bit and evaluated
+diag	note	30000000	0	:wait_edge_user_and:n4	reporting and evaluated
+diag	note	33000000	0	:wait_edge_user_and:n1	n1 6 at 33000000 fs clk '0'
+diag	note	33000000	0	:wait_edge_user_and:n2	n2 3 at 33000000 fs ready '1'
+diag	note	35000000	0	:wait_edge_user_and:p1	p1 3 at 35000000 fs
+diag	note	35000000	0	:wait_edge_user_and:p3	p3 1 at 35000000 fs weak '1'
+diag	note	35000000	0	:wait_edge_user_and:p4	p4 3 at 35000000 fs
+diag	note	35000000	0	:wait_edge_user_and:p5	p5 2 at 35000000 fs
+diag	note	35000000	0	:wait_edge_user_and:n1	n1 7 at 35000000 fs clk '1'
+diag	note	35000000	0	:wait_edge_user_and:n3	bit and evaluated
+diag	note	35000000	0	:wait_edge_user_and:n4	reporting and evaluated
+diag	note	35000000	0	:wait_edge_user_and:n4	n4 3 at 35000000 fs
+diag	note	40000000	0	:wait_edge_user_and:p2	p2 2 at 40000000 fs
+diag	note	40000000	0	:wait_edge_user_and:n1	n1 8 at 40000000 fs clk '0'
+diag	note	40000000	0	:wait_edge_user_and:n2	n2 4 at 40000000 fs ready '1'
+diag	note	40000000	0	:wait_edge_user_and:n3	bit and evaluated
+diag	note	40000000	0	:wait_edge_user_and:n4	reporting and evaluated
+diag	note	44000000	0	:wait_edge_user_and:n3	bit and evaluated
+diag	note	45000000	0	:wait_edge_user_and:p1	p1 4 at 45000000 fs
+diag	note	45000000	0	:wait_edge_user_and:p4	p4 4 at 45000000 fs
+diag	note	45000000	0	:wait_edge_user_and:p6	p6 2 at 45000000 fs
+diag	note	45000000	0	:wait_edge_user_and:n1	n1 9 at 45000000 fs clk '1'
+diag	note	45000000	0	:wait_edge_user_and:n3	bit and evaluated
+diag	note	45000000	0	:wait_edge_user_and:n3	n3 3 at 45000000 fs
+diag	note	45000000	0	:wait_edge_user_and:n4	reporting and evaluated
+diag	note	45000000	0	:wait_edge_user_and:n4	n4 4 at 45000000 fs
+diag	note	50000000	0	:wait_edge_user_and:p2	p2 3 at 50000000 fs
+diag	note	50000000	0	:wait_edge_user_and:n1	n1 10 at 50000000 fs clk '0'
+diag	note	50000000	0	:wait_edge_user_and:n2	n2 5 at 50000000 fs ready '1'
+diag	note	50000000	0	:wait_edge_user_and:n3	bit and evaluated
+diag	note	55000000	0	:wait_edge_user_and:p6	p6 3 at 55000000 fs
+diag	note	55000000	0	:wait_edge_user_and:n1	n1 11 at 55000000 fs clk '1'
+diag	note	55000000	0	:wait_edge_user_and:n3	bit and evaluated
+diag	note	55000000	0	:wait_edge_user_and:n3	n3 4 at 55000000 fs
+diag	note	58000000	0	:wait_edge_user_and:n1	n1 12 at 58000000 fs clk '1'
+diag	note	58000000	0	:wait_edge_user_and:n2	n2 6 at 58000000 fs ready '1'
+diag	note	60000000	0	:wait_edge_user_and:p2	p2 4 at 60000000 fs
+diag	note	60000000	0	:wait_edge_user_and:n2	n2 7 at 60000000 fs ready '1'
+diag	note	65000000	0	:wait_edge_user_and:p1	p1 5 at 65000000 fs
+diag	note	65000000	0	:wait_edge_user_and:p3	p3 2 at 65000000 fs weak '1'
+diag	note	65000000	0	:wait_edge_user_and:p4	p4 5 at 65000000 fs
+diag	note	65000000	0	:wait_edge_user_and:p5	p5 3 at 65000000 fs
+diag	note	70000000	0	:wait_edge_user_and:p2	p2 5 at 70000000 fs
+diag	note	70000000	0	:wait_edge_user_and:n2	n2 8 at 70000000 fs ready '1'
+diag	note	75000000	0	:wait_edge_user_and:p1	p1 6 at 75000000 fs
+diag	note	75000000	0	:wait_edge_user_and:p4	p4 6 at 75000000 fs
+diag	note	75000000	0	:wait_edge_user_and:p6	p6 4 at 75000000 fs
+diag	note	80000000	0	:wait_edge_user_and:p2	p2 6 at 80000000 fs
+diag	note	80000000	0	:wait_edge_user_and:n2	n2 9 at 80000000 fs ready '1'
+diag	note	85000000	0	:wait_edge_user_and:p1	p1 7 at 85000000 fs
+diag	note	85000000	0	:wait_edge_user_and:p4	p4 7 at 85000000 fs
+diag	note	85000000	0	:wait_edge_user_and:p6	p6 5 at 85000000 fs
+diag	note	90000000	0	:wait_edge_user_and:p2	p2 7 at 90000000 fs
+diag	note	90000000	0	:wait_edge_user_and:n2	n2 10 at 90000000 fs ready '1'
+diag	note	95000000	0	:wait_edge_user_and:p1	p1 8 at 95000000 fs
+diag	note	95000000	0	:wait_edge_user_and:p4	p4 8 at 95000000 fs
+diag	note	95000000	0	:wait_edge_user_and:p6	p6 6 at 95000000 fs
+diag	note	100000000	0	:wait_edge_user_and:p2	p2 8 at 100000000 fs
+diag	note	100000000	0	:wait_edge_user_and:n2	n2 11 at 100000000 fs ready '1'

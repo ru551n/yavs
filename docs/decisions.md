@@ -17284,3 +17284,38 @@ the parked retune package.
   run 2, steady, sum 1.0006, 1.0008, 0.9984, 0.9997): the pool 0.9998, 0.9998, 0.9985, 0.9992, the copy 1.0005, 1.0001,
   0.9991, 0.9999. Main materialises frames only at steps, failing instructions and limits, so neither shows there; they
   are for native frames that are left often, as a procedure that waits on a native frame would be.
+
+## Edge waits through user `"and"`, `std_logic_1164` gates and concurrent assertions (yavs-lower, 2026-11-17)
+
+- **What:** three more shapes lower to `Inst::WaitEdge` (`crates/yavs-lower/src/edge.rs`), with the rules of "Waits on a clock
+  edge" above (not postponed, not with coverage counters, edge triggers off with a debugger or VHPI):
+  - the operands left of the edge conjunct may use record fields and the scalar `std_logic_1164` gates and `not`
+    (`Fx::only_reads`): a field selection and the gates' table lookups have no report and cannot fail, as in
+    `wait until (rvalid and rready) = '1' and rising_edge(aclk)`;
+  - a user-defined `"and"` joins the conjunct chain when its body is exactly `return (l = '1') and r;` (either operand order of the
+    `and` and of the `=`) on an unconstrained `std_ulogic` `l` and a BOOLEAN `r`, a pure function with a plain BOOLEAN result and no
+    declaration besides its parameters (`Fx::user_and`); its other operand must only read. This is
+    `wait until s2m.ready and m2s.valid and rising_edge(clk)` with the `"and"(std_ulogic, boolean)` of a types package;
+  - the equivalent process of a non-postponed concurrent assertion `assert not (<edge conjuncts>)` (the predefined `not`) waits with
+    `WaitEdge` before its `WaitOn`s (`Fx::assert_edge`).
+- **Why it is the same run:** in a cycle without the edge the condition is false (the assertion's is true, so nothing is reported),
+  and evaluating it has no effect: the operands that are evaluated only read, the user body is the predefined `and` of a relation and its
+  BOOLEAN parameter (both operands of a user call are evaluated, so the other one must only read too). The equivalent process of the
+  assertion (LRM 11.5) runs once at initialisation as before. Any other body stays a full wait, also sound ones such as
+  `return r and l = '0'`: a fixed shape is easy to check against the LRM, a general proof is not.
+- **Tests:** `delta/wait_edge_user_and` (both operand orders, falling edge, metavalue and weak operands, record fields, gates left of
+  the edge, and four user operators that must not lower: an `or` body, `not l`, a `bit` operand with a report, a report before the
+  `and`) and `delta/assert_edge` (assertions that fire, the edge first or later, falling edge, metavalue operands, and four forms that
+  fire without an edge); both identical to sim1 and sim2. Mutations of `user_and` (no shape check, no parameter check) and
+  `assert_edge` (no `not`) each fail one of them; dropping the `std_ulogic` type check is an equivalent mutant (the shape is then
+  still sound). Work-counter design `wait_edge_forms` (7761 to 4425 process runs).
+- **Measured** (bench builds, `--threads=1`, instructions:u, private copies of the owner's libraries; `--tier=auto` as the median of
+  four or five steady passes, its run to run spread is about 2 percent): a CPU plus accelerator board boot testbench 82.3 M to
+  80.4 M process runs (2.3 percent), auto instructions 0.993, interpreter 0.997; an accelerator halt testbench 0.7 percent fewer
+  runs, auto 0.994, interpreter 0.997; an accelerator program testbench 0.25 percent fewer runs, level in both. Realbench
+  `--compare` (38 tests, one run, interpreter and auto): instruction geometric mean 1.00 in both, the interpreter's per test 1.00
+  everywhere; the auto cells above 1.05 in that run (`uvvm_sb_slv`, `neorv32_dual_full`) were 0.94 and 1.03 over three runs. Cycles
+  were measured in the daytime next to builds and are noise. The earlier estimate of up to 4.6 percent counted every null re-run
+  of a wait without an edge (22.6 M on the boot testbench); these shapes remove 1.9 M of them. The largest rest is a verification
+  component's protocol checker that waits on its clock and two message signals (`wait on aclk, net, runner`) and tests
+  `rising_edge(aclk)` inside: a wait on a list, which no edge rule covers.

@@ -16,6 +16,17 @@ GEN = hashlib.sha1(Path(__file__).read_bytes()).hexdigest()[:10]  # the generato
 
 WIDTHS = [1, 1, 2, 3, 4, 5, 7, 8, 8, 12, 16, 31, 32, 33, 63, 64, 64, 65, 65, 100, 127, 128, 128, 129]
 BIG = 1 << 30
+# Constructs a seed may use, each switched on per seed (--feat sets them); the row and the `-- fz:` comments
+# of the design name them. rtslice: run-time slices; md: arrays of two dimensions; bigmem: memories of more than
+# 64 entries; ucon: records and arrays constrained by a subtype; caseq: `case?`, `select?`, `?=` with '-';
+# impure: impure functions reading signals; sigparam: signal parameters and concurrent procedure calls;
+# ifgen: if-generate; cgen: composite generics; gwidth: one entity at several widths; assert: asserts and
+# reports; zpass: a 'Z' of the testbench passed on, and a metavalue read only when valid; inout: a tri-state
+# pin with a pull; dclk: clocks made by the design.
+FEATS = ["rtslice", "md", "bigmem", "ucon", "alias", "while", "caseq", "impure", "sigparam", "ifgen", "cgen",
+         "gwidth", "assert", "zpass", "inout", "dclk"]
+NOT93 = {"ucon", "caseq"}  # VHDL-2008 only
+MSG = "fzmsg"  # the text of the region's asserts and reports, filtered from both outputs (cycle mode drops them)
 
 
 # ---------------------------------------------------------------- types
@@ -32,7 +43,7 @@ class T:
 
     def mark(s):
         if s.k == "sl":
-            return "std_ulogic"
+            return "std_logic" if getattr(s, "res", False) else "std_ulogic"
         if s.k in VEC:
             base = {"slv": "std_ulogic_vector", "uns": "unsigned", "sgn": "signed"}[s.k]
             return f"{base}({s.lo} to {s.hi})" if s.asc else f"{base}({s.hi} downto {s.lo})"
@@ -40,8 +51,11 @@ class T:
             return f"integer range {s.lo} to {s.hi}"
         return s.name
 
-    def n(s):  # elements of an array, values of an enum
-        return s.hi - s.lo + 1 if s.k in ("arr",) + VEC else len(s.lits)
+    def n(s):  # elements of an array (rows of arr2), values of an enum
+        return s.hi - s.lo + 1 if s.k in ("arr", "arr2") + VEC else len(s.lits)
+
+    def dim2(s):  # the second index range of arr2, as a one-dimensional array type
+        return T("arr", name=None, elem=s.elem, lo=s.lo2, hi=s.hi2, asc=s.asc2)
 
     def same(s, o):
         if s.k != o.k:
@@ -54,16 +68,17 @@ class T:
 
 
 VEC = ("slv", "uns", "sgn")
+COMP = ("rec", "arr", "arr2")
 
 
 class Ex:
     """An expression: `f` with `{}` holes filled by `a` (each an Ex). `t` its type, `r` an integer
     range, `sig` the signal a name reads."""
 
-    __slots__ = ("f", "a", "t", "r", "sig")
+    __slots__ = ("f", "a", "t", "r", "sig", "xs")
 
-    def __init__(s, f, t, a=(), r=None, sig=None):
-        s.f, s.t, s.a, s.r, s.sig = f, t, list(a), r, sig
+    def __init__(s, f, t, a=(), r=None, sig=None, xs=()):
+        s.f, s.t, s.a, s.r, s.sig, s.xs = f, t, list(a), r, sig, list(xs)  # xs: signals an impure call reads
 
     def text(s):
         return s.f.format(*[x.text() for x in s.a]) if s.a else s.f
@@ -100,6 +115,8 @@ def zero(t):
         return t.lits[0]
     if t.k == "rec":
         return f"{t.name}'(" + ", ".join(f"{f} => {zero(ft)}" for f, ft in t.fields) + ")"
+    if t.k == "arr2":
+        return f"{t.name}'(others => (others => {zero(t.elem)}))"
     return f"{t.name}'(others => {zero(t.elem)})"
 
 
@@ -108,10 +125,11 @@ def bits(rng, w):
 
 
 class Obj:
-    __slots__ = ("name", "t", "cls", "v", "init")  # cls: sig, var, const, gen, loop
+    __slots__ = ("name", "t", "cls", "v", "init", "base", "alias")  # cls: sig, var, const, gen, loop
 
-    def __init__(s, name, t, cls):
+    def __init__(s, name, t, cls, base=None, alias=None):
         s.name, s.t, s.cls, s.v, s.init = name, t, cls, None, None
+        s.base, s.alias = base or name, alias  # an alias: the signal it names, and the text it aliases
 
 
 class Proc:
@@ -128,13 +146,22 @@ class Ent:
     def __init__(s, name):
         s.name = name
         s.generics, s.ports, s.sigs, s.consts, s.procs, s.insts = [], [], [], [], [], []
+        s.aliases, s.impures, s.dclks, s.special, s.raw = [], [], [], {}, None
 
 
 # ---------------------------------------------------------------- the generator
 class Gen:
-    def __init__(s, seed, scale=1.0):
+    def __init__(s, seed, scale=1.0, feat=None, std=None):
         s.rng = random.Random(seed)
         s.seed, s.scale = seed, scale
+        s.feat = {f for f in FEATS if s.rng.random() < 0.3} if feat is None else set(feat)
+        r = s.rng.random()
+        s.std = std or ("1993" if r < 0.1 else "2019" if r < 0.2 else "2008")
+        s.v93 = s.std == "1993"
+        if s.v93:
+            s.feat -= NOT93
+        s.used, s.extra, s.sprocs, s.gw, s.in_actual = set(), [], [], None, False
+        s.ent = None
         s.n = 0
         s.enums, s.recs, s.arrs, s.pconsts, s.funcs, s.procs = [], [], [], [], [], []
         s.ents = []
@@ -184,7 +211,7 @@ class Gen:
             fs = [(f"f{j}", s.scalar_type()) for j in range(s.rng.randint(1, 4))]
             if s.recs and s.chance(0.3):
                 fs.append((f"f{len(fs)}", s.rng.choice(s.recs)))
-            s.recs.append(T("rec", name=f"r{i}_t", fields=fs))
+            s.recs.append(T("rec", name=f"r{i}_t", fields=fs, uc="ucon" in s.feat and s.chance(0.6) and any(ft.k in VEC for _, ft in fs)))
         for i in range(s.rng.randint(0, 4)):
             r = s.rng.random()
             el = s.vtype(w=s.width(70)) if r < 0.55 else s.rng.choice(s.recs) if r < 0.7 and s.recs else s.scalar_type()
@@ -192,9 +219,24 @@ class Gen:
                 el = T("sl")
             n = s.rng.choice([1, 2, 4, 4, 8, 16, 5])
             lo = s.rng.choice([0, 0, 0, 1, 4])
-            s.arrs.append(T("arr", name=f"a{i}_t", elem=el, lo=lo, hi=lo + n - 1, asc=s.chance(0.8)))
-        if s.chance(0.3):  # a bigger memory
-            s.arrs.append(T("arr", name=f"a{len(s.arrs)}_t", elem=s.vtype(w=s.width(70)), lo=0, hi=s.rng.choice([31, 63]), asc=True))
+            s.arrs.append(T("arr", name=f"a{i}_t", elem=el, lo=lo, hi=lo + n - 1, asc=s.chance(0.8),
+                            uc="ucon" in s.feat and el.k in VEC and s.chance(0.6)))
+        big = "bigmem" in s.feat
+        for _ in range(2 if big and s.chance(0.5) else 1):
+            if s.chance(0.8 if big else 0.3):  # a bigger memory
+                hi = s.rng.choice([31, 63] + ([64, 65, 100, 127, 128, 255, 511] if big else []))
+                lo = s.rng.choice([0, 0, 1, 3]) if big else 0
+                s.arrs.append(T("arr", name=f"a{len(s.arrs)}_t", elem=s.vtype(w=s.width(70)), lo=lo, hi=lo + hi, asc=not big or s.chance(0.7),
+                                uc="ucon" in s.feat and s.chance(0.4)))
+        if "md" in s.feat:  # arrays of two dimensions
+            for _ in range(s.rng.randint(1, 2)):
+                r = s.rng.random()
+                el = s.vtype(w=s.width(70)) if r < 0.6 else T("sl") if r < 0.8 else s.scalar_type()
+                if el.k == "arr":
+                    el = T("sl")
+                lo, lo2 = s.rng.choice([0, 0, 1, 2]), s.rng.choice([0, 0, 1, 5])
+                s.arrs.append(T("arr2", name=f"md{len(s.arrs)}_t", elem=el, lo=lo, hi=lo + s.rng.randint(0, 4), asc=s.chance(0.7),
+                                lo2=lo2, hi2=lo2 + s.rng.randint(0, 3), asc2=s.chance(0.6)))
         if s.arrs and s.chance(0.3):  # an array of arrays
             el = s.rng.choice(s.arrs)
             s.arrs.append(T("arr", name=f"a{len(s.arrs)}_t", elem=el, lo=0, hi=s.rng.choice([1, 3]), asc=True))
@@ -231,6 +273,10 @@ class Gen:
             return f'"{bits(rng, t.w)}"'
         if t.k == "rec":
             return "(" + ", ".join(f"{f} => {s.const_text(ft)}" for f, ft in t.fields) + ")"
+        if t.k == "arr2":
+            if rng.random() < 0.3 or t.n() == 1 or t.dim2().n() == 1:
+                return f"(others => (others => {s.const_text(t.elem)}))"
+            return "(" + ", ".join("(" + ", ".join(s.const_text(t.elem) for _ in range(t.dim2().n())) + ")" for _ in range(t.n())) + ")"
         if t.k == "arr":
             if rng.random() < 0.2:
                 return f"(others => {s.const_text(t.elem)})"
@@ -240,13 +286,19 @@ class Gen:
     # ------------------------------------------------------------ names
     def descend(s, o, write=False):
         """A random path into object o: a list of (Ex, type) from the whole object down."""
-        e = Ex(o.name, o.t, sig=o.name if o.cls == "sig" else None,
+        e = Ex(o.name, o.t, sig=o.base if o.cls == "sig" else None,
                r=(o.t.lo, o.t.hi) if o.t.k == "int" else None)
         if o.cls == "gen" and o.t.k == "int":
             e.r = o.t.r
+        if o.alias:
+            s.used.add("alias")
+        if o.cls == "gen" and o.t.k not in ("int", "bool"):
+            s.used.add("cgen")
         out = [(e, o.t)]
         t = o.t
         for _ in range(3):
+            if getattr(t, "uc", False):
+                s.used.add("ucon")
             if t.k == "rec" and s.chance(0.8):
                 f, ft = s.rng.choice(t.fields)
                 e = Ex("{}." + f, ft, [e])
@@ -254,6 +306,10 @@ class Gen:
             elif t.k == "arr" and s.chance(0.8):
                 ix = s.index(t, write)
                 e = Ex("{}({})", t.elem, [e, ix])
+                t = t.elem
+            elif t.k == "arr2" and s.chance(0.8):
+                s.used.add("md")
+                e = Ex("{}({}, {})", t.elem, [e, s.index(t, write), s.index(t.dim2(), write)])
                 t = t.elem
             else:
                 break
@@ -265,6 +321,14 @@ class Gen:
     def index(s, t, write=False):
         """An index expression into t's range (static or chosen at run time)."""
         n = t.n()
+        if n > 64:
+            s.used.add("bigmem")
+        if n > 1 and s.chance(0.15) and s.depth > 0:
+            s.depth -= 1
+            try:
+                return s.int_in(t.lo, t.hi)
+            finally:
+                s.depth += 1
         if n > 1 and s.chance(0.5) and s.depth > 0:
             k = max(1, (n).bit_length() - 1)
             s.depth -= 1
@@ -312,8 +376,7 @@ class Gen:
                 return s.lit(t)
             e, u = rng.choice(c)
             if u.w > w:
-                a = rng.randint(u.lo, u.hi - w + 1)
-                e = Ex(f"{{}}({a} to {a + w - 1})" if u.asc else f"{{}}({a + w - 1} downto {a})", T(u.k, w=w), [e])
+                e = s.slice(e, u, w)
             return s.conv(e, u.k, k, w)
         if op == "lit":
             return s.lit(t)
@@ -345,7 +408,7 @@ class Gen:
             r = rng.random()
             if r < 0.4:
                 return Ex("({} %s {})" % rng.choice("+-"), t, [s.vec(k, w), s.vec(k, rng.randint(1, w))])
-            if r < 0.6:
+            if r < 0.6 and not s.v93:  # numeric_std of 2008
                 return Ex("({} %s {})" % rng.choice("+-"), t, [s.vec(k, w), s.sl()])
             if r < 0.8:
                 return Ex("({} %s %d)" % (rng.choice("+-"), rng.randint(0, min(300, (1 << (w - 1)) - 1))), t, [s.vec(k, w)])
@@ -383,6 +446,20 @@ class Gen:
             return s.ctab(t)
         return s.lit(t)
 
+    def slice(s, e, u, w):
+        """A slice of w elements of e (of vector type u): static, or from an index known at run time."""
+        if "rtslice" in s.feat and s.depth >= 0 and s.chance(0.5):
+            s.used.add("rtslice")
+            d = s.depth
+            s.depth = min(d, 1)
+            try:
+                k = s.int_in(u.lo, u.hi - w + 1)
+            finally:
+                s.depth = d
+            return Ex(f"{{}}({{}} to {{}} + {w - 1})" if u.asc else f"{{}}({{}} + {w - 1} downto {{}})", T(u.k, w=w), [e, k, k])
+        a = s.rng.randint(u.lo, u.hi - w + 1)
+        return Ex(f"{{}}({a} to {a + w - 1})" if u.asc else f"{{}}({a + w - 1} downto {a})", T(u.k, w=w), [e])
+
     def conv(s, e, k1, k2, w):
         if k1 == k2:
             return e
@@ -394,7 +471,7 @@ class Gen:
         t = T("sl")
         ops = ["name"] * 4 + ["bit"] * 3 + ["lit"]
         if d > 0:
-            ops += ["gate", "gate", "not", "b2l", "b2l", "red", "match"]
+            ops += ["gate", "gate", "not", "b2l", "b2l"] + ([] if s.v93 else ["red", "match"])
         op = rng.choice(ops)
         s.depth -= 1
         try:
@@ -421,6 +498,10 @@ class Gen:
                 w = s.width()
                 return Ex(rng.choice(["(and {})", "(or {})", "(xor {})"]), t, [s.vec("slv", w)])
             w = s.width()
+            if "caseq" in s.feat and s.chance(0.5):  # a constant with '-' elements: a mask
+                s.used.add("caseq")
+                pat = "".join(rng.choice("01--") for _ in range(w))
+                return Ex(rng.choice(["({} ?= \"%s\")", "({} ?/= \"%s\")"]) % pat, t, [s.vec("slv", w)])
             k = rng.choice(["uns", "sgn"])
             return Ex(rng.choice(["({} ?= {})", "({} ?/= {})"]), t, [s.vec(k, w), s.vec(k, w)])
         finally:
@@ -490,7 +571,7 @@ class Gen:
                 e = rng.choice(s.enums)
                 return Ex(f"{e.name}'pos({{}})", T("int"), [s.expr(e)], r=(0, e.n() - 1))
             a, b = s.int_raw(), s.int_raw()
-            op = rng.choice(["+", "-", "*", "mod", "rem", "/", "min", "max", "abs"])
+            op = rng.choice(["+", "-", "*", "mod", "rem", "/", "abs"] + ([] if s.v93 else ["min", "max"]))
             if op in ("mod", "rem", "/"):
                 k = rng.randint(1, 37)
                 lo, hi = a.r
@@ -561,6 +642,8 @@ class Gen:
                     if ft.k == "rec" and x.f.startswith(ft.name + "'(") and s.chance(0.9):
                         x.f = x.f[len(ft.name) + 1:]
                 return Ex(f"{t.name}'(" + ", ".join(f"{f} => {{}}" for f, _ in t.fields) + ")", t, fs)
+            if t.k == "arr2":
+                return Ex(f"{t.name}'(others => (others => {{}}))", t, [s.expr(t.elem)])
             if s.chance(0.5) or t.n() > 8 or t.n() == 1:
                 return Ex(f"{t.name}'(others => {{}})", t, [s.expr(t.elem)])
             return Ex(f"{t.name}'(" + ", ".join("{}" for _ in range(t.n())) + ")", t, [s.expr(t.elem) for _ in range(t.n())])
@@ -599,8 +682,17 @@ class Gen:
         return s.conv(e, u.k, t.k, t.w)
 
     def call(s, t):
-        """A call of a function of the package returning t."""
+        """A call of a function of the package returning t, or of an impure one of the architecture."""
         rng = s.rng
+        # ponytail: not in port actuals, which elaboration still rejects (E2106); drop the guard once fixed.
+        if "impure" in s.feat and not s.in_func and not s.in_actual and s.chance(0.5):
+            mine = {x.base for x in s.read if x.cls == "sig"}
+            c = [f for f in s.ent.impures if f["ret"].k == t.k and f["ret"].w == t.w and set(f["sigs"]) <= mine]
+            f = rng.choice(c) if c and s.chance(0.7) else s.make_impure(t)
+            if f:
+                s.used.add("impure")
+                args = "(" + ", ".join("{}" for _ in f["params"]) + ")" if f["params"] else ""
+                return Ex(f["name"] + args, t, [s.expr(p.t) for p in f["params"]], xs=f["sigs"])
         c = [f for f in s.funcs if f["ret"].k == t.k and f["ret"].w == t.w]
         if not c or (len(s.funcs) < 8 and s.chance(0.4)):
             c = [s.make_func(t)]
@@ -616,13 +708,111 @@ class Gen:
         f = {"name": name, "params": params, "ret": rt, "locs": locs}
         saved = (s.read, s.write, s.depth, s.loopv, s.in_func)
         s.read, s.write, s.depth, s.loopv, s.in_func = params + locs + s.pconsts, locs, 2, [], True
+        extra, s.extra = s.extra, []
         try:
             f["body"] = s.stmts(rng.randint(1, 4), 2, var_only=True)
             f["ret_e"] = s.expr(rt)
+            locs += s.extra
         finally:
             s.read, s.write, s.depth, s.loopv, s.in_func = saved
+            s.extra = extra
         s.funcs.append(f)
         return f
+
+    def make_impure(s, ret):
+        """An impure function of the architecture reading signals the caller may read, or None."""
+        rng = s.rng
+        sigs = [o for o in s.read if o.cls == "sig" and o.v != "local"]  # not an alias of a process
+        if not sigs:
+            return None
+        params = [Obj(f"p{i}", s.scalar_type(), "var") for i in range(rng.randint(0, 2))]
+        f = {"name": s.fresh("ifn"), "params": params, "ret": T(ret.k, w=ret.w), "locs": []}
+        saved = (s.read, s.write, s.depth, s.loopv, s.used, s.lconsts)
+        s.read, s.write, s.depth, s.loopv, s.used, s.lconsts = params + sigs, [], 2, [], set(), []
+        try:
+            f["ret_e"] = s.expr(f["ret"])
+            if s.chance(0.6):  # read one signal for sure
+                o = rng.choice(sigs)
+                f["ret_e"] = s.mix(f["ret_e"], o)
+        finally:
+            s.read, s.write, s.depth, s.loopv, s.used, s.lconsts = saved
+        f["sigs"] = sorted({x.sig for x in f["ret_e"].walk() if x.sig} | {y for x in f["ret_e"].walk() for y in x.xs})
+        f["body"] = []
+        s.ent.impures.append(f)
+        return f
+
+    def mix(s, e, o):
+        """e (a vector, logic or integer) combined with something of signal o."""
+        t = e.t
+        if t.k in VEC:
+            c = [x for x in s.descend(o) if x[1].k in VEC]
+            if c:
+                x, u = c[-1]
+                return Ex("({} xor {})", t, [e, s.conv(Ex(f"resize(unsigned({{}}), {t.w})", T("uns", w=t.w), [x]), "uns", t.k, t.w)])
+        if t.k == "sl" and o.t.k == "sl":
+            return Ex("({} xor {})", t, [e, Ex(o.name, o.t, sig=o.base)])
+        return e
+
+    def sproc_call(s, seq):
+        """A call of a procedure of the package with signal parameters: in a process (seq), or (not seq)
+        the outputs as fresh signals for a concurrent call. Returns the St, or (text, outs) when not seq."""
+        rng = s.rng
+        ins = [o for o in s.read if o.cls == "sig" and o.t.k not in ("int",)]
+        if not ins:
+            return None
+        p = rng.choice(s.sprocs) if s.sprocs and s.chance(0.6) else None
+        if p is None:
+            a = rng.choice(ins)
+            p = s.make_sproc(a.t)
+        args = []
+        for kind, x in p["params"]:
+            if kind == "sig":
+                c = [o for o in s.read if o.cls == "sig" and o.t.same(x.t) and x.t.same(o.t)]
+                if not c:
+                    return None
+                o = rng.choice(c)
+                args.append(Ex(o.name, o.t, sig=o.base))
+            else:
+                s.depth = 2
+                args.append(s.expr(x.t))
+        outs = []
+        for y in p["outs"]:
+            if seq:
+                c = [o for o in s.write if o.cls == "sig" and not o.alias and o.t.same(y.t) and y.t.same(o.t)]
+                if not c:
+                    return None
+                o = rng.choice(c)
+                outs.append(Ex(o.name, o.t, sig=o.name))
+            else:
+                o = Obj(s.fresh("c"), y.t, "sig")
+                outs.append(o)
+        s.used.add("sigparam")
+        if seq:
+            return St("call", p["name"], args + outs)
+        return p["name"], args, outs
+
+    def make_sproc(s, t):
+        """A package procedure: signal and constant inputs, signal outputs assigned on every path."""
+        rng = s.rng
+        name = s.fresh("sp")
+        params = [("sig", Obj("a0", t, "sig"))]
+        for i in range(1, rng.randint(1, 3)):
+            k = rng.choice(["sig", "const"])
+            params.append((k, Obj(f"a{i}", s.scalar_type(), "sig" if k == "sig" else "var")))
+        outs = [Obj(f"y{i}", s.scalar_type(), "sig") for i in range(rng.randint(1, 2))]
+        saved = (s.read, s.write, s.depth, s.loopv, s.in_func, s.used)
+        s.read, s.write, s.depth, s.loopv, s.in_func, s.used = [x for _, x in params] + s.pconsts, outs, 2, [], True, set()
+        extra, s.extra = s.extra, []
+        try:
+            body = [St("assign", Ex(o.name, o.t, sig=o.name), "<=", s.expr(o.t)) for o in outs]
+            body += s.stmts(rng.randint(0, 2), 2)  # outs of mode out are not read
+            locs = s.extra
+        finally:
+            s.read, s.write, s.depth, s.loopv, s.in_func, s.used = saved
+            s.extra = extra
+        p = {"name": name, "params": params, "outs": outs, "body": body, "locs": locs}
+        s.sprocs.append(p)
+        return p
 
     def make_proc(s):
         rng = s.rng
@@ -630,13 +820,17 @@ class Gen:
         params = [Obj(f"a{i}", s.scalar_type(), "var") for i in range(rng.randint(1, 2))]
         outs = [Obj(f"y{i}", s.scalar_type(), "var") for i in range(rng.randint(1, 2))]
         saved = (s.read, s.write, s.depth, s.loopv, s.in_func)
-        s.read, s.write, s.depth, s.loopv, s.in_func = params + outs + s.pconsts, outs, 2, [], True
+        # VHDL-1993 reads no `out` parameter
+        s.read, s.write, s.depth, s.loopv, s.in_func = params + ([] if s.v93 else outs) + s.pconsts, outs, 2, [], True
+        extra, s.extra = s.extra, []
         try:
             body = [St("assign", Ex(o.name, o.t), ":=", s.expr(o.t)) for o in outs]
             body += s.stmts(rng.randint(0, 3), 2, var_only=True)
+            locs = s.extra
         finally:
             s.read, s.write, s.depth, s.loopv, s.in_func = saved
-        p = {"name": name, "params": params, "outs": outs, "body": body}
+            s.extra = extra
+        p = {"name": name, "params": params, "outs": outs, "body": body, "locs": locs}
         s.procs.append(p)
         return p
 
@@ -655,8 +849,8 @@ class Gen:
                 e, t = Ex("{}({})", T("sl"), [e, s.index(t, True)]), T("sl")
             else:
                 w = s.rng.randint(1, t.w)
-                a = s.rng.randint(t.lo, t.hi - w + 1)
-                e = Ex(f"{{}}({a} to {a + w - 1})" if t.asc else f"{{}}({a + w - 1} downto {a})", T(t.k, w=w), [e])
+                s.depth = 1
+                e = s.slice(e, t, w)
                 t = T(t.k, w=w)
         return e, t, ":=" if o.cls == "var" else "<="
 
@@ -678,6 +872,19 @@ class Gen:
             return s.for_stmt(d, var_only)
         if r < 0.34 and s.loopv:
             return St(rng.choice(["exit", "next"]), s.cond())
+        if d > 0 and "while" in s.feat and r < 0.36:
+            return s.while_stmt(d, var_only)
+        if "assert" in s.feat and not s.in_func and r < 0.37:  # dropped in cycle-based processes; filtered (MSG)
+            s.used.add("assert")
+            msg = Ex(f'"{MSG}{s.fresh("")}"', T("str"))
+            if s.chance(0.5):
+                msg = Ex(msg.f + " & integer'image({})", T("str"), [s.int_raw()]) if s.chance(0.5) else Ex(msg.f + " & std_ulogic'image({})", T("str"), [s.sl()])
+            sev = rng.choice(["note", "warning"])
+            return St("assert", s.cond() if s.chance(0.7) else None, msg, sev)
+        if "sigparam" in s.feat and not var_only and not s.in_func and r < 0.39 and any(o.cls == "sig" and not o.alias for o in s.write):
+            c = s.sproc_call(seq=True)
+            if c:
+                return c
         if r < 0.37 and var_only is False and any(o.cls == "var" for o in s.write):
             p = rng.choice(s.procs) if s.procs and s.chance(0.6) else s.make_proc()
             outs = []
@@ -692,13 +899,15 @@ class Gen:
         if not tg:
             return None
         e, t, op = tg
-        if r < 0.45 and t.k != "arr" and t.k != "rec":
+        if r < 0.45 and t.k not in COMP and not s.v93:
             arms = [(s.expr(t), s.cond()) for _ in range(rng.randint(1, 2))]
             return St("cassign", e, op, arms, s.expr(t))
         if t.k in VEC and not e.a and t.w > 1 and s.chance(0.15):  # an aggregate with named or range choices
             a = rng.randint(t.lo, t.hi)
             b = rng.randint(a, t.hi)
             rng_txt = f"{a} to {b}" if t.asc else f"{b} downto {a}"
+            if b > a and s.v93:  # a range choice of elements (slices are VHDL-2008)
+                return St("assign", e, op, Ex(f"({rng_txt} => {{}}, others => {{}})", t, [s.sl(), s.sl()]))
             if s.chance(0.5) and b > a:
                 return St("assign", e, op, Ex(f"({rng_txt} => {{}}, others => {{}})", t, [s.vec(t.k, b - a + 1), s.sl()]))
             return St("assign", e, op, Ex(f"({a} => {{}}, others => {{}})", t, [s.sl(), s.sl()]))
@@ -724,14 +933,49 @@ class Gen:
             return St("case", sel, arms)
         w = rng.randint(1, 4)
         c = s.names(lambda u: u.k in VEC and u.w == w, s.read)
-        if c:
+        if c and not s.v93:
             sel = rng.choice(c)[0]
+        elif c:  # 1993: the selector's subtype must be locally static
+            sel = Ex(f"fzu{w}_t({{}})", T("uns", w=w), [rng.choice(c)[0]])
         else:
-            sel = Ex("unsigned'({})", T("uns", w=w), [s.vec("uns", w)])
+            sel = Ex(f"fzu{w}_t'({{}})", T("uns", w=w), [s.vec("uns", w)])
+        if "caseq" in s.feat and s.chance(0.5):  # case?: the arms differ in the elements they care about
+            s.used.add("caseq")
+            care = [i for i in range(w) if s.chance(0.6)] or [0]
+            vals = rng.sample(range(1 << len(care)), min(1 << len(care), rng.randint(1, 4)))
+            pats = []
+            for v in vals:
+                b = ["-"] * w
+                for j, i in enumerate(care):
+                    b[i] = "01"[(v >> j) & 1]
+                pats.append('"' + "".join(b) + '"')
+            arms = [(x, s.stmts(rng.randint(0, 2), d - 1, var_only)) for x in pats]
+            arms.append(("others", s.stmts(rng.randint(0, 1), d - 1, var_only)))
+            if sel.t.k != "slv":
+                sel = Ex("std_ulogic_vector({})", T("slv", w=w), [sel])
+            return St("case", sel, arms, True)
         vals = rng.sample(range(1 << w), min(1 << w, rng.randint(1, 4)))
         arms = [(f'"{v:0{w}b}"', s.stmts(rng.randint(0, 2), d - 1, var_only)) for v in vals]
         arms.append(("others", s.stmts(rng.randint(0, 1), d - 1, var_only)))
         return St("case", sel, arms)
+
+    def while_stmt(s, d, var_only):
+        """A while loop (or a loop with an exit) counted by a variable of its own, bounded by 8."""
+        rng = s.rng
+        s.used.add("while")
+        v = Obj(s.fresh("w"), T("int", lo=0, hi=16), "var")
+        s.extra.append(v)
+        s.depth = 1
+        bound = Ex(str(rng.randint(0, 6)), T("int"), r=None) if s.chance(0.4) else s.int_in(0, 8)
+        o = Obj(v.name, T("int", lo=0, hi=9), "loop")
+        s.read.append(o)
+        s.loopv.append(o)
+        try:
+            body = s.stmts(rng.randint(1, 3), d - 1, var_only)
+        finally:
+            s.read.remove(o)
+            s.loopv.remove(o)
+        return St("while", v.name, bound, body, s.chance(0.3))
 
     def for_stmt(s, d, var_only):
         rng = s.rng
@@ -779,11 +1023,18 @@ class Gen:
         rng = s.rng
         ent = Ent("fz_top" if top else s.fresh("fz_sub"))
         s.ents.append(ent)
+        s.ent = ent
         s.econsts, s.arrs_local, s.lconsts = ent.consts, [], []
         for _ in range(rng.randint(0, 3)):  # constants of any type, for their parts
             (s.pconsts if s.chance(0.4) else s.econsts).append(Obj(s.fresh("K"), s.any_type(), "const"))
         ent.generics = [Obj("G_K", T("int", lo=0, hi=15), "gen"), Obj("G_B", T("bool"), "gen")]
         ent.generics[0].t.r = (0, 15)
+        if "cgen" in s.feat:  # generics of composite types, with defaults
+            for i in range(rng.randint(1, 2)):
+                t = s.vtype(w=s.width(70)) if s.chance(0.6) or not (s.recs or s.arrs) else rng.choice(s.recs + s.arrs)
+                o = Obj(f"G_C{i}", t, "gen")
+                o.v = s.const_text(t)
+                ent.generics.append(o)
         clocks = ["clk0", "clk1"]
         ins = [Obj(c, T("sl"), "sig") for c in clocks] + [Obj("rst", T("sl"), "sig"), Obj("arst", T("sl"), "sig")]
         n_in = max(1, int(rng.randint(2, 6) * s.scale))
@@ -796,16 +1047,65 @@ class Gen:
             mems = [Obj(s.fresh("m"), rng.choice(s.arrs), "sig")]
         avail = data_in + regs + mems + list(ent.generics)
         sigs = regs + mems
+        if "alias" in s.feat:  # aliases of inputs and registers, read by any process
+            for _ in range(rng.randint(1, 3)):
+                a = s.alias_of([o for o in data_in + regs if o.t.k in VEC + ("rec",)])
+                if a:
+                    ent.aliases.append(a)
+                    avail.append(a)
+        if "dclk" in s.feat:  # clocks made by the design: gated, divided, copied, chosen by a generic
+            for _ in range(rng.randint(1, 2)):
+                s.used = {"dclk"}
+                o = Obj(s.fresh("dk"), T("sl"), "sig")
+                k = rng.choice(["gate", "div", "copy", "mux"])
+                s.read, s.depth = list(data_in), 1
+                if k == "gate":  # the enable from a register of the falling edge: no glitch, no race with data
+                    en = Obj(s.fresh("dke"), T("sl"), "sig")
+                    ent.procs.append(Proc("whenclk", tgt=en, e=s.sl(), drives=[en], edge="falling_edge(clk0)", used=s.used))
+                    sigs.append(en)
+                    ent.procs.append(Proc("conc", tgt=o, e=Ex("({} and {})", T("sl"), [Ex("clk0", T("sl"), sig="clk0"), Ex(en.name, T("sl"), sig=en.name)]),
+                                          used=s.used))
+                elif k == "div":
+                    ent.procs.append(Proc("whenclk", tgt=o, e=Ex(f"(not {o.name})", T("sl"), sig=o.name), drives=[o], edge="rising_edge(clk0)", used=s.used))
+                elif k == "copy":
+                    ent.procs.append(Proc("conc", tgt=o, e=Ex(rng.choice(["clk0", "clk1"]), T("sl")), used=s.used))
+                else:
+                    ent.procs.append(Proc("cond", tgt=o, arms=[(Ex("clk0", T("sl")), Ex("G_B", T("bool")))], els=Ex("clk1", T("sl")), used=s.used))
+                ent.dclks.append(o.name)
+                sigs.append(o)
+        if top and "zpass" in s.feat:
+            s.zpass(ent, avail, sigs)
+        if top and "inout" in s.feat:
+            s.inout(ent, avail, sigs, regs + data_in)
         # combinational logic in order: each reads inputs, registers and earlier logic
         for _ in range(max(1, int(rng.randint(2, 7) * s.scale))):
             r = rng.random()
+            s.used = set()
             if r < 0.15 and depth > 0:
                 outs = s.instance(ent, depth, avail)
                 avail += outs
                 sigs += outs
                 continue
+            if "gwidth" in s.feat and r < 0.22:
+                outs = s.gw_inst(ent, avail)
+                avail += outs
+                sigs += outs
+                continue
             outs = [Obj(s.fresh("c"), s.any_type(), "sig") for _ in range(rng.randint(1, 2))]
             s.read = [o for o in avail]
+            if "sigparam" in s.feat and r < 0.3:
+                c = s.sproc_call(seq=False)
+                if c:
+                    ent.procs.append(Proc("ccall", name=c[0], args=c[1], outs=c[2], used=s.used))
+                    avail += c[2]
+                    sigs += c[2]
+                    continue
+            if "ifgen" in s.feat and r < 0.38:
+                o = outs[0]
+                s.ifgen(ent, o)
+                avail.append(o)
+                sigs.append(o)
+                continue
             if r < 0.12:
                 outs = s.out_proc(ent, outs[:1])
             elif r < 0.5:
@@ -821,23 +1121,155 @@ class Gen:
             groups.setdefault(rng.randint(0, max(0, len(regs) // 2)), []).append(q)
         for g in groups.values():
             s.read = [o for o in avail]
+            s.used = set()
             if len(g) == 1 and g[0] not in mems and s.chance(0.15):  # q <= d when rising_edge(clk);
                 s.depth = rng.randint(1, 3)
                 ent.procs.append(Proc("whenclk", tgt=g[0], e=s.expr(g[0].t), drives=g,
-                                      edge=rng.choice(["rising_edge", "falling_edge"]) + "(" + ("clk1" if s.chance(0.15) else "clk0") + ")"))
+                                      edge=rng.choice(["rising_edge", "falling_edge"]) + "(" + s.clock() + ")", used=s.used))
                 continue
             s.clocked(ent, g, mems)
         ent.sigs = sigs
-        names = [o.name for o in sigs]
+        names = [o.name for o in sigs if o.name not in ent.special]
         ent.out_names = set(names) if top else set(n for n in names if rng.random() < 0.6) or set(names[:1])
         ent.ports += [("out", o) for o in sigs if o.name in ent.out_names]
         return ent
 
-    def instance(s, ent, depth, avail):
+    def clock(s):
+        if s.ent.dclks and s.chance(0.3):
+            s.used.add("dclk")
+            return s.rng.choice(s.ent.dclks)
+        return "clk1" if s.chance(0.15) else "clk0"
+
+    def alias_of(s, objs):
+        """An alias of part of one of objs: a slice under a subtype of its own range, or a record field."""
         rng = s.rng
-        saved = (s.econsts, s.arrs_local, s.read, s.lconsts)
+        if not objs:
+            return None
+        o = rng.choice(objs)
+        name = s.fresh("al")
+        if o.t.k == "rec":
+            f, ft = rng.choice(o.t.fields)
+            return Obj(name, ft, "sig" if o.cls == "sig" else o.cls, base=o.base, alias=f"{o.name}.{f}")
+        w = rng.randint(1, o.t.w)
+        a = rng.randint(o.t.lo, o.t.hi - w + 1)
+        part = f"{o.name}({a} to {a + w - 1})" if o.t.asc else f"{o.name}({a + w - 1} downto {a})"
+        if w == o.t.w and s.chance(0.5):
+            part = o.name
+        t = T(o.t.k, w=w, lo=rng.choice([0, 0, 2, 5]), asc=s.chance(0.5))
+        return Obj(name, t, "sig" if o.cls == "sig" else o.cls, base=o.base, alias=part)
+
+    def actual(s, ent, e, extra, t=None):
+        """e as a port actual (of formal type t): in VHDL-1993 a signal of its own when it is not a name."""
+        if not s.v93 or (not e.a and e.sig):
+            return e
+        o = Obj(s.fresh("c"), t or e.t, "sig")
+        ent.procs.append(Proc("conc", tgt=o, e=e))
+        extra.append(o)
+        return Ex(o.name, o.t, sig=o.name)
+
+    def ifgen(s, ent, o):
+        """o assigned in an if-generate on the generics, one arm with a signal of its own."""
+        rng = s.rng
+        s.used.add("ifgen")
+        conds = ["G_B", f"G_K > {rng.randint(0, 15)}", "not G_B", f"G_K = {rng.randint(0, 3)}"]
+        arms = []
+        for i in range(1 if s.v93 else rng.randint(1, 3)):
+            s.depth = rng.randint(1, 3)
+            arms.append((rng.choice(conds), s.expr(o.t)))
+        s.depth = rng.randint(1, 3)
+        els = s.expr(o.t)
+        loc = Obj(s.fresh("t"), o.t, "sig") if s.chance(0.4) else None
+        ent.procs.append(Proc("ifgen", tgt=o, arms=arms, els=els, loc=loc, label=s.fresh("ig"), used=s.used, v93=s.v93))
+
+    def zpass(s, ent, avail, sigs):
+        """A 'Z' of the testbench passed on to outputs, and data with metavalues read only when valid."""
+        rng = s.rng
+        s.used = {"zpass"}
+        zt = T("sl") if s.chance(0.5) else T("slv", w=rng.randint(2, 9))
+        zi = Obj(s.fresh("zi"), zt, "sig")
+        ent.ports.append(("in", zi))
+        ent.special[zi.name] = "z"
+        s.read, s.depth = list(avail), 1
+        for k in rng.sample(["copy", "mux", "reg"], rng.randint(1, 3)):
+            o = Obj(s.fresh("zo"), zt, "sig")
+            if k == "copy":
+                ent.procs.append(Proc("conc", tgt=o, e=Ex(zi.name, zt, sig=zi.name), used=s.used))
+            elif k == "mux":
+                ent.procs.append(Proc("cond", tgt=o, arms=[(Ex(zi.name, zt, sig=zi.name), s.cond())], els=s.expr(zt), used=s.used))
+            else:
+                ent.procs.append(Proc("whenclk", tgt=o, e=Ex(zi.name, zt, sig=zi.name), drives=[o], edge="rising_edge(clk0)", used=s.used))
+            sigs.append(o)
+        xt = s.vtype("slv", rng.choice([1, 4, 8, 64, 65]))
+        xv, xd = Obj(s.fresh("xv"), T("sl"), "sig"), Obj(s.fresh("xd"), xt, "sig")
+        ent.ports += [("in", xv), ("in", xd)]
+        ent.special[xv.name], ent.special[xd.name] = "xv", "xd:" + xv.name
+        q = Obj(s.fresh("xq"), xt, "sig")
+        ent.procs.append(Proc("raw", used=s.used, drives=[q], text=f"process (clk0)\nbegin\n  if rising_edge(clk0) then\n    if {xv.name} = '1' then\n"
+                              f"      {q.name} <= {xd.name};\n    end if;\n  end if;\nend process;", reads=[xv.name, xd.name]))
+        sigs.append(q)
+        avail.append(q)
+
+    def inout(s, ent, avail, sigs, srcs):
+        """A tri-state pin the testbench pulls to 'H' or 'L': driven when enabled, read back with to_x01."""
+        s.used = {"inout"}
+        io = Obj(s.fresh("io"), T("sl", res=True), "sig")
+        ent.ports.append(("inout", io))
+        ent.special[io.name] = "io"
+        s.read, s.depth = list(srcs), 2
+        d, oe = s.sl(), s.sl()
+        ent.procs.append(Proc("raw", used=s.used, drives=[], reads=[], text=f"{io.name} <= {d.text()} when {oe.text()} = '1' else 'Z';"))
+        r = Obj(s.fresh("ior"), T("sl"), "sig")
+        ent.procs.append(Proc("conc", tgt=r, e=Ex(f"to_x01({io.name})", T("sl"), sig=io.name), used=s.used))
+        sigs.append(r)
+        avail.append(r)
+
+    def gw_inst(s, ent, avail):
+        """Instances of the entity with a width generic, at several widths."""
+        s.in_actual = True
+        try:
+            return s.gw_inst1(ent, avail)
+        finally:
+            s.in_actual = False
+
+    def gw_inst1(s, ent, avail):
+        rng = s.rng
+        if s.gw is None:
+            s.gw = Ent("fz_gw")
+            s.gw.raw = gw_text(rng, s.v93)
+            s.ents.append(s.gw)
+        outs = []
+        for w in rng.sample([1, 2, 7, 31, 63, 64, 65, 100, 128, 129], rng.randint(1, 3)):
+            s.read = list(avail)
+            maps = [("clk0", Ex(s.clock(), T("sl")))]
+            for n in ("a", "b"):
+                s.depth = rng.randint(0, 2)
+                maps.append((n, s.actual(ent, s.vec("uns", w), outs, T("uns", w=w))))
+            s.depth = 1
+            maps.append(("s", s.actual(ent, s.sl(), outs, T("sl"))))
+            for n, t in (("y", T("uns", w=w)), ("z", T("sl")), ("p", T("uns", w=2 * w))):
+                if s.chance(0.1):
+                    maps.append((n, None))
+                    continue
+                x = Obj(s.fresh("c"), t, "sig")
+                maps.append((n, Ex(x.name, t, sig=x.name)))
+                outs.append(x)
+            p = Proc("inst", sub="fz_gw", gmap=[("G_W", str(w))], maps=maps)
+            p.label = s.fresh("u")
+            ent.procs.append(p)
+        return outs
+
+    def instance(s, ent, depth, avail):
+        s.in_actual = True
+        try:
+            return s.instance1(ent, depth, avail)
+        finally:
+            s.in_actual = False
+
+    def instance1(s, ent, depth, avail):
+        rng = s.rng
+        saved = (s.econsts, s.arrs_local, s.read, s.lconsts, s.ent)
         sub = s.entity(depth - 1)
-        s.econsts, s.arrs_local, s.read, s.lconsts = saved
+        s.econsts, s.arrs_local, s.read, s.lconsts, s.ent = saved
         outs_all = []
         for k in range(2 if s.chance(0.3) else 1):
             s.read = list(avail)
@@ -845,7 +1277,12 @@ class Gen:
             maps = []
             for mode, o in sub.ports:
                 if o.name in ("clk0", "clk1", "rst", "arst"):
-                    maps.append((o.name, Ex(rng.choice(["clk0", "clk1"]) if o.name.startswith("clk") and s.chance(0.1) else o.name, o.t, sig=o.name)))
+                    c = o.name
+                    if o.name.startswith("clk") and s.chance(0.1):
+                        c = rng.choice(["clk0", "clk1"])
+                    elif o.name.startswith("clk") and ent.dclks and s.chance(0.2):
+                        c = rng.choice(ent.dclks)
+                    maps.append((o.name, Ex(c, o.t, sig=c)))
                     continue
                 if mode == "in":
                     s.depth = rng.randint(0, 2)
@@ -855,13 +1292,14 @@ class Gen:
                         lo = o.t.lo
                         p1 = f"{o.name}({lo + a - 1} downto {lo})" if not o.t.asc else f"{o.name}({lo} to {lo + a - 1})"
                         p2 = f"{o.name}({o.t.hi} downto {lo + a})" if not o.t.asc else f"{o.name}({lo + a} to {o.t.hi})"
-                        maps.append((p1, s.vec(o.t.k, a)))
-                        maps.append((p2, s.vec(o.t.k, o.t.w - a)))
+                        maps.append((p1, s.actual(ent, s.vec(o.t.k, a), outs_all, T(o.t.k, w=a))))
+                        maps.append((p2, s.actual(ent, s.vec(o.t.k, o.t.w - a), outs_all, T(o.t.k, w=o.t.w - a))))
                     else:
-                        c = s.names(lambda u: u.k == o.t.k and u.name == o.t.name, s.read) if o.t.k in ("rec", "arr") else []
-                        maps.append((o.name, rng.choice(c)[0] if c and s.chance(0.8) else s.expr(o.t)))
+                        c = s.names(lambda u: u.k == o.t.k and u.name == o.t.name, s.read) if o.t.k in COMP else []
+                        maps.append((o.name, s.actual(ent, rng.choice(c)[0] if c and s.chance(0.8) else s.expr(o.t), outs_all, o.t)))
                 else:
-                    if s.chance(0.08):
+                    # A clock is no data: logic of a clock sampled at that clock's edge is a race.
+                    if s.chance(0.08) or o.name.startswith("dk"):
                         maps.append((o.name, None))
                         continue
                     if o.t.k in VEC and o.t.w >= 2 and s.chance(0.2):
@@ -878,7 +1316,9 @@ class Gen:
                         x = Obj(s.fresh("c"), o.t, "sig")
                         maps.append((o.name, Ex(x.name, x.t, sig=x.name)))
                         outs_all.append(x)
-            p = Proc("inst", sub=sub.name, gk=gk, gb=rng.choice(["true", "false"]), maps=maps)
+            gmap = [("G_K", str(gk)), ("G_B", rng.choice(["true", "false"]))]
+            gmap += [(g.name, s.const_text(g.t)) for g in sub.generics[2:] if s.chance(0.7)]
+            p = Proc("inst", sub=sub.name, gmap=gmap, maps=maps)
             p.label = s.fresh("u")
             ent.procs.append(p)
         return outs_all
@@ -898,7 +1338,7 @@ class Gen:
         lc = s.local_consts()
         vs = [Obj(s.fresh("v"), s.any_type(), "var") for _ in range(rng.randint(0, 2))]
         s.write = outs + vs
-        s.loopv = []
+        s.loopv, s.extra = [], []
         s.depth = 2
         body = [St("assign", Ex(o.name, o.t), ":=" if o.cls == "var" else "<=", s.expr(o.t)) for o in vs + outs]
         s.read = s.read + vs  # only after the default assignments: no variable read before it is assigned
@@ -907,7 +1347,7 @@ class Gen:
             v = Obj(s.fresh("v"), outs[0].t, "var")
             vs.append(v)
             body = [St("assign", Ex(v.name, v.t), ":=", s.expr(v.t))] + body + [St("assign", Ex(outs[0].name, v.t), "<=", Ex(v.name, v.t))]
-        p = Proc("comb", decls=lc + vs, body=body, drives=outs, all=s.chance(0.6))
+        p = Proc("comb", decls=lc + vs + s.extra, body=body, drives=outs, all=s.chance(0.6) and not s.v93, used=s.used)
         ent.procs.append(p)
         s.lconsts = []
 
@@ -920,12 +1360,12 @@ class Gen:
         k = rng.choice(["latch", "state", "sens", "sens", "wait"])
         if k == "latch":
             body = [St("if", [(s.cond(), [St("assign", Ex(o.name, o.t), "<=", s.expr(o.t))])], None)]
-            ent.procs.append(Proc("comb", decls=[], body=body, drives=outs, all=True))
+            ent.procs.append(Proc("comb", decls=[], body=body, drives=outs, all=not s.v93))
         elif k == "state":
             v = Obj(s.fresh("v"), o.t, "var")
             s.read = s.read + [v]
             body = [St("assign", Ex(o.name, o.t), "<=", s.expr(o.t)), St("assign", Ex(v.name, v.t), ":=", s.expr(v.t))]
-            ent.procs.append(Proc("comb", decls=[v], body=body, drives=outs, all=True))
+            ent.procs.append(Proc("comb", decls=[v], body=body, drives=outs, all=not s.v93))
         elif k == "sens":  # reads logic that follows a register, waits on the register alone
             qs = [x for x in s.read if x.cls == "sig" and x.name.startswith("q") and x.t.k in VEC]
             if qs:
@@ -948,11 +1388,23 @@ class Gen:
         rng = s.rng
         s.depth = rng.randint(1, 3)
         r = rng.random()
-        if r < 0.5 or out.t.k in ("rec", "arr"):
-            ent.procs.append(Proc("conc", tgt=out, e=s.expr(out.t)))
+        if r < 0.5 or out.t.k in COMP:
+            ent.procs.append(Proc("conc", tgt=out, e=s.expr(out.t), used=s.used))
         elif r < 0.75:
             arms = [(s.expr(out.t), s.cond()) for _ in range(rng.randint(1, 3))]
-            ent.procs.append(Proc("cond", tgt=out, arms=arms, els=s.expr(out.t)))
+            ent.procs.append(Proc("cond", tgt=out, arms=arms, els=s.expr(out.t), used=s.used))
+        elif "caseq" in s.feat and r < 0.82:  # select? with '-' choices
+            s.used.add("caseq")
+            w = rng.randint(1, 4)
+            care = [i for i in range(w) if s.chance(0.6)] or [0]
+            vals = rng.sample(range(1 << len(care)), min(1 << len(care), rng.randint(1, 3)))
+            arms = []
+            for v in vals:
+                b = ["-"] * w
+                for j, i in enumerate(care):
+                    b[i] = "01"[(v >> j) & 1]
+                arms.append((s.expr(out.t), '"' + "".join(b) + '"'))
+            ent.procs.append(Proc("sel", tgt=out, sel=s.vec("slv", w), arms=arms, els=s.expr(out.t), q=True, used=s.used))
         elif r < 0.9 or out.t.k not in VEC:
             et = rng.choice(s.enums)
             sel = s.expr(et)
@@ -960,7 +1412,7 @@ class Gen:
             rng.shuffle(lits)
             k = rng.randint(1, len(lits))
             arms = [(s.expr(out.t), lit) for lit in lits[:k]]
-            ent.procs.append(Proc("sel", tgt=out, sel=sel, arms=arms, els=s.expr(out.t) if k < len(lits) else None))
+            ent.procs.append(Proc("sel", tgt=out, sel=sel, arms=arms, els=s.expr(out.t) if k < len(lits) else None, used=s.used))
         else:  # a for generate driving each element
             s.read.append(Obj("gi", T("int", lo=out.t.lo, hi=out.t.hi), "loop"))
             srcs = [y for y in s.read if y.t.k in VEC and y.t.w >= out.t.w and y.cls != "loop"]
@@ -971,18 +1423,24 @@ class Gen:
                 iy = "gi" if off == 0 else f"gi + {off}" if off > 0 else f"gi - {-off}"
                 e = Ex("({} %s {})" % rng.choice(["xor", "and", "or"]), T("sl"), [Ex(f"{y.name}({iy})", T("sl"), sig=y.name), e])
             s.read.pop()
-            ent.procs.append(Proc("gen_bits", tgt=out, e=e))
+            ent.procs.append(Proc("gen_bits", tgt=out, e=e, used=s.used))
 
     def clocked(s, ent, regs, mems):
         rng = s.rng
-        clk = "clk1" if s.chance(0.12) else "clk0"
+        clk = s.clock()
         edge = rng.choice(["rising_edge({c})", "rising_edge({c})", "falling_edge({c})", "{c}'event and {c} = '1'", "{c} = '1' and {c}'event"]).format(c=clk)
         reset = rng.choice(["sync", "sync", "async", "none"])
         lc = s.local_consts()
         vs = [Obj(s.fresh("v"), s.any_type(), "var") for _ in range(rng.randint(0, 2))]
-        s.write = regs + vs
-        s.read = s.read + vs
-        s.loopv = []
+        als = []
+        if "alias" in s.feat and s.chance(0.6):  # aliases of part of a register or a variable, written and read
+            a = s.alias_of([o for o in regs + vs if o.t.k in VEC + ("rec",) and o not in mems])
+            if a:
+                a.v = "local"
+                als.append(a)
+        s.write = regs + vs + als
+        s.read = s.read + vs + als
+        s.loopv, s.extra = [], []
         body = []
         for m in [x for x in regs if x in mems]:  # a write port at a run-time index
             s.depth = 2
@@ -991,7 +1449,9 @@ class Gen:
             if ix.a == []:
                 s.depth = 1
                 ix = s.index(m.t)
-            body.append(St("if", [(we, [St("assign", Ex("{}({})", m.t.elem, [Ex(m.name, m.t, sig=m.name), ix]), "<=", s.expr(m.t.elem))])], None))
+            tg = Ex("{}({}, {})", m.t.elem, [Ex(m.name, m.t, sig=m.name), ix, s.index(m.t.dim2())]) if m.t.k == "arr2" else \
+                Ex("{}({})", m.t.elem, [Ex(m.name, m.t, sig=m.name), ix])
+            body.append(St("if", [(we, [St("assign", tg, "<=", s.expr(m.t.elem))])], None))
         body += s.stmts(rng.randint(1, 6) + len(regs), 3)
         for q in regs:  # assign every register somewhere too
             if q not in mems and s.chance(0.5):
@@ -1012,8 +1472,8 @@ class Gen:
         if reset == "async" and s.chance(0.25):  # a reset made by a register of the design (another process's)
             c = [o for o in s.read if o.cls == "sig" and o.t.k == "sl" and o.name.startswith("q") and o not in regs]
             rsig = rng.choice(c).name if c else rsig
-        p = Proc("clocked", decls=lc + vs, body=body, rst_body=rst_body, drives=regs, clk=clk, edge=edge, reset=reset, en=en, shape=shape,
-                 rsig=rsig)
+        p = Proc("clocked", decls=lc + vs + s.extra + als, body=body, rst_body=rst_body, drives=regs, clk=clk, edge=edge, reset=reset, en=en,
+                 shape=shape, rsig=rsig, used=s.used)
         ent.procs.append(p)
 
     # ------------------------------------------------------------ the design
@@ -1048,13 +1508,27 @@ def render_stmts(sts, n):
                 out += render_stmts(a[1], n + 1) or [ind(n + 1) + "null;"]
             out.append(f"{ind(n)}end if;")
         elif k == "case":
-            out.append(f"{ind(n)}case {a[0].text()} is")
+            q = "?" if len(a) > 2 and a[2] else ""
+            out.append(f"{ind(n)}case{q} {a[0].text()} is")
             for ch, body in a[1]:
                 out.append(f"{ind(n + 1)}when {ch} =>")
                 out += render_stmts(body, n + 2) or [ind(n + 2) + "null;"]
             if a[1][-1][0] != "others" and a[0].t.k != "enum":
                 out.append(f"{ind(n + 1)}when others => null;")
-            out.append(f"{ind(n)}end case;")
+            out.append(f"{ind(n)}end case{q};")
+        elif k == "while":
+            v, bound, body, plain = a
+            out.append(f"{ind(n)}{v} := 0;")
+            if plain:
+                out += [f"{ind(n)}loop", f"{ind(n + 1)}exit when {v} >= {bound.text()};"]
+            else:
+                out.append(f"{ind(n)}while {v} < {bound.text()} loop")
+            out.append(f"{ind(n + 1)}{v} := {v} + 1;")
+            out += render_stmts(body, n + 1)
+            out.append(f"{ind(n)}end loop;")
+        elif k == "assert":
+            c, msg, sev = a
+            out.append(f"{ind(n)}assert {c.text()} report {msg.text()} severity {sev};" if c else f"{ind(n)}report {msg.text()} severity {sev};")
         elif k == "for":
             out.append(f"{ind(n)}for {a[0]} in {a[1].text()} loop")
             out += render_stmts(a[2], n + 1) or [ind(n + 1) + "null;"]
@@ -1108,23 +1582,63 @@ def proc_exprs(p):
     for _, e in getattr(p, "maps", None) or []:
         if e is not None:
             yield e
+    for e in getattr(p, "args", None) or []:
+        yield e
 
 
 def reads(p):
     out, mine = [], {o.name for o in p.drives}
     for e in proc_exprs(p):
         for x in e.walk():
-            if x.sig and x.sig not in out and x.sig not in mine:
-                out.append(x.sig)
+            for y in ([x.sig] if x.sig else []) + x.xs:
+                if y not in out and y not in mine:
+                    out.append(y)
     return out
 
 
+def tagged(line, p):
+    """The first line of a process, with the constructs it holds as a comment (for `tags`)."""
+    u = getattr(p, "used", None)
+    return f"{line}  -- fz: {','.join(sorted(u))}" if u else line
+
+
 def render_proc(p, n=1):
+    # The report names a statement of an if-generate by its own line: tag those too.
+    return "\n".join(tagged(l, p) if i == 0 or (p.k == "ifgen" and "<=" in l) else l for i, l in enumerate(render_proc1(p, n).split("\n")))
+
+
+def decl_text(v):
+    if v.alias:
+        return f"alias {v.name} is {v.alias};" if "." in v.alias else f"alias {v.name} : {v.t.mark()} is {v.alias};"
+    if v.cls == "const":
+        return f"constant {v.name} : {v.t.mark()} := {v.v};"
+    return f"variable {v.name} : {v.t.mark()} := {zero(v.t)};"
+
+
+def render_proc1(p, n):
     lab = (p.label + " : ") if p.label else ""
     if p.k == "inst":
         maps = ",\n".join(f"{ind(n + 2)}{f} => {'open' if e is None else e.text()}" for f, e in p.maps)
-        return (f"{ind(n)}{p.label} : entity work.{p.sub}\n{ind(n + 1)}generic map (G_K => {p.gk}, G_B => {p.gb})\n"
+        gm = ", ".join(f"{k} => {v}" for k, v in p.gmap)
+        return (f"{ind(n)}{p.label} : entity work.{p.sub}\n{ind(n + 1)}generic map ({gm})\n"
                 f"{ind(n + 1)}port map (\n{maps});")
+    if p.k == "raw":
+        return "\n".join(ind(n) + l for l in p.text.split("\n"))
+    if p.k == "ccall":
+        return f"{ind(n)}{p.label or ''}{' : ' if p.label else ''}{p.name}(" + ", ".join([e.text() for e in p.args] + [o.name for o in p.outs]) + ");"
+    if p.k == "ifgen":
+        out = []
+        body = lambda e: ([f"{ind(n + 1)}signal {p.loc.name} : {p.loc.t.mark()};", f"{ind(n)}begin", f"{ind(n + 1)}{p.loc.name} <= {e.text()};",
+                           f"{ind(n + 1)}{p.tgt.name} <= {p.loc.name};"] + ([] if p.v93 else [f"{ind(n)}end;"])) if p.loc else [f"{ind(n + 1)}{p.tgt.name} <= {e.text()};"]
+        if p.v93:  # two generates of opposite conditions
+            c, e = p.arms[0]
+            return "\n".join([f"{ind(n)}{p.label}a : if {c} generate"] + body(e) + [f"{ind(n)}end generate;", f"{ind(n)}{p.label}b : if not ({c}) generate",
+                              f"{ind(n + 1)}{p.tgt.name} <= {p.els.text()};", f"{ind(n)}end generate;"])
+        for i, (c, e) in enumerate(p.arms):
+            out.append(f"{ind(n)}{p.label} : if {c} generate" if i == 0 else f"{ind(n)}elsif {c} generate")
+            out += body(e) if i == 0 else [f"{ind(n + 1)}{p.tgt.name} <= {e.text()};"]
+        out += [f"{ind(n)}else generate", f"{ind(n + 1)}{p.tgt.name} <= {p.els.text()};", f"{ind(n)}end generate;"]
+        return "\n".join(out)
     if p.k == "conc":
         return f"{ind(n)}{lab}{p.tgt.name} <= {p.e.text()};"
     if p.k == "whenclk":
@@ -1136,13 +1650,13 @@ def render_proc(p, n=1):
         arms = [f"{e.text()} when {c}" for e, c in p.arms]
         if p.els is not None:
             arms.append(f"{p.els.text()} when others")
-        return f"{ind(n)}{lab}with {p.sel.text()} select {p.tgt.name} <=\n{ind(n + 2)}" + (",\n" + ind(n + 2)).join(arms) + ";"
+        q = "?" if getattr(p, "q", False) else ""
+        return f"{ind(n)}{lab}with {p.sel.text()} select{q} {p.tgt.name} <=\n{ind(n + 2)}" + (",\n" + ind(n + 2)).join(arms) + ";"
     if p.k == "gen_bits":
         g = p.label or "g_" + p.tgt.name
         return (f"{ind(n)}{g}_gen : for gi in {p.tgt.name}'range generate\n{ind(n + 1)}{p.tgt.name}(gi) <= {p.e.text()};\n"
                 f"{ind(n)}end generate;")
-    decls = [f"{ind(n + 1)}constant {v.name} : {v.t.mark()} := {v.v};" if v.cls == "const" else
-             f"{ind(n + 1)}variable {v.name} : {v.t.mark()} := {zero(v.t)};" for v in p.decls]
+    decls = [ind(n + 1) + decl_text(v) for v in p.decls]
     if p.k == "waits":
         return "\n".join([f"{ind(n)}{lab}process"] + decls + [f"{ind(n)}begin", f"{ind(n + 1)}wait until rising_edge({p.clk});",
                           f"{ind(n + 1)}wait for 1 ns;"] + render_stmts(p.body, n + 1) + [f"{ind(n)}end process;"])
@@ -1150,7 +1664,7 @@ def render_proc(p, n=1):
         rd = getattr(p, "sens", None) or reads(p)
         if getattr(p, "partial", False):
             rd = rd[:1]
-        sens = "all" if p.all else ", ".join(rd) or "all"
+        sens = "all" if p.all else ", ".join(rd) or ("clk0" if V93[0] else "all")  # VHDL-1993 has no `all`
         return "\n".join([f"{ind(n)}{lab}process ({sens})"] + decls + [f"{ind(n)}begin"] + render_stmts(p.body, n + 1) + [f"{ind(n)}end process;"])
     # clocked
     body = render_stmts(p.body, 0)
@@ -1172,6 +1686,34 @@ def render_proc(p, n=1):
     return "\n".join([f"{ind(n)}{lab}process {sens}".rstrip()] + decls + [f"{ind(n)}begin"] + [ind(n + 1) + l for l in lines] + [f"{ind(n)}end process;"])
 
 
+def gw_text(rng, v93):
+    """The entity with a width generic G_W: a random choice of operations that hold for every width."""
+    ys = ["a + b", "a xor b", "not a", "a - r", "rotate_left(a, 1)", "shift_right(b, G_W / 2)", "resize(a * b, G_W)",
+          "(a(G_W - 1 downto G_W / 2) & b(G_W / 2 downto 1))", "(b sll 1) or (a srl 1)", "r + 1", "a + to_unsigned(G_W, G_W)",
+          "a / (b or to_unsigned(1, G_W))", "a rem (b or to_unsigned(1, G_W))", "unsigned(std_ulogic_vector(a) xnor std_ulogic_vector(r))",
+          "rotate_right(r, to_integer(b(0 downto 0)))", "resize(shift_left(resize(a, 2 * G_W), G_W), G_W)"]
+    zs = ["a(G_W - 1)", "a(to_integer(resize(b, 7)) mod G_W)", "b2l(a = r)", "r(0) xor s", "b2l(a > b)", "c(G_W / 2)"] + ([] if v93 else ["xor std_ulogic_vector(a)"])
+    ps = ["a * b", "resize(a, 2 * G_W) + b", "a & b", "r & c",
+          "shift_left(resize(a, 2 * G_W), G_W / 2 + 1)", "resize(r, 2 * G_W) - c"]
+    o = "buffer" if v93 else "out"
+    loop = ["      for i in 0 to G_W - 1 loop", "        v(i) := v(i) xor a(G_W - 1 - i);", "      end loop;"] if rng.random() < 0.6 else []
+    if v93:
+        gen = ["  g1 : if G_W > 64 generate", f"    c2 <= {rng.choice(ys)};", "  end generate;", "  g2 : if G_W <= 64 generate",
+               f"    c2 <= {rng.choice(ys)};", "  end generate;"]
+    else:
+        gen = ["  g1 : if G_W > 64 generate", f"    c2 <= {rng.choice(ys)};", "  elsif G_W = 1 generate", f"    c2 <= {rng.choice(ys)};",
+               "  else generate", f"    c2 <= {rng.choice(ys)};", "  end generate;"]
+    return "\n".join([HEAD + "entity fz_gw is", "  generic (G_W : positive := 8);",
+        f"  port (clk0 : in std_ulogic; a, b : in unsigned(G_W - 1 downto 0); s : in std_ulogic;",
+        f"        y : {o} unsigned(G_W - 1 downto 0) := (others => '0'); z : {o} std_ulogic := '0';",
+        f"        p : {o} unsigned(2 * G_W - 1 downto 0) := (others => '0'));", "end entity;", "architecture a of fz_gw is",
+        "  signal r, c, c2 : unsigned(G_W - 1 downto 0) := (others => '0');", "begin",
+        f"  c <= {rng.choice(ys)} when s = '1' else {rng.choice(ys)};  -- fz: gwidth"] + gen + [
+        "  process (clk0)  -- fz: gwidth", "    variable v : unsigned(G_W - 1 downto 0);", "  begin", "    if rising_edge(clk0) then",
+        f"      r <= {rng.choice(ys)};", f"      v := {rng.choice(ys)};"] + loop + [
+        "      y <= v xor c xor c2;", f"      z <= {rng.choice(zs)};", f"      p <= {rng.choice(ps)};", "    end if;", "  end process;", "end architecture;"])
+
+
 HEAD = "library ieee;\nuse ieee.std_logic_1164.all;\nuse ieee.numeric_std.all;\nuse work.fz_pkg.all;\n"
 
 
@@ -1181,29 +1723,46 @@ def render_pkg(g):
         out.append(f"  type {e.name} is ({', '.join(e.lits)});")
     declared = set()
 
+    base = lambda t: {"slv": "std_ulogic_vector", "uns": "unsigned", "sgn": "signed"}[t.k]
+    rng_of = lambda t: f"{t.lo} to {t.hi}" if t.asc else f"{t.hi} downto {t.lo}"
+
     def decl(t):
         if t.k == "rec" and t.name not in declared:
             for _, ft in t.fields:
                 decl(ft)
             declared.add(t.name)
-            out.append(f"  type {t.name} is record")
-            out.extend(f"    {f} : {ft.mark()};" for f, ft in t.fields)
+            uc = getattr(t, "uc", False)  # a record of unconstrained vectors, constrained by a subtype
+            out.append(f"  type {t.name}{'_b' if uc else ''} is record")
+            out.extend(f"    {f} : {base(ft) if uc and ft.k in VEC else ft.mark()};" for f, ft in t.fields)
             out.append("  end record;")
-        elif t.k == "arr" and t.name not in declared:
+            if uc:
+                out.append(f"  subtype {t.name} is {t.name}_b(" + ", ".join(f"{f}({rng_of(ft)})" for f, ft in t.fields if ft.k in VEC) + ");")
+        elif t.k in ("arr", "arr2") and t.name not in declared:
             decl(t.elem)
             declared.add(t.name)
-            rng = f"{t.lo} to {t.hi}" if t.asc else f"{t.hi} downto {t.lo}"
-            out.append(f"  type {t.name} is array ({rng}) of {t.elem.mark()};")
+            if t.k == "arr2":
+                out.append(f"  type {t.name} is array ({rng_of(t)}, {rng_of(t.dim2())}) of {t.elem.mark()};")
+            elif getattr(t, "uc", False):  # an array of unconstrained vectors, constrained by a subtype
+                out.append(f"  type {t.name}_b is array (natural range <>) of {base(t.elem)};")
+                out.append(f"  subtype {t.name} is {t.name}_b({rng_of(t)})({rng_of(t.elem)});")
+            else:
+                out.append(f"  type {t.name} is array ({rng_of(t)}) of {t.elem.mark()};")
     for t in g.recs + g.arrs:
         decl(t)
+    for w in range(1, 5):  # selectors of case statements (a locally static subtype, for VHDL-1993)
+        out.append(f"  subtype fzu{w}_t is unsigned({w - 1} downto 0);")
     out.append("  function b2l(b : boolean) return std_ulogic;")
     for c in g.pconsts:
         out.append(f"  constant {c.name} : {c.t.mark()} := {c.v};")
     for f in g.funcs:
         out.append(f"  subtype {f['name']}_t is {f['ret'].mark()};")
         out.append(f"  function {f['name']}(" + "; ".join(f"{p.name} : {p.t.mark()}" for p in f["params"]) + f") return {f['name']}_t;")
+    sig = lambda p: "; ".join([f"{'signal ' if k == 'sig' else ''}{a.name} : in {a.t.mark()}" for k, a in p["params"]] +
+                              [f"signal {y.name} : out {y.t.mark()}" for y in p["outs"]])
     for p in g.procs:
         out.append(f"  procedure {p['name']}(" + "; ".join([f"{a.name} : in {a.t.mark()}" for a in p["params"]] + [f"{y.name} : out {y.t.mark()}" for y in p["outs"]]) + ");")
+    for p in g.sprocs:
+        out.append(f"  procedure {p['name']}({sig(p)});")
     out.append("end package;")
     out.append("package body fz_pkg is")
     out.append("  function b2l(b : boolean) return std_ulogic is\n  begin\n    if b then\n      return '1';\n    end if;\n    return '0';\n  end function;")
@@ -1216,6 +1775,13 @@ def render_pkg(g):
         out.append("  end function;")
     for p in g.procs:
         out.append(f"  procedure {p['name']}(" + "; ".join([f"{a.name} : in {a.t.mark()}" for a in p["params"]] + [f"{y.name} : out {y.t.mark()}" for y in p["outs"]]) + ") is")
+        out += [f"    variable {v.name} : {v.t.mark()} := {zero(v.t)};" for v in p["locs"]]
+        out.append("  begin")
+        out += render_stmts(p["body"], 2)
+        out.append("  end procedure;")
+    for p in g.sprocs:
+        out.append(f"  procedure {p['name']}({sig(p)}) is")
+        out += [f"    variable {v.name} : {v.t.mark()} := {zero(v.t)};" for v in p["locs"]]
         out.append("  begin")
         out += render_stmts(p["body"], 2)
         out.append("  end procedure;")
@@ -1228,11 +1794,19 @@ def init_of(g, o):
 
 
 def render_ent(g, ent, top):
+    if ent.raw:
+        return ent.raw
     ports = []
     for mode, o in ent.ports:
-        ports.append(f"    {o.name} : in {o.t.mark()}" if mode == "in" else f"    {o.name} : out {o.t.mark()} := {init_of(g, o)}")
+        if mode == "in":
+            ports.append(f"    {o.name} : in {o.t.mark()}")
+        elif mode == "inout":
+            ports.append(f"    {o.name} : inout {o.t.mark()} := 'Z'")
+        else:  # VHDL-1993 reads no out port: buffer
+            ports.append(f"    {o.name} : {'buffer' if g.v93 else 'out'} {o.t.mark()} := {init_of(g, o)}")
     port_names = {o.name for _, o in ent.ports}
-    lines = [HEAD + f"entity {ent.name} is", "  generic (G_K : integer range 0 to 15 := 0; G_B : boolean := false);",
+    gens = ["G_K : integer range 0 to 15 := 0", "G_B : boolean := false"] + [f"{o.name} : {o.t.mark()} := {o.v}" for o in ent.generics[2:]]
+    lines = [HEAD + f"entity {ent.name} is", f"  generic ({'; '.join(gens)});",
              "  port (\n" + ";\n".join(ports) + ");", "end entity;", f"architecture a of {ent.name} is"]
     for c in ent.consts:
         if c.t.k == "arr" and c.t not in g.arrs:
@@ -1242,6 +1816,11 @@ def render_ent(g, ent, top):
     for o in ent.sigs:
         if o.name not in port_names and o.name not in ent.out_names:
             lines.append(f"  signal {o.name} : {o.t.mark()} := {init_of(g, o)};")
+    lines += ["  " + decl_text(a) for a in ent.aliases]
+    for f in ent.impures:
+        lines.append(f"  subtype {f['name']}_t is {f['ret'].mark()};")
+        lines.append(f"  impure function {f['name']}" + ("(" + "; ".join(f"{p.name} : {p.t.mark()}" for p in f["params"]) + ")" if f["params"] else "") +
+                     f" return {f['name']}_t is\n  begin\n    return {f['ret_e'].text()};\n  end function;")
     lines.append("begin")
     for p in ent.procs:
         lines.append(render_proc(p))
@@ -1254,7 +1833,10 @@ def img(name, t):
     if t.k == "sl":
         return f"std_ulogic'image({name})"
     if t.k in VEC:
-        return f"to_hstring({name})"
+        return f"hx(std_ulogic_vector({name}))" if V93[0] else f"to_hstring({name})"
+    if t.k == "arr2":
+        d2 = t.dim2()
+        return " & \",\" & ".join(img(f"{name}({i}, {j})", t.elem) for i in range(t.lo, t.hi + 1) for j in range(d2.lo, d2.hi + 1))
     if t.k == "int":
         return f"integer'image({name})"
     if t.k == "enum":
@@ -1277,6 +1859,9 @@ def draw_stmts(tgt, t, n):
         return [f"draw(r8); {tgt} <= {t.name}'val(to_integer(unsigned(r8)) mod {t.n()});"]
     if t.k == "rec":
         return [x for f, ft in t.fields for x in draw_stmts(f"{tgt}.{f}", ft, n)]
+    if t.k == "arr2":
+        d2 = t.dim2()
+        return [x for i in range(t.lo, t.hi + 1) for j in range(d2.lo, d2.hi + 1) for x in draw_stmts(f"{tgt}({i}, {j})", t.elem, n)]
     return [x for i in range(t.lo, t.hi + 1) for x in draw_stmts(f"{tgt}({i})", t.elem, n)]
 
 
@@ -1286,20 +1871,32 @@ def widths_of(t, acc):
     elif t.k == "rec":
         for _, ft in t.fields:
             widths_of(ft, acc)
-    elif t.k == "arr":
+    elif t.k in ("arr", "arr2"):
         widths_of(t.elem, acc)
     acc.update({1, 8, 16})
     return acc
 
 
+def show(o):
+    """write statements printing ` name=value`, at most 64 elements a statement."""
+    parts = img(o.name, o.t).split(' & "," & ')
+    out = []
+    for i in range(0, len(parts), 64):
+        head = f'string\'(" {o.name}=")' if i == 0 else 'string\'(",")'
+        out.append(f"write(l, {head} & " + ' & "," & '.join(parts[i:i + 64]) + ");")
+    return out
+
+
 def render_tb(g, top, cycles):
     rng = random.Random(g.seed ^ 0x5EED)
-    ins = [o for m, o in top.ports if m == "in" and o.name not in ("clk0", "clk1", "rst", "arst")]
+    sp = top.special
+    ins = [o for m, o in top.ports if m == "in" and o.name not in ("clk0", "clk1", "rst", "arst") and o.name not in sp]
     outs = [o for o in top.sigs if o.name in top.out_names]
+    pins = [o for m, o in top.ports if m == "inout"]
     edge_ins = [o for o in ins if rng.random() < 0.25]
     main_ins = [o for o in ins if o not in edge_ins]
     ws = set()
-    for o in ins:
+    for o in ins + [o for m, o in top.ports if o.name in sp]:
         widths_of(o.t, ws)
     rv = "\n".join(f"    variable r{w} : std_ulogic_vector({w - 1} downto 0);" for w in sorted(ws))
     draw = """    variable s : unsigned(63 downto 0) := x"%016X";
@@ -1321,19 +1918,36 @@ def render_tb(g, top, cycles):
       end loop;
       v := t;
     end procedure;"""
-    sig = [f"  signal {o.name} : {o.t.mark()} := {zero(o.t)};" for o in ins + outs]
+    sig = [f"  signal {o.name} : {o.t.mark()} := {zero(o.t)};" for o in ins + outs + [o for m, o in top.ports if o.name in sp and m == "in"]]
+    sig += [f"  signal {o.name} : {o.t.mark()} := 'H';" for o in pins]
     hold = lambda o: [f"draw(r8); if unsigned(r8) > {rng.choice([40, 90, 160])} then"] + ["  " + x for x in draw_stmts(o.name, o.t, 0)] + ["end if;"]
     drive = [x for o in main_ins for x in hold(o)]
-    pr = ["write(l, integer'image(c));"] + [f"write(l, string'(\" {o.name}=\") & {img(o.name, o.t)});" for o in outs] + ["writeline(output, l);"]
+    for m, o in top.ports:  # the testbench's own 'Z', metavalues on data not valid, a pull on the pin
+        k = sp.get(o.name, "")
+        if k == "z":
+            z = "'Z'" if o.t.k == "sl" else "(others => 'Z')"
+            drive += [f"draw(r8); if unsigned(r8) > 120 then {o.name} <= {z};", "else"] + ["  " + x for x in draw_stmts(o.name, o.t, 0)] + ["end if;"]
+            if o.t.k != "sl" and rng.random() < 0.5:
+                drive.append(f"draw(r8); if unsigned(r8) > 200 then {o.name}({o.t.lo}) <= 'Z'; end if;")
+        elif k.startswith("xd:"):
+            v = k[3:]
+            bad = rng.choice(["'X'", "'U'", "'W'", "'-'", "'Z'"])
+            drive += [f"draw(r8); if unsigned(r8) > 110 then {v} <= '1';"] + ["  " + x for x in draw_stmts(o.name, o.t, 0)] + \
+                     [f"else {v} <= '0'; {o.name} <= (others => {bad});", "end if;"]
+        elif k == "io":
+            drive.append(f"draw(r8); if unsigned(r8) > 128 then {o.name} <= 'H'; else {o.name} <= 'L'; end if;")
+    shown = outs + pins
+    pr = ["write(l, integer'image(c));"] + [x for o in shown for x in show(o)] + ["writeline(output, l);"]
     rst = ["draw(r8); if unsigned(r8) < 20 or c < 2 then rst <= '1'; else rst <= '0'; end if;",
            "draw(r8); if unsigned(r8) < 8 then arst <= '1'; elsif c > 0 then arst <= '0'; end if;"]
     maps = [f"      {o.name} => {o.name}" for _, o in top.ports]
     I = lambda xs, n: "\n".join(ind(n) + x for x in xs)
+    stop = g.v93  # VHDL-1993 has no std.env: the clocks stop and the run ends
     if rng.random() < 0.5:  # both clocks from one process with one wait: their edges come in one delta
         clocks = """  clocks : process
     variable t : natural := 0;
   begin
-    wait for 1 ns;
+    wait for 1 ns;%s
     t := t + 1;
     if t mod 5 = 0 then
       clk0 <= not clk0;
@@ -1341,12 +1955,57 @@ def render_tb(g, top, cycles):
     if t mod 7 = 0 then
       clk1 <= not clk1;
     end if;
-  end process;"""
+  end process;""" % ("\n    if done then\n      wait;\n    end if;" if stop else "")
         n_tb = 3
+    elif stop:
+        clocks = "  clk0 <= not clk0 after 5 ns when not done else clk0;\n  clk1 <= not clk1 after 7 ns when not done else clk1;"
+        n_tb = 4
     else:
         clocks = "  clk0 <= not clk0 after 5 ns;\n  clk1 <= not clk1 after 7 ns;"
         n_tb = 4
-    return f"""-- tbprocs={n_tb}
+    chk = ""
+    if "assert" in g.feat and shown:  # a checker of the top-level unit: evaluated at the clock edge, same messages
+        o = rng.choice(shown)
+        e = {"sl": f"{o.name} = '1'", "int": f"{o.name} > {o.t.lo}"}.get(o.t.k)
+        if o.t.k == "enum":
+            e = f"{o.name} = {o.t.lits[0]}"
+        if o.t.k in VEC:
+            e = f"{o.name}({o.t.lo}) = '0'"
+        if e:
+            chk = f"""  chk : process (clk0)
+  begin
+    if rising_edge(clk0) then
+      assert {e} report "checker " & {img(o.name, o.t)} severity note;
+    end if;
+  end process;
+"""
+            n_tb += 1
+    hx = """  function hx(v : std_ulogic_vector) return string is
+    constant d : string(1 to 16) := "0123456789ABCDEF";
+    variable r : string(1 to (v'length + 3) / 4);
+    variable x : std_ulogic_vector(4 * r'length - 1 downto 0) := (others => '0');
+    variable k : natural;
+  begin
+    x(v'length - 1 downto 0) := v;
+    for i in r'range loop
+      k := 0;
+      for j in 3 downto 0 loop
+        k := 2 * k;
+        if x(4 * (r'length - i) + j) = '1' then
+          k := k + 1;
+        elsif x(4 * (r'length - i) + j) /= '0' then
+          return "X";
+        end if;
+      end loop;
+      r(i) := d(k + 1);
+    end loop;
+    return r;
+  end function;
+  signal done : boolean := false;
+""" if g.v93 else ""
+    gm = ", ".join([f"G_K => {rng.randint(0, 15)}", f"G_B => {rng.choice(['true', 'false'])}"] + [f"{o.name} => {g.const_text(o.t)}" for o in top.generics[2:]])
+    end = "done <= true;\n    wait;" if stop else "std.env.finish;"
+    return f"""-- tbprocs={n_tb} std={g.std} feat={','.join(sorted(g.feat))}
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -1358,10 +2017,10 @@ architecture a of fz_tb is
   signal clk0, clk1 : std_ulogic := '0';
   signal rst, arst : std_ulogic := '1';
 {chr(10).join(sig)}
-begin
+{hx}begin
 {clocks}
-  dut : entity work.fz_top
-    generic map (G_K => {rng.randint(0, 15)}, G_B => {rng.choice(['true', 'false'])})
+{chk}  dut : entity work.fz_top
+    generic map ({gm})
     port map (
 {(',' + chr(10)).join(maps)});
   main : process
@@ -1376,7 +2035,7 @@ begin
 {I([x for o in main_ins if rng.random() < 0.4 for x in hold(o)], 3)}
       wait for 8 ns;
     end loop;
-    std.env.finish;
+    {end}
   end process;
   edge : process
 {draw % (rng.getrandbits(63) | 1, rv)}
@@ -1398,17 +2057,21 @@ def finish(g, top):
             c.v = g.const_text(c.t)
 
 
-def build(seed, scale=1.0):
-    g = Gen(seed, scale)
+def build(seed, scale=1.0, feat=None, std=None):
+    g = Gen(seed, scale, feat, std)
     top = g.design()
     finish(g, top)
     return g
 
 
+V93 = [False]  # the design being rendered is VHDL-1993 (img)
+
+
 def render(g, cycles=40):
     top = next(e for e in g.ents if e.name == "fz_top")
+    V93[0] = g.v93
     parts = [render_pkg(g)]
-    for ent in reversed(g.ents):
+    for ent in sorted(reversed(g.ents), key=lambda e: e.raw is None):  # the width entity first: all may use it
         parts.append(render_ent(g, ent, ent is top))
     parts.append(render_tb(g, top, cycles))
     return "\n\n".join(parts) + "\n"
@@ -1425,10 +2088,10 @@ def mem_ok():
     return False
 
 
-def script(binary, tiers, warm, checks):
+def script(binary, tiers, warm, checks, std="2008"):
     """bash steps of one design in its directory: analysis, elaboration, then the runs; each
     run's stdout, stderr and status in files named after it."""
-    y = f"Y={binary}; S='--std=2008 --work=work:lib'; "
+    y = f"Y={binary}; S='--std={std} --work=work:lib'; "
     st = ['$Y analyze $S d.vhd > a.out 2>&1 || exit 97', '$Y elab $S fz_tb > e.out 2>&1 || exit 98',
           '$Y run $S --cycle-report fz_tb > report.out 2> report.err']
     runs = []
@@ -1448,17 +2111,18 @@ def script(binary, tiers, warm, checks):
     return y + "; ".join(st), [r[0] for r in runs]
 
 
-META = re.compile(r"metavalue|'[UXWZ-]'|=[0-9A-F,]*[UXWZ]")
+META = re.compile(r"(\S*)(?:metavalue|='[UXWZ-]'|=[0-9A-F,]*[UXWZ])")
 T0_META = re.compile(r"^\*\* Warning: 0fs\+\d+: NUMERIC_STD\.\S+: metavalue detected")
 
 
 def norm(out):
-    """stdout without the metavalue warnings of time 0: an expression actual of a port is 'U'
-    until its equivalent process first runs, and cycle-based processes give no ieee warnings."""
+    """stdout without the metavalue warnings of time 0 (an expression actual of a port is 'U'
+    until its equivalent process first runs, and cycle-based processes give no ieee warnings),
+    and without the reports of the design's own asserts (dropped in cycle-based processes)."""
     lines, keep = out.splitlines(), []
     i = 0
     while i < len(lines):
-        if T0_META.match(lines[i]):
+        if T0_META.match(lines[i]) or (MSG in lines[i] and lines[i].startswith("** ")):
             i += 2 if i + 1 < len(lines) and lines[i + 1].startswith("    Process ") else 1
             continue
         keep.append(lines[i])
@@ -1474,7 +2138,7 @@ def one(seed, a, binary):
     d = Path(a.out) / f"s{seed}"
     shutil.rmtree(d, ignore_errors=True)
     d.mkdir(parents=True)
-    g = build(seed, a.scale)
+    g = build(seed, a.scale, a.feat, a.std)
     (d / "d.vhd").write_text(render(g, a.cycles))
     return check(d, a, binary, seed)
 
@@ -1482,11 +2146,16 @@ def one(seed, a, binary):
 def check(d, a, binary, seed=None):
     tiers = a.tiers.split(",")
     checks = a.checks and (seed is None or seed % a.checks == 0)
-    sh, runs = script(binary, tiers, a.warm, checks)
+    hd = re.search(r"-- tbprocs=\d+ std=(\d+) feat=(\S*)", (d / "d.vhd").read_text())
+    sh, runs = script(binary, tiers, a.warm, checks, hd.group(1) if hd else "2008")
     env = dict(os.environ, YAVS_STD_CACHE=str(Path(a.out) / "std-cache"))
     cmd = ["timeout", "300", "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G", "bash", "-c", sh]
     p = subprocess.run(cmd, cwd=d, env=env, capture_output=True, text=True)
     res = {"seed": seed, "dir": str(d), "verdict": "same", "why": "", "gen": GEN}
+    if hd:
+        res["std"], res["feat"] = hd.group(1), hd.group(2).split(",") if hd.group(2) else []
+    if p.returncode not in (97, 98, 124) and "W1404" in (d / "a.out").read_text(errors="replace"):  # a static index outside its range:
+        p.returncode = 97  # an error of the design (the shrinker's narrowing makes them), though only a warning at analysis
     if p.returncode in (97, 98, 124):
         res["verdict"] = {97: "analysis", 98: "elab", 124: "timeout"}[p.returncode]
         f = {97: "a.out", 98: "e.out"}.get(p.returncode)
@@ -1562,11 +2231,11 @@ def tags(d, rep):
         while j < len(text) and j < i + 400 and not text[j].strip().startswith(("end process", "end generate")) and (j == i or text[i].lstrip().startswith(("process", "g_"))):
             j += 1
         body = "\n".join(text[i:j + 1])
-        for k, rx in TAGS.items():
-            if rx.search(body):
-                c = out.setdefault(k, [0, 0])
-                c[0] += on == "member"
-                c[1] += 1
+        fz = re.search(r"-- fz: (\S+)", text[i]) if i < len(text) else None
+        for k in [k for k, rx in TAGS.items() if rx.search(body)] + (fz.group(1).split(",") if fz else []):
+            c = out.setdefault(k, [0, 0])
+            c[0] += on == "member"
+            c[1] += 1
     return out
 
 
@@ -1590,8 +2259,11 @@ def main():
     g.add_argument("seed", type=int)
     g.add_argument("--scale", type=float, default=1.0)
     g.add_argument("--cycles", type=int, default=40)
+    feat = lambda x: [f for f in x.split(",") if f] if x != "random" else None
     for name in ("run", "shrink", "check"):
         r = sub.add_parser(name)
+        r.add_argument("--feat", type=feat, default=None, help=f"the constructs every seed uses, of {','.join(FEATS)} (default: random per seed)")
+        r.add_argument("--std", choices=["1993", "2008", "2019"], help="the VHDL version of every seed (default: random per seed)")
         if name == "run":
             r.add_argument("--seeds", default="0:100", help="A:B, the seeds A to B - 1")
         elif name == "shrink":
@@ -1611,15 +2283,20 @@ def main():
         r.add_argument("--json", help="append one line per seed to this file")
         if name == "run":
             r.add_argument("--min-share", type=float, default=60.0, help="fail when fewer percent of the processes joined")
+    g.add_argument("--feat", type=feat, default=None)
+    g.add_argument("--std", choices=["1993", "2008", "2019"])
     a = ap.parse_args()
     if a.cmd == "gen":
-        print(render(build(a.seed, a.scale), a.cycles), end="")
+        print(render(build(a.seed, a.scale, a.feat, a.std), a.cycles), end="")
         return 0
     binary = shutil.which(a.bin) or a.bin
     if a.cmd == "check":
         r = check(Path(a.dir), a, binary)
         print(json.dumps(r, indent=1))
         return 0 if r["verdict"] in ("same", "vacuous") else 1
+    for f in a.feat or []:
+        if f not in FEATS:
+            ap.error(f"unknown construct {f!r} in --feat; known: {', '.join(FEATS)}")
     if a.cmd == "shrink":
         return shrink(a, binary)
     lo, hi = map(int, a.seeds.split(":"))
@@ -1697,7 +2374,7 @@ def stmt_lists(g):
             elif st.k == "case":
                 for _, b in st.a[1]:
                     yield from rec(b)
-            elif st.k == "for":
+            elif st.k in ("for", "while"):
                 yield from rec(st.a[2])
     for ent in g.ents:
         for p in ent.procs:
@@ -1705,7 +2382,7 @@ def stmt_lists(g):
             yield from rec(p.rst_body)
     for f in g.funcs:
         yield from rec(f["body"])
-    for p in g.procs:
+    for p in g.procs + g.sprocs:
         yield from rec(p["body"])
 
 
@@ -1735,12 +2412,16 @@ def edits(g):
     lists = list(stmt_lists(g))
     return [("proc", sum(len(e.procs) for e in g.ents)),
             ("sig", sum(len(e.sigs) + len(e.ports) for e in g.ents)),
-            ("narrow", len(vec_types(g))),
-            ("const", len(g.pconsts) + sum(len(e.consts) for e in g.ents) + len(g.funcs) + len(g.procs)),
+            ("narrow", len(vec_types(g)) * len(NARROW)),
+            ("const", len(g.pconsts) + sum(len(e.consts) for e in g.ents) + len(g.funcs) + len(g.procs) + len(g.sprocs)),
+            ("decl", sum(len(e.aliases) + len(e.impures) for e in g.ents)),
             ("stmt", sum(len(l) for l in lists)),
             ("hoist", sum(len(l) for l in lists)),
             ("ex", len(all_exprs(g))),
             ("kid", len(all_exprs(g)))]
+
+
+NARROW = [lambda w: w // 2, lambda w: w - 1, lambda w: 1, lambda w: 64 if w > 64 else w - 1, lambda w: 8]  # widths a vector may shrink to
 
 
 def vec_types(g):
@@ -1757,9 +2438,12 @@ def vec_types(g):
 
 def edit(g, kind, i):
     """Apply edit i of a kind to g in place; False if it does not apply."""
-    if kind == "narrow":  # half the width: a slice now outside fails analysis, a mismatch shows as a metavalue
-        t = vec_types(g)[i]
-        t.w = max(1, t.w // 2)
+    if kind == "narrow":  # a smaller width: a slice now outside fails analysis, a mismatch shows as a metavalue
+        t = vec_types(g)[i // len(NARROW)]
+        w = max(1, NARROW[i % len(NARROW)](t.w))
+        if w >= t.w:
+            return False
+        t.w = w
         t.hi = t.lo + t.w - 1
         return True
     if kind == "proc":
@@ -1770,7 +2454,14 @@ def edit(g, kind, i):
             i -= len(e.procs)
         return False
     if kind == "const":  # a constant or subprogram nothing uses any more
-        for lst in [g.pconsts] + [e.consts for e in g.ents] + [g.funcs, g.procs]:
+        for lst in [g.pconsts] + [e.consts for e in g.ents] + [g.funcs, g.procs, g.sprocs]:
+            if i < len(lst):
+                del lst[i]
+                return True
+            i -= len(lst)
+        return False
+    if kind == "decl":  # an alias or impure function nothing uses any more
+        for lst in [x for e in g.ents for x in (e.aliases, e.impures)]:
             if i < len(lst):
                 del lst[i]
                 return True
@@ -1799,7 +2490,7 @@ def edit(g, kind, i):
                     return True
                 st = lst[i]
                 body = st.a[0][0][1] if st.k == "if" else next((b for _, b in st.a[1] if b), None) if st.k == "case" else st.a[2] if st.k == "for" else None
-                if body is None or st.k == "for":  # a for body uses its index
+                if body is None or st.k in ("for", "while"):  # a loop body uses its index
                     return False
                 lst[i:i + 1] = body
                 return True
@@ -1824,15 +2515,16 @@ def edit(g, kind, i):
 def shrink(a, binary):
     import copy
     seed = a.seed
-    g = build(seed, a.scale)
+    g = build(seed, a.scale, a.feat, a.std)
     d = Path(a.out) / f"shrink{seed}"
     shutil.rmtree(d, ignore_errors=True)
     d.mkdir(parents=True)
     tiers, run = a.tiers.split(","), None
     cycles = a.cycles
+    meta = None  # the outputs showing metavalues at the start (a 'Z' passed on): no others may appear
 
     def test(g2, cyc):
-        nonlocal run
+        nonlocal run, meta
         try:
             text = render(g2, cyc)
         except Exception:
@@ -1848,8 +2540,10 @@ def shrink(a, binary):
         if r["verdict"] == "differs" and (run is None or r["run"] == run):
             rr = r["run"]
             normal = (d / f"normal-{rr.split('-')[-1] if rr != 'checks' else a.tiers.split(',')[0]}.out").read_text(errors="replace")
-            if META.search(norm(normal)):  # a narrowed width made a length mismatch: not the same bug
+            ms = set(META.findall(norm(normal)))
+            if meta is not None and not ms <= meta:  # a narrowed width made a length mismatch: not the same bug
                 return False
+            meta = ms if meta is None else meta
             run = r["run"]
             return r
         return False

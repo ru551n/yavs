@@ -166,11 +166,16 @@ YAVS_CYCLE_CACHE_CHECK=1 YAVS_BIN=... python3 -I tools/difftest/cyclegate.py --w
   `tests/cycle` and the bench designs in normal and cycle mode with one binary and fails on any difference the
   documented losses (A6) or the reviewed list `tools/difftest/cyclegate.expected` do not explain; a new entry in that list is a decision to accept the loss, not a way to silence the gate. It also shows how many
   processes joined per test, so a pass is not vacuous: read the summary's count of tests with a member.
-- Run the fixed-seed fuzz run before every push of cycle code too (about 3 minutes, README "Cycle mode fuzzer"):
-  `python3 -I tools/difftest/cyclefuzz.py run --seeds 0:400 --warm --checks 5 --bin <release yavs>` (exit 1 on a
+- Run the fixed-seed fuzz run before every push of cycle code too (about 2.5 minutes: 156 s on 2026-11-17, README "Cycle mode fuzzer"):
+  `python3 -I tools/difftest/cyclefuzz.py run --seeds 0:300 --warm --checks 5 --bin <release yavs>` (exit 1 on a
   difference, a seed that does not compare, or membership under 60 percent). Random designs in the subset found two wrong results that every gate before it passed (`q <= q`
-  after an earlier write, a right shift by 64 or more); `shrink SEED` reduces a failing seed, and its summary
-  shows how many of the designs' processes joined. A longer run (`--seeds A:B` with new seeds) after a lowering change.
+  after an earlier write, a right shift by 64 or more), and its second round (constructs switched on per seed, `--feat`,
+  VHDL-1993 and 2019 seeds, README table) one more in cycle mode (a register on a clock a member divides, `dclkreg.vhd`)
+  and four in the normal mode (constants of element-constrained subtypes, port actuals of slices with signal bounds and
+  of aliases, `wait until` on those); `shrink SEED` reduces a failing seed, and its summary
+  shows how many of the designs' processes joined, also per construct. A difference that is a delta race of the design
+  (a clock gated by an input that also feeds the sampled data, a clock used as data at its own edge) is by contract: the
+  generator avoids those forms. A longer run (`--seeds A:B` with new seeds) after a lowering change.
 - When a recorded command file of the user's test runs exists, run `tools/difftest/cyclereplay.py` on it before every push
   of cycle code too (README "Cycle mode gate"): it replays those runs normal and `--cycle` and compares the exit status, the
   end time, the console and the files written. It runs on private copies of the recorded libraries (made per replay,

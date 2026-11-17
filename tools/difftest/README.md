@@ -206,7 +206,7 @@ edges, and runs each design normal and `--cycle` with one binary (`--bin`, defau
 is deterministic from its seed (and the version of the generator, whose hash each JSON line records).
 
     python3 -I tools/difftest/cyclefuzz.py gen 7                      # the design of seed 7
-    python3 -I tools/difftest/cyclefuzz.py run --seeds 0:400 --warm --checks 5 --bin target/release/yavs
+    python3 -I tools/difftest/cyclefuzz.py run --seeds 0:300 --warm --checks 5 --bin target/release/yavs
     python3 -I tools/difftest/cyclefuzz.py shrink 7 --bin ...          # a failing seed reduced to a small reproducer
     python3 -I tools/difftest/cyclefuzz.py shrink 7 --reason "did not count" --bin ...  # reduced while the report holds the text
     python3 -I tools/difftest/cyclefuzz.py check DIR --bin ...         # a reproducer `DIR/d.vhd` edited by hand
@@ -221,26 +221,56 @@ enables, memories written at run-time indices), combinational processes, concurr
 all three kinds, `for generate`, hierarchy with generics, expression actuals and partial associations
 of ports, two clocks (made by two concurrent assignments or by one process), and processes cycle mode
 must leave in the event kernel (latches, variables keeping state, waits in time, and a process that
-waits on a register and reads logic following it: the run-count class). They hold no asserts or reports in the region, every signal and variable is initialised and
-the inputs are `'0'` and `'1'`, so any difference is a bug; the metavalue warnings of time 0 (an
-expression actual is `'U'` until its equivalent process runs) are not compared. The generator also
-avoids the `numeric_std` "vector truncated" warnings: cycle mode gives them at other deltas or, for a
-call folded during elaboration, once at time 0.
+waits on a register and reads logic following it: the run-count class).
+
+Each seed also switches on, each with a chance of 30 percent, some of these constructs (`--feat` names the
+ones every seed uses; the seed's line of `--json` and the `-- tbprocs=` line of its design list them):
+
+| name | what |
+|---|---|
+| `rtslice` | slices whose bounds are known at run time only, read and written, of elements chosen at run time |
+| `md` | arrays of two dimensions, indexed by run-time values, as signals, memories and constants |
+| `bigmem` | memories of 65 to 512 entries, bounds not at 0, both directions |
+| `ucon` | records and arrays of unconstrained vectors constrained by a subtype (VHDL-2008) |
+| `alias` | aliases of slices (with a range of their own) and record fields, of signals and of variables, read and written |
+| `while` | `while` loops and loops with an `exit`, counted by a variable, bounded by a constant or a run-time value |
+| `caseq` | `case?`, `select?` and `?=` with `'-'` (VHDL-2008) |
+| `impure` | impure functions of the architecture reading signals, called from every kind of process |
+| `sigparam` | package procedures with signal parameters, called in processes and as concurrent procedure calls |
+| `ifgen` | if-generate with `elsif` and `else` (two generates in VHDL-1993), one alternative with a signal of its own |
+| `cgen` | generics of vector, record and array types, given in generic maps or by default |
+| `gwidth` | one entity with a width generic instantiated at several widths (1 to 129) |
+| `assert` | asserts and reports in the design's processes, and a checker of the testbench at the clock edge |
+| `zpass` | a `'Z'` the testbench drives passed on to outputs (copy, mux, register), and data with metavalues read only when valid |
+| `inout` | a tri-state `std_logic` pin the testbench pulls to `'H'` or `'L'`, read back with `to_x01` |
+| `dclk` | clocks made by the design: gated, divided by a register, copied, chosen by a generic |
+
+A seed is VHDL-2008, or with a chance of 10 percent each VHDL-1993 (no 2008 operators or forms, `buffer` ports,
+the testbench stops its clocks) or VHDL-2019 (`--std` sets it). Every signal and variable is initialised and
+the inputs are `'0'` and `'1'` except where `zpass` and `inout` say, so any difference is a bug. Not compared:
+the metavalue warnings of time 0 (an expression actual is `'U'` until its equivalent process runs), and the
+reports of the design's own asserts (their text starts `fzmsg`), which cycle mode drops; the testbench's
+checker is compared. The generator avoids the `numeric_std` "vector truncated" warnings: cycle mode gives
+them at other deltas or, for a call folded during elaboration, once at time 0. Not generated, because the
+user guide documents them as differences: a metavalue the region reads as 0 where it changes a result, a
+`'U'` start value, `'H'`/`'L'` passed on to an output.
 
 Each seed runs, per tier of `--tiers` (default `interp,clift`), the normal mode and `--cycle` cold (no
 region code in the cache); `--warm` runs it again with the region from the cache (a cold run that left
 no code in the cache fails); `--checks N` runs every Nth seed once more with `YAVS_CYCLE_CHECKS=all`,
 `YAVS_CYCLE_SKIP_CHECK=1`, `YAVS_CYCLE_IMPORT_CHECK=1` and `YAVS_CYCLE_GUARD=all`. Compared: exit status,
 standard output and standard error without the summary line. A `--cycle-report` run gives the members; the
-summary prints how many of the design's processes joined the region and the most common reasons of the
-others, so a pass is not vacuous (a seed with no member is `vacuous`). The exit status is 1 when a
+summary prints how many of the design's processes joined the region, per construct (the processes holding
+it), and the most common reasons of the others, so a pass is not vacuous (a seed with no member is `vacuous`). The exit status is 1 when a
 seed differs or does not compare (analysis or elaboration fails, the normal run fails or times out:
 a valid design, so a bug of the generator or of yavs) and when fewer than `--min-share` percent
-(default 60) of the designs' processes joined the region. Simulations run under
+(default 60) of the designs' processes joined the region. A static index or slice outside its range
+(warning `W1404` at analysis) counts as a failed analysis. Simulations run under
 `systemd-run --user --scope -p MemoryMax=2G`, at most 2 at a time, and wait while less than 20 GB of
 memory is available. Passing seeds' directories are removed (`--keep` keeps them); `--json FILE` appends
-a line per seed. `shrink` deletes processes, statements, signals, ports, constants and subprograms,
-replaces expressions by a constant or an operand, halves the widths of vectors and shortens the run,
+a line per seed. `shrink` deletes processes, statements, signals, ports, constants, subprograms, aliases and impure
+functions, replaces expressions by a constant or an operand, narrows vectors (to half, one less, 1, 64 and
+8 elements) and shortens the run,
 keeping each step that still differs in the same run (or, with `--reason`, still shows the reason);
 `shrink` regenerates the seed from the current generator, so shrink a seed with the version that found it.
 

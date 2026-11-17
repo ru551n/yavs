@@ -806,9 +806,8 @@ class Gen:
                 continue
             outs = [Obj(s.fresh("c"), s.any_type(), "sig") for _ in range(rng.randint(1, 2))]
             s.read = [o for o in avail]
-            if r < 0.07:
-                s.out_proc(ent, outs[:1])
-                outs = outs[:1]
+            if r < 0.12:
+                outs = s.out_proc(ent, outs[:1])
             elif r < 0.5:
                 s.comb_proc(ent, outs)
             else:
@@ -918,7 +917,7 @@ class Gen:
         rng = s.rng
         s.write, s.loopv, s.depth = outs, [], 2
         o = outs[0]
-        k = rng.choice(["latch", "state", "sens", "wait"])
+        k = rng.choice(["latch", "state", "sens", "sens", "wait"])
         if k == "latch":
             body = [St("if", [(s.cond(), [St("assign", Ex(o.name, o.t), "<=", s.expr(o.t))])], None)]
             ent.procs.append(Proc("comb", decls=[], body=body, drives=outs, all=True))
@@ -927,12 +926,23 @@ class Gen:
             s.read = s.read + [v]
             body = [St("assign", Ex(o.name, o.t), "<=", s.expr(o.t)), St("assign", Ex(v.name, v.t), ":=", s.expr(v.t))]
             ent.procs.append(Proc("comb", decls=[v], body=body, drives=outs, all=True))
-        elif k == "sens":
-            body = [St("assign", Ex(o.name, o.t), "<=", s.expr(o.t))]
-            ent.procs.append(Proc("comb", decls=[], body=body, drives=outs, all=False, partial=True))
+        elif k == "sens":  # reads logic that follows a register, waits on the register alone
+            qs = [x for x in s.read if x.cls == "sig" and x.name.startswith("q") and x.t.k in VEC]
+            if qs:
+                q = rng.choice(qs)
+                c = Obj(s.fresh("c"), T("uns", w=8), "sig")
+                ent.procs.append(Proc("conc", tgt=c, e=Ex(f"resize(unsigned({q.name}), 8) + {rng.randint(1, 9)}", c.t)))
+                outs = outs + [c]
+                o.t = T("uns", w=8)
+                e = Ex(f"resize(unsigned({c.name}), 8) + resize(unsigned({q.name}), 8)", o.t)
+                ent.procs.append(Proc("comb", decls=[], body=[St("assign", Ex(o.name, o.t), "<=", e)], drives=outs, all=False, sens=[q.name]))
+            else:
+                body = [St("assign", Ex(o.name, o.t), "<=", s.expr(o.t))]
+                ent.procs.append(Proc("comb", decls=[], body=body, drives=outs, all=False, partial=True))
         else:
             body = [St("assign", Ex(o.name, o.t), "<=", s.expr(o.t))]
             ent.procs.append(Proc("waits", decls=[], body=body, drives=outs, clk="clk1" if s.chance(0.2) else "clk0"))
+        return outs
 
     def conc(s, ent, out):
         rng = s.rng
@@ -1137,7 +1147,10 @@ def render_proc(p, n=1):
         return "\n".join([f"{ind(n)}{lab}process"] + decls + [f"{ind(n)}begin", f"{ind(n + 1)}wait until rising_edge({p.clk});",
                           f"{ind(n + 1)}wait for 1 ns;"] + render_stmts(p.body, n + 1) + [f"{ind(n)}end process;"])
     if p.k == "comb":
-        sens = "all" if p.all else ", ".join(reads(p)[:1] if getattr(p, "partial", False) else reads(p)) or "all"
+        rd = getattr(p, "sens", None) or reads(p)
+        if getattr(p, "partial", False):
+            rd = rd[:1]
+        sens = "all" if p.all else ", ".join(rd) or "all"
         return "\n".join([f"{ind(n)}{lab}process ({sens})"] + decls + [f"{ind(n)}begin"] + render_stmts(p.body, n + 1) + [f"{ind(n)}end process;"])
     # clocked
     body = render_stmts(p.body, 0)

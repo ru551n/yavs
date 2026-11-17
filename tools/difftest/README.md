@@ -198,8 +198,8 @@ edges, both edge forms, `wait until`, `q <= d when rising_edge(c)`, synchronous 
 enables, memories written at run-time indices), combinational processes, concurrent assignments of
 all three kinds, `for generate`, hierarchy with generics, expression actuals and partial associations
 of ports, two clocks (made by two concurrent assignments or by one process), and processes cycle mode
-must leave in the event kernel (latches, variables keeping state, incomplete sensitivity lists, waits
-in time). They hold no asserts or reports in the region, every signal and variable is initialised and
+must leave in the event kernel (latches, variables keeping state, waits in time, and a process that
+waits on a register and reads logic following it: the run-count class). They hold no asserts or reports in the region, every signal and variable is initialised and
 the inputs are `'0'` and `'1'`, so any difference is a bug; the metavalue warnings of time 0 (an
 expression actual is `'U'` until its equivalent process runs) are not compared. The generator also
 avoids the `numeric_std` "vector truncated" warnings: cycle mode gives them at other deltas or, for a

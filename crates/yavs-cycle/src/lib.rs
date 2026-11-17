@@ -179,7 +179,7 @@ fn at(db: &Db, span: yavs_diag::Span) -> String {
 /// reason, all of them listed. Under [`Mode::Report`] only the report is made, nothing is
 /// compiled.
 pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>> {
-    let sel = store::select(db, e).map_err(|d| vec![d])?;
+    let sel = store::select(db, e)?;
     let label = |pi: usize| e.hier.proc_label(&e.procs[pi], yavs_elab::Case::Lrm);
     if mode == Mode::Strict {
         let errs: Vec<Diagnostic> = (sel.out.iter())
@@ -447,7 +447,7 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
             .with_note("this is a bug in yavs"),
         ]
     })?;
-    store::built().map_err(|d| vec![d])?;
+    store::built()?;
     Ok(Plan {
         report,
         summary,

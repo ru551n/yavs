@@ -1,1 +1,1 @@
-Cycle mode keeps its analysis of the region in the compilation cache too, with the region's machine code as a whole: a later run of the same design, also another test case of a test suite, starts about as fast as a run without `--cycle`.
+Cycle mode keeps its analysis of the region in the compilation cache too, with the region's machine code as a whole: a later run of the same design, also another test case of a test suite, starts close to as fast as a run without `--cycle`.

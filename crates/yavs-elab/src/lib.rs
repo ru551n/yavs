@@ -162,7 +162,10 @@ pub struct ElabConfig {
 
 /// See [`ElabConfig::values`].
 #[derive(Clone)]
-pub struct ValuesHook(pub std::sync::Arc<dyn Fn(&Db, &GenericReads) -> bool + Send + Sync>);
+pub struct ValuesHook(pub std::sync::Arc<ValuesFn>);
+
+/// The function of a [`ValuesHook`].
+pub type ValuesFn = dyn Fn(&Db, &GenericReads) -> bool + Send + Sync;
 
 impl std::fmt::Debug for ValuesHook {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

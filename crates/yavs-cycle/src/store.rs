@@ -261,7 +261,7 @@ fn look(db: &Db, reads: &GenericReads) -> bool {
 }
 
 /// The selection of `e`: from the cache when the hook found it, else made (and stored).
-pub(crate) fn select(db: &Db, e: &Elaborated) -> Result<Selection, Diagnostic> {
+pub(crate) fn select(db: &Db, e: &Elaborated) -> Result<Selection, Vec<Diagnostic>> {
     let found = FOUND.lock().unwrap_or_else(PoisonError::into_inner).take();
     // From here on nothing elaborates: natives need no test.
     yavs_interp::watch_outside(false);
@@ -354,14 +354,16 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Result<Selection, Diagnostic> {
     Ok(sel)
 }
 
-fn ice(m: &str) -> Diagnostic {
-    Diagnostic::error("E9999", format!("cycle mode's analysis cache: {m}"))
-        .with_note("this is a bug in yavs")
+fn ice(m: &str) -> Vec<Diagnostic> {
+    vec![
+        Diagnostic::error("E9999", format!("cycle mode's analysis cache: {m}"))
+            .with_note("this is a bug in yavs"),
+    ]
 }
 
 /// After the region is built: under `YAVS_CYCLE_CACHE_CHECK` an error when the build read a
 /// top-level generic, which the key of the region's code would not hold.
-pub(crate) fn built() -> Result<(), Diagnostic> {
+pub(crate) fn built() -> Result<(), Vec<Diagnostic>> {
     let check = (SETUP
         .lock()
         .unwrap_or_else(PoisonError::into_inner)

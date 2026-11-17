@@ -241,10 +241,14 @@ def one(item, jobs_args):
                 shutil.rmtree(base / kind, ignore_errors=True)
                 if (base / "cold" / "lib").is_dir():  # (none when the analysis failed)
                     shutil.copytree(base / "cold" / "lib", base / kind / "lib")
-                res["cached"] = any((base / kind / "lib" / "yavs-cache" / "cycle").glob("cycle-*.img"))
+                store = base / kind / "lib" / "yavs-cache" / "cycle"
+                res["cached"] = any(store.glob("cycle-*.img"))
+                analyses = len(list(store.glob("cyc3-*.img")))
             rc, out, err = D.run(t, vhd, hdr, base / kind, 1, "", not jobs_args.no_sandbox,
                                  fresh=not (kind == "cycle" and jobs_args.warm))
             if kind == "cycle" and jobs_args.warm:
+                # The analysis came from the cache when the cold run kept one and the warm run kept no other.
+                res["analysis"] = analyses > 0 and len(list(store.glob("cyc3-*.img"))) == analyses
                 warm = D.normalise(rc, out, err, yavs=True)
                 if warm != cold:
                     res.update(bucket="differs", why="the warm run (region code from the cache) differs from the cold run\n" + first_diff(cold, warm))
@@ -351,7 +355,8 @@ def main():
           f"{c['known']} known differences, {c['differs']} differ otherwise, {c['refused']} refused, {c['skipped']} skipped; "
           f"{with_m} of {len(ran)} compared tests have at least one process in the region "
           f"({sum(r['members'] for r in ran)} of {sum(r['procs'] for r in ran)} processes)"
-          + (f"; warm: {sum(bool(r.get('cached')) for r in res)} tests ran with region code in the cache" if a.warm else ""))
+          + (f"; warm: {sum(bool(r.get('cached')) for r in res)} tests ran with region code in the cache, "
+             f"{sum(bool(r.get('analysis')) for r in res)} with the analysis from it" if a.warm else ""))
     sys.exit(1 if c["differs"] else 0)
 
 

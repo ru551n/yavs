@@ -524,13 +524,15 @@ class YavsInterface(SimulatorInterface):
             check_interactive_args(args, debug_port)
 
         tokens = None
-        # The budget is the CPUs the run may use, not -p: a run of -p N at or above it lends nothing.
+        # The budget is the CPUs the run may use; the -p workers keep a slot each, so -p N at or above the CPU
+        # count has nothing to lend and gets no server. -p 0 is one job per CPU, as the test runner resolves it.
         # A debugger session is one simulation on one thread.
         serve = not getattr(args, "yavs_no_jobserver", False) and _jobserver_from_environment()
         cpus = usable_cpus()
-        if serve and cpus > 1 and debug_port is None and not interactive:
+        jobs = getattr(args, "num_threads", 1) or cpu_count()
+        if serve and jobs < cpus and debug_port is None and not interactive:
             try:
-                tokens = TokenServer(cpus)
+                tokens = TokenServer(cpus, reserve=jobs)
             except OSError as exc:
                 # Tokens only speed a run up: every simulation then runs on one thread (#878)
                 LOGGER.warning("cannot start the yavs token server (%s); simulations use one thread", exc)

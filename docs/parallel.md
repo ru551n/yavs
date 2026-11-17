@@ -128,6 +128,32 @@ The accelerator bench pools: it gains a third with 2.2 threads on average, and t
 58 percent more CPU time for that third. The processor model never uses a token, and the token mode alone
 costs it 2 percent even with seven cores free ([#882](https://github.com/ru551n/yavs/issues/882)).
 
+### Token server on by default, measured 2026-11-17
+
+`vunit-yavs` starts the server by default when `-p N` is below the CPU count; each `-p` slot keeps its CPU, the rest
+are lent. 172 tests of seven CNN-accelerator module benches (0.03 s to 5 s each), the whole run pinned to 4 cores
+(so 4 slots), daytime on a shared host (load 8 to 25), median of 3 runs, `--yavs-no-jobserver` (as before) against
+the default, each with its own output, a cold run (run caches removed) and a warm one. Wall and CPU (user + sys of
+the whole run) in seconds:
+
+| Case | Wall before | Wall default | CPU before | CPU default |
+|---|---|---|---|---|
+| `-p 1`, cold | 144.7 | 131.1 (0.91x) | 159.8 | 176.6 (1.11x) |
+| `-p 1`, warm | 139.9 | 121.9 (0.87x) | 153.0 | 180.4 (1.18x) |
+| `-p 2`, cold | 76.2 | 87.8 (1.15x) | 159.2 | 198.0 (1.24x) |
+| `-p 2`, warm | 77.3 | 78.2 (1.01x) | 158.9 | 183.9 (1.16x) |
+| `--cycle`, `-p 1`, cold | 79.6 | 72.0 (0.90x) | 95.2 | 90.1 (0.95x) |
+| `--cycle`, `-p 1`, warm | 59.0 | 56.2 (0.95x) | 72.8 | 70.7 (0.97x) |
+| `--cycle`, `-p 2`, cold | 47.5 | 46.9 (0.99x) | 100.5 | 100.7 (1.00x) |
+| `--cycle`, `-p 2`, warm | 36.5 | 34.3 (0.94x) | 78.0 | 72.1 (0.92x) |
+
+`-p 4` on 4 cores starts no server, so it runs as before. Its runs with the server of the first version (one slot
+per running test, before the reserve) were 4 to 8 percent slower in wall and 8 to 10 percent dearer in CPU: a slot
+freed between two tests was lent at once and the next test started on a full machine (45 of 172 test starts).
+Only the longest tests gain from threads (a 5.8 s test ran in 4.6 s for 8.5 s of CPU instead of 6.1); the short ones
+decide early not to. The `-p 2` cold wall spread (77.6 to 88.8 s with the server, 75.6 to 93.6 s without) is as
+wide as the difference: a series on a quiet host is still to do.
+
 ## `--threads=auto`
 
 The kernel decides while the run goes (`crates/yavs-kernel/src/kernel/auto.rs`; the rules are in

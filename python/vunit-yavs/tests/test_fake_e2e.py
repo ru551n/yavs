@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from multiprocessing import cpu_count
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -92,7 +93,7 @@ class TestFakeYavs(unittest.TestCase):
         self.assertIn("--exit-severity=error", runs[0])
         self.assertFalse(any(arg.startswith("--dap") for arg in runs[0]))
         # The token server is on by default: every simulation runs with --threads=auto
-        self.assertEqual("--threads=auto" in runs[0], usable_cpus() > 1)
+        self.assertEqual("--threads=auto" in runs[0], usable_cpus() > 1)  # -p 1
         for cmd in calls:
             if cmd[0] in ("analyze", "elab", "run"):
                 flags = [arg for arg in cmd if arg.startswith("--std-cache=")]
@@ -144,7 +145,7 @@ class TestFakeYavs(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertIn("--threads=3", self._runs(calls)[0])
 
-    @unittest.skipIf(usable_cpus() < 2, "one CPU: nothing to lend")
+    @unittest.skipIf(usable_cpus() < 3, "-p 2 lends only from a third CPU on")
     def test_token_server_is_on_by_default(self):
         exit_code, output, results, calls = self._run("-p", "2")
         self.assertEqual(exit_code, 0, output)
@@ -155,7 +156,7 @@ class TestFakeYavs(unittest.TestCase):
         self.assertIn(["tokens", 1], calls)
 
     def test_token_server_for_every_job_count_and_opt_out(self):
-        # The budget is the usable CPUs at any -p; -p 0 is one job per CPU (#1141)
+        # The budget is the usable CPUs; each -p worker keeps one, so -p 0 (one job per CPU, #1141) has no server
         opt_outs = {"default": ((), None), "flag": (("--yavs-no-jobserver",), None)}
         opt_outs["environment"] = ((), {"VUNIT_YAVS_JOBSERVER": "off"})
         opt_outs["old flag"] = (("--yavs-jobserver",), None)
@@ -166,7 +167,7 @@ class TestFakeYavs(unittest.TestCase):
                     self.assertEqual(exit_code, 0, output)
                     runs = self._runs(calls)
                     self.assertEqual(len(runs), 1)
-                    served = name in ("default", "old flag") and usable_cpus() > 1
+                    served = name in ("default", "old flag") and usable_cpus() > (int(jobs) or cpu_count())
                     self.assertEqual(bool([call for call in calls if call[0] == "tokens"]), served)
                     self.assertEqual("--threads=auto" in runs[0], served)
                     if not served:

@@ -2,10 +2,13 @@
 
 ## Unreleased
 
-- The token server is on by default, at any `-p`, with one slot for each CPU the run may use (not `-p`): the CPUs no
-  running test takes are lent to the simulations, which run with `--threads=auto`, and `-p N` never keeps more CPUs
-  busy than the machine has. `--yavs-no-jobserver` or `VUNIT_YAVS_JOBSERVER=off` turns it off; `--yavs-jobserver` is
-  still accepted. Under the server the threads of `--yavs-max-threads N` past the first run only on lent tokens.
+- The token server is on by default when `-p N` is below the CPU count (`-p 0` is one per CPU), with one slot for
+  each CPU the run may use: each test slot keeps its CPU, also between two tests, and the CPUs the slots leave idle
+  are lent to the simulations, which run with `--threads=auto`, so threads never keep more CPUs busy than the
+  machine has. With `-p N` at or above the CPU count no server starts. `--yavs-no-jobserver` or
+  `VUNIT_YAVS_JOBSERVER=off` turns it off; `--yavs-jobserver` is still accepted. Under the server the threads of
+  `--yavs-max-threads N` past the first run only on lent tokens. The server no longer lends the slots of `-p` that
+  idle in the tail of a regression: a test starting in such a slot found its CPU lent.
 
 ## 0.20.1 (2026-11-14)
 

@@ -14821,6 +14821,16 @@ whole-signal read, the call, the result's check and copy, the wide drive).
   simulation whose threads do not gain gives its tokens back after its trial and asks for none until the next one, so
   the cap no longer has to protect the processor tests; a gaining one can use up to 8. `yavs.max_threads` and
   `--yavs-max-threads` take a number or `auto`.
+- **Decision: the vunit-yavs token server is on by default, sized to the usable CPUs, and each `-p` worker keeps its
+  slot** (owner, 2026-11-17: on by default, from the CPUs and not from `-p` alone, no oversubscription; the reserve is
+  the agent's, for the owner to confirm). Slots = the CPUs of the runner's affinity; free = slots - max(`-p`, running)
+  - lent; no server when `-p` (`-p 0` = the CPU count) is not below the slots, under `--yavs-debug` or
+  `--yavs-interactive`, or with `--yavs-no-jobserver` / `VUNIT_YAVS_JOBSERVER=off`. Why the reserve: with one slot
+  per running test, a slot freed between two tests of a worker was lent at once to a simulation with a standing want,
+  and lent tokens are never taken back, so the next test started on a full machine: 45 of 172 test starts of a
+  `-p 4` run on 4 CPUs (measured with a probe). Cost: the tail of a regression no longer lends the slots of workers
+  that ran out of tests (the old opt-in server's aim); keeping it would need a freed slot to stay free for a while
+  before it is lent (not built).
 
 ## Copies of subprograms by the descriptors of their arguments (`opt/subcopy.rs`, `copies.rs`, 2026-11-03; landed with the maintainer's ruling of 2026-11-07)
 

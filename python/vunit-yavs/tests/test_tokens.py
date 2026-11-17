@@ -142,6 +142,19 @@ class TestTokenServer(unittest.TestCase):
         wait_for(lambda: self.lent() == [3, 3, 3, 3])
         self.assertEqual(4 + sum(self.lent()), 16)
 
+    def test_the_slot_of_a_worker_between_two_tests_is_not_lent(self):
+        # -p 2 on 4 slots: 2 can be lent; when a test ends its worker's slot waits for the next test, so the slots
+        # are never oversubscribed when it starts
+        self.server = TokenServer(4, reserve=2)
+        first_client, first = self.start()
+        _, second = self.start()
+        self.assertEqual(first.want(3), (1, 2))
+        self.server.remove(first_client)
+        self.assertEqual(second.want(3), (1, 2))
+        _, third = self.start()
+        self.assertEqual(2 + sum(self.lent()), 4)
+        self.assertEqual(third.want(3), (1, 0))
+
     def test_breadth_first_newest_first(self):
         # -p 7 with 3 tests: 4 free tokens; wants arrive oldest first and nothing is taken back
         sims = [self.start(7)[1] for _ in range(3)]

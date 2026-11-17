@@ -160,10 +160,10 @@ Share CPU cores
 functions, and apart from a tier-up thread that prepares functions alongside it, it keeps at most its own threads
 busy, so ``-p N`` on N cores leaves the computer usable. On a
 machine with idle cores, ``vu.set_sim_option("yavs.tier_compile", "background")`` compiles alongside the run
-instead, at the lowest system priority (:doc:`running-faster`). Near the end of a regression, when only long
-tests are left, or with ``-p 1``, the token server of ``vunit-yavs`` lends the idle CPUs to the running simulations
-as threads. It is on by default, sized to the CPUs the run may use, so ``-p N`` with threads never keeps more
-of them busy than the machine has:
+instead, at the lowest system priority (:doc:`running-faster`). When ``-p N`` is below the CPU count, the token
+server of ``vunit-yavs`` lends the CPUs the N test slots leave idle to the running simulations as threads. It is
+on by default, sized to the CPUs the run may use, and never lends a test slot's CPU, so threads never keep more
+CPUs busy than the machine has:
 
 .. code-block:: bash
 

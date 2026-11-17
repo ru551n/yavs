@@ -704,12 +704,12 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   option `yavs.max_threads` (or the runner argument `--yavs-max-threads N` for every test; both
   take a number or `auto`) becomes `--threads=N` before the raw flags, so `--threads` in
   `yavs.sim_flags` still wins; none under `--dap` or for `elab`. The runner starts a token server
-  by default (owner, 2026-11-17; before that only with `--yavs-jobserver` and `-p N` above 1), at
-  any `-p`, with one slot per CPU the runner may use (its affinity), none with one CPU, under
-  `--yavs-debug` or `--yavs-interactive`, or with `--yavs-no-jobserver` or
+  by default (owner, 2026-11-17; before that only with `--yavs-jobserver` and `-p N` above 1)
+  when `-p N` (`-p 0` = the CPU count) is below the CPUs the runner may use (its affinity), with one
+  slot per such CPU; none under `--yavs-debug` or `--yavs-interactive`, or with `--yavs-no-jobserver` or
   `VUNIT_YAVS_JOBSERVER=off`. Under it every `yavs run`
   gets `--threads=auto` (or `yavs.max_threads` when set, before the raw flags) and its own
-  `YAVS_TOKENS`: the runner lends the slots no running test takes as tokens, at most
+  `YAVS_TOKENS`: the runner lends as tokens the slots left after max(N, running tests), at most
   `min(slots, 8) - 1` per test with `auto` and `yavs.max_threads - 1` with a number, breadth first,
   newest test first, and never takes back a token in use (python/vunit-yavs/README.md "Token
   server"). Before 2026-11-07 the default under the server was `--threads=min(N, 4)`.
@@ -1009,7 +1009,7 @@ While a call is under way, the simulation stays at its end if it gets there. If 
 
 ## 7. Environment
 
-The test runner sets no yavs environment variables (only `YAVS_TOKENS` under its token server, on by default, section 5). `YAVS_STDLIB` overrides the std/ieee
+The test runner sets no yavs environment variables (only `YAVS_TOKENS` under its token server, section 5). `YAVS_STDLIB` overrides the std/ieee
 tree (section 3); `YAVS_STD_CACHE` names the directory of the shared std/ieee units, or `off`; `--std-cache` overrides it (section 3). Simulator hooks from the test runner packages
 can add `elab_flags`, `run_flags` and run environment; the test runner applies
 `elab_flags` to both `run` and `elab`, and `run_flags` only to `run`. `YAVS_HUGE_HEAP=0` stops yavs

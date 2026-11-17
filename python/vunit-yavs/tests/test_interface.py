@@ -957,15 +957,18 @@ class TestYavsInterface(unittest.TestCase):
 
     @NEEDS_FAKE_BIN
     def test_token_server_is_on_by_default_with_one_slot_per_usable_cpu(self):
-        # The budget is the CPUs the run may use, whatever -p says, and a namespace without package arguments too
-        with mock.patch("vunit_yavs.usable_cpus", return_value=6):
-            for kwargs in ({}, {"num_threads": 1}, {"num_threads": 4}, {"num_threads": 0}, {"num_threads": 12}):
+        # The budget is the CPUs the run may use; each -p worker keeps one, so -p N at or above it has no server.
+        # A namespace without package arguments is -p 1; -p 0 is one job per CPU.
+        with mock.patch("vunit_yavs.usable_cpus", return_value=6), mock.patch("vunit_yavs.cpu_count", return_value=6):
+            cases = (({}, 1), ({"num_threads": 1}, 1), ({"num_threads": 4}, 4), ({"yavs_jobserver": True}, 1))
+            for kwargs, reserve in cases:
                 with self.subTest(**kwargs):
-                    self.assertEqual(self._from_args(**kwargs)._tokens.num_threads, 6)  # pylint: disable=protected-access
-            # The old flag is the default
-            self.assertEqual(self._from_args(yavs_jobserver=True)._tokens.num_threads, 6)
+                    tokens = self._from_args(**kwargs)._tokens  # pylint: disable=protected-access
+                    self.assertEqual((tokens.num_threads, tokens.reserve), (6, reserve))
+            for jobs in (0, 6, 12):
+                self.assertIsNone(self._from_args(num_threads=jobs)._tokens)  # pylint: disable=protected-access
         with mock.patch("vunit_yavs.usable_cpus", return_value=1):
-            self.assertIsNone(self._from_args(num_threads=4)._tokens)
+            self.assertIsNone(self._from_args(num_threads=1)._tokens)  # pylint: disable=protected-access
 
     @NEEDS_FAKE_BIN
     def test_usable_cpus_follow_the_affinity(self):
@@ -973,7 +976,7 @@ class TestYavsInterface(unittest.TestCase):
             self.skipTest("no CPU affinity on this platform")
         self.assertEqual(usable_cpus(), len(os.sched_getaffinity(0)))
         with mock.patch("os.sched_getaffinity", return_value={0, 3}):
-            self.assertEqual(self._from_args(num_threads=8)._tokens.num_threads, 2)  # pylint: disable=protected-access
+            self.assertEqual(self._from_args(num_threads=1)._tokens.num_threads, 2)  # pylint: disable=protected-access
 
     @NEEDS_FAKE_BIN
     def test_token_server_opt_out(self):

@@ -74,14 +74,17 @@ class Connection:
 
 class TokenServer:
     """
-    The CPU budget of a run of num_threads slots (the usable CPUs), make style: one running test is free and each
-    further running test takes one slot, so with k tests running num_threads - k tokens are lent to the simulations.
+    The CPU budget of a run of num_threads slots (the usable CPUs), make style: each running test takes one slot,
+    and reserve slots (the -p workers of the run) are never lent, so with k tests running
+    num_threads - max(k, reserve) tokens are lent to the simulations. A worker starting its next test always finds
+    its slot, so the slots are never oversubscribed through a token lent between two tests.
     Tokens in use are never taken back: a test starting while every token is in use runs at once, so the
     total is num_threads in the steady state, not at every instant.
     """
 
-    def __init__(self, num_threads):
+    def __init__(self, num_threads, reserve=1):
         self.num_threads = num_threads
+        self.reserve = reserve
         self._clients = []  # Oldest first
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -191,7 +194,7 @@ class TokenServer:
     def _rebalance(self):
         """Lend the free tokens by priority and return the connections lent more"""
         conns = [conn for client in self._clients for conn in client.conns]
-        free = self.num_threads - max(len(self._clients), 1) - sum(conn.lent for conn in conns)
+        free = self.num_threads - max(len(self._clients), self.reserve) - sum(conn.lent for conn in conns)
         changed = []
         for conn, count in zip(conns, lend_order(free, [conn.lent for conn in conns], [c.limit() for c in conns])):
             if count:

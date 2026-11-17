@@ -417,11 +417,12 @@ const STRICT_MAX: usize = 40;
 
 /// The error of each reason a process below the top-level unit stays out for (A40): what is not
 /// supported (the headline), where (the statement; the other process or signal when it spans
-/// processes), the processes, why, and how to fix it. One error per reason and statement, its
+/// processes), the processes, why, and how to fix it. One error per code and statement, its
 /// processes listed (a statement of an entity used many times), sorted by file and line.
 fn strict_errors(db: &Db, e: &Elaborated, out: &[(usize, region::Why)]) -> Vec<Diagnostic> {
-    // By file, line, column, code and text: one error each.
-    type Key<'a> = (String, u32, u32, &'a str, &'a str);
+    // By file, line, column and code: one error each, with the text of its first process (the
+    // instances of one statement differ in their names only).
+    type Key<'a> = (String, u32, u32, &'a str);
     let mut groups: BTreeMap<Key, (&check::Reason, Vec<usize>)> = BTreeMap::new();
     for (pi, why) in out {
         let r = match why {
@@ -433,13 +434,7 @@ fn strict_errors(db: &Db, e: &Elaborated, out: &[(usize, region::Why)]) -> Vec<D
         }
         let f = db.sources.get(r.span.file);
         let (line, col) = f.line_col(r.span.start);
-        let key = (
-            f.path.clone(),
-            line as u32,
-            col as u32,
-            r.code,
-            r.text.as_str(),
-        );
+        let key = (f.path.clone(), line as u32, col as u32, r.code);
         groups.entry(key).or_insert((r, Vec::new())).1.push(*pi);
     }
     let total = groups.len();
@@ -459,6 +454,22 @@ fn strict_errors(db: &Db, e: &Elaborated, out: &[(usize, region::Why)]) -> Vec<D
     errs
 }
 
+/// A reason's text as its construct and detail: split at the first `: ` outside backticks (a
+/// quoted name or expression can hold one).
+fn construct(text: &str) -> (&str, &str) {
+    let mut quoted = false;
+    for (i, c) in text.char_indices() {
+        match c {
+            '`' => quoted = !quoted,
+            ':' if !quoted && text[i + 1..].starts_with(' ') => {
+                return (&text[..i], &text[i + 2..]);
+            }
+            _ => {}
+        }
+    }
+    (text, "")
+}
+
 /// One reason as an error: the headline names the construct, the label points at it, the notes
 /// say which processes and why, the help how to fix it.
 fn reason_error(db: &Db, e: &Elaborated, r: &check::Reason, procs: &[usize]) -> Diagnostic {
@@ -469,7 +480,7 @@ fn reason_error(db: &Db, e: &Elaborated, r: &check::Reason, procs: &[usize]) -> 
         "run with `--cycle` to leave this process in the event simulation",
         true,
     ));
-    let (what, detail) = r.text.split_once(": ").unwrap_or((&r.text, ""));
+    let (what, detail) = construct(&r.text);
     let mut d = Diagnostic::error(r.code, format!("{what} is not supported in cycle mode"))
         .with_primary(r.span, detail);
     if let Some((span, what)) = &r.also {
@@ -2584,6 +2595,15 @@ mod tests {
 
     /// A40: every reason has a code of its own with a title, why and fix, and no text a user
     /// sees hedges or names an internal rule.
+    #[test]
+    fn a_colon_in_quoted_code_does_not_split_the_headline() {
+        assert_eq!(
+            super::construct("a name `<<signal .t.x : bit>>`: it is here"),
+            ("a name `<<signal .t.x : bit>>`", "it is here")
+        );
+        assert_eq!(super::construct("a latch"), ("a latch", ""));
+    }
+
     #[test]
     fn reasons_say_plainly_what_is_not_supported() {
         let mut seen = std::collections::BTreeSet::new();

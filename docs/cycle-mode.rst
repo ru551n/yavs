@@ -670,7 +670,7 @@ Each error says, in this order:
 * **why** it cannot be cycle-based (``note: why:``);
 * **how to fix** it (``help:``), or that it is a limitation of yavs and not a problem in the design.
 
-There is one error per reason and statement, sorted by file and line. At most 40 are printed; a last line says
+There is one error per code and statement, sorted by file and line. At most 40 are printed; a last line says
 how many more there are, and ``--cycle-report`` lists them all.
 
 ``left_out.vhd`` under strict mode:

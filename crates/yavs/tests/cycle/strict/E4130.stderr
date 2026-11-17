@@ -1,8 +1,15 @@
 error[E4130]: logic between clocks whose edges come in different delta cycles is not supported in cycle mode
    --> $DIR/strict.vhd:333:3
     |
-333 |   c <= not r;
-    |   ^^^^^^^^^^^ registers on t_e4130.clk feed it and a register on t_e4130.gclk samples it, with its edge in a later delta cycle
+333 |     c <= not r;
+    |     ^^^^^^^^^^^ registers on t_e4130.clk feed it and a register on t_e4130.gclk samples it, with its edge in a later delta cycle
+334 | /   p2 : process (gclk)
+335 | |   begin
+336 | |     if rising_edge(gclk) then
+337 | |       q <= c;
+338 | |     end if;
+339 | |   end process;
+    | |______________- t_e4130.dut.p2 samples it on t_e4130.gclk
     |
     = note: in process t_e4130.dut.c <= ... (strict.vhd:333)
     = note: why: the edges of the two clocks come in different delta cycles of one time step: the event simulation samples this logic before it settles, cycle-based code would hand over the settled value

@@ -5978,6 +5978,7 @@ fn strict_err(dir: &Path, top: &str, extra: &[&str]) -> String {
     let canon = dir.canonicalize().expect("dir");
     err.replace(&*canon.to_string_lossy(), "$DIR")
         .replace(&*dir.to_string_lossy(), "$DIR")
+        .replace(r"$DIR\", "$DIR/")
 }
 
 /// Compare `err` with the snapshot `tests/cycle/strict/NAME.stderr` (`YAVS_BLESS=1` writes it).
@@ -6110,6 +6111,12 @@ fn cycle_strict_lists_every_reason_sorted_grouped_and_capped() {
     );
     let err = strict_err(&dir, "t_many", &[]);
     assert_eq!(err.matches("error[E4111]").count(), 1, "{err}");
+    // Also when the text names each instance's signal: the first one's.
+    assert_eq!(err.matches("error[E4119]").count(), 1, "{err}");
+    assert!(
+        err.contains("in 7 processes: t_many.g(0).latch.p (strict.vhd:"),
+        "{err}"
+    );
     assert!(
         err.contains("= note: in 7 processes: t_many.g(0).dut.q <= ... (strict.vhd:")
             && err.contains(" and 2 more"),
@@ -6124,10 +6131,11 @@ entity t_many is
 end entity;
 architecture tb of t_many is
   signal a : std_ulogic := '0';
-  signal q : std_ulogic_vector(0 to 6);
+  signal q, r : std_ulogic_vector(0 to 6);
 begin
   g : for i in 0 to 6 generate
     dut : entity work.d_e4111 port map (a, q(i));
+    latch : entity work.d_e4119 port map (a, a, r(i));
   end generate;
   stim : process
   begin

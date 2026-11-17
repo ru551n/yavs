@@ -1320,14 +1320,21 @@ fn meta_rule(
             ),
             _ => "a metavalue literal assigned to a signal the testbench reads:".to_string(),
         };
-        gone.push((
-            pi,
-            Reason::new(
-                crate::codes::META_OUT,
-                db.stmts[e.procs[pi].stmt].span,
-                format!("{what} {}", e.leaf_name(o)),
-            ),
-        ));
+        let mut r = Reason::new(
+            crate::codes::META_OUT,
+            db.stmts[e.procs[pi].stmt].span,
+            format!("{what} {}", e.leaf_name(o)),
+        );
+        // A testbench process that reads it, when the scan names one.
+        if let Some(&q) = (tb.iter())
+            .find(|&&q| proc_reads(db, e, q, &mut memo).is_some_and(|(r, _)| r.contains(&o)))
+        {
+            r = r.also(
+                db.stmts[e.procs[q].stmt].span,
+                format!("{} reads {}", e.proc_label(&e.procs[q]), e.leaf_name(o)),
+            );
+        }
+        gone.push((pi, r));
     }
     gone
 }
@@ -1928,6 +1935,8 @@ fn cross_delta(
     // Registers by clock group, and what registers of each group read.
     let mut reg: BTreeMap<LeafId, u64> = BTreeMap::new();
     let mut feeds: BTreeMap<LeafId, u64> = BTreeMap::new();
+    // Each register with its group and what it reads directly: the second place of an error.
+    let mut samplers: Vec<(usize, u64, BTreeSet<LeafId>)> = Vec::new();
     // The combinational pieces: member or not, reads, writes.
     let mut pieces: Vec<(Option<usize>, Vec<LeafId>, Vec<LeafId>)> = Vec::new();
     for (&pi, (f, b)) in taken {
@@ -1940,6 +1949,7 @@ fn cross_delta(
                 for &r in &b.reads {
                     *feeds.entry(r).or_default() |= g;
                 }
+                samplers.push((pi, g, b.reads.iter().copied().collect()));
                 if b.reset.is_some() {
                     let mut ws: Vec<LeafId> =
                         f.outs.iter().map(|o| LeafId(o.leaf as u32)).collect();
@@ -1981,6 +1991,9 @@ fn cross_delta(
                 // A monitor without a trigger that drives nothing (a reporter on `process (done)`)
                 // sees settled values earlier by contract.
                 let monitor = ws.is_empty() && trig(pi).is_none();
+                if !monitor {
+                    samplers.push((pi, g, r.iter().copied().collect()));
+                }
                 for l in r.into_iter().filter(|_| !monitor) {
                     *feeds.entry(l).or_default() |= g;
                 }
@@ -2106,20 +2119,29 @@ fn cross_delta(
             continue;
         }
         if let Some((from, to)) = differ(t, f) {
-            gone.push((
-                *pi,
-                Reason::new(
-                    crate::codes::CROSS_DELTA,
-                    db.stmts[e.procs[*pi].stmt].span,
-                    format!(
-                        "logic between clocks whose edges come in different delta cycles: registers \
+            // A register of the later clock reading what the piece writes, when one does directly.
+            let sampler = (samplers.iter())
+                .find(|(_, g, r)| g & to != 0 && ws.iter().any(|w| r.contains(w)))
+                .map(|&(q, _, _)| {
+                    let at = db.stmts[e.procs[q].stmt].span;
+                    (
+                        at,
+                        format!("{} samples it on {}", e.proc_label(&e.procs[q]), name(to)),
+                    )
+                });
+            let mut r = Reason::new(
+                crate::codes::CROSS_DELTA,
+                db.stmts[e.procs[*pi].stmt].span,
+                format!(
+                    "logic between clocks whose edges come in different delta cycles: registers \
                          on {} feed it and a register on {} samples it, with its edge in a later \
                          delta cycle",
-                        name(from),
-                        name(to)
-                    ),
+                    name(from),
+                    name(to)
                 ),
-            ));
+            );
+            r.also = sampler;
+            gone.push((*pi, r));
         }
     }
     gone
@@ -2176,6 +2198,27 @@ fn clock_logic(
                         ),
                     ),
                 ));
+                // The process the clock clocks.
+                let user = (e
+                    .procs
+                    .iter()
+                    .position(|p| p.trigger.as_ref().is_some_and(|t| t.leaf == c)))
+                .or_else(|| {
+                    (taken.iter())
+                        .find(|(_, (_, b))| b.clock.is_some_and(|k| k.leaf == c))
+                        .map(|(q, _)| *q)
+                });
+                if let (Some(q), Some(last)) = (user, gone.last_mut()) {
+                    let at = db.stmts[e.procs[q].stmt].span;
+                    last.1.also = Some((
+                        at,
+                        format!(
+                            "{} is clocked by {}",
+                            e.proc_label(&e.procs[q]),
+                            e.leaf_name(c)
+                        ),
+                    ));
+                }
             }
             work.extend(rs.iter().map(|&r| (r, c)));
         }

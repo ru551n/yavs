@@ -714,22 +714,19 @@ fn differs(e: &Elaborated, f: &Fit, b: &Body) -> Option<String> {
         None => f.reset.is_empty(),
     };
     if !shape || !reset {
-        return Some(
-            "an internal mismatch in yavs (please report it): the two passes of yavs read the \
-             process's shape, clock or reset differently"
-                .into(),
-        );
+        return Some(lower::bug(
+            "the two passes of yavs read the process's shape, clock or reset differently",
+        ));
     }
     let (l, x) = (b.rparts.iter()).find_map(|&(l, lo, n)| {
         f.reads
             .first_missing(u64::from(l.0), lo, lo + n)
             .map(|x| (l, x))
     })?;
-    Some(format!(
-        "an internal mismatch in yavs (please report it): a read of element {x} of {} that the \
-         first pass of yavs missed",
+    Some(lower::bug(&format!(
+        "a read of element {x} of {} that the first pass of yavs missed",
         e.leaf_name(l)
-    ))
+    )))
 }
 
 /// The dependence analysis of the fitting processes.
@@ -884,13 +881,9 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         }
         match lower::lower(db, e, pi) {
             // The lowering must see the shape the checker proved, clock included.
-            Ok(b) if differs(e, &f, &b).is_some() => out.push((
+            Ok(b) if let Some(w) = differs(e, &f, &b) => out.push((
                 pi,
-                Why::NotYet(Reason::new(
-                    crate::codes::LEFT_OUT,
-                    pspan(pi),
-                    differs(e, &f, &b).expect("checked"),
-                )),
+                Why::NotYet(Reason::new(crate::codes::INTERNAL, pspan(pi), w)),
             )),
             // The asserts and reports of the top-level unit are evaluated (A19): at a clock edge
             // in region code, else the process stays in the event kernel.
@@ -1080,13 +1073,14 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
                 continue;
             }
             // The reset branch runs again in the settle, apart from the edge test.
+            // The lowering gives every member with a reset that shape (`Lx::process`).
             if b.reset.is_some() && reset_piece(&b.ops).is_none() {
                 gone.push((
                     pi,
                     Reason::new(
-                        crate::codes::LEFT_OUT,
+                        crate::codes::INTERNAL,
                         pspan(pi),
-                        "an asynchronous reset branch of this form",
+                        lower::bug("an asynchronous reset branch of another shape"),
                     ),
                 ));
             }

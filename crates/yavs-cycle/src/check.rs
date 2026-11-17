@@ -104,6 +104,21 @@ fn out<T>(code: &'static str, span: Span, text: impl Into<String>) -> R<T> {
     Err(Stop::Out(Reason::new(code, span, text)))
 }
 
+/// A reason no design reaches (analysis or an earlier check rules it out): an internal error,
+/// a panic in debug builds.
+fn bug<T>(span: Span, what: impl Into<String>) -> R<T> {
+    Err(Stop::Out(internal(span, what.into())))
+}
+
+fn internal(span: Span, what: String) -> Reason {
+    debug_assert!(false, "cycle mode: {what}");
+    Reason::new(
+        codes::INTERNAL,
+        span,
+        format!("{}{what}", crate::lower::BUG),
+    )
+}
+
 /// Statement instances a process may take while static loops are enumerated; past that, loops
 /// are analysed without their parameter's value.
 const BUDGET: usize = 1 << 16;
@@ -318,10 +333,10 @@ pub(crate) fn check(db: &Db, e: &Elaborated, pi: usize, callees: &mut Callees) -
         }
         Err(Stop::Out(r)) => Verdict::Out(r),
         Err(Stop::Behav(w)) => Verdict::Behavioural(w),
-        Err(Stop::Budget) => Verdict::Out(Reason::new(
-            codes::LOOP_BOUND,
+        // The outermost enumerated loop takes it and goes on without the parameter's value.
+        Err(Stop::Budget) => Verdict::Out(internal(
             db.stmts[p.stmt].span,
-            "loops of more than 65 536 statement runs in one process",
+            "the loop budget ran out outside an enumerated loop".into(),
         )),
     }
 }
@@ -709,10 +724,10 @@ impl Cx<'_> {
                 self.lsps_into(&lsps, &mut wait);
                 self.finish_comb(st, wait)
             }
-            _ => out(
-                codes::ANALYSIS,
+            // Elaboration makes processes of these four kinds of statements only.
+            _ => bug(
                 s.span,
-                "a concurrent statement of this kind",
+                "a process of a concurrent statement of another kind",
             ),
         }
     }
@@ -1065,8 +1080,8 @@ impl Cx<'_> {
     /// The fall-through state of a body that must end normally.
     fn ended(&mut self, flow: Flow) -> R<St> {
         if let Some((s, _)) = flow.exits.first().or(flow.nexts.first()) {
-            return out(
-                codes::ANALYSIS,
+            // Analysis ties every `exit` and `next` to a loop around it.
+            return bug(
                 self.db.stmts[*s].span,
                 "an `exit` or `next` of a loop outside this process or subprogram",
             );
@@ -1159,11 +1174,10 @@ impl Cx<'_> {
             driven.add(l, a, z);
         }
         if let Some((k, x, _)) = self.sig_any.minus(&driven).iter().next() {
-            return out(
-                codes::ANALYSIS,
+            return bug(
                 self.span(),
                 format!(
-                    "an internal mismatch in yavs (please report it): an assignment to {}, which elaboration does not list among the process's drivers",
+                    "an assignment to {}, which elaboration does not list among the process's drivers",
                     self.elem_name(k, x)
                 ),
             );
@@ -2314,11 +2328,12 @@ impl Cx<'_> {
                 }
                 Ok(Dv::Flat(Rc::new(s)))
             }
-            ExprKind::New { .. } | ExprKind::Null => out(
-                codes::TESTBENCH,
-                ex.span,
-                "an access value (dynamic memory)",
-            ),
+            // An access value lives in a variable or comes from a call of an impure function;
+            // a process declaring one is behavioural, and a call or operator taking or giving
+            // one is one of a subprogram that uses access values (behavioural too).
+            ExprKind::New { .. } | ExprKind::Null => {
+                bug(ex.span, "an access value in an expression")
+            }
             ExprKind::PrivateVar { .. } => out(codes::TESTBENCH, ex.span, "a protected object"),
             ExprKind::Const(_) | ExprKind::AttrValue { .. } | ExprKind::Open | ExprKind::Error => {
                 Ok(Self::empty())
@@ -3039,9 +3054,10 @@ impl Cx<'_> {
                     return out(codes::TESTBENCH, span, "a method of a protected object");
                 }
                 let info = self.callee(c.callee);
+                // Analysis rejects a call that can wait in a process with a sensitivity list
+                // (E1801); one without is behavioural when it calls one (`waits_behavioural`).
                 if info.waits {
-                    return out(
-                        codes::WAIT,
+                    return bug(
                         span,
                         format!("a call of `{}`, which waits", db.decls[c.callee].name),
                     );
@@ -3058,8 +3074,10 @@ impl Cx<'_> {
                 self.decls(*scope)?;
                 self.stmts(body, st)
             }
-            StmtKind::Return(_) => out(codes::ANALYSIS, span, "a `return` outside a subprogram"),
-            _ => out(codes::ANALYSIS, span, "a statement of this kind"),
+            // Analysis allows `return` in subprograms only, and no concurrent statement in a
+            // sequence of statements.
+            StmtKind::Return(_) => bug(span, "a `return` outside a subprogram"),
+            _ => bug(span, "a concurrent statement in a sequence of statements"),
         }
     }
 
@@ -3464,12 +3482,10 @@ impl Cx<'_> {
             }
             return Ok(());
         }
+        // Analysis takes names and aggregates of names as targets only; an external name stops
+        // at E4138 first.
         let Some(p) = self.place(t, st)? else {
-            return out(
-                codes::ANALYSIS,
-                db.exprs[t].span,
-                "an assignment target of this form",
-            );
+            return bug(db.exprs[t].span, "an assignment target of this form");
         };
         let mut extra = (*st.ctl).clone();
         extra.union(&p.idx);
@@ -3524,11 +3540,7 @@ impl Cx<'_> {
         let c = self.callee(callee);
         self.callee_ok(callee, &c, span)?;
         let Some(sp) = db.decls[callee].kind.subprogram() else {
-            return out(
-                codes::CALL,
-                span,
-                "a call of something that is not a subprogram",
-            );
+            return bug(span, "a call of something that is not a subprogram");
         };
         // Reads: every `in` and `inout` actual, and the signals the procedure reads itself.
         let mut ins = ESet::default();

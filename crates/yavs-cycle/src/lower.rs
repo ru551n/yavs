@@ -877,6 +877,18 @@ const CALL: char = '\u{2}';
 
 /// The reason of a lowering error `w`: E4101 at its statement, else at `whole` (the process);
 /// an error inside a called subprogram names the call too.
+/// The text of an internal error: a reason no design reaches (`bug`).
+pub(crate) const BUG: &str = "an internal error in yavs (please report it): ";
+
+/// A lowering error no design reaches (the checker or analysis rules it out): an internal error,
+/// a panic in debug builds.
+/// Shapes, waits and jumps the checker refuses first; arities of the `ieee` subprograms, which
+/// their declarations fix; what analysis rejects (targets, conditions, `return`, choices).
+pub(crate) fn bug(what: &str) -> String {
+    debug_assert!(false, "cycle mode: {what}");
+    format!("{BUG}{what}")
+}
+
 pub(crate) fn reason(w: String, whole: Span) -> crate::check::Reason {
     let span = |m: &str| -> Option<Span> {
         let n: Vec<u32> = m.split(':').filter_map(|x| x.parse().ok()).collect();
@@ -905,7 +917,12 @@ pub(crate) fn reason(w: String, whole: Span) -> crate::check::Reason {
     }
     text.push_str(&rest);
     let at = marks.first().copied().flatten().unwrap_or(whole);
-    let r = crate::check::Reason::new(crate::codes::LEFT_OUT, at, text);
+    let code = if text.starts_with(BUG) {
+        crate::codes::INTERNAL
+    } else {
+        crate::codes::LEFT_OUT
+    };
+    let r = crate::check::Reason::new(code, at, text);
     match marks.get(1).copied().flatten() {
         Some(call) if call != at => r.also(call, "called from here"),
         _ => r,
@@ -1077,7 +1094,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
             ..
         } => lx.conc_assign(target, delay, rhs),
         StmtKind::ConcSignalAssign { .. } => {
-            Err("a guarded or postponed concurrent assignment".into())
+            Err(bug("a guarded or postponed concurrent assignment"))
         }
         // Simulation-only, as in processes: not evaluated, and it reads nothing.
         StmtKind::ConcAssert {
@@ -1097,7 +1114,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
             lx.proc_call(call)?;
             Ok(lx.body(Kind::Comb, None, None))
         }
-        _ => Err("a concurrent statement of this kind".into()),
+        _ => Err(bug("a concurrent statement of this kind")),
     }
 }
 
@@ -1201,25 +1218,27 @@ impl Lx<'_> {
             if t.wait {
                 // `wait until <edge>;` first: the rest runs at every edge.
                 let [w, rest @ ..] = body else {
-                    return Err("an empty clocked process".into());
+                    return Err(bug("an empty clocked process"));
                 };
                 let StmtKind::Wait { until: Some(c), .. } = db.stmts[*w].kind else {
-                    return Err(
-                        "a `wait until` process whose wait is not its first statement".into(),
-                    );
+                    return Err(bug(
+                        "a `wait until` process whose wait is not its first statement",
+                    ));
                 };
                 self.edge_body(c, rest)?;
                 return Ok(self.body(Kind::Clocked, Some(clock), None));
             }
             let [s] = body else {
-                return Err("a clocked process with statements outside its edge test".into());
+                return Err(bug(
+                    "a clocked process with statements outside its edge test",
+                ));
             };
             let StmtKind::If {
                 branches,
                 else_: None,
             } = &db.stmts[*s].kind
             else {
-                return Err("a clocked process with an `else` branch".into());
+                return Err(bug("a clocked process with an `else` branch"));
             };
             match (&branches[..], t.reset) {
                 ([(cond, inner)], None) => {
@@ -1242,11 +1261,11 @@ impl Lx<'_> {
                     });
                     return Ok(self.body(Kind::Clocked, Some(clock), Some(reset)));
                 }
-                _ => return Err("a clocked process with an `elsif` branch".into()),
+                _ => return Err(bug("a clocked process with an `elsif` branch")),
             }
         }
         if matches!(sensitivity, Sensitivity::None) {
-            return Err("a process with wait statements".into());
+            return Err(bug("a process with wait statements"));
         }
         // The subset checker proved the rest (`check.rs`): every element a path may assign is
         // assigned on every path, every variable is assigned before it is read, and the
@@ -1570,7 +1589,7 @@ impl Lx<'_> {
             StmtKind::Loop { .. } => Err("a `while` loop or a loop without a scheme".into()),
             StmtKind::Next { loop_, when } => self.jump(Tgt::Next(*loop_), *when),
             StmtKind::Exit { loop_, when } => self.jump(Tgt::Exit(*loop_), *when),
-            StmtKind::Wait { .. } => Err("a wait statement".into()),
+            StmtKind::Wait { .. } => Err(bug("a wait statement")),
             // Simulation-only: compiled to nothing, counted for the report (the mode is for speed).
             StmtKind::Assert { .. } | StmtKind::Report { .. } if !self.top => {
                 // In a call of constants the outcome is fixed: one that holds is dropped, any
@@ -1618,7 +1637,7 @@ impl Lx<'_> {
             StmtKind::ProcCall(call) => self.proc_call(call),
             StmtKind::Force { .. } | StmtKind::Release { .. } => Err("`force` or `release`".into()),
             StmtKind::Return(v) => self.ret(*v),
-            _ => Err("a statement of this kind".into()),
+            _ => Err(bug("a statement of this kind")),
         }
     }
 
@@ -1628,7 +1647,7 @@ impl Lx<'_> {
         }
         let dst = self.name(target.expr, true)?;
         if self.signal_rooted(&dst) {
-            return Err("an assignment target that is not a variable".into());
+            return Err(bug("an assignment target that is not a variable"));
         }
         let c = self.fold(v);
         let src = self.expr_h(v, Some(&dst))?;
@@ -1825,7 +1844,7 @@ impl Lx<'_> {
                 }
                 (Val::Part(p), Choice::Expr(x)) => {
                     let Some(c) = self.fold(*x) else {
-                        return Err("a `case` choice that is not known during elaboration".into());
+                        return Err(bug("a `case` choice that is not known during elaboration"));
                     };
                     let t = self.db.base(self.db.exprs[*x].subtype);
                     let (codes, _) = self.codes(t, &c)?;
@@ -1930,7 +1949,7 @@ impl Lx<'_> {
         let mut inner = Vec::new();
         deep(db, body, &mut inner);
         if (inner.iter()).any(|&x| matches!(db.stmts[x].kind, StmtKind::Wait { .. })) {
-            return Err("a loop with a `wait`".into());
+            return Err(bug("a loop with a `wait`"));
         }
         let targets = |exit: bool| {
             inner.iter().any(|&x| match db.stmts[x].kind {
@@ -1957,7 +1976,7 @@ impl Lx<'_> {
             });
         }
         let yavs_sem::decl::DeclKind::Object(po) = &db.decls[param].kind else {
-            return Err("a loop parameter that is not an object".into());
+            return Err(bug("a loop parameter that is not an object"));
         };
         let enum_param = matches!(db.types[db.base(po.subtype)].kind, TypeKind::Enum { .. });
         let old = self.consts.get(&param).cloned();
@@ -2145,7 +2164,7 @@ impl Lx<'_> {
         let c = self.expr(c)?;
         let c = self.part(c)?;
         if c.len != 1 {
-            return Err("a condition that is not a boolean".into());
+            return Err(bug("a condition that is not a boolean"));
         }
         Ok(self.whole(c))
     }
@@ -3071,7 +3090,7 @@ impl Lx<'_> {
         // A formal or local of a call being inlined.
         match self.bound(d) {
             Some(Bind::Const(_)) if target && !self.bounds => {
-                return Err("an assignment to a constant".into());
+                return Err(bug("an assignment to a constant"));
             }
             Some(Bind::Const(c)) => return self.literal(db.base(o.subtype), &c),
             Some(Bind::Val(v)) => return Ok(v),
@@ -3106,7 +3125,7 @@ impl Lx<'_> {
                     return Ok(v.clone());
                 }
                 let StmtKind::Process { scope, .. } = &db.stmts[self.p.stmt].kind else {
-                    return Err("a variable outside a process".into());
+                    return Err(bug("a variable outside a process"));
                 };
                 if decl.scope != *scope {
                     return Err(format!("`{}`, a variable of another region", decl.name));
@@ -3139,9 +3158,7 @@ impl Lx<'_> {
                 Ok(v)
             }
             ObjClass::SharedVariable => self.shared_var(d),
-            ObjClass::Constant if target && !self.bounds => {
-                Err("an assignment to a constant".into())
-            }
+            ObjClass::Constant if target && !self.bounds => Err(bug("an assignment to a constant")),
             ObjClass::Constant => {
                 if let Some(c) = self.consts.get(&d).cloned() {
                     let mut v = self.literal(db.base(o.subtype), &c)?;
@@ -3161,7 +3178,8 @@ impl Lx<'_> {
                     )),
                 }
             }
-            _ => Err(format!("`{}`, an object of this class", decl.name)),
+            // Files make a process behavioural (`check.rs`).
+            _ => Err(bug(&format!("`{}`, an object of this class", decl.name))),
         }
     }
 
@@ -3175,20 +3193,22 @@ impl Lx<'_> {
         }
         let (db, e) = (self.db, self.e);
         let decl = &db.decls[d];
+        // The checker keeps a call of a subprogram using a shared variable out (E4114), and a
+        // protected one is used through its methods only (E4114).
         if !self.frames.is_empty() {
-            return Err(format!(
+            return Err(bug(&format!(
                 "the shared variable `{}` in a subprogram",
                 decl.name
-            ));
+            )));
         }
         let yavs_sem::decl::DeclKind::Object(o) = &decl.kind else {
-            return Err("a shared variable that is not an object".into());
+            return Err(bug("a shared variable that is not an object"));
         };
         if matches!(
             db.types[db.base(o.subtype)].kind,
             TypeKind::Protected { .. }
         ) {
-            return Err("a shared variable of a protected type".into());
+            return Err(bug("a shared variable of a protected type"));
         }
         // The elaborated region that declares it, from the process outwards.
         let mut s = Some(self.p.scope);
@@ -4935,7 +4955,9 @@ impl Lx<'_> {
     ) -> R<(Part, Part, u32)> {
         use yavs_ir::ieee::Form;
         let [a, b] = args else {
-            return Err("a `numeric_std` operator with an unexpected number of arguments".into());
+            return Err(bug(
+                "a `numeric_std` operator with an unexpected number of arguments",
+            ));
         };
         let (a, b) = (self.arg(a)?, self.arg(b)?);
         for v in [&a, &b] {
@@ -4975,7 +4997,7 @@ impl Lx<'_> {
     /// operator's `INTEGER` whose range starts at 0 or above.
     fn shift_call(&mut self, args: &[yavs_sem::hir::Arg], k: ShiftK, count: Count) -> R<Val> {
         let [a, n] = args else {
-            return Err("a shift with an unexpected number of arguments".into());
+            return Err(bug("a shift with an unexpected number of arguments"));
         };
         let a = self.arg(a)?;
         let a = self.part(a)?;
@@ -4983,7 +5005,7 @@ impl Lx<'_> {
             return Err("a shift or rotation of a null array".into());
         }
         let Actual::Expr(nx) = n.actual else {
-            return Err("a count that is not given".into());
+            return Err(bug("a count that is not given"));
         };
         if let Ok(n) = self.static_int(nx) {
             // A `NATURAL` count below 0 fails the call in the normal mode; `-n` of the most
@@ -5244,7 +5266,7 @@ impl Lx<'_> {
             return self.call(x, *target, args);
         }
         let Some(sp) = decl.kind.subprogram() else {
-            return Err("a call of something that is not a subprogram".into());
+            return Err(bug("a call of something that is not a subprogram"));
         };
         // A call elaboration evaluated and `fold` did not take (A22): its reports are made
         // where the normal mode makes them, by the event kernel.
@@ -5287,16 +5309,16 @@ impl Lx<'_> {
         let not_yet = || Err(format!("a call of `{}`", decl.name));
         let one = |lx: &mut Self| -> R<Val> {
             let Some(a) = args.first() else {
-                return Err("a call without arguments".into());
+                return Err(bug("a call without arguments"));
             };
             lx.arg(a)
         };
         let two = |lx: &mut Self| -> R<(Val, Val)> {
             let [a, b] = args else {
-                return Err(format!(
+                return Err(bug(&format!(
                     "a call of `{}` with an unexpected number of arguments",
                     decl.name
-                ));
+                )));
             };
             let a = lx.arg(a)?;
             // The second operand takes the shape of the first (an aggregate), unless it has
@@ -5816,12 +5838,10 @@ impl Lx<'_> {
                     }
                     I::ToUnsigned | I::ToSigned => {
                         let [a, n] = args else {
-                            return Err(
-                                "a conversion with an unexpected number of arguments".into()
-                            );
+                            return Err(bug("a conversion with an unexpected number of arguments"));
                         };
                         let Actual::Expr(nx) = n.actual else {
-                            return Err("a size that is not given".into());
+                            return Err(bug("a size that is not given"));
                         };
                         let n = self.static_int(nx).map_err(|_| {
                             "a vector size that is not known during elaboration".to_string()
@@ -5838,10 +5858,10 @@ impl Lx<'_> {
                     }
                     I::Resize { signed } => {
                         let [a, n] = args else {
-                            return Err("`resize` with an unexpected number of arguments".into());
+                            return Err(bug("`resize` with an unexpected number of arguments"));
                         };
                         let Actual::Expr(nx) = n.actual else {
-                            return Err("a size that is not given".into());
+                            return Err(bug("a size that is not given"));
                         };
                         let to = self.static_int(nx).map_err(|_| {
                             "a vector size that is not known during elaboration".to_string()
@@ -6140,7 +6160,9 @@ impl Lx<'_> {
     /// left does not decide (LRM 9.2.2): where it could fail a check, behind a branch.
     fn short_circuit(&mut self, g: Gate, args: &[yavs_sem::hir::Arg]) -> R<Val> {
         let [a, b] = args else {
-            return Err("a logical operator with an unexpected number of arguments".into());
+            return Err(bug(
+                "a logical operator with an unexpected number of arguments",
+            ));
         };
         let a = self.arg(a)?;
         let a = self.part(a)?;
@@ -6235,7 +6257,7 @@ impl Lx<'_> {
     ) -> R<Val> {
         use yavs_ir::ieee::Form;
         let [a, b] = args else {
-            return Err("a division with an unexpected number of arguments".into());
+            return Err(bug("a division with an unexpected number of arguments"));
         };
         let (a, b) = (self.arg(a)?, self.arg(b)?);
         for v in [&a, &b] {
@@ -6322,7 +6344,7 @@ impl Lx<'_> {
             return Ok(Val::Part(t));
         }
         let [a, b] = args else {
-            return Err("a comparison with an unexpected number of arguments".into());
+            return Err(bug("a comparison with an unexpected number of arguments"));
         };
         let (a, b) = (self.arg(a)?, self.arg(b)?);
         let vec = if form == Form::Vi { &a } else { &b };
@@ -6553,7 +6575,9 @@ impl Lx<'_> {
         let name = &db.decls[callee].name;
         let mut binds = HashMap::new();
         for (i, p) in sp.params.iter().enumerate() {
-            let d = p.decl.ok_or("a parameter without a declaration")?;
+            let d = p
+                .decl
+                .ok_or_else(|| bug("a parameter without a declaration"))?;
             let what = format!("parameter {}", p.name.text.as_str().to_ascii_uppercase());
             let x = match args
                 .iter()
@@ -6571,7 +6595,7 @@ impl Lx<'_> {
             let b = if p.class == ObjClass::Signal {
                 let v = self.name(x, p.mode != Mode::In)?;
                 if !self.signal_rooted(&v) {
-                    return Err("a signal parameter whose actual is not a signal".into());
+                    return Err(bug("a signal parameter whose actual is not a signal"));
                 }
                 Bind::Val(self.formal_val(v, p.subtype, Some(d), &what)?)
             } else if p.mode == Mode::In {
@@ -6596,7 +6620,7 @@ impl Lx<'_> {
                 // formal's subtype checks what the callee writes.
                 let place = self.name(x, true)?;
                 if self.signal_rooted(&place) {
-                    return Err("a variable parameter whose actual is a signal".into());
+                    return Err(bug("a variable parameter whose actual is a signal"));
                 }
                 // ponytail: an integer formal claims its own range for what it reads, which an
                 // `out` actual of a wider subtype may not hold (an erroneous call); a separate
@@ -7024,7 +7048,7 @@ impl Lx<'_> {
     /// `return [v];` of the innermost call.
     fn ret(&mut self, v: Option<ExprId>) -> R<()> {
         let Some(fi) = self.frames.len().checked_sub(1) else {
-            return Err("a `return` statement in a process".into());
+            return Err(bug("a `return` statement in a process"));
         };
         match (v, self.frames[fi].ret_st) {
             (Some(e), Some(st)) => {
@@ -7051,7 +7075,7 @@ impl Lx<'_> {
                 }
             }
             (None, None) => {}
-            _ => return Err("a `return` that does not match its subprogram".into()),
+            _ => return Err(bug("a `return` that does not match its subprogram")),
         }
         let flag = self.frames[fi].flag;
         if let Some(f) = flag {

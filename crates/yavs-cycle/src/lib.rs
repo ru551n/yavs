@@ -102,10 +102,20 @@ pub mod codes {
     /// A loop without bounds known during elaboration, too large, or with a jump out of an
     /// outer loop.
     pub const LOOP_BOUND: &str = "E4139";
+    /// A reason no design can reach (the analysis or an earlier check rules it out): a bug in
+    /// yavs, kept as a reason so the process stays in the event kernel (`check::bug`, `lower::bug`).
+    pub const INTERNAL: &str = "E9999";
 
     /// Every code of a reason a process stays out: (code, report title, why it cannot be
     /// cycle-based, how to fix it, whether it is a limitation of yavs rather than the design).
     pub(crate) const REASONS: &[(&str, &str, &str, &str, bool)] = &[
+        (
+            INTERNAL,
+            "an internal error in yavs",
+            "yavs reached a state its own earlier checks rule out",
+            "please report this as a bug in yavs, with the design; run with `--cycle` to leave this process in the event simulation meanwhile",
+            true,
+        ),
         (
             LEFT_OUT,
             "a construct cycle mode does not implement yet",
@@ -481,8 +491,12 @@ fn reason_error(db: &Db, e: &Elaborated, r: &check::Reason, procs: &[usize]) -> 
         true,
     ));
     let (what, detail) = construct(&r.text);
-    let mut d = Diagnostic::error(r.code, format!("{what} is not supported in cycle mode"))
-        .with_primary(r.span, detail);
+    let head = if r.code == codes::INTERNAL {
+        format!("{what} in cycle mode")
+    } else {
+        format!("{what} is not supported in cycle mode")
+    };
+    let mut d = Diagnostic::error(r.code, head).with_primary(r.span, detail);
     if let Some((span, what)) = &r.also {
         d = d.with_secondary(*span, what.clone());
     }

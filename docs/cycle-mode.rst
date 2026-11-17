@@ -840,6 +840,9 @@ design: the process is fine for the normal mode, and ``--cycle`` leaves it in th
      - A loop whose bounds are not known during elaboration, a very large loop, ``exit`` or ``next`` of an outer
        loop
      - Use bounds from constants or generics, split a large loop, jump only out of the innermost loop.
+   * - E9999
+     - An internal error in yavs: a reason its own earlier checks should rule out
+     - A bug in yavs: please report it with the design; ``--cycle`` keeps the process in the event simulation.
 
 ``yavs --explain E4119`` prints the whole explanation of one code; :doc:`error-codes` lists them all.
 

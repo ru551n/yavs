@@ -6133,6 +6133,269 @@ fn cycle_strict_gives_each_code_with_what_where_why_and_fix() {
     strict_snapshot("E4116-E4128", &err);
 }
 
+/// The reasons of constructs few designs use (`tests/cycle/rare.vhd`): each process's code and
+/// text in the region report, and under `--cycle-strict` its error headline (A40).
+#[test]
+fn rare_reasons_are_named_in_the_report_and_under_strict() {
+    let dir = tempdir("cycle-rare");
+    std::fs::write(dir.join("rare.vhd"), include_str!("cycle/rare.vhd")).expect("write");
+    let o = yavs(
+        &dir,
+        &[
+            "analyze",
+            "--relaxed",
+            "--std=2008",
+            "--work=work:lib",
+            "rare.vhd",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // Per top: process, code and text.
+    type Rows<'a> = &'a [(&'a str, &'a str, &'a str)];
+    let cases: [(&str, Rows); 2] = [
+        (
+            "rare_a_tb",
+            &[
+                (
+                    "dut.implicit",
+                    "E4112",
+                    "an implicit signal (`'stable`, `'quiet`, `'delayed`, `'transaction`)",
+                ),
+                (
+                    "dut.g.guard_read",
+                    "E4115",
+                    "the `GUARD` signal of a guarded block",
+                ),
+                ("dut.shared_comb", "E4114", "the shared variable `sv`"),
+                (
+                    "dut.access_val",
+                    "E4114",
+                    "an access value (dynamic memory)",
+                ),
+                (
+                    "dut.clock_at_index",
+                    "E4123",
+                    "a clocked process of another shape: a clock or reset that is not one fixed element of a signal",
+                ),
+                (
+                    "dut.call_force",
+                    "E4116",
+                    "a call of `pforce`: it forces a signal",
+                ),
+                (
+                    "dut.call_delay",
+                    "E4111",
+                    "a call of `pdelay`: it assigns a signal with a delay",
+                ),
+                (
+                    "dut.call_edge",
+                    "E4112",
+                    "a call of `fedge`: it tests a signal edge",
+                ),
+                (
+                    "dut.call_prot",
+                    "E4114",
+                    "a call of `fprot`: it uses a protected object",
+                ),
+                (
+                    "dut.mem_both",
+                    "E4133",
+                    "a memory written both at run-time indices and at fixed ones: rare_a_tb.dut.mem",
+                ),
+                (
+                    "dut.mem_out",
+                    "E4133",
+                    "a memory read outside the region: rare_a_tb.dut.imem",
+                ),
+            ],
+        ),
+        (
+            "rare_b_tb",
+            &[
+                (
+                    "dut.val_logic",
+                    "E4101",
+                    "`'val` of a logic type at a position computed at run time (it can be a metavalue)",
+                ),
+                (
+                    "dut.int_wide",
+                    "E4101",
+                    "`to_integer` of a vector of more than 64 elements",
+                ),
+                (
+                    "dut.x01_sig",
+                    "E4101",
+                    "a logic subtype with a range (`X01`, `UX01`, ...) (signal `x01s`)",
+                ),
+                (
+                    "dut.deep",
+                    "E4101",
+                    "an array nested more than four deep (signal `n5`)",
+                ),
+                (
+                    "dut.int_conv",
+                    "E4101",
+                    "a type conversion that is not between logic vector types",
+                ),
+                (
+                    "dut.no_return",
+                    "E4101",
+                    "a function `noret` that can reach its end without `return`",
+                ),
+                (
+                    "dut.outside_formal",
+                    "E4101",
+                    "a value outside the subtype of parameter N",
+                ),
+                (
+                    "dut.individual",
+                    "E4101",
+                    "a call with an open, converted or individual actual",
+                ),
+                ("dut.succ", "E4101", "an attribute of this kind"),
+                (
+                    "dut.pkg_shared",
+                    "E4101",
+                    "the shared variable `psv`, which is not of an architecture or block around the process",
+                ),
+                (
+                    "dut.recursion",
+                    "E4101",
+                    "calls of `fact` nested more than 32 deep (a recursion elaboration does not bound)",
+                ),
+                (
+                    "dut.short_value",
+                    "E4101",
+                    "an assignment of a value of another length than its target",
+                ),
+                (
+                    "dut.short_gate",
+                    "E4101",
+                    "a logical operator on operands of different lengths",
+                ),
+                (
+                    "dut.short_match",
+                    "E4101",
+                    "a matching comparison of operands of different lengths",
+                ),
+                (
+                    "dut.short_formal",
+                    "E4101",
+                    "a value of another length than its subtype",
+                ),
+                (
+                    "dut.slice_dir",
+                    "E4101",
+                    "a slice in the other direction than its array",
+                ),
+                (
+                    "dut.slice_out",
+                    "E4101",
+                    "a slice outside its array's range",
+                ),
+                (
+                    "dut.huge",
+                    "E4101",
+                    "a vector of 134217728 elements (cycle mode takes 1 to 2**26) (variable `big`)",
+                ),
+                (
+                    "dut.neg_count",
+                    "E4101",
+                    "a shift operator by a count chosen at run time whose subtype allows negative values",
+                ),
+                (
+                    "dut.two_conds",
+                    "E4101",
+                    "a clocked process whose condition is more than the edge test and one more condition",
+                ),
+                (
+                    "dut.known_assert",
+                    "E4101",
+                    "an assert or report of `odd`, called with arguments known during elaboration, that cycle mode cannot show to hold",
+                ),
+                (
+                    "dut.pieces",
+                    "E4101",
+                    "an aggregate with slice pieces without a range choice",
+                ),
+                ("dut.null_size", "E4101", "a null or very large vector size"),
+                (
+                    "dut.neg_known",
+                    "E4101",
+                    "a shift by a negative count known during elaboration",
+                ),
+                (
+                    "dut.choice_len",
+                    "E4101",
+                    "a `case` choice of another length than the selector",
+                ),
+                // The top-level unit's checkers stay in the event kernel.
+                (
+                    "sev_signal",
+                    "",
+                    "a severity that is not known during elaboration",
+                ),
+                (
+                    "real_image",
+                    "",
+                    "a value of this type in a report message, which cycle mode cannot format in region code",
+                ),
+            ],
+        ),
+    ];
+    for (top, rows) in cases {
+        let o = yavs(
+            &dir,
+            &[
+                "run",
+                "--relaxed",
+                "--work=work:lib",
+                "--no-cache",
+                "--cycle-report",
+                top,
+            ],
+        );
+        let report = String::from_utf8_lossy(&o.stderr).into_owned();
+        assert!(o.status.success(), "{report}");
+        let o = yavs(
+            &dir,
+            &[
+                "run",
+                "--relaxed",
+                "--work=work:lib",
+                "--no-cache",
+                "--cycle-strict",
+                top,
+            ],
+        );
+        let strict = String::from_utf8_lossy(&o.stderr).into_owned();
+        assert_eq!(o.status.code(), Some(2), "{strict}");
+        for (label, code, text) in rows {
+            let (_, r) = row(&report, &format!("{top}.{label}"));
+            assert!(
+                r.contains(&format!("{code} {text}").trim_start().to_string()),
+                "{r}"
+            );
+            if code.is_empty() {
+                continue;
+            }
+            // The headline is the text up to its first `: ` outside backticks.
+            let mut quoted = false;
+            let cut = (text.char_indices())
+                .find(|&(i, c)| {
+                    quoted ^= c == '`';
+                    !quoted && c == ':' && text[i + 1..].starts_with(' ')
+                })
+                .map_or(text.len(), |(i, _)| i);
+            let head = format!(
+                "error[{code}]: {} is not supported in cycle mode",
+                &text[..cut]
+            );
+            assert!(strict.contains(&head), "{head}\n{strict}");
+        }
+    }
+}
+
 /// Strict lists every reason at once, one error per statement, sorted by file and line, with
 /// the processes of a statement used by several instances counted in one error and a cap of 40
 /// errors with a line saying how many more there are.

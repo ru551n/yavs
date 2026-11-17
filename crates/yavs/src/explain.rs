@@ -673,7 +673,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     // every stage
     (
         "E9999",
-        "An internal compiler error (\"this is a bug in yavs\"). Please report it with the input that triggers it.",
+        "An internal compiler error (\"this is a bug in yavs\"). Please report it with the input that triggers it. In the cycle-mode region report it is a reason yavs's own earlier checks should rule out: the process stays in the event kernel, and `--cycle-strict` gives it as an error.",
     ),
 ];
 

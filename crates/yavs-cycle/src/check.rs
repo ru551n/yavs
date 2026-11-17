@@ -1004,6 +1004,8 @@ impl Cx<'_> {
             dropped: 0,
             reads: ESet::default(),
         };
+        // A reset branch elaboration found never runs (`rst = '1' and G`, `G` false): the edge alone.
+        let reset = reset.filter(|_| self.p.trigger.is_none_or(|t| t.reset.is_some()));
         if let Some((r, a)) = reset {
             // The condition of an asynchronous reset: signals of its sensitivity list, not the
             // clock (`rst = '1'`, `a = '1' or b = '1'`). An edge test there is no trigger.

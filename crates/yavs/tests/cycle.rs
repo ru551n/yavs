@@ -2262,6 +2262,58 @@ fn procedure_calls_with_mode_views_read_and_drive_their_elements() {
     }
 }
 
+/// An asynchronous reset with a constant in an `and` (`rst = '1' and G`, `G and rst = '1'`) is the
+/// reset alone for G true and no reset for G false: the registers join, also in the normal mode's
+/// edge trigger. A reset of another form and an assert before the edge test keep their process out
+/// with a reason that names them, not "a call of `rising_edge`".
+#[test]
+fn a_reset_with_a_constant_in_an_and_folds() {
+    let dir = tempdir("cycle-foldreset");
+    analyze(&dir, "foldreset.vhd", include_str!("cycle/foldreset.vhd"));
+    for w in [1, 63, 64, 65, 128] {
+        let g = format!("-gW={w}");
+        for t in tiers() {
+            let t = [&t[..], &[&g[..]]].concat();
+            let (normal, _) = run(&dir, &t, "cycle_foldreset");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_foldreset");
+            assert_eq!(normal.len(), 16, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            // The reset pulse at 60 ns: G true resets, G false keeps the data (hand-checked).
+            if w == 1 {
+                assert!(normal[5].ends_with("q=0 1 0 1 1 0 0 1"), "{normal:?}");
+            }
+            assert!(
+                err.contains("cycle mode: 4 of 10 processes run cycle-based"),
+                "{w}: {err}"
+            );
+            for p in ["on_g.first", "on_g.second", "off.first", "off.second"] {
+                let member = err.lines().any(|l| {
+                    l.trim_start()
+                        .starts_with(&format!("cycle_foldreset.{p} ("))
+                        && l.ends_with("clocked")
+                });
+                assert!(member, "{p}: {err}");
+            }
+            assert!(
+                err.contains(
+                    "E4101 an asynchronous reset condition of this form: cycle mode takes one \
+                     signal of a logic type compared with a value (`rst = '1'`), alone or in an \
+                     `and` with constants (foldreset.vhd:32)"
+                ),
+                "{err}"
+            );
+            assert!(
+                err.contains(
+                    "E4101 a clocked process with statements beside its edge test: cycle mode \
+                     takes `if <edge> then ... end if;`, after an optional reset branch, as its \
+                     only statement (foldreset.vhd:38)"
+                ),
+                "{err}"
+            );
+        }
+    }
+}
+
 /// A logical right shift by a count known during elaboration (of 1, 63, 64, 65, 100 and the width
 /// less one) gives zeros above the bits that remain, also into a signal or variable that held
 /// another value in the same run: the region wrote only the words of the remaining bits.

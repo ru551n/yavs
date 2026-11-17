@@ -3322,13 +3322,15 @@ impl Elab<'_> {
             (self.static_elem(s, l)? == (leaf, elem)).then_some(())?;
         }
         let logic = |e: &Self, l: LeafId| e.m.nets.leaf(l).ty.elem == Elem::Logic;
-        let reset = match reset {
-            Some(r) => {
+        let reset = match reset.map(|r| self.reset_level(s, r)) {
+            Some(None) => return None,
+            Some(Some(Some(r))) => {
                 let (x, pos) = self.db.level_of(r)?;
                 let (rl, re) = self.static_elem(s, x)?;
                 (logic(self, rl) && pos <= 8).then_some((rl, re, pos as u8))
             }
-            None => None,
+            // A reset branch that never runs: only the edge wakes the process.
+            Some(Some(None)) | None => None,
         };
         if (legacy || reset.is_some()) && !logic(self, leaf) {
             return None;
@@ -3341,6 +3343,44 @@ impl Elab<'_> {
             legacy,
             reset,
         })
+    }
+
+    /// The level test (`rst = '1'`) an asynchronous reset condition `r` comes to once the static
+    /// operands of its `and`s are folded (`rst = '1' and G`): `Some(None)` when one is false and
+    /// the others cannot fail, so the branch never runs; `None` for another form.
+    fn reset_level(&mut self, s: ScopeId, r: ExprId) -> Option<Option<ExprId>> {
+        let db: &Db = self.db;
+        if db.level_of(r).is_some() {
+            return Some(Some(r));
+        }
+        let ExprKind::Call {
+            callee,
+            args,
+            method_of: None,
+            implicit_cond: false,
+        } = &db.exprs[r].kind
+        else {
+            return None;
+        };
+        let decl = &db.decls[*callee];
+        let boolean = Some(db.base(db.exprs[r].subtype)) == db.well_known.boolean;
+        if !(decl.implicit && boolean && decl.name.key().as_str() == "\"and\"") {
+            return None;
+        }
+        let [a, b] = &args[..] else {
+            return None;
+        };
+        let (Actual::Expr(a), Actual::Expr(b)) = (&a.actual, &b.actual) else {
+            return None;
+        };
+        for (k, other) in [(*a, *b), (*b, *a)] {
+            match self.static_val(s, k) {
+                Some(Val::Enum(1)) => return self.reset_level(s, other),
+                Some(Val::Enum(0)) if self.safe_operand(other) => return Some(None),
+                _ => {}
+            }
+        }
+        None
     }
 
     /// The signal parts the condition of the guard `g` of block `b` reads; `None` while one is

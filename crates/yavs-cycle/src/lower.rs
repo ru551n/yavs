@@ -1241,7 +1241,8 @@ impl Lx<'_> {
                 return Err(bug("a clocked process with an `else` branch"));
             };
             match (&branches[..], t.reset) {
-                ([(cond, inner)], None) => {
+                // A reset branch elaboration found never runs (`rst = '1' and G`, `G` false).
+                ([(cond, inner)] | [_, (cond, inner)], None) => {
                     self.edge_body(*cond, inner)?;
                     return Ok(self.body(Kind::Clocked, Some(clock), None));
                 }
@@ -1267,6 +1268,9 @@ impl Lx<'_> {
         if matches!(sensitivity, Sensitivity::None) {
             return Err(bug("a process with wait statements"));
         }
+        if let Some(w) = self.untriggered(body) {
+            return Err(w);
+        }
         // The subset checker proved the rest (`check.rs`): every element a path may assign is
         // assigned on every path, every variable is assigned before it is read, and the
         // sensitivity list names everything the body reads.
@@ -1275,6 +1279,47 @@ impl Lx<'_> {
         self.uninit = 0;
         self.init_ops.clear();
         Ok(self.body(Kind::Comb, None, None))
+    }
+
+    /// Why a process with an edge test that elaboration found no clock-edge trigger for stays
+    /// out: the form of its asynchronous reset, or statements beside its edge test.
+    fn untriggered(&self, body: &[StmtId]) -> Option<String> {
+        let db = self.db;
+        let edge_in = |x: ExprId| {
+            let mut found = false;
+            db.walk_expr(x, &mut |y| found |= db.edge_shape(y).is_some());
+            found
+        };
+        let mut all = Vec::new();
+        deep(db, body, &mut all);
+        let mut edge = false;
+        for &s in &all {
+            db.stmt_exprs(s, &mut |x, _| edge |= edge_in(x));
+        }
+        if !edge {
+            return None;
+        }
+        let span = |x: ExprId| {
+            let s = db.exprs[x].span;
+            format!("{AT}{}:{}:{}", s.file.0, s.start, s.end)
+        };
+        if let [s] = body
+            && let StmtKind::If { branches, .. } = &db.stmts[*s].kind
+            && let [(r, _), (c, _)] = &branches[..]
+            && edge_in(*c)
+        {
+            return Some(format!(
+                "an asynchronous reset condition of this form: cycle mode takes one signal of a \
+                 logic type compared with a value (`rst = '1'`), alone or in an `and` with \
+                 constants{}",
+                span(*r)
+            ));
+        }
+        Some(
+            "a clocked process with statements beside its edge test: cycle mode takes \
+             `if <edge> then ... end if;`, after an optional reset branch, as its only statement"
+                .into(),
+        )
     }
 
     /// The body of a clocked process under its edge condition `cond`: the edge itself, or the

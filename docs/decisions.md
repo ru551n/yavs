@@ -3585,6 +3585,12 @@ user's performance priority:
   element) is an edge too, as an event ending on that value from any value (not the IEEE 1164
   function, which also needs the old value to be '0' or 'L'). Other literals ('H', ...) and
   non-`std_ulogic` signals are not recognised.
+- A reset condition with static operands of an `and` (cycle-mode agent, 2026-11-18): `R and G`
+  or `G and R` with `G` a static BOOLEAN the elaborator evaluates (a generic) is `R` when `G` is
+  true; when it is false the branch never runs and the trigger has no reset, provided the other
+  operands cannot fail (levels of static signal names), so only edges wake the process. Exact: an
+  event of the reset signal alone would run the process to no effect. Cycle mode takes the same
+  registers (a reset gated by a generic, common in IP cores).
 
 ## One edge-test instruction for every clock-edge idiom (yavs-sem, yavs-ir, yavs-lower, yavs-interp, yavs-llvm, yavs-kernel, yavs-elab, #632, #589, #590, #591, 2026-10-23)
 

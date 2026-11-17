@@ -2003,6 +2003,29 @@ fn a_right_shift_by_a_known_count_writes_every_word_of_its_target() {
     }
 }
 
+/// Consecutive `if`s whose conditions are computed the same way join behind one branch: a register
+/// file written and read bit by bit under `if idx = k`; variables updated in place before each `if`
+/// (`a := a and en`) look alike but read other values and stay apart (they joined at first).
+#[test]
+fn ifs_on_one_condition_join_and_look_alike_ones_do_not() {
+    let dir = tempdir("cycle-joinif");
+    analyze(&dir, "joinif.vhd", include_str!("cycle/joinif.vhd"));
+    for w in [1, 63, 64, 65, 128] {
+        let g = format!("-gW={w}");
+        for t in tiers() {
+            let t = [&t[..], &[&g[..]]].concat();
+            let (normal, _) = run(&dir, &t, "cycle_joinif");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_joinif");
+            assert_eq!(normal.len(), 24, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 3 of 5 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// Globally static calls on bits and slices of elements of constant arrays, folded from
 /// elaboration's values: an element has its subtype's index range, also when bit-string literals
 /// (`0 to n - 1`) gave it. Elaboration had read them by the literal's range (found by the fuzzer).

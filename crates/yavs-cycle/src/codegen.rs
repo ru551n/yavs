@@ -869,7 +869,35 @@ fn cut(ops: &[Op], max: usize) -> Vec<Vec<Op>> {
 fn join_ifs(ops: &[Op], keep: &[bool]) -> Vec<Op> {
     let mut reads: Words<u32> = Words::default();
     walk(ops, &mut 0, &mut |_, w| *reads.entry(w).or_default() += 1);
-    join_level(ops, keep, &reads)
+    let mut wrote: Words<u32> = Words::default();
+    count_writes(ops, &mut wrote);
+    join_level(ops.to_vec(), keep, &reads, &wrote)
+}
+
+/// How often an operation of `ops` may write each word (`span` words from its destination).
+fn count_writes(ops: &[Op], wrote: &mut Words<u32>) {
+    for op in ops {
+        if let Op::If { then, else_, .. } = op {
+            count_writes(then, wrote);
+            count_writes(else_, wrote);
+            continue;
+        }
+        let n = span(op) as i32;
+        let d = std::cell::Cell::new(None);
+        op.map(
+            &|r| r,
+            &|r| {
+                d.set(Some(word(r)));
+                r
+            },
+            &|x| x,
+        );
+        if let Some(d) = d.get() {
+            for k in 0..n {
+                *wrote.entry(d + 8 * k).or_default() += 1;
+            }
+        }
+    }
 }
 
 /// The byte offset of the one word `op` writes, when it is a chain operation: no check, no
@@ -904,7 +932,17 @@ fn chain_dst(op: &Op) -> Option<i32> {
     Some(d.get())
 }
 
-fn join_level(ops: &[Op], keep: &[bool], reads: &Words<u32>) -> Vec<Op> {
+fn join_level(mut ops: Vec<Op>, keep: &[bool], reads: &Words<u32>, wrote: &Words<u32>) -> Vec<Op> {
+    // Operations move to `out`: a clone per level of nested `If`s would be quadratic.
+    let take = |o: &mut Op| {
+        std::mem::replace(
+            o,
+            Op::IntLit {
+                dst: Ref::Loc(0),
+                v: 0,
+            },
+        )
+    };
     let mut out: Vec<Op> = Vec::with_capacity(ops.len());
     // The `If` last put out, its chain (in `out`, before it) and the words the chain reads that
     // it did not write itself.
@@ -930,7 +968,8 @@ fn join_level(ops: &[Op], keep: &[bool], reads: &Words<u32>) -> Vec<Op> {
             let mut a = j;
             while a > i {
                 match chain_dst(&ops[a - 1]) {
-                    Some(d) if need.contains(&d) => {
+                    // Not one that reads what it writes (`a := a and en`).
+                    Some(d) if need.contains(&d) && !reads_word(&ops[a - 1], d) => {
                         reads_of(&ops[a - 1], &mut need);
                         a -= 1;
                     }
@@ -942,19 +981,15 @@ fn join_level(ops: &[Op], keep: &[bool], reads: &Words<u32>) -> Vec<Op> {
         let (Some(j), Some((at, n, ext))) = (j, last.as_ref()) else {
             // Not a chain and an `If`, or no `If` before it: put out as it is.
             if let Some(j) = j {
-                out.extend_from_slice(&ops[i..j]);
-                let Op::If { cond, then, else_ } = &ops[j] else {
+                let Op::If { cond, .. } = &ops[j] else {
                     unreachable!()
                 };
-                last = Some((out.len(), j - i, chain_ext(&ops[i..j], word(*cond))));
-                out.push(Op::If {
-                    cond: *cond,
-                    then: then.clone(),
-                    else_: else_.clone(),
-                });
+                let ext = chain_ext(&ops[i..j], word(*cond));
+                out.extend(ops[i..=j].iter_mut().map(take));
+                last = Some((out.len() - 1, j - i, ext));
                 i = j + 1;
             } else {
-                out.push(ops[i].clone());
+                out.push(take(&mut ops[i]));
                 last = None;
                 i += 1;
             }
@@ -1000,7 +1035,10 @@ fn join_level(ops: &[Op], keep: &[bool], reads: &Words<u32>) -> Vec<Op> {
             let only_here = (new.iter()).all(|&w| {
                 !kept(keep, w) && reads.get(&w).copied().unwrap_or(0) == walk_count(&ops[i..=j], w)
             });
+            // Each chain word is written once in the member: by its chain alone.
+            let once = old.iter().chain(&new).all(|w| wrote.get(w) == Some(&1));
             let ok = same
+                && once
                 && only_here
                 && clean(t0, ext)
                 && clean(e0, ext)
@@ -1031,11 +1069,18 @@ fn join_level(ops: &[Op], keep: &[bool], reads: &Words<u32>) -> Vec<Op> {
     // Then inside the branches.
     for op in &mut out {
         if let Op::If { then, else_, .. } = op {
-            *then = join_level(then, keep, reads);
-            *else_ = join_level(else_, keep, reads);
+            *then = join_level(std::mem::take(then), keep, reads, wrote);
+            *else_ = join_level(std::mem::take(else_), keep, reads, wrote);
         }
     }
     out
+}
+
+/// Whether `op` reads word `w`.
+fn reads_word(op: &Op, w: i32) -> bool {
+    let mut r = Vec::new();
+    reads_of(op, &mut r);
+    r.contains(&w)
 }
 
 /// The words `op` reads (`reads`), added to `need`.
@@ -3332,6 +3377,48 @@ mod tests {
         let mut kept = keep.clone();
         kept[17] = true;
         assert_eq!(ifs(&join_ifs(&ops[..8], &kept)), 4);
+        // Variables updated in place before each `If` (`a := a and en; if a = '1'`, then the same
+        // with `b`): the chains look alike but read other values.
+        let l = Ref::Loc;
+        let var = |v: u32, src: u32, c: u32| {
+            vec![
+                Op::Copy {
+                    dst: l(v),
+                    src: l(src),
+                    len: 1,
+                },
+                Op::Gate {
+                    g: crate::lower::Gate::And,
+                    dst: l(v),
+                    a: l(v),
+                    b: l(3),
+                    len: 1,
+                },
+                Op::If {
+                    cond: l(v),
+                    then: vec![Op::Lit {
+                        dst: l(c),
+                        val: vec![1].into(),
+                    }],
+                    else_: vec![],
+                },
+            ]
+        };
+        let inplace = [var(20, 4, 30), var(21, 5, 31)].concat();
+        assert_eq!(ifs(&join_ifs(&inplace, &keep)), 2);
+        // The same without the copies: each variable is written once, from its own earlier value.
+        let own = |v: u32, c: u32| var(v, 0, c)[1..].to_vec();
+        assert_eq!(
+            ifs(&join_ifs(&[own(20, 30), own(21, 31)].concat(), &keep)),
+            2
+        );
+        // A chain word written again later in the member: apart.
+        let mut again = ops[..8].to_vec();
+        again.push(Op::Lit {
+            dst: Ref::Loc(16),
+            val: vec![0].into(),
+        });
+        assert_eq!(ifs(&join_ifs(&again, &keep)), 4);
         let mut late = ops[..8].to_vec();
         late.push(Op::Copy {
             dst: Ref::Loc(5),

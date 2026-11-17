@@ -20,6 +20,11 @@ Buckets: identical; documented (equal once the delta of report stamps and the re
 cycle-based processes are taken out, or the normal run ended on a failure of such a process); differs
 (a wrong result: the exit status, the end time, the console or a written file; fails the gate); skipped
 (the normal run does not finish or fails to start). Each test shows how many processes joined the region.
+
+`--contract exact` (the default) runs cycle mode under the exact rules, as cyclegate.py does
+(`--cycle-exact-meta`, YAVS_CYCLE_EXACT_CLOCKS=1). `--contract default` runs plain `--cycle` and a report
+under the exact rules too: a difference where the two regions differ is bucket `contract` (listed, not
+failing), a crash or an internal error always fails.
 """
 import argparse, atexit, concurrent.futures as cf, difflib, json, math, os, random, re, shlex, shutil, subprocess, sys, time
 from pathlib import Path
@@ -350,10 +355,16 @@ def one_run(e, mode, base, a, stats=True, perf=None):
             s = s.replace(k, v)
         return s
 
-    flag = {"normal": [], "cycle": ["--cycle"], "report": ["--cycle-report"]}[mode]
+    exact = a.contract == "exact" or mode == "xreport"
+    flag = {"normal": [], "cycle": ["--cycle"], "report": ["--cycle-report"], "xreport": ["--cycle-report"]}[mode]
+    flag += [G.EXACT] if exact and mode != "normal" else []
     argv = [a.bin, "run", *flag, *[fix(x) for x in e["argv"][2:]]]
     env = {**os.environ, **{k: fix(v) for k, v in e.get("env", {}).items()}, **dict(x.split("=", 1) for x in a.env),
            "YAVS_STD_CACHE": str(a.std)}
+    if exact:
+        env["YAVS_CYCLE_EXACT_CLOCKS"] = "1"
+    else:
+        env.pop("YAVS_CYCLE_EXACT_CLOCKS", None)
     if mode == "cycle" and a.warm and stats:
         env["YAVS_CYCLE_STATS"] = "1"  # the cache hits; its lines are taken out below
     cmd = shlex.split(a.prefix) + [shutil.which("timeout"), str(a.timeout)]
@@ -396,6 +407,12 @@ def one(e, a):
             cl = D.normalise(crc, strip_records(cout, hr, mr), strip_records(cerr, hr, mr), yavs=True)
             res["end"] = ends(nl)[-1] if ends(nl) == ends(cl) else f"{ends(nl)[-1]} normal, {ends(cl)[-1]} cycle"
             res["bucket"], res["why"] = compare(nrc, nl, nf, crc, cl, cf_, lost, member_paths(rep), (str(base / "normal"), str(base / "cycle")))
+            if G.CRASH.search(cerr + rerr):
+                res.update(bucket="differs", why=["cycle mode crashed or failed internally"] + cerr.splitlines()[-10:])
+            elif res["bucket"] == "differs" and a.contract == "default":
+                xrep = G.split_report(one_run(e, "xreport", base, a)[2])[1]
+                if xrep != rep:
+                    res.update(bucket="contract", why=["the default contract changes the region: " + G.region_diff(xrep, rep)] + res["why"])
             if res["bucket"] == "identical" and (nout, nerr) != tuple(strip_records(t, hr, mr) for t in (nout, nerr)):
                 res.update(bucket="documented", why=["reports and library warnings of cycle-based processes"])
             h = res["hits"] = a.hits.get(e["name"], {})
@@ -405,7 +422,7 @@ def one(e, a):
                 res.update(bucket="timeout", why=[f"the cycle run timed out after {a.timeout} s; the normal run did not"])
             elif a.count:
                 res["count"] = counted(e, base, a)
-        if res["bucket"] in ("differs", "timeout"):
+        if res["bucket"] in ("differs", "timeout", "contract"):  # a contract difference is for review
             res["dir"] = str(base)
         else:
             D.drop(base)
@@ -551,6 +568,9 @@ def main():
                     "(instructions, cycles, branch and L1 cache misses, user space; warm-up runs first); pin with --prefix 'tools/claim core --'")
     ap.add_argument("--count-warmups", type=int, default=2, metavar="N", help="with --count: uncounted runs per mode first (default 2: "
                     "the cache stores a design on its second run)")
+    ap.add_argument("--contract", choices=("exact", "default"), default="exact",
+                    help="exact (default): cycle runs under the exact rules (--cycle-exact-meta, YAVS_CYCLE_EXACT_CLOCKS=1); "
+                         "default: plain --cycle, a difference where the exact rules give another region is bucket contract")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("-v", "--verbose", action="store_true", help="one line per test")
     a = ap.parse_args()
@@ -589,22 +609,23 @@ def main():
                 res.append(r)
                 if r["why"][:1] == ["not started: the time budget is spent"]:
                     continue
-                if a.verbose or r["bucket"] in ("differs", "skipped", "timeout"):
+                if a.verbose or r["bucket"] in ("differs", "skipped", "timeout", "contract"):
                     print(f"{r['bucket'].upper():10} {r['name']}  [{r['members']}/{r['procs']} in the region] end {r['end']}" + count_text(r)
                           + (f"\n    " + "\n    ".join(r["why"]) if r["why"] and r["bucket"] != "documented" else ""), flush=True)
-                if r["bucket"] == "differs":
+                if r["bucket"] in ("differs", "contract"):
                     print(f"    outputs kept in {r['dir']}", flush=True)
         except BaseException:
             ex.shutdown(wait=True, cancel_futures=True)
             raise
     if a.json:
         a.json.write_text("\n".join(json.dumps(r) for r in res) + "\n")
-    c = {b: sum(r["bucket"] == b for r in res) for b in ("identical", "documented", "differs", "timeout", "skipped")}
+    c = {b: sum(r["bucket"] == b for r in res) for b in ("identical", "documented", "contract", "differs", "timeout", "skipped")}
     ran = [r for r in res if r["bucket"] not in ("skipped", "timeout")]
     budget = sum(r["why"][:1] == ["not started: the time budget is spent"] for r in res)
     with_m = sum(r["members"] > 0 for r in ran)
     print(f"cycle replay: {len(res)} tests: {c['identical']} identical, {c['documented']} documented losses only, "
-          f"{c['differs']} differ, {c['timeout']} cycle runs timed out (not compared), {c['skipped'] - budget} skipped, {budget} not started (budget); {with_m} of {len(ran)} compared tests have at least one process "
+          + (f"{c['contract']} differ by the default contract, " if a.contract == "default" else "")
+          + f"{c['differs']} differ, {c['timeout']} cycle runs timed out (not compared), {c['skipped'] - budget} skipped, {budget} not started (budget); {with_m} of {len(ran)} compared tests have at least one process "
           f"in the region ({sum(r['members'] for r in ran)} of {sum(r['procs'] for r in ran)} processes)")
     hs = [r.get("hits", {}) for r in ran if r["members"]]
     if a.warm:

@@ -12,7 +12,9 @@ line `time name value` per change at the end of a time step); the traces are com
 step. A difference only where the normal mode holds a metavalue (`U X Z W L H -`) is counted apart: cycle mode
 reads metavalues as 0 or 1, and logic that follows such a value may give another value (Microwatt's
 `early_rd_valid` is `'U'` at 0 fs in the normal mode, `'1'` in cycle mode). Any other difference is one, and the
-exit status is 1. Stdlib only.
+exit status is 1. Cycle mode runs under the exact rules (`--cycle-exact-meta`, YAVS_CYCLE_EXACT_CLOCKS=1)
+unless `--contract default` asks for plain `--cycle`, whose copied clocks and metavalues may give other values
+by design (docs/cycle-mode.rst "The contract in short"). Stdlib only.
 """
 import argparse, os, subprocess, sys, tempfile
 from pathlib import Path
@@ -97,9 +99,16 @@ def main():
     ap.add_argument("--show", type=int, default=10)
     ap.add_argument("--seeds", help="trace the signals of this list (YAVS_CYCLE_SEEDS of another binary, say "
                     "the one before a change that lets processes join) instead of asking this one")
+    ap.add_argument("--contract", choices=("exact", "default"), default="exact",
+                    help="exact (default): --cycle-exact-meta and YAVS_CYCLE_EXACT_CLOCKS=1; default: plain --cycle")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("args", nargs=argparse.REMAINDER)
     o = ap.parse_args()
+    exact = ["--cycle-exact-meta"] if o.contract == "exact" else []
+    if exact:
+        os.environ["YAVS_CYCLE_EXACT_CLOCKS"] = "1"
+    else:
+        os.environ.pop("YAVS_CYCLE_EXACT_CLOCKS", None)
     if o.selftest:
         return selftest()
     if not o.bin:
@@ -114,7 +123,7 @@ def main():
         lst.write_text(Path(o.seeds).read_text())
     else:
         env = dict(os.environ, YAVS_CYCLE_SEEDS=str(lst))
-        r = subprocess.run([o.bin, *args[:1], "--cycle-report", *args[1:]], cwd=o.cwd, env=env,
+        r = subprocess.run([o.bin, *args[:1], "--cycle-report", *exact, *args[1:]], cwd=o.cwd, env=env,
                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         if not lst.exists():
             sys.exit(f"seeddiff: --cycle-report wrote no list (exit {r.returncode}): {r.stderr[-2000:]}")
@@ -123,7 +132,7 @@ def main():
     if not names:
         return 0
     rcs = {}
-    for mode, extra in (("normal", []), ("cycle", ["--cycle"])):
+    for mode, extra in (("normal", []), ("cycle", ["--cycle", *exact])):
         env = dict(os.environ, YAVS_TRACE=str(out / f"{mode}.trace"), YAVS_TRACE_SIGNALS=str(lst))
         with open(out / f"{mode}.out", "w") as fo, open(out / f"{mode}.err", "w") as fe:
             rcs[mode] = subprocess.run([o.bin, *args[:1], *extra, *args[1:]], cwd=o.cwd, env=env,

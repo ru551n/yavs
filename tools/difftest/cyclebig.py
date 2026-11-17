@@ -9,6 +9,11 @@ must be the count `GATE` holds, so a change of membership is seen, and the norma
 test's `expect` lines, so two equally short runs cannot pass. Fails when the run compared nothing (no
 member, or no output at all) and when a world is missing (the command that makes it is printed). Worlds
 are made by tools/realbench/run.py --prepare. Stdlib only. See README.md.
+
+`--contract exact` (the default) runs cycle mode under the exact rules (`--cycle-exact-meta`,
+YAVS_CYCLE_EXACT_CLOCKS=1), which `GATE` holds. `--contract default` runs plain `--cycle`: the member
+count is shown, not checked, a difference of the output is listed as `CONTRACT`, and only a crash, an
+internal error or another exit status fails.
 """
 import argparse, itertools, os, re, shutil, subprocess, sys, time
 from pathlib import Path
@@ -58,11 +63,15 @@ def selftest(d):
     print("selftest ok")
 
 
+EXTRA = ["--cycle", "--cycle-exact-meta"]  # the cycle flags; `--contract default`: "--cycle" alone
+CRASH = re.compile(r"E9999|this is a bug in yavs|panicked")
+
+
 def one_mode(Y, t, world, d, cycle, tier, timeout, stop):
     """Run one mode in a copy of the world; (exit status, members, reports, {name: text file}, last lines of stderr)."""
     shutil.copytree(world, d, symlinks=True)
     start = time.time()
-    script = R.yavs_script(Y, t, d, tier, stop=stop, extra=["--cycle"] if cycle else [])
+    script = R.yavs_script(Y, t, d, tier, stop=stop, extra=EXTRA if cycle else [])
     with open(d.parent / f"{d.name}.out", "w") as fo, open(d.parent / f"{d.name}.err", "w") as fe:
         rc = subprocess.run(["timeout", str(timeout), "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=8G",
                              "bash", "-c", script], stdout=fo, stderr=fe).returncode
@@ -74,7 +83,10 @@ def one_mode(Y, t, world, d, cycle, tier, timeout, stop):
     reports = sum(1 for l in open(out, errors="replace") if R.REPORT.match(l))
     m = MEMBERS.search(err.read_text(errors="replace")) if cycle else None
     files = {p.name: p for p in d.iterdir() if p.is_file() and p.stat().st_mtime >= start and p.name not in (R.OUT, R.ERR)}
-    tail = [l for l in err.read_text(errors="replace").splitlines() if l.strip()][-3:]
+    text = err.read_text(errors="replace")
+    tail = [l for l in text.splitlines() if l.strip()][-3:]
+    if CRASH.search(text):
+        tail = ["crashed: " + CRASH.search(text).group(0)] + tail
     return rc, m and m.group(0), reports, {"console": con, **files}, tail
 
 
@@ -86,8 +98,16 @@ def main():
     ap.add_argument("--tier", default="auto")
     ap.add_argument("--timeout", type=int, default=900, help="seconds per run")
     ap.add_argument("--keep", action="store_true", help="keep the scratch directory")
+    ap.add_argument("--contract", choices=("exact", "default"), default="exact",
+                    help="exact (default): --cycle-exact-meta and YAVS_CYCLE_EXACT_CLOCKS=1, members checked against GATE; "
+                         "default: plain --cycle, differences listed, only a crash or another exit status fails")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
+    if a.contract == "exact":
+        os.environ["YAVS_CYCLE_EXACT_CLOCKS"] = "1"
+    else:
+        EXTRA[1:] = []
+        os.environ.pop("YAVS_CYCLE_EXACT_CLOCKS", None)
     scratch = Path(os.environ.get("CYCLEBIG_CACHE", "~/.cache/yavs-cyclebig")).expanduser() / f"run-{os.getpid()}"
     if a.selftest:
         return selftest(scratch)
@@ -115,24 +135,30 @@ def main():
             why.append(f"the normal run ended with exit status {rn}, not {want_n}: " + " / ".join(ntail))
         if rc != want_c:
             why.append(f"the cycle run ended with exit status {rc}, not {want_c}: " + " / ".join(ctail))
-        if mem and mem != f"{g['members']} processes":
+        if mem and mem != f"{g['members']} processes" and a.contract == "exact":
             why.append(f"members: {mem}, the gate holds {g['members']} (a change of membership: explain it and update GATE)")
         con = nf["console"].read_text(errors="replace")
         why += [f"the normal console lacks /{e}/" for e in t.get("expect", []) if not re.search(e, con, re.M)]
         if set(nf) != set(cf):
             why.append(f"files written: {sorted(nf)} normal, {sorted(cf)} cycle")
-        why += [f"{k}: {d}" for k in sorted(set(nf) & set(cf)) if (d := same_lines(nf[k], cf[k]))]
+        diffs = [f"{k}: {d}" for k in sorted(set(nf) & set(cf)) if (d := same_lines(nf[k], cf[k]))]
+        crashed = any(l.startswith("crashed: ") for l in ctail)
+        if crashed:
+            why.append("the cycle run crashed: " + " / ".join(ctail))
+        contract = a.contract == "default" and not why and diffs
+        if not contract:
+            why += diffs
         lines = {k: sum(1 for l in open(p, errors="replace") if l.strip()) for k, p in nf.items()}
         if not mem or mem.startswith("0 "):
             why.append("no process joined the region: nothing was compared")
         elif not any(lines.values()):
             why.append("the normal run wrote nothing to compare")
         bad += bool(why)
-        print(f"{'DIFFERS' if why else 'SAME':8}{name}  [{mem or 'no region'}], {a.tier}, stop {g['stop'] or t['stop'] or 'none'}, "
+        print(f"{'DIFFERS' if why else 'CONTRACT' if contract else 'SAME':8}{name}  [{mem or 'no region'}], {a.tier}, stop {g['stop'] or t['stop'] or 'none'}, "
               + f"exit {rn} normal, {rc} cycle, {time.time() - began:.0f} s; "
               + ", ".join(f"{k} {n} lines" for k, n in sorted(lines.items()))
               + f"; reports {nrep} normal, {crep} cycle (not compared)", flush=True)
-        for w in why:
+        for w in why + (diffs if contract else []):
             print(f"    {w}")
     if not a.keep and not bad:
         shutil.rmtree(scratch, ignore_errors=True)

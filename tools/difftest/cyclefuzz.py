@@ -2088,15 +2088,23 @@ def mem_ok():
     return False
 
 
+# The cycle runs compare exactly (`--contract exact`): the normal mode's metavalue rules and copied clocks.
+EXACT = "--cycle-exact-meta"
+CONTRACT = {"exact": True}
+
+
 def script(binary, tiers, warm, checks, std="2008"):
     """bash steps of one design in its directory: analysis, elaboration, then the runs; each
     run's stdout, stderr and status in files named after it."""
-    y = f"Y={binary}; S='--std={std} --work=work:lib'; "
+    x = CONTRACT["exact"]
+    y = ("export YAVS_CYCLE_EXACT_CLOCKS=1; " if x else "unset YAVS_CYCLE_EXACT_CLOCKS; ") + f"Y={binary}; S='--std={std} --work=work:lib{' ' + EXACT if x else ''}'; "
     st = ['$Y analyze $S d.vhd > a.out 2>&1 || exit 97', '$Y elab $S fz_tb > e.out 2>&1 || exit 98',
           '$Y run $S --cycle-report fz_tb > report.out 2> report.err']
+    st[:2] = [c.replace("$S", "$A") for c in st[:2]]  # analyze and elab take no cycle flag
+    y += f"A='--std={std} --work=work:lib'; "
     runs = []
     for t in tiers:
-        runs.append((f"normal-{t}", f"--tier={t}", ""))
+        runs.append((f"normal-{t}", f"--tier={t}", "N"))
         runs.append((f"cycle-{t}", f"--tier={t} --cycle", ""))
         if warm:
             runs.append((f"warm-{t}", f"--tier={t} --cycle", ""))  # the region from the cache of the run before
@@ -2105,7 +2113,9 @@ def script(binary, tiers, warm, checks, std="2008"):
     for name, flags, env in runs:
         if name.startswith("cycle-"):  # cold: no region code from an earlier run
             st.append("rm -rf lib/yavs-cache/cycle")
-        st.append(f"{env}$Y run $S {flags} fz_tb > {name}.out 2> {name}.err; echo $? > {name}.rc")
+        opts = "$A" if env == "N" else "$S"  # the normal mode takes no cycle flag
+        env = "" if env == "N" else env
+        st.append(f"{env}$Y run {opts} {flags} fz_tb > {name}.out 2> {name}.err; echo $? > {name}.rc")
         if name.startswith("cycle-"):
             st.append(f"ls lib/yavs-cache/cycle/cycle-*.img > {name}.cached 2>/dev/null")
     return y + "; ".join(st), [r[0] for r in runs]
@@ -2281,6 +2291,8 @@ def main():
         r.add_argument("--cycles", type=int, default=40)
         r.add_argument("--keep", action="store_true", help="keep the directories of passing seeds")
         r.add_argument("--json", help="append one line per seed to this file")
+        r.add_argument("--contract", choices=("exact", "default"), default="exact",
+                       help="exact (default): cycle runs with --cycle-exact-meta and YAVS_CYCLE_EXACT_CLOCKS=1; default: plain --cycle")
         if name == "run":
             r.add_argument("--min-share", type=float, default=60.0, help="fail when fewer percent of the processes joined")
     g.add_argument("--feat", type=feat, default=None)
@@ -2289,6 +2301,7 @@ def main():
     if a.cmd == "gen":
         print(render(build(a.seed, a.scale, a.feat, a.std), a.cycles), end="")
         return 0
+    CONTRACT["exact"] = a.contract == "exact"
     binary = shutil.which(a.bin) or a.bin
     if a.cmd == "check":
         r = check(Path(a.dir), a, binary)

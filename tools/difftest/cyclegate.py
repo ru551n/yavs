@@ -11,8 +11,15 @@ the reviewed cause); differs (anything else: a wrong result in cycle mode, or a 
 difference that changed; the bucket that fails the gate); refused (E41xx under --cycle);
 skipped (the normal mode does not run it). Each test also reports how many processes joined
 the region, so a pass is not vacuous. See README.md.
+
+The gate compares exactly (`--contract exact`, the default): cycle runs take `--cycle-exact-meta`
+and YAVS_CYCLE_EXACT_CLOCKS=1, which keep the metavalue rules and copied clocks of the normal
+mode. `--contract default` runs plain `--cycle` (two-state metavalues, a copied clock is its
+source: docs/cycle-mode.rst "The contract in short") and also reports the region under the exact
+rules: where the two reports agree the test must pass as under the exact gate; where they differ
+a difference of the output is bucket `contract` (listed, not failing) and only a crash fails it.
 """
-import argparse, atexit, shutil, zlib, concurrent.futures as cf, difflib, json, re, sys
+import argparse, atexit, os, shutil, zlib, concurrent.futures as cf, difflib, json, re, sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -25,6 +32,18 @@ BENCH_DIR = ROOT / "tools" / "bench" / "designs"
 CYC = "$YAVS_RUN_FLAGS"  # the one place `yavs run` takes its extra flags in D.YAVS
 NORMAL = D.YAVS
 CYCLE = D.YAVS.replace(CYC, "--cycle " + CYC)
+EXACT = "--cycle-exact-meta"  # with YAVS_CYCLE_EXACT_CLOCKS=1: the exact rules (`exact`)
+CRASH = re.compile(r"E9999|this is a bug in yavs|panicked")
+
+
+def exact(on):
+    """Run every cycle run under the exact rules (`--contract exact`) or the default contract."""
+    global CYCLE
+    CYCLE = D.YAVS.replace(CYC, "--cycle " + (EXACT + " " if on else "") + CYC)
+    if on:
+        os.environ["YAVS_CYCLE_EXACT_CLOCKS"] = "1"
+    else:
+        os.environ.pop("YAVS_CYCLE_EXACT_CLOCKS", None)
 
 # crates/yavs/tests/cycle/*.vhd: file -> [(top, extra run flags, text edit)]. numeric.vhd, calls.vhd,
 # recarr.vhd, slices.vhd, ram.vhd and reclit.vhd have the width token W, constelem.vhd also string
@@ -231,6 +250,12 @@ def known(r, expected):
             r["why"] = f"the listed difference changed (checksum {crc} before, {r.get('crc')} now): review it\n" + r["why"]
 
 
+def region_diff(x, d):
+    """The first lines of the region report under the exact rules (`x`) that the default's (`d`) lacks."""
+    gone = [l.strip() for l in x if l not in d][:3]
+    return "; ".join(gone) or "the clocks or the members' order differ"
+
+
 def first_diff(a, b):
     d = list(difflib.unified_diff(a, b, "normal", "cycle", lineterm="", n=1))
     return "\n".join(d[:30])
@@ -244,7 +269,10 @@ def one(item, jobs_args):
     try:
         outs = []
         tr = tc.replace("--cycle ", "--cycle-report ", 1)  # the members: analysis only
-        for kind, t in (("normal", tn), ("cycle", tc), ("report", tr)):
+        runs = [("normal", tn), ("cycle", tc), ("report", tr)]
+        if jobs_args.contract == "default":  # the members under the exact rules, to compare
+            runs.append(("xreport", "export YAVS_CYCLE_EXACT_CLOCKS=1; " + tr.replace("--cycle-report ", f"--cycle-report {EXACT} ", 1)))
+        for kind, t in runs:
             if kind == "cycle" and jobs_args.warm:
                 # A cold run first, then the run compared in a fresh directory with its library: the
                 # region's code from the compilation cache (files the test writes start afresh).
@@ -266,7 +294,11 @@ def one(item, jobs_args):
                     res["dir"] = str(base)
                     return res
             outs.append((rc, out, err))
-        (nrc, nout, nerr), (crc, cout, cerr), (_, _, rerr) = outs
+        (nrc, nout, nerr), (crc, cout, cerr), (_, _, rerr) = outs[:3]
+        if CRASH.search(cerr + rerr) or (crc == 124 and nrc != 124):
+            res.update(bucket="differs", why="cycle mode crashed or timed out\n" + "\n".join(cerr.splitlines()[-20:]))
+            res["dir"] = str(base)
+            return res
         if nrc in (97, 98, 124) and hdr["exit"] != nrc:
             res.update(bucket="skipped", why={97: "analysis fails", 98: "elaboration fails", 124: "timeout"}[nrc] + " in the normal mode")
         else:
@@ -281,6 +313,9 @@ def one(item, jobs_args):
                 cl = D.normalise(crc, cout, cerr, yavs=True)
                 lost = lambda path: dropped > 0 and (path in members or (path == "-" and "-" in members))
                 res["bucket"], res["why"] = classify(nl, cl, lost)
+                if res["bucket"] == "differs" and len(outs) > 3 and split_report(outs[3][2])[1] != rep:
+                    res.update(bucket="contract", why="differs where the default contract changes the region: "
+                               + region_diff(split_report(outs[3][2])[1], rep) + "\n" + res["why"].partition("\n")[2])
         if res["bucket"] == "differs":
             res["crc"] = "%08x" % zlib.crc32("\n".join(difflib.unified_diff(nl, cl, lineterm="", n=1)).encode())
             res["dir"] = str(base)
@@ -312,6 +347,11 @@ def selftest():
     assert (e, held_asserts(r), count_members(r)) == ("real", ({":tb:dut:p", ":tb:q", "-"}, 3), (2, 5)), (e, held_asserts(r))
     e, r = split_report("cycle mode: 2 of 5 processes run cycle-based, 3 in the event kernel (see --cycle-report)\nreal\n")
     assert (e, held_asserts(r), count_members(r)) == ("real", (set(), 0), (2, 5)), e
+    exact(True)
+    assert EXACT in CYCLE and os.environ.get("YAVS_CYCLE_EXACT_CLOCKS") == "1"
+    exact(False)
+    assert EXACT not in CYCLE and "YAVS_CYCLE_EXACT_CLOCKS" not in os.environ
+    assert region_diff(["a", "  b", "  c"], ["a", "  c"]) == "b"
     print("selftest ok")
 
 
@@ -326,10 +366,15 @@ def main():
     ap.add_argument("--warm", action="store_true",
                     help="run each cycle run first in a library of its own, then the compared run on a copy of that "
                          "library, with the region's code from the compilation cache, and fail when the two differ")
+    ap.add_argument("--contract", choices=("exact", "default"), default="exact",
+                    help="exact (default): cycle runs keep the normal mode's metavalue rules and copied clocks "
+                         "(--cycle-exact-meta, YAVS_CYCLE_EXACT_CLOCKS=1); default: plain --cycle, a difference where "
+                         "the exact rules give another region is bucket contract, not a failure")
     ap.add_argument("-v", "--verbose", action="store_true", help="one line per test with its membership")
     a = ap.parse_args()
     if a.selftest:
         return selftest()
+    exact(a.contract == "exact")
     err = D.candidate_error("yavs")
     if err:
         sys.exit(err)
@@ -343,7 +388,7 @@ def main():
             for r in ex.map(lambda i: one(i, a), todo):
                 res.append(r)
                 known(r, expected)
-                if a.verbose or r["bucket"] in ("differs", "known") or "not compared" in r["why"]:
+                if a.verbose or r["bucket"] in ("differs", "known", "contract") or "not compared" in r["why"]:
                     print(f"{r['bucket'].upper():10} {r['name']}  [{r['members']}/{r['procs']} in the region]"
                           + (f" {r['why'].splitlines()[0]}" if r["why"] else ""), flush=True)
                 if r["bucket"] == "known":
@@ -359,11 +404,13 @@ def main():
     for r in res:
         if r["name"] in expected and r["bucket"] in ("identical", "documented"):
             print(f"note: {r['name']} no longer differs: remove it from cyclegate.expected")
-    c = {b: sum(r["bucket"] == b for r in res) for b in ("identical", "documented", "known", "differs", "refused", "skipped")}
-    ran = [r for r in res if r["bucket"] in ("identical", "documented", "known", "differs")]
+    c = {b: sum(r["bucket"] == b for r in res) for b in ("identical", "documented", "known", "contract", "differs", "refused", "skipped")}
+    ran = [r for r in res if r["bucket"] in ("identical", "documented", "known", "contract", "differs")]
     with_m = sum(r["members"] > 0 for r in ran)
     print(f"cycle gate: {len(res)} tests: {c['identical']} identical, {c['documented']} documented losses only, "
-          f"{c['known']} known differences, {c['differs']} differ otherwise, {c['refused']} refused, {c['skipped']} skipped; "
+          f"{c['known']} known differences, "
+          + (f"{c['contract']} differ by the default contract, " if a.contract == "default" else "")
+          + f"{c['differs']} differ otherwise, {c['refused']} refused, {c['skipped']} skipped; "
           f"{with_m} of {len(ran)} compared tests have at least one process in the region "
           f"({sum(r['members'] for r in ran)} of {sum(r['procs'] for r in ran)} processes)"
           + (f"; warm: {sum(bool(r.get('cached')) for r in res)} tests ran with region code in the cache, "

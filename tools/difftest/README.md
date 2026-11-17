@@ -121,6 +121,19 @@ run stops when it differs:
 
     YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclegate.py [--warm]
 
+Every comparing tool here (`cyclegate.py`, `cyclereplay.py`, `cyclebig.py`, `cyclefuzz.py`, `seeddiff.py`) compares
+exactly by default, `--contract exact`: its cycle runs take `--cycle-exact-meta` and `YAVS_CYCLE_EXACT_CLOCKS=1`,
+which keep the normal mode's metavalue rules and a copied clock a clock of its own, so a difference is a bug. The
+default contract of `--cycle` gives up both (`docs/cycle-mode.rst`, "The contract in short"): `--contract default`
+runs plain `--cycle` to show it does not crash. `cyclegate.py` and `cyclereplay.py` then also make the region report
+under the exact rules: where it equals the default's, the test must pass as under the exact gate; where it differs,
+a difference of the output is bucket `contract` (listed with the first rows the exact region has and the default's
+lacks, not failing); a crash or an internal error (`E9999`) always fails. `cyclebig.py --contract default` lists a
+difference as `CONTRACT` and checks no member count; `cyclefuzz.py` and `seeddiff.py` only change the flags. Run the
+gates exact before a push, and default once to see that it runs:
+
+    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclegate.py --contract default -v
+
 The gate has no large design. `cyclebig.py` is its companion for the big ones, required before every push that
 changes which processes join the region: it runs realbench worlds (made by
 `tools/realbench/run.py --prepare` under `YAVS_REALBENCH_CACHE`, named `<test>-<label>`, `--label` default `yavs`)

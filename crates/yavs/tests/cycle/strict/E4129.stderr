@@ -1,0 +1,31 @@
+error[E4129]: combinational logic feeding a process that depends on delta cycles is not supported in cycle mode
+   --> $DIR/strict.vhd:308:3
+    |
+308 |     c <= a and b;
+    |     ^^^^^^^^^^^^^ it drives t_e4129.dut.c, which t_e4129.dut.latch reads through logic
+309 | /   latch : process (en, c)
+310 | |   begin
+311 | |     if en = '1' then
+312 | |       q <= c;
+313 | |     end if;
+314 | |   end process;
+    | |______________- t_e4129.dut.latch, outside the region, keeps a value from its previous run (a latch, or a variable read before it is assigned)
+    |
+    = note: in process t_e4129.dut.c <= ... (strict.vhd:308)
+    = note: why: the event simulation changes this logic over several delta cycles and the reader outside the region sees each step; cycle-based code changes it in one step, so the reader would see other values or run another number of times
+    = help: fix the reader so that it can join the region too (a complete sensitivity list, no latch, no variable read before it is assigned), or make it a clocked process; or run with `--cycle` to leave this process in the event simulation
+
+error[E4119]: a latch is not supported in cycle mode
+   --> $DIR/strict.vhd:311:5
+    |
+311 | /     if en = '1' then
+312 | |       q <= c;
+313 | |     end if;
+    | |___________^ t_e4129.q is not assigned on every path (this statement leaves it unassigned)
+    |
+    = note: in process t_e4129.dut.latch (strict.vhd:309)
+    = note: why: a signal that is not assigned on every path keeps its old value, which is state, not combinational logic
+    = help: assign it on every path, for example with a default assignment at the start of the process; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 2 previous errors
+

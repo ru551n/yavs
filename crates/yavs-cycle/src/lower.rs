@@ -866,6 +866,52 @@ struct IntV {
 
 type R<T> = Result<T, String>;
 
+/// Ends a lowering error with the innermost statement it came from (`stmt`), read back by
+/// [`reason`]. ponytail: a marker in the text, not a typed error; type it if errors grow fields.
+const AT: char = '\u{1}';
+
+/// The same as [`AT`] for a statement of a called subprogram, and the marker of the process's
+/// statement that called it.
+const INNER: char = '\u{3}';
+const CALL: char = '\u{2}';
+
+/// The reason of a lowering error `w`: E4101 at its statement, else at `whole` (the process);
+/// an error inside a called subprogram names the call too.
+pub(crate) fn reason(w: String, whole: Span) -> crate::check::Reason {
+    let span = |m: &str| -> Option<Span> {
+        let n: Vec<u32> = m.split(':').filter_map(|x| x.parse().ok()).collect();
+        match n[..] {
+            [f, start, end] => Some(Span {
+                file: yavs_diag::FileId(f),
+                start,
+                end,
+            }),
+            _ => None,
+        }
+    };
+    // A caller may add to the text after a marker (` (signal `s`)`).
+    let (mut text, mut rest) = (String::new(), String::new());
+    let mut marks = Vec::new();
+    for (i, part) in w.split([AT, INNER, CALL]).enumerate() {
+        if i == 0 {
+            text = part.to_string();
+            continue;
+        }
+        let (m, r) = part.split_once(' ').unwrap_or((part, ""));
+        marks.push(span(m));
+        if !r.is_empty() {
+            rest = format!("{rest} {r}");
+        }
+    }
+    text.push_str(&rest);
+    let at = marks.first().copied().flatten().unwrap_or(whole);
+    let r = crate::check::Reason::new(crate::codes::LEFT_OUT, at, text);
+    match marks.get(1).copied().flatten() {
+        Some(call) if call != at => r.also(call, "called from here"),
+        _ => r,
+    }
+}
+
 /// What a branch of an `if`, `case` or a conditional or selected assignment does.
 #[derive(Clone, Copy)]
 enum Br<'b> {
@@ -976,7 +1022,7 @@ const UNROLL_MAX: u32 = 1 << 16;
 pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
     let p = &e.procs[pi];
     if p.postponed {
-        return Err("a postponed process cannot run cycle-based".into());
+        return Err("a postponed process".into());
     }
     let mut lx = Lx {
         shared: Default::default(),
@@ -1031,7 +1077,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
             ..
         } => lx.conc_assign(target, delay, rhs),
         StmtKind::ConcSignalAssign { .. } => {
-            Err("a guarded or postponed concurrent assignment cannot run cycle-based".into())
+            Err("a guarded or postponed concurrent assignment".into())
         }
         // Simulation-only, as in processes: not evaluated, and it reads nothing.
         StmtKind::ConcAssert {
@@ -1051,7 +1097,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
             lx.proc_call(call)?;
             Ok(lx.body(Kind::Comb, None, None))
         }
-        _ => Err("a concurrent statement of this kind is not supported in cycle mode yet".into()),
+        _ => Err("a concurrent statement of this kind".into()),
     }
 }
 
@@ -1159,9 +1205,7 @@ impl Lx<'_> {
                 };
                 let StmtKind::Wait { until: Some(c), .. } = db.stmts[*w].kind else {
                     return Err(
-                        "a `wait until` process whose wait is not its first statement is not \
-                         supported in cycle mode yet"
-                            .into(),
+                        "a `wait until` process whose wait is not its first statement".into(),
                     );
                 };
                 self.edge_body(c, rest)?;
@@ -1202,7 +1246,7 @@ impl Lx<'_> {
             }
         }
         if matches!(sensitivity, Sensitivity::None) {
-            return Err("a process with wait statements runs in the event kernel".into());
+            return Err("a process with wait statements".into());
         }
         // The subset checker proved the rest (`check.rs`): every element a path may assign is
         // assigned on every path, every variable is assigned before it is read, and the
@@ -1266,17 +1310,19 @@ impl Lx<'_> {
         rhs: &Rhs<Waveform>,
     ) -> R<Body> {
         if matches!(delay, yavs_sem::hir::Delay::Inertial { reject: Some(_) }) {
-            return Err("a `reject` limit has no meaning in cycle mode".into());
+            return Err("a `reject` limit".into());
         }
         if let Some(t) = self.p.trigger {
+            const SHAPE: &str = "an edge-triggered concurrent assignment of another shape: only \
+                                 `q <= d when <edge>;` is taken, write anything more as a clocked process";
             let Rhs::Conditional(alts) = rhs else {
-                return Err("an edge-triggered assignment of another shape".into());
+                return Err(SHAPE.into());
             };
             let [(w, Some(c))] = &alts[..] else {
-                return Err("an edge-triggered assignment of another shape".into());
+                return Err(SHAPE.into());
             };
             if t.reset.is_some() || t.wait || self.db.edge_shape(*c).is_none() {
-                return Err("an edge-triggered assignment of another shape".into());
+                return Err(SHAPE.into());
             }
             self.wave(target, w)?;
             let clock = Clock {
@@ -1299,9 +1345,7 @@ impl Lx<'_> {
         let &d0 = (self.p.drivers.first()).ok_or("a port expression actual that drives nothing")?;
         let so = nets.obj(nets.leaf(nets.drivers[d0].leaf).obj);
         if so.decl != pa.port || so.shape != pa.shape {
-            return Err(
-                "an expression actual of part of a port is not supported in cycle mode yet".into(),
-            );
+            return Err("an expression actual for part of a port".into());
         }
         let mut next = so.leaves.0.0;
         let v = self
@@ -1422,7 +1466,9 @@ impl Lx<'_> {
     fn guard(&mut self, f: impl FnOnce(&mut Self) -> R<()>) -> R<()> {
         let mut flags: Vec<Ref> = Vec::new();
         for j in &self.pend {
-            let f = j.flag.ok_or("a jump cycle mode cannot follow")?;
+            let f = j
+                .flag
+                .ok_or("a jump (`return`, `exit` or `next`) of this form")?;
             if !flags.contains(&f) {
                 flags.push(f);
             }
@@ -1455,15 +1501,16 @@ impl Lx<'_> {
     fn stmt(&mut self, s: StmtId) -> R<()> {
         let outer = std::mem::replace(&mut self.at, self.db.stmts[s].span);
         let r = self.stmt_kind(s).map_err(|w| {
-            if w.ends_with(')') && w.contains(".vhd") {
-                return w;
-            }
             let span = self.db.stmts[s].span;
-            let f = self.db.sources.get(span.file);
-            let file = std::path::Path::new(&f.path)
-                .file_name()
-                .map_or(f.path.clone(), |n| n.to_string_lossy().into_owned());
-            format!("{w} ({file}:{})", f.line_col(span.start).0)
+            let at = |m: char| format!("{m}{}:{}:{}", span.file.0, span.start, span.end);
+            if !w.contains([AT, INNER]) {
+                return format!("{w}{}", at(if self.frames.is_empty() { AT } else { INNER }));
+            }
+            // The statement of the process that called the subprogram the error is in.
+            if self.frames.is_empty() && w.contains(INNER) && !w.contains(CALL) {
+                return format!("{w}{}", at(CALL));
+            }
+            w
         });
         self.at = outer;
         r
@@ -1494,7 +1541,7 @@ impl Lx<'_> {
             },
             StmtKind::SignalAssign { target, delay, rhs } => {
                 if matches!(delay, yavs_sem::hir::Delay::Inertial { reject: Some(_) }) {
-                    return Err("a `reject` limit has no meaning in cycle mode".into());
+                    return Err("a `reject` limit".into());
                 }
                 self.signal_rhs(target, rhs)
             }
@@ -1520,13 +1567,10 @@ impl Lx<'_> {
                 body,
                 ..
             } => self.for_loop(s, *param, range, body),
-            StmtKind::Loop { .. } => Err(
-                "a `while` loop or a loop without a scheme is not supported in cycle mode yet"
-                    .into(),
-            ),
+            StmtKind::Loop { .. } => Err("a `while` loop or a loop without a scheme".into()),
             StmtKind::Next { loop_, when } => self.jump(Tgt::Next(*loop_), *when),
             StmtKind::Exit { loop_, when } => self.jump(Tgt::Exit(*loop_), *when),
-            StmtKind::Wait { .. } => Err("a wait statement runs in the event kernel".into()),
+            StmtKind::Wait { .. } => Err("a wait statement".into()),
             // Simulation-only: compiled to nothing, counted for the report (the mode is for speed).
             StmtKind::Assert { .. } | StmtKind::Report { .. } if !self.top => {
                 // In a call of constants the outcome is fixed: one that holds is dropped, any
@@ -1561,17 +1605,20 @@ impl Lx<'_> {
                     }
                     Err(w) => {
                         self.dropped += 1;
+                        let w = w
+                            .split([AT, INNER, CALL])
+                            .next()
+                            .unwrap_or_default()
+                            .to_string();
                         self.note_why.get_or_insert(w);
                     }
                 }
                 Ok(())
             }
             StmtKind::ProcCall(call) => self.proc_call(call),
-            StmtKind::Force { .. } | StmtKind::Release { .. } => {
-                Err("`force` and `release` cannot run cycle-based".into())
-            }
+            StmtKind::Force { .. } | StmtKind::Release { .. } => Err("`force` or `release`".into()),
             StmtKind::Return(v) => self.ret(*v),
-            _ => Err("a statement that is not supported in cycle mode yet".into()),
+            _ => Err("a statement of this kind".into()),
         }
     }
 
@@ -1637,10 +1684,13 @@ impl Lx<'_> {
             return Ok(());
         };
         let [el] = &w[..] else {
-            return Err("a waveform of several elements needs time inside a cycle".into());
+            return Err("a waveform of several elements".into());
         };
         let (Some(v), None) = (el.value, el.after) else {
-            return Err("a delayed assignment (`after`) needs time inside a cycle".into());
+            return Err(
+                "an assignment with `after 0 ns`: it means the same as no `after`, so leave it out"
+                    .into(),
+            );
         };
         // A null slice given a null slice (`p(2 to n) <= p(1 to n - 1)` with n = 1): nothing to
         // assign.
@@ -1785,9 +1835,7 @@ impl Lx<'_> {
                     self.match_codes(*p, &codes, matching)?
                 }
                 _ => {
-                    return Err(
-                        "a `case` choice of this kind is not supported in cycle mode yet".into(),
-                    );
+                    return Err("a `case` choice of this kind".into());
                 }
             };
             any = Some(match any {
@@ -1882,7 +1930,7 @@ impl Lx<'_> {
         let mut inner = Vec::new();
         deep(db, body, &mut inner);
         if (inner.iter()).any(|&x| matches!(db.stmts[x].kind, StmtKind::Wait { .. })) {
-            return Err("a loop with a `wait` runs in the event kernel".into());
+            return Err("a loop with a `wait`".into());
         }
         let targets = |exit: bool| {
             inner.iter().any(|&x| match db.stmts[x].kind {
@@ -1896,7 +1944,7 @@ impl Lx<'_> {
         let size = (inner.len() as u64 + 1).saturating_mul(n);
         if size + u64::from(self.unrolled) > u64::from(UNROLL_MAX) {
             return Err(format!(
-                "a loop of {n} iterations, above what cycle mode unrolls ({UNROLL_MAX} statements)"
+                "a loop of {n} iterations, more than the {UNROLL_MAX} statements cycle mode unrolls"
             ));
         }
         self.unrolled += size as u32;
@@ -1965,7 +2013,7 @@ impl Lx<'_> {
     /// `next` or `exit` of a loop being unrolled, if `when` holds.
     fn jump(&mut self, tgt: Tgt, when: Option<ExprId>) -> R<()> {
         let (Tgt::Exit(l) | Tgt::Next(l)) = tgt else {
-            return Err("a jump cycle mode cannot follow".into());
+            return Err("a jump (`return`, `exit` or `next`) of this form".into());
         };
         let Some(&(exit, next)) = self.loop_flags.get(&l) else {
             return Err("`exit` or `next` of a loop that is not unrolled".into());
@@ -2154,7 +2202,7 @@ impl Lx<'_> {
     /// own in `args` here.
     fn message(&mut self, x: ExprId, out: &mut Vec<Piece>, args: &mut Vec<(Ref, u32)>) -> R<()> {
         let db = self.db;
-        let cannot = || Err("a report message cycle mode cannot format in region code".into());
+        let cannot = || Err("a report message of this form".into());
         let ty = db.base(db.exprs[x].subtype);
         if let Some(c) = self.fold(x) {
             return match c {
@@ -2198,9 +2246,7 @@ impl Lx<'_> {
                 };
                 let arg = |k: usize| match cargs.get(k).map(|a| &a.actual) {
                     Some(Actual::Expr(e)) => Ok(*e),
-                    _ => {
-                        Err("a report message cycle mode cannot format in region code".to_string())
-                    }
+                    _ => Err("a report message of this form".to_string()),
                 };
                 let digits = |lx: &mut Self, bits: u32, out: &mut Vec<Piece>, args: &mut Vec<_>| {
                     let a = arg(0)?;
@@ -2311,7 +2357,7 @@ impl Lx<'_> {
         let v = self.expr(x)?;
         let p = self.part(v)?;
         if p.int.is_some() || p.len == 0 {
-            return Err("a vector in a report message cycle mode cannot format".into());
+            return Err("a vector of this type in a report message".into());
         }
         let len = p.len;
         let w = self.whole(p);
@@ -2774,7 +2820,7 @@ impl Lx<'_> {
             {
                 self.expr(x)
             }
-            _ => Err("a name that is not supported in cycle mode yet".into()),
+            _ => Err("a name of this kind".into()),
         }
     }
 
@@ -2846,11 +2892,7 @@ impl Lx<'_> {
     /// downto i)`): the length from the bounds in four trials, each giving every unknown name
     /// a value of its own (one name, one value), the same in all four, and checked at run time.
     fn dynamic_slice(&mut self, prefix: ExprId, range: &RangeC, target: bool) -> R<Val> {
-        let unknown = || {
-            "a slice whose length is not known during elaboration is not supported in cycle mode \
-             yet"
-            .to_string()
-        };
+        let unknown = || "a slice whose length is not known during elaboration".to_string();
         let RangeC::Explicit { left, dir, right } = range else {
             return Err(unknown());
         };
@@ -3119,10 +3161,7 @@ impl Lx<'_> {
                     )),
                 }
             }
-            _ => Err(format!(
-                "`{}`, an object of a class cycle mode does not take",
-                decl.name
-            )),
+            _ => Err(format!("`{}`, an object of this class", decl.name)),
         }
     }
 
@@ -3426,17 +3465,13 @@ impl Lx<'_> {
                     leaf: None,
                 }))
             }
-            Shape::Scalar { .. } => {
-                Err("a value of a real or physical type is not supported in cycle mode yet".into())
-            }
+            Shape::Scalar { .. } => Err("a value of a real or physical type".into()),
             Shape::Array { .. } if let Some((ds, el)) = self.int_dims(shape)? => {
                 self.int_part(ds, el, d, leaf)
             }
             Shape::Array { dims, elem, .. } if matches!(**elem, Shape::Record { .. }) => {
                 let [b] = &dims[..] else {
-                    return Err(
-                        "a multi-dimensional array is not supported in cycle mode yet".into(),
-                    );
+                    return Err("a multi-dimensional array".into());
                 };
                 self.fields_of(elem, *b, d, leaf)
             }
@@ -3450,7 +3485,7 @@ impl Lx<'_> {
                 }
                 if n > VEC_MAX {
                     return Err(format!(
-                        "a vector of {n} elements (cycle mode takes 1 to 2**26 for now)"
+                        "a vector of {n} elements (cycle mode takes 1 to 2**26)"
                     ));
                 }
                 let n = n as u32;
@@ -3512,7 +3547,7 @@ impl Lx<'_> {
         }
         if n > VEC_MAX {
             return Err(format!(
-                "a vector of {n} elements (cycle mode takes 1 to 2**26 for now)"
+                "a vector of {n} elements (cycle mode takes 1 to 2**26)"
             ));
         }
         let n = n as u32;
@@ -3548,7 +3583,7 @@ impl Lx<'_> {
             return Ok(None);
         };
         let [b] = &dims[..] else {
-            return Err("a multi-dimensional array is not supported in cycle mode yet".into());
+            return Err("a multi-dimensional array".into());
         };
         let ds = Dims::wrap(*b, inner)
             .ok_or_else(|| "an array nested more than four deep".to_string())?;
@@ -3571,22 +3606,18 @@ impl Lx<'_> {
             ..
         } = el
         else {
-            return Err(
-                "an array of real or physical values is not supported in cycle mode yet".into(),
-            );
+            return Err("an array of real or physical values".into());
         };
         if !matches!(
             self.db.types[*ty].kind,
             TypeKind::Integer | TypeKind::Enum { .. }
         ) {
-            return Err(
-                "an array of real or physical values is not supported in cycle mode yet".into(),
-            );
+            return Err("an array of real or physical values".into());
         }
         let n = (ds.b[..ds.n as usize - 1].iter()).fold(1u64, |a, b| a.saturating_mul(b.len()));
         if n == 0 || n > 1 << 14 {
             return Err(format!(
-                "an array of {n} integers (cycle mode takes 1 to 2**14 for now)"
+                "an array of {n} integers (cycle mode takes 1 to 2**14)"
             ));
         }
         let (lo, hi) = r.low_high();
@@ -3623,18 +3654,12 @@ impl Lx<'_> {
             }
             Shape::Array { dims, elem, .. } => {
                 let [b] = &dims[..] else {
-                    return Err(
-                        "a multi-dimensional array is not supported in cycle mode yet".into(),
-                    );
+                    return Err("a multi-dimensional array".into());
                 };
                 Dims::wrap(*b, self.logic_dims(elem)?)
                     .ok_or_else(|| "an array nested more than four deep".to_string())
             }
-            _ => Err(
-                "an array whose elements are not logic values or arrays of them is not supported \
-                 in cycle mode yet"
-                    .into(),
-            ),
+            _ => Err("an array whose elements are not logic values or arrays of them".into()),
         }
     }
 
@@ -3649,11 +3674,9 @@ impl Lx<'_> {
             _ => 0,
         };
         match range {
-            Some(b) if b.len() != n => Err(
-                "a logic subtype with a range (`X01`, `UX01`, ...) is not supported in cycle mode \
-                 yet"
-                .into(),
-            ),
+            Some(b) if b.len() != n => {
+                Err("a logic subtype with a range (`X01`, `UX01`, ...)".into())
+            }
             _ => Ok(()),
         }
     }
@@ -4057,9 +4080,7 @@ impl Lx<'_> {
                 prefix: AttrPrefix::Subtype(st),
                 args,
             } if args.len() == 1 => self.pos_val(*attr == PredefAttr::Pos, *st, args[0]),
-            ExprKind::Attr { .. } => {
-                Err("an attribute that is not supported in cycle mode yet".into())
-            }
+            ExprKind::Attr { .. } => Err("an attribute of this kind".into()),
             ExprKind::Aggregate { assocs, bounds } => self.aggregate(x, assocs, bounds, hint),
             ExprKind::Qualified { to, operand } | ExprKind::Conv { to, operand } => {
                 self.convert(x, *to, *operand, hint)
@@ -4071,7 +4092,7 @@ impl Lx<'_> {
                 method_of: None,
                 ..
             } => self.call(x, *callee, args),
-            _ => Err("an expression that is not supported in cycle mode yet".into()),
+            _ => Err("an expression of this kind".into()),
         }
     }
 
@@ -4164,7 +4185,7 @@ impl Lx<'_> {
             }
             Some(_) if logic => {
                 if i.lo < zero || i.hi > zero + 1 {
-                    return Err("'val of a logic type at a position that may be a metavalue".into());
+                    return Err("`'val` of a logic type at a position computed at run time (it can be a metavalue)".into());
                 }
                 let one = self.int_lit(zero + 1);
                 let t = self.tmp(1);
@@ -4282,7 +4303,9 @@ impl Lx<'_> {
     /// vectors by their length, records field by field; anything else is not implemented yet.
     fn fits_fields(&mut self, v: &Val, st: SubtypeId) -> R<()> {
         let db = self.db;
-        let no = || Err("a qualified record whose fields may lie outside their subtypes".into());
+        let no = || {
+            Err("a qualified record aggregate with fields computed at run time that can lie outside their subtypes".into())
+        };
         match (v, &db.types[db.base(st)].kind) {
             (Val::Rec(fs), TypeKind::Record { elems }) if fs.len() == elems.len() => {
                 for (f, el) in fs.iter().zip(elems.iter()) {
@@ -4388,11 +4411,7 @@ impl Lx<'_> {
                     (Err(w), ..) => return Err(w),
                 };
                 if yavs_elab::elem_of(db, db.base(*elem)) != yavs_kernel::Elem::Logic {
-                    return Err(
-                        "an aggregate of vectors whose shape is not known here is not supported \
-                         in cycle mode yet"
-                            .into(),
-                    );
+                    return Err("an aggregate of vectors whose shape is not known here".into());
                 }
                 (b.len() as u32, Dims::wrap(b, Dims::NONE).expect("one deep"))
             }
@@ -4424,11 +4443,7 @@ impl Lx<'_> {
         for (k, a) in assocs.iter().enumerate() {
             if a.slice_piece {
                 let [Choice::Range(r)] = &a.choices[..] else {
-                    return Err(
-                        "an aggregate with slice pieces without a range choice is not \
-                                supported in cycle mode yet"
-                            .into(),
-                    );
+                    return Err("an aggregate with slice pieces without a range choice".into());
                 };
                 let (rb, _) = self.static_range(r)?;
                 if rb.is_empty() {
@@ -4979,18 +4994,13 @@ impl Lx<'_> {
             return Ok(Val::Part(self.static_shift(k, a, n)));
         }
         if count == Count::Static {
-            return Err(
-                "a shift by a count chosen at run time of this operation is not supported in \
-                 cycle mode yet"
-                    .into(),
-            );
+            return Err("a shift by a count chosen at run time of this operation".into());
         }
         let n = self.expr(nx)?;
         let n = self.int(n)?;
         if count == Count::Integer && n.lo < 0 {
             return Err(
-                "a shift operator by a count chosen at run time that may be negative is not \
-                 supported in cycle mode yet"
+                "a shift operator by a count chosen at run time whose subtype allows negative values"
                     .into(),
             );
         }
@@ -5274,12 +5284,7 @@ impl Lx<'_> {
             S::Rol => ShiftK::Rol,
             S::Ror => ShiftK::Ror,
         };
-        let not_yet = || {
-            Err(format!(
-                "a call of `{}`, which is not supported in cycle mode yet",
-                decl.name
-            ))
-        };
+        let not_yet = || Err(format!("a call of `{}`", decl.name));
         let one = |lx: &mut Self| -> R<Val> {
             let Some(a) = args.first() else {
                 return Err("a call without arguments".into());
@@ -5406,11 +5411,7 @@ impl Lx<'_> {
                             });
                             Ok(Val::Int(t))
                         }
-                        _ => Err(format!(
-                            "the predefined `{}` on integers, which is not supported in cycle \
-                             mode yet",
-                            decl.name
-                        )),
+                        _ => Err(format!("the predefined `{}` on integers", decl.name)),
                     };
                 }
                 if let Some(g) = g {
@@ -5518,11 +5519,7 @@ impl Lx<'_> {
                     }
                     // `??` of BIT: the value itself.
                     Family::Cond => one(self),
-                    _ => Err(format!(
-                        "the predefined `{}` on these operands, which is not supported in cycle \
-                         mode yet",
-                        decl.name
-                    )),
+                    _ => Err(format!("the predefined `{}` on these operands", decl.name)),
                 }
             }
             _ => {
@@ -6274,10 +6271,7 @@ impl Lx<'_> {
             }
         };
         if a.len > 64 || b.len > 64 {
-            return Err(
-                "a division of vectors of more than 64 elements is not supported in cycle mode yet"
-                    .into(),
-            );
+            return Err("a division of vectors of more than 64 elements".into());
         }
         let (a, b) = (self.ext(a, 64, signed), self.ext(b, 64, signed));
         let (ra, rb) = (self.whole(a), self.whole(b));
@@ -6388,7 +6382,7 @@ impl Lx<'_> {
     fn proc_call(&mut self, call: &yavs_sem::hir::Call) -> R<()> {
         let db = self.db;
         if call.method_of.is_some() {
-            return Err("a method of a protected object cannot run cycle-based".into());
+            return Err("a method of a protected object".into());
         }
         let mut callee = call.callee;
         if let yavs_sem::decl::DeclKind::Alias(yavs_sem::decl::Alias::NonObject { target }) =
@@ -6402,10 +6396,7 @@ impl Lx<'_> {
                 .any(|p| sp.mangled.as_str().starts_with(p))
         });
         if library {
-            return Err(format!(
-                "a call of `{}`, which is not supported in cycle mode yet",
-                db.decls[callee].name
-            ));
+            return Err(format!("a call of `{}`", db.decls[callee].name));
         }
         self.inline(callee, &call.args).map(|_| ())
     }
@@ -6415,12 +6406,7 @@ impl Lx<'_> {
         use yavs_sem::decl::SubprogramKind;
         let db = self.db;
         let decl = &db.decls[callee];
-        let not_yet = || {
-            format!(
-                "a call of `{}`, which is not supported in cycle mode yet",
-                decl.name
-            )
-        };
+        let not_yet = || format!("a call of `{}`", decl.name);
         let Some(sp) = decl.kind.subprogram() else {
             return Err(not_yet());
         };
@@ -6443,7 +6429,7 @@ impl Lx<'_> {
         let size = all.len() as u32 + 1;
         if self.unrolled.saturating_add(size) > UNROLL_MAX {
             return Err(format!(
-                "calls of `{}` that inline more than cycle mode takes ({UNROLL_MAX} statements)",
+                "calls of `{}` that inline to more than the {UNROLL_MAX} statements cycle mode takes",
                 decl.name
             ));
         }
@@ -6541,11 +6527,11 @@ impl Lx<'_> {
         let jumps = std::mem::replace(&mut self.pend, saved);
         r?;
         if jumps.iter().any(|j| j.tgt != Tgt::Ret(depth)) {
-            return Err("a jump cycle mode cannot follow".into());
+            return Err("a jump (`return`, `exit` or `next`) of this form".into());
         }
         if !procedure && !jumps.iter().any(|j| j.always) {
             return Err(format!(
-                "`{}` may reach its end without `return`, which cycle mode does not model",
+                "a function `{}` that can reach its end without `return`",
                 decl.name
             ));
         }
@@ -6579,11 +6565,7 @@ impl Lx<'_> {
                     .default
                     .ok_or_else(|| format!("a call of `{name}` without a value for its {what}"))?,
                 Some(_) => {
-                    return Err(
-                        "a call with an open, converted or individual actual is not supported in \
-                         cycle mode yet"
-                            .into(),
-                    );
+                    return Err("a call with an open, converted or individual actual".into());
                 }
             };
             let b = if p.class == ObjClass::Signal {
@@ -6760,9 +6742,7 @@ impl Lx<'_> {
             TypeKind::Array { .. } => self.arr_dims(et, &ec)?,
             _ => {
                 return Err(
-                    "an array whose elements are not logic values or arrays of them is not \
-                     supported in cycle mode yet"
-                        .into(),
+                    "an array whose elements are not logic values or arrays of them".into(),
                 );
             }
         };
@@ -6777,7 +6757,7 @@ impl Lx<'_> {
             return Err("an array value of a type that is not an array".into());
         };
         if indexes.len() != 1 {
-            return Err("a multi-dimensional array is not supported in cycle mode yet".into());
+            return Err("a multi-dimensional array".into());
         }
         let own = |c: &'_ Constraint| match c {
             Constraint::Array { dims: Some(d), .. } => Some(d.clone()),
@@ -6787,7 +6767,7 @@ impl Lx<'_> {
             .or_else(|| own(&db.subtypes[db.types[t].base_subtype].constraint))
             .ok_or("an array whose index range is not known here")?;
         let [r] = &dims[..] else {
-            return Err("a multi-dimensional array is not supported in cycle mode yet".into());
+            return Err("a multi-dimensional array".into());
         };
         let (outer, _) = self.static_range(r)?;
         let ec = match c {
@@ -6804,11 +6784,7 @@ impl Lx<'_> {
         match &db.types[t].kind {
             TypeKind::Enum { lits } if yavs_elab::elem_of(db, t) == yavs_kernel::Elem::Logic => {
                 if self.subtype_bounds(st)?.len() != lits.len() as u64 {
-                    return Err(
-                        "a logic subtype with a range (`X01`, `UX01`, ...) is not supported in \
-                         cycle mode yet"
-                            .into(),
-                    );
+                    return Err("a logic subtype with a range (`X01`, `UX01`, ...)".into());
                 }
                 let mut p = self.tmp(1);
                 (p.fresh, p.obj) = (false, Some(d));
@@ -6835,11 +6811,7 @@ impl Lx<'_> {
                 let c = &db.subtypes[st].constraint;
                 if matches!(c, Constraint::Array { elem: ec, .. } if !matches!(**ec, Constraint::None))
                 {
-                    return Err(
-                        "an array of records with element constraints is not supported in cycle \
-                         mode yet"
-                            .into(),
-                    );
+                    return Err("an array of records with element constraints".into());
                 }
                 let (outer, ..) = self.arr_outer(t, c)?;
                 self.layout_fields(outer, *elem, d)
@@ -6849,7 +6821,7 @@ impl Lx<'_> {
                 let n = ds.b[0].len() * u64::from(ds.elem_len());
                 if n == 0 || n > VEC_MAX {
                     return Err(format!(
-                        "a vector of {n} elements (cycle mode takes 1 to 2**26 for now)"
+                        "a vector of {n} elements (cycle mode takes 1 to 2**26)"
                     ));
                 }
                 let mut p = self.tmp(n as u32);
@@ -6859,20 +6831,14 @@ impl Lx<'_> {
             TypeKind::Record { elems } => {
                 if matches!(&db.subtypes[st].constraint, Constraint::Record { elems } if !elems.is_empty())
                 {
-                    return Err(
-                        "a record subtype with element constraints is not supported in cycle \
-                         mode yet"
-                            .into(),
-                    );
+                    return Err("a record subtype with element constraints".into());
                 }
                 (elems.iter())
                     .map(|el| self.layout(el.subtype, d))
                     .collect::<R<Vec<_>>>()
                     .map(Val::Rec)
             }
-            _ => {
-                Err("a value of a real or physical type is not supported in cycle mode yet".into())
-            }
+            _ => Err("a value of a real or physical type".into()),
         }
     }
 
@@ -6885,11 +6851,7 @@ impl Lx<'_> {
             TypeKind::Record { elems } => {
                 if matches!(&db.subtypes[st].constraint, Constraint::Record { elems } if !elems.is_empty())
                 {
-                    return Err(
-                        "a record subtype with element constraints is not supported in cycle \
-                         mode yet"
-                            .into(),
-                    );
+                    return Err("a record subtype with element constraints".into());
                 }
                 return (elems.iter())
                     .map(|el| self.layout_fields(outer, el.subtype, d))
@@ -6898,11 +6860,7 @@ impl Lx<'_> {
             }
             TypeKind::Enum { lits } if yavs_elab::elem_of(db, t) == yavs_kernel::Elem::Logic => {
                 if self.subtype_bounds(st)?.len() != lits.len() as u64 {
-                    return Err(
-                        "a logic subtype with a range (`X01`, `UX01`, ...) is not supported in \
-                         cycle mode yet"
-                            .into(),
-                    );
+                    return Err("a logic subtype with a range (`X01`, `UX01`, ...)".into());
                 }
                 (Dims::NONE, None)
             }
@@ -6923,16 +6881,14 @@ impl Lx<'_> {
             }
             TypeKind::Array { .. } => (self.arr_dims(t, &db.subtypes[st].constraint)?, None),
             _ => {
-                return Err(
-                    "a value of a real or physical type is not supported in cycle mode yet".into(),
-                );
+                return Err("a value of a real or physical type".into());
             }
         };
         let ds = Dims::wrap(outer, inner).ok_or("an array nested more than four deep")?;
         let n = ds.b[0].len() * u64::from(ds.elem_len());
         if n == 0 || n > VEC_MAX {
             return Err(format!(
-                "a vector of {n} elements (cycle mode takes 1 to 2**26 for now)"
+                "a vector of {n} elements (cycle mode takes 1 to 2**26)"
             ));
         }
         let mut p = self.tmp(n as u32);

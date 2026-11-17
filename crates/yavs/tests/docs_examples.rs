@@ -512,6 +512,9 @@ fn cycle_mode_page() {
     for code in ["E4127", "E4119", "E4111", "E4121"] {
         assert!(err.contains(&format!("error[{code}]")), "{err}");
     }
+    // The page shows the files as relative paths.
+    let dir = format!("{}/", e.0.canonicalize().expect("dir").display());
+    on_page(page, &err.replace(&dir, ""));
     let (code, _, err) = e.yavs(&["run", "--cycle", "--surfer", WORK, "tb_counter"]);
     assert_eq!(code, 2);
     assert!(err.contains("error[E4102]"), "{err}");

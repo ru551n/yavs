@@ -53,12 +53,32 @@ pub(crate) struct Fit {
     pub reads: ESet,
 }
 
-/// Why a process is outside the subset.
+/// Why a process stays out: its code, the statement that causes it, the text, and the other
+/// side of a situation that spans processes (another process or signal, where it is). The text
+/// is `construct: detail`: the construct a noun phrase ("<construct> is not supported in cycle
+/// mode"), the optional detail what at the statement causes it.
 #[derive(Clone, Debug)]
 pub(crate) struct Reason {
     pub code: &'static str,
     pub span: Span,
     pub text: String,
+    pub also: Option<(Span, String)>,
+}
+
+impl Reason {
+    pub(crate) fn new(code: &'static str, span: Span, text: impl Into<String>) -> Self {
+        Reason {
+            code,
+            span,
+            text: text.into(),
+            also: None,
+        }
+    }
+
+    pub(crate) fn also(mut self, span: Span, what: impl Into<String>) -> Self {
+        self.also = Some((span, what.into()));
+        self
+    }
 }
 
 pub(crate) enum Verdict {
@@ -81,11 +101,7 @@ type R<T> = Result<T, Stop>;
 type Parts = Vec<(u64, u32, u32)>;
 
 fn out<T>(code: &'static str, span: Span, text: impl Into<String>) -> R<T> {
-    Err(Stop::Out(Reason {
-        code,
-        span,
-        text: text.into(),
-    }))
+    Err(Stop::Out(Reason::new(code, span, text)))
 }
 
 /// Statement instances a process may take while static loops are enumerated; past that, loops
@@ -302,11 +318,11 @@ pub(crate) fn check(db: &Db, e: &Elaborated, pi: usize, callees: &mut Callees) -
         }
         Err(Stop::Out(r)) => Verdict::Out(r),
         Err(Stop::Behav(w)) => Verdict::Behavioural(w),
-        Err(Stop::Budget) => Verdict::Out(Reason {
-            code: codes::ANALYSIS,
-            span: db.stmts[p.stmt].span,
-            text: "its loops are too large for the analysis".into(),
-        }),
+        Err(Stop::Budget) => Verdict::Out(Reason::new(
+            codes::LOOP_BOUND,
+            db.stmts[p.stmt].span,
+            "loops of more than 65 536 statement runs in one process",
+        )),
     }
 }
 
@@ -586,19 +602,10 @@ impl Cx<'_> {
     fn process(&mut self) -> R<Fit> {
         let (db, p) = (self.db, self.p);
         if p.postponed {
-            return out(
-                codes::GUARDED,
-                self.span(),
-                "a postponed process runs at the end of a time step, which a cycle does not have",
-            );
+            return out(codes::GUARDED, self.span(), "a postponed process");
         }
         if p.guard.is_some() {
-            return out(
-                codes::GUARDED,
-                self.span(),
-                "the guard of a guarded block: guarded signals and assignments are not in the \
-                 two-state subset",
-            );
+            return out(codes::GUARDED, self.span(), "a guarded block");
         }
         if let Some(pa) = &p.actual {
             // `formal <= expr`: a combinational process with the expression's reads as its list.
@@ -641,11 +648,7 @@ impl Cx<'_> {
                 ..
             } => {
                 if *guarded {
-                    return out(
-                        codes::GUARDED,
-                        s.span,
-                        "a guarded assignment: guarded signals are not in the two-state subset",
-                    );
+                    return out(codes::GUARDED, s.span, "a guarded assignment");
                 }
                 // `q <= d when <edge>;` is a clocked process.
                 if let Rhs::Conditional(alts) = rhs
@@ -693,7 +696,7 @@ impl Cx<'_> {
                 let c = self.callee(call.callee);
                 if c.waits {
                     return Err(Stop::Behav(format!(
-                        "it calls `{}`, which may wait",
+                        "it calls `{}`, which can wait",
                         db.decls[call.callee].name
                     )));
                 }
@@ -709,7 +712,7 @@ impl Cx<'_> {
             _ => out(
                 codes::ANALYSIS,
                 s.span,
-                "a kind of statement the analysis does not know",
+                "a concurrent statement of this kind",
             ),
         }
     }
@@ -743,7 +746,7 @@ impl Cx<'_> {
                     return out(
                         codes::NOT_TWO_STATE,
                         decl.span,
-                        format!("`{}` is a real or physical (time) object", decl.name),
+                        format!("the real or physical (time) object `{}`", decl.name),
                     );
                 }
                 _ => {}
@@ -842,9 +845,7 @@ impl Cx<'_> {
             return out(
                 codes::SHAPE,
                 db.exprs[x].span,
-                "an edge test in a form cycle mode does not take: a clocked process is `if \
-                 <edge> then ... end if;`, with an optional asynchronous reset branch before \
-                 it, and nothing else",
+                "a clocked process of another shape: an edge test outside the clock-edge template",
             );
         }
         self.comb = true;
@@ -875,7 +876,7 @@ impl Cx<'_> {
                 }
                 StmtKind::ProcCall(c) if self.callee(c.callee).waits => {
                     return Err(Stop::Behav(format!(
-                        "it calls `{}`, which may wait",
+                        "it calls `{}`, which can wait",
                         db.decls[c.callee].name
                     )));
                 }
@@ -904,7 +905,7 @@ impl Cx<'_> {
             return out(
                 codes::SHAPE,
                 db.stmts[*w].span,
-                "its wait is inside another statement; a clocked process waits once, first",
+                "a clocked process of another shape: its `wait` is inside another statement",
             );
         };
         let StmtKind::Wait { on, until, .. } = &db.stmts[*w].kind else {
@@ -914,15 +915,14 @@ impl Cx<'_> {
             return out(
                 codes::WAIT,
                 db.stmts[*w].span,
-                "a wait that is not on a clock edge: only `wait until <edge>;` as the first \
-                 statement makes a clocked process",
+                "a wait that is not `wait until <edge>;`",
             );
         };
         if i != 0 {
             return out(
                 codes::SHAPE,
                 db.stmts[kept[0]].span,
-                "statements before its `wait until` run once at initialisation, without an edge",
+                "a clocked process of another shape: statements before its `wait until <edge>;`",
             );
         }
         let (leaf, el) = self.clock_elem(edge.sig)?;
@@ -935,7 +935,7 @@ impl Cx<'_> {
                 return out(
                     codes::SHAPE,
                     db.stmts[*w].span,
-                    "its wait does not name its clock in its `on` list",
+                    "a clocked process of another shape: its `wait` does not name the clock in its `on` list",
                 );
             }
         }
@@ -972,7 +972,7 @@ impl Cx<'_> {
                 codes::SHAPE,
                 span,
                 format!(
-                    "its sensitivity list does not name its clock {}",
+                    "a clocked process of another shape: the sensitivity list does not name the clock {}",
                     self.e.leaf_name(leaf)
                 ),
             );
@@ -998,15 +998,14 @@ impl Cx<'_> {
                 return out(
                     codes::SHAPE,
                     db.exprs[r].span,
-                    "the branch before the edge test does not test a signal: it is no asynchronous \
-                     reset",
+                    "a clocked process of another shape: the branch before the edge test tests no signal, so it is not an asynchronous reset",
                 );
             }
             if rs.first_missing(u64::from(leaf.0), el, el + 1).is_none() {
                 return out(
                     codes::SHAPE,
                     db.exprs[r].span,
-                    "the asynchronous reset condition reads the clock",
+                    "a clocked process of another shape: the asynchronous reset condition reads the clock",
                 );
             }
             if let Some(l) = self.missing(&rs, wait) {
@@ -1014,7 +1013,7 @@ impl Cx<'_> {
                     codes::SHAPE,
                     db.exprs[r].span,
                     format!(
-                        "its sensitivity list does not name {l}, which its asynchronous reset reads"
+                        "a clocked process of another shape: the asynchronous reset reads {l}, which the sensitivity list does not name"
                     ),
                 );
             }
@@ -1034,7 +1033,9 @@ impl Cx<'_> {
                 return out(
                     codes::SENSITIVITY,
                     db.exprs[r].span,
-                    format!("its reset branch reads {l}, which its sensitivity list does not name"),
+                    format!(
+                        "an incomplete sensitivity list: the reset branch reads {l}, which the list does not name"
+                    ),
                 );
             }
             for (&k, segs) in &st.vals {
@@ -1067,7 +1068,7 @@ impl Cx<'_> {
             return out(
                 codes::ANALYSIS,
                 self.db.stmts[*s].span,
-                "an `exit` or `next` of a loop the analysis does not see",
+                "an `exit` or `next` of a loop outside this process or subprogram",
             );
         }
         Ok(flow.fall.unwrap_or_default())
@@ -1086,7 +1087,7 @@ impl Cx<'_> {
             let want = want.intersect(&self.sig_any);
             if let Some((_, x, _)) = want.minus(&st.def).iter().next() {
                 let mut text = format!(
-                    "it does not assign {} on every path, so it keeps its value: a latch",
+                    "a latch: {} is not assigned on every path",
                     self.elem_name(l, x)
                 );
                 let mut at = self.span();
@@ -1095,7 +1096,7 @@ impl Cx<'_> {
                     .iter()
                     .find(|(s, _)| s.first_missing(l, x, x + 1).is_none())
                 {
-                    text.push_str(" (this statement leaves it unassigned on a path)");
+                    text.push_str(" (this statement leaves it unassigned)");
                     at = *s;
                 }
                 return out(codes::LATCH, at, text);
@@ -1118,8 +1119,7 @@ impl Cx<'_> {
                 codes::SENSITIVITY,
                 self.read_at.get(&k).copied().unwrap_or(self.span()),
                 format!(
-                    "it reads {l}, which its sensitivity list does not name: the normal mode \
-                     would not run it when that changes"
+                    "an incomplete sensitivity list: the process reads {l}, which the list does not name"
                 ),
             );
         }
@@ -1142,8 +1142,7 @@ impl Cx<'_> {
                     codes::STATE,
                     *span,
                     format!(
-                        "it reads {} before assigning it on some path: a variable that keeps its \
-                         value from one run to the next is state, not combinational logic",
+                        "a variable read before it is assigned: {} is read here before it is assigned on every path",
                         self.var_name(*decl, k, x)
                     ),
                 );
@@ -1164,8 +1163,7 @@ impl Cx<'_> {
                 codes::ANALYSIS,
                 self.span(),
                 format!(
-                    "the analysis sees it assign {}, which elaboration does not list among its \
-                     drivers",
+                    "an internal mismatch in yavs (please report it): an assignment to {}, which elaboration does not list among the process's drivers",
                     self.elem_name(k, x)
                 ),
             );
@@ -1386,11 +1384,15 @@ impl Cx<'_> {
                                 codes::HISTORY,
                                 ex.span,
                                 "an implicit signal (`'stable`, `'quiet`, `'delayed`, \
-                                 `'transaction`): the region keeps no signal history",
+                                 `'transaction`)",
                             );
                         }
                         (_, ObjRole::Guard) => {
-                            return out(codes::GUARDED, ex.span, "the `GUARD` signal of a block");
+                            return out(
+                                codes::GUARDED,
+                                ex.span,
+                                "the `GUARD` signal of a guarded block",
+                            );
                         }
                         (ObjClass::Signal, _) => match self.e.signal(self.p.scope, *d) {
                             Some(o) => Root::Sig(o),
@@ -1399,7 +1401,7 @@ impl Cx<'_> {
                                     codes::ANALYSIS,
                                     ex.span,
                                     format!(
-                                        "`{}`, a signal the analysis cannot find",
+                                        "the signal `{}`, which yavs cannot place in the design",
                                         db.decls[*d].name
                                     ),
                                 );
@@ -1416,7 +1418,7 @@ impl Cx<'_> {
                             return out(
                                 codes::TESTBENCH,
                                 ex.span,
-                                format!("`{}` is a shared variable", db.decls[*d].name),
+                                format!("the shared variable `{}`", db.decls[*d].name),
                             );
                         }
                         (ObjClass::File, _) => {
@@ -1441,11 +1443,7 @@ impl Cx<'_> {
                 _ => return Ok(None),
             },
             ExprKind::External(_) => {
-                return out(
-                    codes::ANALYSIS,
-                    ex.span,
-                    "an external name: the analysis does not follow it",
-                );
+                return out(codes::EXTERNAL, ex.span, "an external name");
             }
             ExprKind::Field { prefix, elem } => {
                 let Some(mut n) = self.name(*prefix, st)? else {
@@ -1494,7 +1492,7 @@ impl Cx<'_> {
                 return out(
                     codes::TESTBENCH,
                     ex.span,
-                    "an access value: dynamic memory is not in the subset",
+                    "an access value (dynamic memory)",
                 );
             }
             _ => return Ok(None),
@@ -1551,7 +1549,7 @@ impl Cx<'_> {
             _ => out(
                 codes::SHAPE,
                 span,
-                "a clock or reset that is not one static element of a signal",
+                "a clocked process of another shape: a clock or reset that is not one fixed element of a signal",
             ),
         }
     }
@@ -2103,11 +2101,7 @@ impl Cx<'_> {
             _ => false,
         };
         if z {
-            return out(
-                codes::HIGH_Z,
-                db.exprs[x].span,
-                "a `'Z'` value: two-state values have no high impedance",
-            );
+            return out(codes::HIGH_Z, db.exprs[x].span, "the value `'Z'`");
         }
         Ok(())
     }
@@ -2207,11 +2201,7 @@ impl Cx<'_> {
                         Quiet => "quiet",
                         _ => "transaction",
                     };
-                    return out(
-                        codes::HISTORY,
-                        ex.span,
-                        format!("`'{name}`: the region keeps no signal history"),
-                    );
+                    return out(codes::HISTORY, ex.span, format!("the attribute `'{name}`"));
                 }
                 let mut s = ESet::default();
                 if matches!(
@@ -2246,8 +2236,7 @@ impl Cx<'_> {
                     return out(
                         codes::HISTORY,
                         ex.span,
-                        "an edge test of a signal other than the clock: the region keeps no \
-                         signal history",
+                        "an edge test of a signal other than the process's clock",
                     );
                 }
                 let sp = db.decls[*callee].kind.subprogram();
@@ -2328,7 +2317,7 @@ impl Cx<'_> {
             ExprKind::New { .. } | ExprKind::Null => out(
                 codes::TESTBENCH,
                 ex.span,
-                "an access value: dynamic memory is not in the subset",
+                "an access value (dynamic memory)",
             ),
             ExprKind::PrivateVar { .. } => out(codes::TESTBENCH, ex.span, "a protected object"),
             ExprKind::Const(_) | ExprKind::AttrValue { .. } | ExprKind::Open | ExprKind::Error => {
@@ -2582,7 +2571,7 @@ impl Cx<'_> {
                     codes::CALL,
                     span,
                     format!(
-                        "`{}` reads `{}`, a signal the analysis cannot find",
+                        "a call of `{}`, which reads the signal `{}` that yavs cannot place in the design",
                         db.decls[callee].name, db.decls[d].name
                     ),
                 );
@@ -2608,16 +2597,16 @@ impl Cx<'_> {
             )));
         }
         if let Some(w) = &c.opaque {
-            return out(codes::CALL, span, format!("it calls `{name}`: {w}"));
+            return out(codes::CALL, span, format!("a call of `{name}`: {w}"));
         }
         // A procedure of a clocked process changing the process's own state is register logic.
         if let Some(w) = &c.writes_outside
             && self.comb
         {
-            return out(codes::CALL, span, format!("it calls `{name}`, which {w}"));
+            return out(codes::CALL, span, format!("a call of `{name}`: it {w}"));
         }
         if let Some((code, w)) = &c.bad {
-            return out(code, span, format!("it calls `{name}`, which {w}"));
+            return out(code, span, format!("a call of `{name}`: it {w}"));
         }
         Ok(())
     }
@@ -2662,7 +2651,7 @@ impl Cx<'_> {
             return self.callee(t);
         }
         let Some(sp) = decl.kind.subprogram() else {
-            c.opaque = Some("it is not a subprogram the analysis knows".into());
+            c.opaque = Some("it has no VHDL body yavs can see".into());
             return c;
         };
         let procedure = sp.kind == SubprogramKind::Procedure;
@@ -2686,13 +2675,13 @@ impl Cx<'_> {
                 return c;
             }
             Body::Foreign(_) => {
-                c.opaque = Some("a foreign subprogram".into());
+                c.opaque = Some("it is a foreign subprogram".into());
                 return c;
             }
             Body::Hir { .. } => {}
             _ if pure => return c,
             _ => {
-                c.opaque = Some("a subprogram whose body the analysis does not see".into());
+                c.opaque = Some("its body is not in the analysed libraries".into());
                 return c;
             }
         }
@@ -2883,7 +2872,7 @@ impl Cx<'_> {
             if c.opaque.is_none() {
                 c.opaque = o
                     .opaque
-                    .map(|w| format!("it calls `{}`: {w}", db.decls[k].name));
+                    .map(|w| format!("through `{}`: {w}", db.decls[k].name));
             }
             if c.bad.is_none() {
                 c.bad = o
@@ -3042,11 +3031,9 @@ impl Cx<'_> {
                 }
                 Ok(f)
             }
-            StmtKind::Wait { .. } => out(
-                codes::WAIT,
-                span,
-                "a wait other than the one `wait until <edge>;` of a clocked process",
-            ),
+            StmtKind::Wait { .. } => {
+                out(codes::WAIT, span, "a wait that is not `wait until <edge>;`")
+            }
             StmtKind::ProcCall(c) => {
                 if c.method_of.is_some() {
                     return out(codes::TESTBENCH, span, "a method of a protected object");
@@ -3056,7 +3043,7 @@ impl Cx<'_> {
                     return out(
                         codes::WAIT,
                         span,
-                        format!("it calls `{}`, which may wait", db.decls[c.callee].name),
+                        format!("a call of `{}`, which waits", db.decls[c.callee].name),
                     );
                 }
                 let mut st = self.proc_call(st, c.callee, &c.args, span)?;
@@ -3064,21 +3051,15 @@ impl Cx<'_> {
                 st.known = Rc::default();
                 Ok(Flow::fall(st))
             }
-            StmtKind::Force { .. } | StmtKind::Release { .. } => out(
-                codes::FORCE,
-                span,
-                "`force` and `release` change signals from outside their drivers",
-            ),
+            StmtKind::Force { .. } | StmtKind::Release { .. } => {
+                out(codes::FORCE, span, "`force` or `release`")
+            }
             StmtKind::SeqBlock { body, scope } => {
                 self.decls(*scope)?;
                 self.stmts(body, st)
             }
             StmtKind::Return(_) => out(codes::ANALYSIS, span, "a `return` outside a subprogram"),
-            _ => out(
-                codes::ANALYSIS,
-                span,
-                "a statement the analysis does not know",
-            ),
+            _ => out(codes::ANALYSIS, span, "a statement of this kind"),
         }
     }
 
@@ -3304,22 +3285,14 @@ impl Cx<'_> {
                 if l == s {
                     back.push(x);
                 } else {
-                    return out(
-                        codes::ANALYSIS,
-                        span,
-                        "a `next` of an outer loop: the analysis does not follow it",
-                    );
+                    return out(codes::LOOP_BOUND, span, "a `next` of an outer loop");
                 }
             }
             for (l, x) in f.exits {
                 if l == s {
                     exits.push(x);
                 } else {
-                    return out(
-                        codes::ANALYSIS,
-                        span,
-                        "an `exit` of an outer loop: the analysis does not follow it",
-                    );
+                    return out(codes::LOOP_BOUND, span, "an `exit` of an outer loop");
                 }
             }
             let next = self
@@ -3330,9 +3303,9 @@ impl Cx<'_> {
             }
             if round + 1 == rounds && self.comb {
                 return out(
-                    codes::ANALYSIS,
+                    codes::LOOP_BOUND,
                     span,
-                    "a loop whose dependences the analysis cannot bound",
+                    "a loop whose bounds are not known during elaboration",
                 );
             }
             cur = next;
@@ -3345,11 +3318,7 @@ impl Cx<'_> {
                 j.ctl = ctl0;
                 Ok(Flow::fall(j))
             }
-            None => out(
-                codes::ANALYSIS,
-                span,
-                "a loop without an exit in a process that must finish each run",
-            ),
+            None => out(codes::LOOP_BOUND, span, "a loop without an exit"),
         }
     }
 
@@ -3456,18 +3425,10 @@ impl Cx<'_> {
         use yavs_sem::hir::Delay;
         match delay {
             Delay::Transport => {
-                return out(
-                    codes::DELAY,
-                    span,
-                    "a `transport` delay needs time inside a cycle",
-                );
+                return out(codes::DELAY, span, "a `transport` delay");
             }
             Delay::Inertial { reject: Some(_) } => {
-                return out(
-                    codes::DELAY,
-                    span,
-                    "a `reject` limit needs time inside a cycle",
-                );
+                return out(codes::DELAY, span, "a `reject` limit");
             }
             _ => {}
         }
@@ -3476,11 +3437,7 @@ impl Cx<'_> {
             return Ok(());
         };
         let [el] = &els[..] else {
-            return out(
-                codes::DELAY,
-                span,
-                "a waveform of several elements needs time inside a cycle",
-            );
+            return out(codes::DELAY, span, "a waveform of several elements");
         };
         if el.after.is_some_and(|a| {
             !matches!(
@@ -3488,18 +3445,10 @@ impl Cx<'_> {
                 Some(ConstValue::Phys(0)) | Some(ConstValue::Int(0))
             )
         }) {
-            return out(
-                codes::DELAY,
-                span,
-                "a delayed assignment (`after`) needs time inside a cycle",
-            );
+            return out(codes::DELAY, span, "a delayed assignment (`after`)");
         }
         let Some(v) = el.value else {
-            return out(
-                codes::GUARDED,
-                span,
-                "a `null` waveform disconnects a guarded signal",
-            );
+            return out(codes::GUARDED, span, "a `null` waveform");
         };
         let d = self.expr(v, st)?;
         self.assign(st, target, d)
@@ -3519,7 +3468,7 @@ impl Cx<'_> {
             return out(
                 codes::ANALYSIS,
                 db.exprs[t].span,
-                "an assignment target the analysis does not resolve",
+                "an assignment target of this form",
             );
         };
         let mut extra = (*st.ctl).clone();
@@ -3601,7 +3550,7 @@ impl Cx<'_> {
                     codes::CALL,
                     span,
                     format!(
-                        "`{}` reads a signal the analysis cannot find",
+                        "a call of `{}`, which reads a signal yavs cannot place in the design",
                         db.decls[callee].name
                     ),
                 );
@@ -3627,7 +3576,8 @@ impl Cx<'_> {
                     return out(
                         codes::ANALYSIS,
                         span,
-                        "an `out` actual the analysis does not resolve",
+                        "an `out` or `inout` parameter associated part by part: pass one whole variable or \
+                         signal to it",
                     );
                 }
             };

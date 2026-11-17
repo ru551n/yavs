@@ -1,0 +1,12 @@
+error[E4118]: the value `'Z'` is not supported in cycle mode
+   --> $DIR/strict.vhd:151:29
+    |
+151 |   q <= a when en = '1' else 'Z';
+    |                             ^^^
+    |
+    = note: in process t_e4118.dut.q <= ... (strict.vhd:151)
+    = note: why: cycle-based code uses two-state values, which have no high impedance
+    = help: keep tri-state buses in the testbench or at the top of the design, or drive '0' and '1' with a separate enable signal; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 1 previous error
+

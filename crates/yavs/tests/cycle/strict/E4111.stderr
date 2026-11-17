@@ -1,0 +1,12 @@
+error[E4111]: a delayed assignment (`after`) is not supported in cycle mode
+  --> $DIR/strict.vhd:52:3
+   |
+52 |   q <= a after 1 ns;
+   |   ^^^^^^^^^^^^^^^^^^
+   |
+   = note: in process t_e4111.dut.q <= ... (strict.vhd:52)
+   = note: why: cycle-based code has no time inside a clock cycle, so it cannot keep a delay
+   = help: assign without a delay (`q <= d;`) in the design; keep delays in testbench models; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 1 previous error
+

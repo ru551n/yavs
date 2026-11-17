@@ -1,0 +1,26 @@
+error[E4132]: a register reset by another register that drives a clock or reset is not supported in cycle mode
+   --> $DIR/strict.vhd:982:3
+    |
+982 | /   reg2 : process (clk, rr)
+983 | |   begin
+984 | |     if rr = '1' then
+985 | |       r2 <= '0';
+...   |
+988 | |     end if;
+989 | |   end process;
+    | |______________^ its asynchronous reset t_e4132.dut.rr comes from a register, and it drives t_e4132.dut.r2, the clock or asynchronous reset of t_e4132.dut.reg3
+990 | /   reg3 : process (clk, r2)
+991 | |   begin
+992 | |     if r2 = '1' then
+993 | |       q <= '0';
+...   |
+996 | |     end if;
+997 | |   end process;
+    | |______________- t_e4132.dut.reg3 is clocked or reset by t_e4132.dut.r2
+    |
+    = note: in process t_e4132.dut.reg2 (strict.vhd:982)
+    = note: why: the event simulation can change this register at the clock edge and again one delta cycle later, and that pulse clocks or resets another process; cycle-based code settles both at once and gives no pulse
+    = help: use a synchronous reset for this register, or a reset that does not come from another register; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 1 previous error
+

@@ -22,7 +22,7 @@ const INDEX: &str = "cyc3i";
 /// megabytes each, per test case, and push the code its test cases share out of the store.
 const PER_DESIGN: usize = 16;
 /// Of the payload's encoding: changed with any type of `Selection` or `Built`.
-const FORMAT: &str = "3";
+const FORMAT: &str = "4";
 /// The payloads of `cyc3` and `cyc3c` entries, by a hash of their bytes: an entry holds the hex
 /// of its payload's key, so test cases whose analyses come out the same keep it once.
 const PAYLOAD: &str = "cyc3p";
@@ -61,6 +61,7 @@ struct ReasonData {
     code: String,
     span: yavs_diag::Span,
     text: String,
+    also: Option<(yavs_diag::Span, String)>,
 }
 
 impl serde::Serialize for crate::check::Reason {
@@ -69,6 +70,7 @@ impl serde::Serialize for crate::check::Reason {
             code: self.code.to_string(),
             span: self.span,
             text: self.text.clone(),
+            also: self.also.clone(),
         }
         .serialize(s)
     }
@@ -77,37 +79,15 @@ impl serde::Serialize for crate::check::Reason {
 impl<'de> serde::Deserialize<'de> for crate::check::Reason {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let r = ReasonData::deserialize(d)?;
-        use crate::codes::*;
-        let code = [
-            LEFT_OUT,
-            NOT_WITH,
-            REPORT_FILE,
-            WAIT,
-            DELAY,
-            HISTORY,
-            NOT_TWO_STATE,
-            TESTBENCH,
-            GUARDED,
-            FORCE,
-            CALL,
-            HIGH_Z,
-            LATCH,
-            STATE,
-            SENSITIVITY,
-            LOOP,
-            SHAPE,
-            SHARED,
-            CLOCK_MADE,
-            ANALYSIS,
-            HISTORY_READ,
-        ]
-        .into_iter()
-        .find(|c| *c == r.code)
-        .ok_or_else(|| serde::de::Error::custom("an unknown code"))?;
+        let code = (crate::codes::REASONS.iter())
+            .map(|c| c.0)
+            .find(|c| *c == r.code)
+            .ok_or_else(|| serde::de::Error::custom("an unknown code"))?;
         Ok(crate::check::Reason {
             code,
             span: r.span,
             text: r.text,
+            also: r.also,
         })
     }
 }

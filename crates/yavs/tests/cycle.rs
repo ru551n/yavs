@@ -201,7 +201,7 @@ fn a_region_with_processes_left_out_gives_the_same_result() {
         );
         assert!(
             err.contains("cycle_partial.dut.pick (partial.vhd:66)")
-                && err.contains("a `while` loop or a loop without a scheme is not supported"),
+                && err.contains("E4101 a `while` loop or a loop without a scheme (partial.vhd:19)"),
             "{err}"
         );
         assert!(
@@ -524,7 +524,7 @@ fn a_sensitivity_list_naming_a_part_keeps_the_process_out() {
     assert!(
         err.contains("0 of 2 processes run cycle-based")
             && err.contains(
-                "E4121 it reads cycle_part_list.v(1), which its sensitivity list does not name"
+                "E4121 an incomplete sensitivity list: the process reads cycle_part_list.v(1), which the list does not name"
             ),
         "{err}"
     );
@@ -549,10 +549,15 @@ fn cycle_strict_refuses_rtl_that_cannot_join() {
     assert!(o.stdout.is_empty(), "no simulation runs");
     // The RTL process below the top level that cannot join is listed; the testbench is exempt.
     assert!(
-        err.contains("error[E4101]: process cycle_partial.dut.pick cannot run cycle-based yet"),
+        err.contains("error[E4101]: a `while` loop or a loop without a scheme is not supported")
+            && err.contains("= note: in process cycle_partial.dut.pick (partial.vhd:"),
         "{err}"
     );
-    assert!(err.contains("partial.vhd:66:3"), "{err}");
+    // At the loop in the function, and the call in the process.
+    assert!(
+        err.contains("partial.vhd:19:5") && err.contains("- called from here"),
+        "{err}"
+    );
     // The concurrent `q <= r` joins.
     assert!(!err.contains("cycle_partial.dut.q <= ..."), "{err}");
     assert!(!err.contains("cycle_partial.main"), "{err}");
@@ -791,7 +796,7 @@ fn the_report_groups_what_stays_out_by_reason_most_common_first() {
     assert!(counts.len() > 15, "{report}");
     assert!(counts.windows(2).all(|w| w[0].0 >= w[1].0), "{counts:?}");
     // First the logic a process with a foreign call may read (`calls_foreign`: every signal).
-    assert!(counts[0].1.starts_with("E4101 "), "{counts:?}");
+    assert!(counts[0].1.starts_with("E4129 "), "{counts:?}");
     assert!(
         report.contains("    behavioural, in the event kernel (6 processes):"),
         "{report}"
@@ -2324,8 +2329,8 @@ fn a_register_with_an_internal_reset_feeding_a_short_list_stays_out() {
         assert!(
             err.contains("cycle mode: 2 of 7 processes run cycle-based")
                 && err.contains(
-                    "it computes, as a register with an asynchronous reset, cycle_runreset.q, in \
-                     the fan-in of cycle_runreset.dut.list"
+                    "a register with an asynchronous reset feeding a process that depends on delta \
+                     cycles: it drives cycle_runreset.q, which cycle_runreset.dut.list reads"
                 ),
             "{err}"
         );
@@ -2347,7 +2352,7 @@ fn a_register_whose_pulse_resets_or_clocks_another_stays_out() {
         assert_eq!(cycle, normal, "{t:?}\n{err}");
         assert!(
             err.contains("cycle mode: 2 of 6 processes run cycle-based")
-                && err.contains("its asynchronous reset cycle_pulse.r is made by a register"),
+                && err.contains("its asynchronous reset cycle_pulse.r comes from a register"),
             "{err}"
         );
     }
@@ -2624,7 +2629,14 @@ fn row<'a>(report: &'a str, label: &str) -> (&'a str, &'a str) {
             section = match l.trim() {
                 h if h.starts_with("cycle-based") => "cycle-based:",
                 h if h.starts_with("behavioural") => "behavioural, in the event kernel:",
-                h if h.starts_with("E4101") => "in the subset, not implemented in cycle mode yet:",
+                // In the subset, kept out by the lowering or a rule of the region as a whole.
+                h if h
+                    .get(1..5)
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .is_some_and(|n| n == 4101 || (4128..=4137).contains(&n)) =>
+                {
+                    "in the subset, not implemented in cycle mode yet:"
+                }
                 h if h.starts_with('E') => "outside the subset, in the event kernel:",
                 h => h,
             };
@@ -2674,7 +2686,7 @@ fn subset_reasons_are_reported_with_their_code_and_position() {
         ("drive_2", "E4124", "drive_2"),
         ("gate", "E4125", "gate"),
         ("on_divided", "E4125", "on_divided"),
-        ("external", "E4126", "<<signal"),
+        ("external", "E4138", "<<signal"),
         ("real_read", "E4113", "ri2 <="),
         ("before_wait", "E4123", "g1 <= a"),
         ("clock_unlisted", "E4123", "rising_edge"),
@@ -2699,7 +2711,7 @@ fn subset_reasons_are_reported_with_their_code_and_position() {
         ("calls_foreign", "E4117", "outside(a)"),
         ("with_else", "E4123", "rising_edge"),
         ("nested_wait", "E4123", "wait until"),
-        ("slow_loop", "E4126", "while"),
+        ("slow_loop", "E4139", "while"),
         ("drives_bus", "E4124", "drives_bus"),
         ("drives_resolved", "E4124", "drives_resolved"),
     ];
@@ -2718,7 +2730,7 @@ fn subset_reasons_are_reported_with_their_code_and_position() {
         let line = line_of("bad_bits", "if x(0) = '1'");
         assert_eq!(section, "outside the subset, in the event kernel:", "{r}");
         assert!(
-            r.contains("E4119 it does not assign sub_tb.bus16(7) on every path")
+            r.contains("E4119 a latch: sub_tb.bus16(7) is not assigned on every path")
                 && r.ends_with(&format!("(subset.vhd:{line})")),
             "{r}"
         );
@@ -2729,7 +2741,7 @@ fn subset_reasons_are_reported_with_their_code_and_position() {
     for label in ["fields.pass", "back", "fields.pass_one", "back_one"] {
         let (section, r) = row(&report, &format!("sub_tb.{label}"));
         assert_eq!(section, "outside the subset, in the event kernel:", "{r}");
-        assert!(r.contains("  E4122 it is in a combinational loop"), "{r}");
+        assert!(r.contains("  E4122 a combinational loop: "), "{r}");
     }
     assert!(
         report.contains("sub_tb.gx -> sub_tb.fields.pass_one -> sub_tb.go -> sub_tb.back_one")
@@ -2749,7 +2761,7 @@ fn subset_reasons_are_reported_with_their_code_and_position() {
         ("forever", "it waits forever (`wait;`)"),
         ("two_waits", "it has 2 wait statements"),
         ("logger", "it declares `l`, an access value"),
-        ("waits_inside", "it calls `tick`, which may wait"),
+        ("waits_inside", "it calls `tick`, which can wait"),
         ("dut.protected_var", "it declares `cnt`, a protected object"),
     ] {
         let (section, r) = row(&report, &format!("sub_tb.{label}"));
@@ -2948,15 +2960,21 @@ fn cycle_strict_names_the_code_of_each_reason() {
         ("E4125", "gate"),
     ] {
         assert!(
-            err.contains(&format!(
-                "error[{code}]: process sub_tb.dut.{label} is outside what cycle mode can run"
-            )),
+            err.contains(&format!("error[{code}]: "))
+                && err.contains(&format!(
+                    "= note: in process sub_tb.dut.{label} (subset.vhd:"
+                )),
             "{code} {label}: {err}"
         );
     }
     // In the subset but not implemented yet: the code of that.
+    let at = err
+        .find("note: in process sub_tb.dut.async_two")
+        .expect("listed");
     assert!(
-        err.contains("error[E4101]: process sub_tb.dut.async_two cannot run cycle-based yet"),
+        err[..at]
+            .rfind("error[")
+            .is_some_and(|i| err[i..].starts_with("error[E4101]")),
         "{err}"
     );
     // The testbench, the top-level unit, is exempt, behavioural or not.
@@ -3071,7 +3089,10 @@ fn several_clocks_and_crossings_give_the_same_result() {
             section, "in the subset, not implemented in cycle mode yet:",
             "{err}"
         );
-        assert!(line.contains("may come in a later delta"), "{line}");
+        assert!(
+            line.contains("with its edge in a later delta cycle"),
+            "{line}"
+        );
     }
 }
 
@@ -3137,18 +3158,25 @@ fn drivers_of_signals_whose_history_is_read_outside_stay_out() {
         );
         assert_eq!(row(&err, "cycle_history.dut.pn").0, "cycle-based:", "{err}");
         for (label, what) in [
-            ("pq", "reads `'last_event` of cycle_history.q"),
-            ("pr", "reads `'active` of cycle_history.r"),
-            ("pt", "reads an implicit signal"),
+            (
+                "pq",
+                "`'last_event` of cycle_history.q, read by cycle_history.main",
+            ),
+            (
+                "pr",
+                "`'active` of cycle_history.r, read by cycle_history.main",
+            ),
+            ("pt", "an implicit signal"),
             (
                 "pk",
-                "calls a subprogram that reads the history of cycle_history.k",
+                "a call of a subprogram reading the history of cycle_history.k",
             ),
         ] {
             let (section, line) = row(&err, &format!("cycle_history.dut.{label}"));
             assert_eq!(section, "outside the subset, in the event kernel:", "{err}");
             assert!(
-                line.contains("E4127 cycle_history.main") && line.contains(what),
+                line.contains("E4127 history of a signal read outside the region: ")
+                    && line.contains(what),
                 "{line}"
             );
         }
@@ -3169,7 +3197,7 @@ fn drivers_of_signals_whose_history_is_read_outside_stay_out() {
     for label in ["pq", "pr", "pt", "pk"] {
         assert!(
             err.contains(&format!(
-                "error[E4127]: process cycle_history.dut.{label} is outside what cycle mode can run"
+                "= note: in process cycle_history.dut.{label} (history.vhd:"
             )),
             "{label}: {err}"
         );
@@ -3672,7 +3700,7 @@ fn asserts_and_reports_of_the_top_level_unit_are_evaluated() {
         }
         assert!(
             report
-                .contains("it checks cycle_topcheck.flag, which is not driven by the region alone"),
+                .contains("E4136 an assert reading a signal the region does not drive alone: cycle_topcheck.flag"),
             "{report}"
         );
         assert!(
@@ -4577,7 +4605,7 @@ fn null_arrays_equal_the_normal_mode() {
             assert!(
                 err.contains("cycle mode: 6 of 8 processes run cycle-based")
                     && err.contains(&format!(
-                        "cycle_nullvec.u.wr2 (nullvec{w}.vhd:40)         an index chosen at run \
+                        "cycle_nullvec.u.wr2 (nullvec{w}.vhd:40)         E4101 an index chosen at run \
                          time of an array of null elements (nullvec{w}.vhd:43)"
                     )),
                 "{w}: {err}"
@@ -4607,7 +4635,9 @@ fn resolved_out_ports_on_unresolved_actuals_equal_the_normal_mode() {
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
                 err.contains("cycle mode: 3 of 6 processes run cycle-based")
-                    && err.contains("E4124 cycle_portres.u.two is also driven by"),
+                    && err.contains(
+                        "E4124 a signal with two drivers: cycle_portres.u.two is driven by"
+                    ),
                 "{w}: {err}"
             );
         }
@@ -4977,8 +5007,8 @@ fn clocks_of_a_known_delta_share_their_logic() {
             assert!(
                 err.contains("cycle mode: 12 of 19 processes run cycle-based")
                     && err.contains(
-                        "it computes, from registers on cycle_deltacls.ca, a value a register on \
-                         cycle_deltacls.cc samples"
+                        "registers on cycle_deltacls.ca feed it and a register on \
+                         cycle_deltacls.cc samples it"
                     ),
                 "{w}: {err}"
             );
@@ -4991,8 +5021,8 @@ fn clocks_of_a_known_delta_share_their_logic() {
     assert!(
         err.contains("cycle mode: 3 of 7 processes run cycle-based")
             && err.contains(
-                "it computes, from registers on cycle_deltazero.cc, a value a register on \
-                 cycle_deltazero.cz samples"
+                "registers on cycle_deltazero.cc feed it and a register on \
+                 cycle_deltazero.cz samples it"
             )
             && err.lines().any(
                 |l| l.contains("cycle_deltazero.xz <= ... (deltacls128.vhd:107)")
@@ -5053,31 +5083,31 @@ fn logic_feeding_a_process_that_counts_its_runs_stays_out() {
             assert!(
                 err.contains("cycle mode: 4 of 26 processes run cycle-based")
                     && err.contains(
-                        "it computes, combinationally, cycle_runcount.c2, in the fan-in of \
-                         cycle_runcount.stale"
+                        "it drives cycle_runcount.c2, which \
+                         cycle_runcount.stale reads through logic"
                     )
                     && err.contains(
-                        "it computes, combinationally, cycle_runcount.dut.c3, in the fan-in of \
-                         cycle_runcount.dut.list"
+                        "it drives cycle_runcount.dut.c3, which \
+                         cycle_runcount.dut.list reads through logic"
                     )
                     && err.contains(
-                        "it computes, combinationally, cycle_runcount.dut.e4, in the fan-in of \
-                         cycle_runcount.dut.mask"
+                        "it drives cycle_runcount.dut.e4, which \
+                         cycle_runcount.dut.mask reads through logic"
                     )
                     && err.contains(
-                        "it computes, combinationally, cycle_runcount.dut.c6, in the fan-in of \
-                         cycle_runcount.dut.waiter"
+                        "it drives cycle_runcount.dut.c6, which \
+                         cycle_runcount.dut.waiter reads through logic"
                     )
                     && err.contains(
-                        "it computes, combinationally, cycle_runcount.dut.c8, in the fan-in of \
-                         cycle_runcount.dut.resets"
+                        "it drives cycle_runcount.dut.c8, which \
+                         cycle_runcount.dut.resets reads through logic"
                     )
                     && err.contains(
-                        "it computes, combinationally, cycle_runcount.dut.c12, in the fan-in of \
+                        "it drives cycle_runcount.dut.c12, which \
                          cycle_runcount.dut.li <= ..."
                     )
                     && err.contains(
-                        "it computes, combinationally, cycle_runcount.dut.c14, in the fan-in of \
+                        "it drives cycle_runcount.dut.c14, which \
                          cycle_runcount.dut.li2 <= ..."
                     ),
                 "{w}: {err}"
@@ -5185,14 +5215,14 @@ fn shared_variable_memories_equal_the_normal_mode() {
             for (who, other) in [("mem", "peek"), ("mem2", "via_fn")] {
                 assert!(
                     err.contains(&format!(
-                        "E4114 the shared variable `{who}` is also used by cycle_shram.hid.{other}"
+                        "E4114 a shared variable used by two processes: `{who}` is also used by cycle_shram.hid.{other}"
                     )),
                     "{who}: {err}"
                 );
             }
             assert!(
                 err.contains(
-                    "E4114 the shared variable `mem` is also used by cycle_shram.tp.p_read"
+                    "E4114 a shared variable used by two processes: `mem` is also used by cycle_shram.tp.p_read"
                 ),
                 "{err}"
             );
@@ -5429,7 +5459,7 @@ fn a_resolution_function_of_the_design_runs_on_out_ports() {
             assert_eq!(got, want, "{top} {t:?}");
             assert_eq!(cycle, normal, "{top} {t:?}\n{err}");
             assert!(
-                err.contains("has a resolution function of its own"),
+                err.contains("a signal with a resolution function of its own"),
                 "{top}: {err}"
             );
         }
@@ -5664,7 +5694,7 @@ fn shift_operators_equal_the_normal_mode() {
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
                 err.contains("cycle mode: 2 of 4 processes run cycle-based")
-                    && err.contains("may be negative"),
+                    && err.contains("whose subtype allows negative values"),
                 "{w}: {err}"
             );
         }
@@ -5690,7 +5720,7 @@ fn qualified_record_aggregates_equal_the_normal_mode() {
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
                 err.contains("cycle mode: 3 of 5 processes run cycle-based")
-                    && err.contains("may lie outside their subtypes"),
+                    && err.contains("can lie outside their subtypes"),
                 "{w}: {err}"
             );
             let mut shown = Vec::new();
@@ -5794,7 +5824,7 @@ fn a_register_on_a_clock_the_region_makes_samples_its_logic_before_it_settles() 
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
                 err.contains("cycle mode: 1 of 5 processes run cycle-based")
-                    && err.contains("a value a register on cycle_dclkreg.dk samples"),
+                    && err.contains("a register on cycle_dclkreg.dk samples it"),
                 "{w}: {err}"
             );
         }
@@ -5819,7 +5849,7 @@ fn a_register_left_out_late_still_keeps_the_logic_it_samples_out() {
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
                 err.contains("cycle mode: 1 of 7 processes run cycle-based")
-                    && err.contains("a value a register on cycle_latecone.dk2 samples"),
+                    && err.contains("a register on cycle_latecone.dk2 samples it"),
                 "{w}: {err}"
             );
         }
@@ -5879,7 +5909,7 @@ fn paths_through_processes_outside_still_keep_cross_delta_logic_out() {
                                 "xq" => 55,
                                 _ => 15,
                             }
-                        )) && err.contains("a value a register on cycle_xout.cg2 samples"),
+                        )) && err.contains("a register on cycle_xout.cg2 samples it"),
                         "{p} {w}: {err}"
                     );
                 }
@@ -5890,12 +5920,12 @@ fn paths_through_processes_outside_still_keep_cross_delta_logic_out() {
                 assert_eq!(k(cycle), sinks, "width {w} {f:?}\n{serr}");
                 assert!(
                     serr.contains("cycle mode: 2 of 11 processes run cycle-based")
-                        && serr.contains("a value a register on cycle_xsink.cg2 samples"),
+                        && serr.contains("a register on cycle_xsink.cg2 samples it"),
                     "{w}: {serr}"
                 );
                 assert!(
                     err.contains("cycle mode: 3 of 9 processes run cycle-based")
-                        && err.contains("cycle_xgate.cg1 <= ... (crossout.vhd:91)  it computes")
+                        && err.contains("cycle_xgate.cg1 <= ... (crossout.vhd:91)  E4131 ")
                         && err.contains(
                             "    cycle_xgate.cg0 <= ... (crossout.vhd:90)  combinational"
                         ),
@@ -5923,9 +5953,187 @@ fn a_register_with_a_reset_on_a_late_clock_keeps_the_logic_it_samples_out() {
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
                 err.contains("cycle mode: 1 of 6 processes run cycle-based")
-                    && err.contains("a value a register on cycle_lateasync.dk samples"),
+                    && err.contains("a register on cycle_lateasync.dk samples it"),
                 "{w}: {err}"
             );
         }
     }
 }
+
+/// `--cycle-strict` on `top` of a design analysed in `dir`: exit 2, nothing simulated, and the
+/// standard error with the directory written as `$DIR`.
+fn strict_err(dir: &Path, top: &str, extra: &[&str]) -> String {
+    let o = yavs(
+        dir,
+        &[
+            &["run", "--work=work:lib", "--no-cache", "--cycle-strict"],
+            extra,
+            &[top],
+        ]
+        .concat(),
+    );
+    let err = String::from_utf8_lossy(&o.stderr).into_owned();
+    assert_eq!(o.status.code(), Some(2), "{top}: {err}");
+    assert!(o.stdout.is_empty(), "{top}: nothing runs");
+    let canon = dir.canonicalize().expect("dir");
+    err.replace(&*canon.to_string_lossy(), "$DIR")
+        .replace(&*dir.to_string_lossy(), "$DIR")
+}
+
+/// Compare `err` with the snapshot `tests/cycle/strict/NAME.stderr` (`YAVS_BLESS=1` writes it).
+fn strict_snapshot(name: &str, err: &str) {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/cycle/strict/{name}.stderr"));
+    if std::env::var_os("YAVS_BLESS").is_some_and(|v| v == "1") {
+        std::fs::create_dir_all(path.parent().expect("dir")).expect("mkdir");
+        std::fs::write(&path, err).expect("bless");
+    } else {
+        let want = std::fs::read_to_string(&path).unwrap_or_default();
+        assert_eq!(
+            err, want,
+            "{name}: the snapshot differs (YAVS_BLESS=1 rewrites it)"
+        );
+    }
+}
+
+/// A40: each reason under `--cycle-strict` is an error with its own code that says what is not
+/// supported (the headline), where (the statement, the other process when it spans processes,
+/// the processes it keeps out), why, and how to fix it or that it is a limitation of yavs. One
+/// minimal design per code, the whole message a snapshot.
+#[test]
+fn cycle_strict_gives_each_code_with_what_where_why_and_fix() {
+    let dir = tempdir("cycle-strict-each");
+    analyze(&dir, "strict.vhd", include_str!("cycle/strict.vhd"));
+    let cases: &[(&str, &[&str])] = &[
+        ("E4101", &[]),
+        ("E4110", &[]),
+        ("E4111", &[]),
+        ("E4112", &[]),
+        ("E4113", &[]),
+        ("E4114", &[]),
+        ("E4115", &[]),
+        ("E4117", &[]),
+        ("E4118", &[]),
+        ("E4119", &[]),
+        ("E4120", &[]),
+        ("E4121", &[]),
+        ("E4122", &[]),
+        ("E4123", &[]),
+        ("E4124", &[]),
+        ("E4125", &[]),
+        ("E4126", &[]),
+        ("E4127", &[]),
+        ("E4129", &[]),
+        ("E4130", &[]),
+        ("E4131", &[]),
+        ("E4132", &[]),
+        ("E4133", &[]),
+        ("E4134", &[]),
+        ("E4135", &[]),
+        ("E4137", &["--cycle-exact-meta"]),
+        ("E4138", &[]),
+        ("E4139", &[]),
+    ];
+    for &(code, extra) in cases {
+        let err = strict_err(&dir, &format!("t_{}", code.to_lowercase()), extra);
+        let head = format!("error[{code}]: ");
+        let at = err.find(&head).unwrap_or_else(|| panic!("{code}: {err}"));
+        let first = err[at..].lines().next().expect("a line");
+        assert!(
+            first.ends_with(" is not supported in cycle mode"),
+            "{first}"
+        );
+        for part in [
+            "--> $DIR/strict.vhd:",
+            "= note: in process",
+            "= note: why: ",
+            "= help: ",
+        ] {
+            assert!(err[at..].contains(part), "{code}: no {part:?}: {err}");
+        }
+        strict_snapshot(code, &err);
+    }
+    // A force anywhere in the design: E4116 at the force, E4128 for every other process.
+    let dir = tempdir("cycle-strict-force");
+    analyze(
+        &dir,
+        "strictforce.vhd",
+        include_str!("cycle/strictforce.vhd"),
+    );
+    let err = strict_err(&dir, "t_e4116", &[]);
+    assert!(
+        err.contains("error[E4116]: ") && err.contains("error[E4128]: "),
+        "{err}"
+    );
+    strict_snapshot("E4116-E4128", &err);
+}
+
+/// Strict lists every reason at once, one error per statement, sorted by file and line, with
+/// the processes of a statement used by several instances counted in one error and a cap of 40
+/// errors with a line saying how many more there are.
+#[test]
+fn cycle_strict_lists_every_reason_sorted_grouped_and_capped() {
+    let dir = tempdir("cycle-strict-many");
+    analyze(&dir, "subset.vhd", include_str!("cycle/subset.vhd"));
+    let err = strict_err(&dir, "sub_tb", &[]);
+    let lines: Vec<usize> = (err.lines())
+        .filter_map(|l| l.trim_start().strip_prefix("--> $DIR/subset.vhd:"))
+        .map(|l| {
+            l.split(':')
+                .next()
+                .expect("line")
+                .parse()
+                .expect("a number")
+        })
+        .collect();
+    assert_eq!(lines.len(), 40, "{err}");
+    assert!(lines.is_sorted(), "{lines:?}");
+    let codes: std::collections::BTreeSet<&str> = (err.lines())
+        .filter_map(|l| l.strip_prefix("error[E41"))
+        .map(|l| &l[..2])
+        .collect();
+    assert!(codes.len() >= 15, "{codes:?}");
+    assert!(
+        err.contains("more errors not shown; `--cycle-report` lists every process"),
+        "{err}"
+    );
+    assert!(
+        err.contains("error: aborting due to 40 previous errors"),
+        "{err}"
+    );
+    // One statement, several instances: one error naming them all.
+    let dir = tempdir("cycle-strict-group");
+    analyze(
+        &dir,
+        "strict.vhd",
+        &(include_str!("cycle/strict.vhd").to_string() + GROUPED),
+    );
+    let err = strict_err(&dir, "t_many", &[]);
+    assert_eq!(err.matches("error[E4111]").count(), 1, "{err}");
+    assert!(
+        err.contains("= note: in 7 processes: t_many.g(0).dut.q <= ... (strict.vhd:")
+            && err.contains(" and 2 more"),
+        "{err}"
+    );
+}
+
+const GROUPED: &str = "
+library ieee;
+use ieee.std_logic_1164.all;
+entity t_many is
+end entity;
+architecture tb of t_many is
+  signal a : std_ulogic := '0';
+  signal q : std_ulogic_vector(0 to 6);
+begin
+  g : for i in 0 to 6 generate
+    dut : entity work.d_e4111 port map (a, q(i));
+  end generate;
+  stim : process
+  begin
+    wait for 10 ns;
+    a <= '1';
+    wait;
+  end process;
+end architecture;
+";

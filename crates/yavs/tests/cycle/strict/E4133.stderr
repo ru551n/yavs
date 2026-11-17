@@ -1,0 +1,18 @@
+error[E4133]: a memory written in an asynchronous reset branch is not supported in cycle mode
+   --> $DIR/strict.vhd:353:3
+    |
+353 | /   p : process (clk, rst)
+354 | |   begin
+355 | |     if rst = '1' then
+356 | |       mem(0) <= '0';
+...   |
+360 | |     end if;
+361 | |   end process;
+    | |______________^ t_e4133.dut.mem
+    |
+    = note: in process t_e4133.dut.p (strict.vhd:353)
+    = note: why: yavs keeps a large memory in cycle-based code only when it is written at run-time indices in the clock-edge branch and read inside the region
+    = help: this is a limitation of yavs, not a problem in your design: write the memory only in the clock-edge branch at run-time indices and read it only inside the design, or run with `--cycle`
+
+error: aborting due to 1 previous error
+

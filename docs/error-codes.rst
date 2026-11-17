@@ -607,7 +607,7 @@ Cycle mode (E4 and W4)
    * - Code
      - Meaning
    * - _`E4101`
-     - ``yavs run --cycle-strict`` found a process below the top-level design unit that is in the subset cycle mode can run, but needs something cycle mode does not implement yet; the label names it.
+     - Cycle mode can run this kind of logic, but yavs does not implement the construct the error names in cycle-based code yet: a limitation of yavs, not a problem in the design.
    * - _`E4102`
      - ``yavs run --cycle`` (or ``--cycle-strict``) cannot be used with an option that records, shows, counts or changes signals inside the cycle region: a debug session (``--dap``, ``--interactive``, ``--do``), ``--wave``, ``--surfer`` (which records a waveform), ``--cov``, ``--vhpi`` or ``--activity``.
    * - _`E4103`
@@ -647,9 +647,33 @@ Cycle mode (E4 and W4)
    * - _`E4125`
      - Clocks come from outside the region.
    * - _`E4126`
-     - The analysis of cycle mode cannot prove that the process fits: it reads an external name, has a loop whose dependences do not settle, or uses a statement or name the analysis does not follow.
+     - yavs cannot yet follow a construct of the process far enough to show that it is clocked or combinational logic: an ``out`` actual, an assignment target or a statement of an unusual form, a signal it cannot place in the design, or an internal mismatch it asks you to report.
    * - _`E4127`
      - A process outside the cycle region reads the history of a signal this process drives: ``'active``, ``'last_active``, ``'last_event``, ``'last_value``, ``'transaction``, ``'stable``, ``'quiet`` or ``'delayed``, directly or in a subprogram it calls (an edge test such as ``rising_edge`` is not history here).
+   * - _`E4128`
+     - The design uses ``force`` or ``release`` somewhere.
+   * - _`E4129`
+     - Combinational logic (or a register with an asynchronous reset) feeds a process outside the region whose result depends on the delta cycles its inputs change in: one that keeps a value from its previous run (a latch, a variable read before it is assigned, a combinational loop), has an incomplete sensitivity list, or stays out for another reason.
+   * - _`E4130`
+     - Logic between registers of two clocks whose edges come in different delta cycles of one time step: a clock gated or computed by an assignment comes one delta cycle after its source (a plain copy is its source).
+   * - _`E4131`
+     - Logic that computes part of a clock from a signal the region drives.
+   * - _`E4132`
+     - A register whose asynchronous reset another register makes, and whose output is the clock or the asynchronous reset of a process.
+   * - _`E4133`
+     - A memory (an array signal of more than 4096 logic elements or 64 integers) that is written in an asynchronous reset branch, written both at run-time indices and at fixed ones, or read outside the region.
+   * - _`E4134`
+     - Some elements of a signal are driven by this process and others by a process outside the region.
+   * - _`E4135`
+     - The process drives a signal that also gets its value from a port connection or a constant source, which yavs does not model in cycle-based code yet.
+   * - _`E4136`
+     - An assert or report of the top-level unit reads a signal the region does not drive alone.
+   * - _`E4137`
+     - Under ``--cycle-exact-meta``, a process assigns a metavalue literal (``'U'``, ``'X'``, ...) to a signal the testbench reads, or passes on a ``'Z'`` from a process outside to such a signal.
+   * - _`E4138`
+     - An external name (``<<signal .tb.dut.x : std_logic>>``) in the process.
+   * - _`E4139`
+     - A loop cycle mode cannot unroll.
 
 Internal errors (E9)
 --------------------
@@ -668,4 +692,4 @@ See also
 
 * :doc:`troubleshooting`: how to read a diagnostic, and the common problems.
 * :doc:`cli-reference`: ``--message-format``, ``-Werror`` and exit statuses.
-* :doc:`cycle-mode`: the codes E4101 to E4127 and what to do about them.
+* :doc:`cycle-mode`: the codes E4101 to E4139 and what to do about them.

@@ -505,7 +505,7 @@ Arguments:
 
 .. option:: --cycle-strict
 
-   Cycle mode in its strict form, instead of ``--cycle``: the same selection, but a process below the top-level design unit that is not behavioural and cannot run cycle-based is an error, all of them listed, and the run stops before simulation: outside the subset with the code of the reason (E4110 to E4127), not implemented yet E4101.
+   Cycle mode in its strict form, instead of ``--cycle``: the same selection, but a process below the top-level design unit that is not behavioural and cannot run cycle-based is an error, and the run stops before simulation. Each error names the construct that is not supported, points at its statement, and says why and how to fix it, with the code of the reason (E4110 to E4139; E4101 for what yavs does not implement yet); one error per statement lists the processes it keeps out, sorted by file and line, at most 40.
 
 .. option:: --cycle-report, --cycle-report=FILE
 
@@ -585,7 +585,7 @@ Arguments:
 
    May be repeated.
 
-Diagnostics named above: ``E0105``, ``E0106``, ``E0107``, ``E0120``, ``E0136``, ``E0701``, ``E0801``, ``E0901``, ``E0902``, ``E3002``, ``E4101``, ``E4102``, ``E4103``, ``E4110``, ``E4127``; ``yavs --explain CODE`` explains each.
+Diagnostics named above: ``E0105``, ``E0106``, ``E0107``, ``E0120``, ``E0136``, ``E0701``, ``E0801``, ``E0901``, ``E0902``, ``E3002``, ``E4101``, ``E4102``, ``E4103``, ``E4110``, ``E4139``; ``yavs --explain CODE`` explains each.
 
 ``yavs cov merge``
 ------------------

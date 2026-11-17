@@ -1,0 +1,20 @@
+error[E4134]: a signal driven partly outside the region is not supported in cycle mode
+   --> $DIR/strict.vhd:374:3
+    |
+374 |     v(0) <= not a;
+    |     ^^^^^^^^^^^^^^ other elements of t_e4134.dut.v come from t_e4134.dut.model
+375 | /   model : process
+376 | |   begin
+377 | |     v(1) <= '0';
+378 | |     wait for 5 ns;
+379 | |     v(1) <= '1';
+380 | |     wait;
+381 | |   end process;
+    | |______________- t_e4134.dut.model drives other elements of t_e4134.dut.v
+    |
+    = note: in process t_e4134.dut.v(0) <= ... (strict.vhd:374)
+    = note: why: yavs does not split one signal between cycle-based code and the event simulation yet
+    = help: this is a limitation of yavs, not a problem in your design: drive all elements of the signal from processes that can run cycle-based, or split it into two signals
+
+error: aborting due to 1 previous error
+

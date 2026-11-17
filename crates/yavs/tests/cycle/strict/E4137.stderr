@@ -1,0 +1,12 @@
+error[E4137]: a metavalue literal assigned to a signal the testbench reads is not supported in cycle mode
+   --> $DIR/strict.vhd:406:3
+    |
+406 |   q <= a when en = '1' else 'X';
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ t_e4137.q
+    |
+    = note: in process t_e4137.dut.q <= ... (strict.vhd:406)
+    = note: why: under `--cycle-exact-meta` the testbench must see the metavalues the event simulation gives it, and cycle-based code gives only '0' and '1'
+    = help: run without `--cycle-exact-meta`, or assign '0' or '1' instead of the metavalue; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 1 previous error
+

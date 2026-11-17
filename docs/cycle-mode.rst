@@ -208,7 +208,7 @@ body. A signal needs one source: one process drives each element of it.
    * - Is a register whose asynchronous reset another register makes, and whose output is the clock or the
        asynchronous reset of a process: the normal mode can change it at the edge and again a delta later, and
        that pulse resets or clocks the other process
-     - E4101. The region settles the edge and the reset together and would not show the pulse.
+     - E4132. The region settles the edge and the reset together and would not show the pulse.
    * - Is combinational logic, or a register with an asynchronous reset (the normal mode can change it twice in
        one time step: at the edge and at a reset made by another register), that feeds, back to the registers
        (processes that act at clock edges alone), a process outside the region whose result may depend on the delta cycles its inputs change in: one that
@@ -219,7 +219,7 @@ body. A signal needs one source: one process drives each element of it.
        its ``'Z'`` or its ``after`` alone does not count, nor does a process that acts at clock edges alone
        (logic between clocks whose edges come in different delta cycles is the row below). Testbench code (the top-level unit, and a monitor that drives no signal) sees the settled values
        earlier, as described below
-     - E4101. The region settles such logic in one delta cycle where the normal mode takes several, so that
+     - E4129. The region settles such logic in one delta cycle where the normal mode takes several, so that
        process would see other values or run another number of times.
    * - Shares a signal element with another process, or the signal has a resolution function of its own
      - E4124.
@@ -234,15 +234,24 @@ body. A signal needs one source: one process drives each element of it.
        later) feed and registers of the first or second kind sample. The path counts whatever lies on it: processes outside the
        region for any reason (a testbench process excepted), registers outside the region, ports. Logic that
        computes a clock from what the region drives stays out too: the clock's edge would come early
-     - E4101. The normal mode samples such logic before its new value arrives; the region would hand over the
-       settled value.
+     - E4130, and E4131 for logic that computes a clock. The normal mode samples such logic before its new value
+       arrives; the region would hand over the settled value.
    * - Is clocked in a form that is not one of those above, or uses a clock made inside the region
      - E4123, E4125.
-   * - Compares with a metavalue literal (``= 'U'``), has a ``while`` loop or a ``for`` loop whose bounds are not
-       known when the design is elaborated, or another construct cycle mode cannot take *yet*; with
-       ``--cycle-exact-meta`` also a process that assigns a metavalue literal to a signal the testbench reads or
-       passes on a ``'Z'`` from outside to such a signal
-     - E4101: in the subset, not implemented yet. This is the one reason that is expected to shrink.
+   * - With ``--cycle-exact-meta``: assigns a metavalue literal to a signal the testbench reads, or passes on a
+       ``'Z'`` from outside to such a signal
+     - E4137.
+   * - Uses an external name, or a loop whose bounds are not known when the design is elaborated, that is too
+       large to unroll, or that leaves an outer loop with ``exit`` or ``next``
+     - E4138, E4139.
+   * - Drives part of a signal whose other elements a process outside the region drives, a signal that also gets
+       a value from a port connection or a constant, or a memory written in its reset branch, at fixed and
+       run-time indices both, or read outside the region; or the design uses ``force`` or ``release`` anywhere
+     - E4134, E4135, E4133, E4128: limitations of yavs.
+   * - Compares with a metavalue literal (``= 'U'``), has a ``while`` loop, or another construct cycle mode cannot
+       take *yet*
+     - E4101: in the subset, not implemented yet. This is the reason that is expected to shrink. E4126 is the same
+       for a construct yavs does not follow far enough to show the process is logic.
 
 .. _cycle-report:
 
@@ -266,14 +275,14 @@ a small design with a testbench and four things cycle mode does not take:
     cycle mode: 1 of 7 processes run cycle-based, on the rising edge of tb_left_out.clk
       6 processes stay in the event kernel:
         E4111 a delay, `transport`, `reject` or a waveform (2 processes):
-          tb_left_out.clk <= ... (left_out.vhd:62)    E4111 a delayed assignment (`after`) needs time inside a cycle (left_out.vhd:62)
-          tb_left_out.dut.p_slow (left_out.vhd:37)    E4111 a delayed assignment (`after`) needs time inside a cycle (left_out.vhd:40)
+          tb_left_out.clk <= ... (left_out.vhd:62)    E4111 a delayed assignment (`after`) (left_out.vhd:62)
+          tb_left_out.dut.p_slow (left_out.vhd:37)    E4111 a delayed assignment (`after`) (left_out.vhd:40)
         E4119 a latch (1 process):
-          tb_left_out.dut.p_latch (left_out.vhd:29)   E4119 it does not assign tb_left_out.held(0) on every path, so it keeps its value: a latch (this statement leaves it unassigned on a path) (left_out.vhd:31)
+          tb_left_out.dut.p_latch (left_out.vhd:29)   E4119 a latch: tb_left_out.held(0) is not assigned on every path (this statement leaves it unassigned) (left_out.vhd:31)
         E4121 an incomplete sensitivity list (1 process):
-          tb_left_out.dut.p_sum (left_out.vhd:45)     E4121 it reads tb_left_out.dut.b(0), which its sensitivity list does not name: the normal mode would not run it when that changes (left_out.vhd:47)
+          tb_left_out.dut.p_sum (left_out.vhd:45)     E4121 an incomplete sensitivity list: the process reads tb_left_out.dut.b(0), which the list does not name (left_out.vhd:47)
         E4127 its history is read outside the region (1 process):
-          tb_left_out.dut.q <= ... (left_out.vhd:26)  E4127 tb_left_out.main reads `'last_event` of tb_left_out.q, and the region keeps no history of the signals it drives: its drivers stay in the event kernel (left_out.vhd:77)
+          tb_left_out.dut.q <= ... (left_out.vhd:26)  E4127 history of a signal read outside the region: `'last_event` of tb_left_out.q, read by tb_left_out.main (left_out.vhd:77)
         behavioural, in the event kernel (1 process):
           tb_left_out.main (left_out.vhd:67)          it waits for a time
       cycle-based processes give no warnings of the ieee libraries (numeric_std metavalue and compare warnings)
@@ -285,14 +294,16 @@ a small design with a testbench and four things cycle mode does not take:
 
 * The first line says how many processes join and on which clock edges they run.
 * Then come the processes that stay, grouped by reason, the most common reason first. A row has the process (an
-  instance path and where it starts) and the reason with the position of the construct that causes it. A
+  instance path and where it starts) and the reason with the position of the construct that causes it, in the
+  same words as the error of ``--cycle-strict``: the construct, and after a colon what at that place causes it. A
   concurrent assignment is shown as ``name <= ...``. A delayed clock like ``clk <= not clk after ...`` is on
   almost every list and is expected. *Behavioural* processes are the ones that are testbench by nature.
 * If cycle-based processes hold ``assert`` or ``report`` statements, a line counts them per process: they are not
   evaluated (:ref:`cycle-changes`). The following two lines are fixed text: library warnings, and the asserts of
   the top-level unit, which are evaluated.
 * ``subset`` counts the processes that fit the rules. Fewer processes join than fit when one with a rarer
-  problem is missing something the lowering needs (those are the E4101 rows). A *loop group* is a set of
+  problem needs something yavs does not implement yet, or a rule of the region as a whole keeps it out (the
+  rows of E4101 and E4128 to E4137). A *loop group* is a set of
   processes that depend on each other in a circle without forming a combinational loop; the region evaluates
   them with more work per clock, which this count lets you see.
 * ``boundary`` is the cost of the split between region and kernel. ``signal leaves exported`` are the signals the
@@ -638,9 +649,9 @@ Strict mode
 -----------
 
 ``--cycle-strict`` is for a design that should be cycle-based as a whole, for example in CI to notice when a
-change moves a process out of the region. The selection is the same as with ``--cycle``. The difference is that a
-process that is RTL by shape and cannot join is an error, with the code of the reason (E4101, E4110 to E4127), all of
-them listed, and the run stops with exit status 2 before simulating.
+change moves a process out of the region. The selection is the same as with ``--cycle``. The difference is that
+every reason a process that is RTL by shape cannot join is an error, and the run stops with exit status 2 before
+simulating.
 
 Two groups are exempt and never an error:
 
@@ -648,8 +659,21 @@ Two groups are exempt and never an error:
 * *behavioural* processes anywhere in the design: timed waits, ``wait;``, several waits, files and text input and
   output, access values, protected objects. A bus model below the top-level unit is of this kind.
 
-``left_out.vhd`` under strict mode. The errors are printed in this order; the second and later ones look
-like the ones shown, and the notes under each are the same:
+Each error says, in this order:
+
+* **what** is not supported, in its first line: ``error[E41xx]: <construct> is not supported in cycle mode``;
+* **where**: the statement that causes it, with what there causes it under the marker, and for a situation that
+  spans processes (a delta race between clocks, a reader outside the region, a second driver) a second marker at
+  the other process or signal; an error inside a called subprogram marks the call too;
+* the processes it keeps out, with their instance paths (``in process ...``, or ``in 7 processes: ...`` for a
+  statement of an entity used several times);
+* **why** it cannot be cycle-based (``note: why:``);
+* **how to fix** it (``help:``), or that it is a limitation of yavs and not a problem in the design.
+
+There is one error per reason and statement, sorted by file and line. At most 40 are printed; a last line says
+how many more there are, and ``--cycle-report`` lists them all.
+
+``left_out.vhd`` under strict mode:
 
 .. code-block:: bash
 
@@ -657,63 +681,164 @@ like the ones shown, and the notes under each are the same:
 
 .. code-block:: text
 
-    error[E4127]: process tb_left_out.dut.q <= ... (left_out.vhd:26) is outside what cycle mode can run
-      --> left_out.vhd:77:43
-       |
-    77 |     report "q last changed " & time'image(q'last_event) & " ago";
-       |                                           ^^^^^^^^^^^^ tb_left_out.main reads `'last_event` of tb_left_out.q, and the region keeps no history of the signals it drives: its drivers stay in the event kernel
-       |
-       = note: `--cycle-strict` needs every process below the top-level design unit that is not behavioural to run cycle-based
-       = help: run with `--cycle` to leave it in the event kernel
-
-    error[E4119]: process tb_left_out.dut.p_latch is outside what cycle mode can run
+    error[E4119]: a latch is not supported in cycle mode
       --> left_out.vhd:31:5
        |
     31 | /     if en = '1' then
     32 | |       held <= d;
     33 | |     end if;
-       | |___________^ it does not assign tb_left_out.held(0) on every path, so it keeps its value: a latch (this statement leaves it unassigned on a path)
+       | |___________^ tb_left_out.held(0) is not assigned on every path (this statement leaves it unassigned)
        |
-       = note: `--cycle-strict` needs every process below the top-level design unit that is not behavioural to run cycle-based
-       = help: run with `--cycle` to leave it in the event kernel
+       = note: in process tb_left_out.dut.p_latch (left_out.vhd:29)
+       = note: why: a signal that is not assigned on every path keeps its old value, which is state, not combinational logic
+       = help: assign it on every path, for example with a default assignment at the start of the process; or run with `--cycle` to leave this process in the event simulation
 
+    error[E4111]: a delayed assignment (`after`) is not supported in cycle mode
+      --> left_out.vhd:40:7
+       |
+    40 |       slow <= d after 1 ns;
+       |       ^^^^^^^^^^^^^^^^^^^^^
+       |
+       = note: in process tb_left_out.dut.p_slow (left_out.vhd:37)
+       = note: why: cycle-based code has no time inside a clock cycle, so it cannot keep a delay
+       = help: assign without a delay (`q <= d;`) in the design; keep delays in testbench models; or run with `--cycle` to leave this process in the event simulation
+
+    error[E4121]: an incomplete sensitivity list is not supported in cycle mode
+      --> left_out.vhd:47:16
+       |
+    47 |     sum <= d + b;
+       |                ^ the process reads tb_left_out.dut.b(0), which the list does not name
+       |
+       = note: in process tb_left_out.dut.p_sum (left_out.vhd:45)
+       = note: why: the event simulation does not run the process when that signal changes, so its result is not a function of what it reads, and cycle-based code would compute another result
+       = help: use `process (all)`, or name every signal the process reads in its sensitivity list; or run with `--cycle` to leave this process in the event simulation
+
+    error[E4127]: history of a signal read outside the region is not supported in cycle mode
+      --> left_out.vhd:77:43
+       |
+    26 |   q <= reg;
+       |   --------- tb_left_out.dut.q <= ... (left_out.vhd:26) drives tb_left_out.q
     ...
+    77 |     report "q last changed " & time'image(q'last_event) & " ago";
+       |                                           ^^^^^^^^^^^^ `'last_event` of tb_left_out.q, read by tb_left_out.main
+       |
+       = note: in process tb_left_out.dut.q <= ... (left_out.vhd:26)
+       = note: why: a process outside the region reads the history of a signal this process drives, and cycle-based code keeps no history of the signals it drives
+       = help: let the reader keep its own copy of the old value, or use an edge test instead of `'last_value` or `'last_event`; or run with `--cycle` to leave this process in the event simulation
 
     error: aborting due to 4 previous errors
 
-The errors you meet most, and what to do:
+Every code, what it means and what to do. *Limitation* marks a reason that is a gap in yavs, not a problem in the
+design: the process is fine for the normal mode, and ``--cycle`` leaves it in the event simulation.
 
 .. list-table::
    :header-rows: 1
-   :widths: 14 86
+   :widths: 10 35 55
 
    * - Code
+     - Not supported
      - Fix
-   * - E4119
-     - A latch. Assign the signal on every path of the process: give it a default value at the top of the
-       process, before the ``if``.
-   * - E4121
-     - Incomplete sensitivity list. Use ``process (all)`` (VHDL-2008), or list every signal the process reads.
-   * - E4120
-     - A variable of a combinational process is read before it is assigned, so it is state. Assign it first.
-   * - E4124
-     - Two processes drive the same signal element. Drive it from one process.
-   * - E4111
-     - ``after`` inside RTL. Delays belong in testbench models; remove it from the design, or keep the model out
-       of the design hierarchy.
-   * - E4123
-     - A clocked process of another shape. Write it as ``if rising_edge(clk) then ... end if;`` with an
-       optional asynchronous reset branch before it, and nothing else in the process.
-   * - E4112, E4127
-     - A history attribute. Replace it with an edge test or a register; for E4127 let the testbench keep its own
-       copy of the value instead of reading the history of the design's signal.
-   * - E4113, E4118
-     - ``real`` or ``time`` values computed at run time, and ``'Z'``. These cannot join; use ``--cycle`` and
-       accept that they stay in the event simulation, or move the model into the testbench.
    * - E4101
-     - Not implemented yet. The process is in the subset, and a later version may take it. Use ``--cycle`` meanwhile.
+     - A construct yavs does not implement in cycle-based code yet (the headline names it)
+     - Limitation. Write the construct another way (the label often says how), or use ``--cycle``.
+   * - E4110
+     - A wait other than ``wait until <edge>;`` as the first statement
+     - Write a clocked process (``if rising_edge(clk) then ... end if;``) or a combinational one with a
+       sensitivity list; a model with waits belongs in the testbench.
+   * - E4111
+     - ``after``, ``transport``, ``reject``, a waveform of several elements
+     - Assign without a delay in the design; keep delays in testbench models.
+   * - E4112
+     - Signal history (``'last_value``, ``'stable``, ``'event`` outside the clock's edge test, an edge test of
+       another signal)
+     - Use an edge test of the process's own clock, or keep the old value in a register.
+   * - E4113
+     - A ``real`` or ``time`` value computed at run time
+     - Use an integer or a constant, or move the model into the testbench.
+   * - E4114
+     - Shared variables used by several processes, protected objects, access values
+     - Pass values between processes through signals; keep the rest in the testbench.
+   * - E4115
+     - Postponed processes, guarded blocks, signals and assignments, ``null`` waveforms
+     - Use a plain process and an ordinary signal with one driver.
+   * - E4116
+     - ``force`` and ``release`` in a process of the design
+     - Force signals from the testbench.
+   * - E4117
+     - A call of a subprogram without a VHDL body, or one that changes what it is not given
+     - Give it a body; in a combinational process, pass what it changes as parameters.
+   * - E4118
+     - The value ``'Z'``
+     - Keep tri-state buses in the testbench, or drive ``'0'`` and ``'1'`` with a separate enable.
+   * - E4119
+     - A latch: a signal not assigned on every path of a combinational process
+     - Give it a default value at the top of the process, before the ``if``.
+   * - E4120
+     - A variable of a combinational process read before it is assigned
+     - Assign it at the start of the process.
+   * - E4121
+     - An incomplete sensitivity list
+     - Use ``process (all)``, or list every signal the process reads.
+   * - E4122
+     - A combinational loop
+     - Break it with a register, or split the signal so that no element depends on itself.
+   * - E4123
+     - A clocked process of another shape
+     - ``if rising_edge(clk) then ... end if;`` with an optional asynchronous reset branch before it, nothing
+       else in the process, clock and reset in the sensitivity list.
+   * - E4124
+     - A signal element with two drivers, a guarded signal, a resolution function of the design
+     - Drive each element from one process.
+   * - E4125
+     - A clock made inside the design (gated, divided)
+     - Make the clock in the testbench, or use a clock enable.
+   * - E4126
+     - A construct yavs does not follow far enough to show the process is logic
+     - Limitation. Write it more simply (the label says how where it can), or use ``--cycle``.
+   * - E4127
+     - A process outside the region reads the history of a signal this process drives
+     - Let the reader keep its own copy, or use an edge test.
+   * - E4128
+     - ``force`` or ``release`` anywhere in the design: no process joins
+     - Limitation. Drive the signal from the testbench instead, or use ``--cycle``.
+   * - E4129
+     - Logic feeding a process outside the region whose result depends on delta cycles (the second marker
+       names it)
+     - Fix that reader so that it can join too (complete sensitivity list, no latch), or make it clocked.
+   * - E4130
+     - Logic between clocks whose edges come in different delta cycles
+     - Clock both registers from one clock, or make the second clock a plain copy (``clk_b <= clk_a;``).
+   * - E4131
+     - Logic that computes a clock from what the region drives
+     - Make the clock in the testbench, or use a clock enable.
+   * - E4132
+     - A register reset by another register that drives a clock or reset
+     - Use a synchronous reset, or a reset that does not come from a register.
+   * - E4133
+     - A memory written in its reset branch, at fixed and run-time indices both, or read outside the region
+     - Limitation. Write it at run-time indices in the clock-edge branch and read it inside the design.
+   * - E4134
+     - A signal driven partly by a process outside the region (the second marker names it)
+     - Limitation. Drive all of it from logic that joins, or split it into two signals.
+   * - E4135
+     - A driven signal that also gets a value from a port connection or a constant
+     - Limitation. Drive the signal from one process only.
+   * - E4136
+     - An assert of the top-level unit reading a signal the region does not drive alone (``--cycle-report``
+       only: the top-level unit is exempt)
+     - Nothing to fix.
+   * - E4137
+     - With ``--cycle-exact-meta``: a metavalue the testbench reads
+     - Run without ``--cycle-exact-meta``, or assign ``'0'`` or ``'1'``.
+   * - E4138
+     - An external name
+     - Limitation. Pass the signal through a port.
+   * - E4139
+     - A loop whose bounds are not known during elaboration, a very large loop, ``exit`` or ``next`` of an outer
+       loop
+     - Use bounds from constants or generics, split a large loop, jump only out of the innermost loop.
 
-The other codes are in :doc:`error-codes`, and ``yavs --explain E4119`` prints the whole explanation of one.
+``yavs --explain E4119`` prints the whole explanation of one code; :doc:`error-codes` lists them all.
 
 .. _cycle-cache:
 
@@ -784,9 +909,9 @@ that raises the message joined.
 
 **A design is slower, or not faster.** Read the first line of the report:
 
-* Few processes joined: the E4101 rows and the ``boundary`` line say what keeps the rest out. A clocked checker of the
-  top-level unit that holds an ``assert`` stays in the event simulation by design, and so does anything whose history
-  the testbench reads.
+* Few processes joined: the rows of the report (or the errors of ``--cycle-strict``) and the ``boundary`` line say
+  what keeps the rest out. A clocked checker of the top-level unit that holds an ``assert`` stays in the event
+  simulation by design, and so does anything whose history the testbench reads.
 * The testbench is most of the run: ``--profile`` shows where the time goes (:doc:`running-faster`). Cycle mode does
   not touch that part.
 * The test is short: see the start-up cost above, and keep the cache between runs.
@@ -796,6 +921,6 @@ See also
 
 * :doc:`cli-reference`: ``--cycle``, ``--cycle-strict``, ``--cycle-report`` and ``--cycle-exact-meta``.
 * :doc:`vunit-yavs`: the ``yavs.cycle`` sim option.
-* :doc:`error-codes`: the codes E4101 to E4127.
+* :doc:`error-codes`: the codes E4101 to E4139.
 * :doc:`running-faster`: the other ways to a faster run.
 * :doc:`environment`: the ``YAVS_CYCLE_*`` variables for developers.

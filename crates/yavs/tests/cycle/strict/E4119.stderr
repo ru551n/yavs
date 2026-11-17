@@ -1,0 +1,14 @@
+error[E4119]: a latch is not supported in cycle mode
+   --> $DIR/strict.vhd:165:5
+    |
+165 | /     if en = '1' then
+166 | |       q <= a;
+167 | |     end if;
+    | |___________^ t_e4119.q is not assigned on every path (this statement leaves it unassigned)
+    |
+    = note: in process t_e4119.dut.p (strict.vhd:163)
+    = note: why: a signal that is not assigned on every path keeps its old value, which is state, not combinational logic
+    = help: assign it on every path, for example with a default assignment at the start of the process; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 1 previous error
+

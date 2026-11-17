@@ -70,12 +70,267 @@ pub mod codes {
     /// A clock made inside the region: its combinational maker, or the users of a register-made
     /// one.
     pub const CLOCK_MADE: &str = "E4125";
-    /// The analysis cannot prove the process fits (it does not follow a construct).
+    /// A construct yavs does not follow far enough to show the process is logic (a limitation).
     pub const ANALYSIS: &str = "E4126";
     /// A process outside the region reads the history of a signal the process drives
     /// (`'active`, `'last_active`, `'last_event`, `'last_value`, `'transaction`, `'stable`,
     /// `'quiet`, `'delayed`).
     pub const HISTORY_READ: &str = "E4127";
+    /// `force` or `release` somewhere in the design: no process joins (a limitation).
+    pub const FORCED: &str = "E4128";
+    /// Logic feeding a process outside whose result depends on the delta cycles its inputs
+    /// change in (the run-count cone).
+    pub const DELTA_FANIN: &str = "E4129";
+    /// Logic between registers of clocks whose edges come in different delta cycles.
+    pub const CROSS_DELTA: &str = "E4130";
+    /// Logic that computes part of a clock from what the region drives.
+    pub const CLOCK_LOGIC: &str = "E4131";
+    /// A register reset by another register, driving a clock or asynchronous reset (a pulse).
+    pub const PULSE: &str = "E4132";
+    /// A memory written in a form cycle mode does not take yet (a limitation).
+    pub const MEMORY: &str = "E4133";
+    /// A signal driven partly inside the region and partly outside (a limitation).
+    pub const SPLIT: &str = "E4134";
+    /// A driven signal that also has a port or constant source (a limitation).
+    pub const PORT_SOURCE: &str = "E4135";
+    /// An assert of the top-level unit reading a signal the region does not drive alone.
+    pub const CHECK_OUTSIDE: &str = "E4136";
+    /// Under `--cycle-exact-meta`: a metavalue the testbench would see as '0' or '1'.
+    pub const META_OUT: &str = "E4137";
+    /// An external name (a limitation).
+    pub const EXTERNAL: &str = "E4138";
+    /// A loop without bounds known during elaboration, too large, or with a jump out of an
+    /// outer loop.
+    pub const LOOP_BOUND: &str = "E4139";
+
+    /// Every code of a reason a process stays out: (code, report title, why it cannot be
+    /// cycle-based, how to fix it, whether it is a limitation of yavs rather than the design).
+    pub(crate) const REASONS: &[(&str, &str, &str, &str, bool)] = &[
+        (
+            LEFT_OUT,
+            "a construct cycle mode does not implement yet",
+            "yavs does not implement this construct in cycle-based code yet",
+            "run with `--cycle` to leave this process in the event simulation, or write the construct another way",
+            true,
+        ),
+        (
+            WAIT,
+            "a wait that is not the clock edge",
+            "a cycle-based process runs once per clock edge or input change, so its only wait can be `wait until <edge>;` as its first statement",
+            "write it as a clocked process (`if rising_edge(clk) then ... end if;`) or as a combinational process with a sensitivity list; a model with waits belongs in the testbench",
+            false,
+        ),
+        (
+            DELAY,
+            "a delay, `transport`, `reject` or a waveform",
+            "cycle-based code has no time inside a clock cycle, so it cannot keep a delay",
+            "assign without a delay (`q <= d;`) in the design; keep delays in testbench models",
+            false,
+        ),
+        (
+            HISTORY,
+            "signal history",
+            "cycle-based code keeps only the present value of each signal, not its history",
+            "use an edge test of the process's own clock, or keep the old value in a register of your own",
+            false,
+        ),
+        (
+            NOT_TWO_STATE,
+            "a real or time value computed at run time",
+            "cycle-based code computes logic values, integers and enumerations only",
+            "use an integer or a constant (constant expressions are computed during elaboration), or move the model into the testbench",
+            false,
+        ),
+        (
+            TESTBENCH,
+            "a shared variable, protected object or access value",
+            "cycle-based code has no dynamic memory and no state shared between processes",
+            "pass values between processes through signals; keep shared variables, protected objects and access values in the testbench",
+            false,
+        ),
+        (
+            GUARDED,
+            "a postponed process or a guarded signal",
+            "cycle mode has no end of a time step and no guarded signals",
+            "use a plain process and an ordinary signal with one driver",
+            false,
+        ),
+        (
+            FORCE,
+            "`force` or `release`",
+            "`force` and `release` change a signal from outside its drivers, which cycle-based code does not see",
+            "force signals from the testbench, not from a process of the design",
+            false,
+        ),
+        (
+            CALL,
+            "a call without a VHDL body or with side effects",
+            "cycle-based code inlines every call, so it needs the subprogram's VHDL body and must see everything the call changes",
+            "give the subprogram a VHDL body; in a combinational process, pass what it changes as parameters",
+            false,
+        ),
+        (
+            HIGH_Z,
+            "a `'Z'` value",
+            "cycle-based code uses two-state values, which have no high impedance",
+            "keep tri-state buses in the testbench or at the top of the design, or drive '0' and '1' with a separate enable signal",
+            false,
+        ),
+        (
+            LATCH,
+            "a latch",
+            "a signal that is not assigned on every path keeps its old value, which is state, not combinational logic",
+            "assign it on every path, for example with a default assignment at the start of the process",
+            false,
+        ),
+        (
+            STATE,
+            "a variable read before it is assigned",
+            "a variable read before it is assigned keeps its value from the previous run, which is state, not combinational logic",
+            "assign the variable at the start of the process, before any read",
+            false,
+        ),
+        (
+            SENSITIVITY,
+            "an incomplete sensitivity list",
+            "the event simulation does not run the process when that signal changes, so its result is not a function of what it reads, and cycle-based code would compute another result",
+            "use `process (all)`, or name every signal the process reads in its sensitivity list",
+            false,
+        ),
+        (
+            LOOP,
+            "a combinational loop",
+            "logic in which an element depends on itself has no single settled value, so it cannot be put in a static order",
+            "break the loop with a register, or split the signal so that no element depends on itself",
+            false,
+        ),
+        (
+            SHAPE,
+            "a clocked process of another shape",
+            "a clocked process runs cycle-based only in the clock-edge template",
+            "write it as `if rising_edge(clk) then ... end if;`, optionally with an asynchronous reset branch first (`if rst = '1' then ... elsif rising_edge(clk) then`), nothing else in the process, and the clock and reset in its sensitivity list",
+            false,
+        ),
+        (
+            SHARED,
+            "a signal with another source",
+            "in cycle-based code every signal element has exactly one source, its process",
+            "drive each element from one process, or merge the sources into one process",
+            false,
+        ),
+        (
+            CLOCK_MADE,
+            "a clock made inside the design",
+            "cycle-based code runs on edges of clocks that come from outside the region; a clock made inside it would change between those edges",
+            "make the clock in the testbench, or use a clock enable on the main clock instead of a gated or divided clock",
+            false,
+        ),
+        (
+            ANALYSIS,
+            "a construct yavs does not follow yet",
+            "yavs cannot follow this construct far enough yet to show that the process is clocked or combinational logic",
+            "run with `--cycle` to leave this process in the event simulation, or write the construct more simply",
+            true,
+        ),
+        (
+            HISTORY_READ,
+            "its history is read outside the region",
+            "a process outside the region reads the history of a signal this process drives, and cycle-based code keeps no history of the signals it drives",
+            "let the reader keep its own copy of the old value, or use an edge test instead of `'last_value` or `'last_event`",
+            false,
+        ),
+        (
+            FORCED,
+            "`force` or `release` elsewhere in the design",
+            "yavs does not combine `force` and `release` with cycle-based code yet, so no process runs cycle-based in a design that uses them",
+            "run with `--cycle` to keep the whole design in the event simulation, or drive the signal from the testbench instead of forcing it",
+            true,
+        ),
+        (
+            DELTA_FANIN,
+            "logic feeding a process that depends on delta cycles",
+            "the event simulation changes this logic over several delta cycles and the reader outside the region sees each step; cycle-based code changes it in one step, so the reader would see other values or run another number of times",
+            "fix the reader so that it can join the region too (a complete sensitivity list, no latch, no variable read before it is assigned), or make it a clocked process",
+            false,
+        ),
+        (
+            CROSS_DELTA,
+            "logic between clocks whose edges come in different delta cycles",
+            "the edges of the two clocks come in different delta cycles of one time step: the event simulation samples this logic before it settles, cycle-based code would hand over the settled value",
+            "clock both registers from one clock, or make the second clock a plain copy of the first (`clk_b <= clk_a;` counts as the same clock), not a gated or computed one",
+            false,
+        ),
+        (
+            CLOCK_LOGIC,
+            "logic in a clock path",
+            "cycle-based code gives its outputs one delta cycle after its inputs change, where the event simulation takes one delta cycle per level of logic, so the clock edge would come early",
+            "make the clock in the testbench, or use a clock enable instead of logic on the clock",
+            false,
+        ),
+        (
+            PULSE,
+            "a register reset by another register that drives a clock or reset",
+            "the event simulation can change this register at the clock edge and again one delta cycle later, and that pulse clocks or resets another process; cycle-based code settles both at once and gives no pulse",
+            "use a synchronous reset for this register, or a reset that does not come from another register",
+            false,
+        ),
+        (
+            MEMORY,
+            "a memory written in a form cycle mode does not take yet",
+            "yavs keeps a large memory in cycle-based code only when it is written at run-time indices in the clock-edge branch and read inside the region",
+            "write the memory only in the clock-edge branch at run-time indices and read it only inside the design, or run with `--cycle`",
+            true,
+        ),
+        (
+            SPLIT,
+            "a signal driven partly outside the region",
+            "yavs does not split one signal between cycle-based code and the event simulation yet",
+            "drive all elements of the signal from processes that can run cycle-based, or split it into two signals",
+            true,
+        ),
+        (
+            PORT_SOURCE,
+            "a signal with a port or constant source",
+            "the signal also gets its value from a port or a constant, which yavs does not model in cycle-based code yet",
+            "drive the signal from one process only, or run with `--cycle`",
+            true,
+        ),
+        (
+            CHECK_OUTSIDE,
+            "an assert reading a signal the region does not drive alone",
+            "the assert must see the event simulation's values of that signal, so its process stays where those values are",
+            "nothing to fix: the check runs in the event simulation as written",
+            false,
+        ),
+        (
+            META_OUT,
+            "a metavalue the testbench would see as '0' or '1'",
+            "under `--cycle-exact-meta` the testbench must see the metavalues the event simulation gives it, and cycle-based code gives only '0' and '1'",
+            "run without `--cycle-exact-meta`, or assign '0' or '1' instead of the metavalue",
+            false,
+        ),
+        (
+            EXTERNAL,
+            "an external name",
+            "yavs does not follow external names in cycle-based code yet",
+            "pass the signal through a port, or run with `--cycle` to leave this process in the event simulation",
+            true,
+        ),
+        (
+            LOOP_BOUND,
+            "a loop cycle mode cannot unroll",
+            "cycle-based code unrolls every loop, so it needs bounds known during elaboration, a size it can unroll, and `exit` and `next` of the innermost loop only",
+            "give the loop bounds known during elaboration (constants or generics), split a very large loop, and use `exit` and `next` only for the innermost loop",
+            false,
+        ),
+    ];
+
+    /// The row of `code` in [`REASONS`].
+    pub(crate) fn reason(
+        code: &str,
+    ) -> Option<&'static (&'static str, &'static str, &'static str, &'static str, bool)> {
+        REASONS.iter().find(|r| r.0 == code)
+    }
 }
 
 /// What the command line asked of cycle mode.
@@ -114,28 +369,7 @@ pub type Reporter = Arc<std::sync::OnceLock<Arc<ReportFn>>>;
 
 /// A short name of what a code stands for, for the headings of the region report.
 fn title(code: &str) -> &'static str {
-    use codes::*;
-    match code {
-        WAIT => "a wait that is not the clock edge",
-        DELAY => "a delay, `transport`, `reject` or a waveform",
-        HISTORY => "signal history read",
-        NOT_TWO_STATE => "a real or time value computed at run time",
-        TESTBENCH => "a shared variable, protected object or access value",
-        GUARDED => "a postponed process or a guarded signal",
-        FORCE => "`force` or `release`",
-        CALL => "a call the analysis cannot follow",
-        HIGH_Z => "a `'Z'` value",
-        LATCH => "a latch",
-        STATE => "a variable read before it is assigned",
-        SENSITIVITY => "an incomplete sensitivity list",
-        LOOP => "a combinational loop",
-        SHAPE => "a clocked process of another shape",
-        SHARED => "a signal with another source",
-        CLOCK_MADE => "a clock made inside the region",
-        ANALYSIS => "the analysis cannot prove it fits",
-        HISTORY_READ => "its history is read outside the region",
-        _ => "",
-    }
+    codes::reason(code).map_or("", |r| r.1)
 }
 
 /// Elements the region read as 0 because they held a metavalue (`'U'`, `'X'`, `'Z'`, `'W'`,
@@ -176,6 +410,87 @@ fn at(db: &Db, span: yavs_diag::Span) -> String {
         .file_name()
         .map_or(f.path.clone(), |n| n.to_string_lossy().into_owned());
     format!("{file}:{}", f.line_col(span.start).0)
+}
+
+/// At most this many errors under `--cycle-strict`; one more line counts the rest.
+const STRICT_MAX: usize = 40;
+
+/// The error of each reason a process below the top-level unit stays out for (A40): what is not
+/// supported (the headline), where (the statement; the other process or signal when it spans
+/// processes), the processes, why, and how to fix it. One error per reason and statement, its
+/// processes listed (a statement of an entity used many times), sorted by file and line.
+fn strict_errors(db: &Db, e: &Elaborated, out: &[(usize, region::Why)]) -> Vec<Diagnostic> {
+    // By file, line, column, code and text: one error each.
+    type Key<'a> = (String, u32, u32, &'a str, &'a str);
+    let mut groups: BTreeMap<Key, (&check::Reason, Vec<usize>)> = BTreeMap::new();
+    for (pi, why) in out {
+        let r = match why {
+            region::Why::Subset(r) | region::Why::NotYet(r) => r,
+            region::Why::Behavioural(_) => continue,
+        };
+        if region::in_top_unit(e, *pi) {
+            continue;
+        }
+        let f = db.sources.get(r.span.file);
+        let (line, col) = f.line_col(r.span.start);
+        let key = (
+            f.path.clone(),
+            line as u32,
+            col as u32,
+            r.code,
+            r.text.as_str(),
+        );
+        groups.entry(key).or_insert((r, Vec::new())).1.push(*pi);
+    }
+    let total = groups.len();
+    let mut errs: Vec<Diagnostic> = (groups.into_values().take(STRICT_MAX))
+        .map(|(r, procs)| reason_error(db, e, r, &procs))
+        .collect();
+    if total > STRICT_MAX {
+        errs.push(Diagnostic::new(
+            yavs_diag::Severity::Note,
+            "",
+            format!(
+                "{} more errors not shown; `--cycle-report` lists every process that stays out",
+                total - STRICT_MAX
+            ),
+        ));
+    }
+    errs
+}
+
+/// One reason as an error: the headline names the construct, the label points at it, the notes
+/// say which processes and why, the help how to fix it.
+fn reason_error(db: &Db, e: &Elaborated, r: &check::Reason, procs: &[usize]) -> Diagnostic {
+    let (_, _, why, fix, limitation) = codes::reason(r.code).copied().unwrap_or((
+        r.code,
+        "",
+        "",
+        "run with `--cycle` to leave this process in the event simulation",
+        true,
+    ));
+    let (what, detail) = r.text.split_once(": ").unwrap_or((&r.text, ""));
+    let mut d = Diagnostic::error(r.code, format!("{what} is not supported in cycle mode"))
+        .with_primary(r.span, detail);
+    if let Some((span, what)) = &r.also {
+        d = d.with_secondary(*span, what.clone());
+    }
+    let names: Vec<String> = procs.iter().map(|&pi| region::where_(db, e, pi)).collect();
+    const SHOWN: usize = 5;
+    let mut list = names[..names.len().min(SHOWN)].join(", ");
+    if names.len() > SHOWN {
+        let _ = write!(list, " and {} more", names.len() - SHOWN);
+    }
+    d = d.with_note(match procs.len() {
+        1 => format!("in process {list}"),
+        n => format!("in {n} processes: {list}"),
+    });
+    d = d.with_note(format!("why: {why}"));
+    d.with_help(if limitation {
+        format!("this is a limitation of yavs, not a problem in your design: {fix}")
+    } else {
+        format!("{fix}; or run with `--cycle` to leave this process in the event simulation")
+    })
 }
 
 /// Select the region of `e` and compile it. Under [`Mode::Strict`], a process left out that is
@@ -222,38 +537,8 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
             ]);
         }
     };
-    let label = |pi: usize| e.hier.proc_label(&e.procs[pi], yavs_elab::Case::Lrm);
     if mode == Mode::Strict {
-        let errs: Vec<Diagnostic> = (sel.out.iter())
-            .filter(|(pi, why)| {
-                !region::in_top_unit(e, *pi) && !matches!(why, region::Why::Behavioural(_))
-            })
-            .map(|(pi, why)| {
-                let note = "`--cycle-strict` needs every process below the top-level design \
-                            unit that is not behavioural to run cycle-based";
-                let help = "run with `--cycle` to leave it in the event kernel";
-                match why {
-                    region::Why::Subset(r) => Diagnostic::error(
-                        r.code,
-                        format!("process {} is outside what cycle mode can run", label(*pi)),
-                    )
-                    .with_primary(r.span, r.text.clone()),
-                    _ => Diagnostic::error(
-                        codes::LEFT_OUT,
-                        format!("process {} cannot run cycle-based yet", label(*pi)),
-                    )
-                    .with_primary(
-                        db.stmts[e.procs[*pi].stmt].span,
-                        match why {
-                            region::Why::NotYet(w) => w.clone(),
-                            _ => String::new(),
-                        },
-                    ),
-                }
-                .with_note(note)
-                .with_help(help)
-            })
-            .collect();
+        let errs = strict_errors(db, e, &sel.out);
         if !errs.is_empty() {
             return Err(errs);
         }
@@ -351,17 +636,13 @@ fn report(
     let mut left: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for (pi, why) in &sel.out {
         let (head, text) = match why {
-            region::Why::Subset(r) => (
+            region::Why::Subset(r) | region::Why::NotYet(r) => (
                 format!("{} {}", r.code, title(r.code)),
                 format!("{} {} ({})", r.code, r.text, at(db, r.span)),
             ),
             region::Why::Behavioural(w) => {
                 ("behavioural, in the event kernel".to_string(), w.clone())
             }
-            region::Why::NotYet(w) => (
-                format!("{} not implemented in cycle mode yet", codes::LEFT_OUT),
-                w.clone(),
-            ),
         };
         left.entry(head)
             .or_default()
@@ -2261,5 +2542,83 @@ impl Resolve<'_> {
 
     fn op(&self, op: &Op) -> Op {
         op.map(&|r| self.src(r), &|r| self.dst(r), &|x| self.sites + x)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::codes;
+
+    /// The string literals of a source file, outside `//` comments (continued lines joined).
+    fn literals(src: &str) -> Vec<String> {
+        let (mut out, mut cur, mut chars) = (Vec::new(), None::<String>, src.chars().peekable());
+        while let Some(c) = chars.next() {
+            match (&mut cur, c) {
+                (None, '/') if chars.peek() == Some(&'/') => {
+                    chars.by_ref().take_while(|&c| c != '\n').for_each(drop);
+                }
+                (None, '\'') => {
+                    // A char literal (`'"'`) or a lifetime: skip to its end.
+                    if chars.peek() == Some(&'\\') {
+                        chars.next();
+                    }
+                    chars.next();
+                }
+                (None, '"') => cur = Some(String::new()),
+                (Some(_), '"') => out.extend(cur.take()),
+                (Some(t), '\\') => match chars.next() {
+                    Some('\n') => {
+                        while chars.peek().is_some_and(|c| c.is_whitespace()) {
+                            chars.next();
+                        }
+                    }
+                    Some(e) => t.push(e),
+                    None => {}
+                },
+                (Some(t), c) => t.push(c),
+                (None, _) => {}
+            }
+        }
+        out
+    }
+
+    /// A40: every reason has a code of its own with a title, why and fix, and no text a user
+    /// sees hedges or names an internal rule.
+    #[test]
+    fn reasons_say_plainly_what_is_not_supported() {
+        let mut seen = std::collections::BTreeSet::new();
+        for (code, title, why, fix, _) in codes::REASONS {
+            assert!(seen.insert(code), "{code} twice");
+            assert!(
+                !title.is_empty() && !why.is_empty() && !fix.is_empty(),
+                "{code}"
+            );
+        }
+        let banned = [
+            "the analysis",
+            "the lowering",
+            "subset checker",
+            "cross_delta",
+            "run-count",
+            "meta_rule",
+            "pulse rule",
+            "did not count",
+            "could not",
+            "may ",
+            "the normal mode",
+            // The headline adds it.
+            "not supported in cycle mode",
+        ];
+        let texts: Vec<String> = (codes::REASONS.iter())
+            .flat_map(|r| [r.1, r.2, r.3].map(String::from))
+            .chain(literals(include_str!("check.rs")))
+            .chain(literals(include_str!("region.rs")))
+            .chain(literals(include_str!("lower.rs")))
+            .collect();
+        for t in &texts {
+            for b in banned {
+                assert!(!t.contains(b), "{b:?} in {t:?}");
+            }
+        }
     }
 }

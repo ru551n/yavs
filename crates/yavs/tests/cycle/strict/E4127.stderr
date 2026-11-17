@@ -1,0 +1,20 @@
+error[E4127]: history of a signal read outside the region is not supported in cycle mode
+   --> $DIR/strict.vhd:766:64
+    |
+290 | /   p : process (clk)
+291 | |   begin
+292 | |     if rising_edge(clk) then
+293 | |       q <= a;
+294 | |     end if;
+295 | |   end process;
+    | |______________- t_e4127.dut.p drives t_e4127.q
+...
+766 |       a <= '1'; wait for 20 ns; report "q changed " & time'image(q'last_event) & " ago";
+    |                                                                  ^^^^^^^^^^^^ `'last_event` of t_e4127.q, read by t_e4127.stim
+    |
+    = note: in process t_e4127.dut.p (strict.vhd:290)
+    = note: why: a process outside the region reads the history of a signal this process drives, and cycle-based code keeps no history of the signals it drives
+    = help: let the reader keep its own copy of the old value, or use an edge test instead of `'last_value` or `'last_event`; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 1 previous error
+

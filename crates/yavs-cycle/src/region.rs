@@ -22,8 +22,9 @@ pub(crate) enum Why {
     Subset(Reason),
     /// A process of the testbench kind.
     Behavioural(String),
-    /// In the subset; cycle mode does not implement something it needs yet.
-    NotYet(String),
+    /// In the subset; cycle mode does not implement something it needs yet, or a rule of the
+    /// region as a whole keeps it out.
+    NotYet(Reason),
 }
 
 /// The region: members (clocked first, then combinational in dependency order) and the boundary.
@@ -513,27 +514,29 @@ pub(crate) fn subset(db: &Db, e: &Elaborated) -> Subset {
             for &d in &e.procs[pi].drivers {
                 let l = e.nets.drivers[d].leaf;
                 let leaf = e.nets.leaf(l);
-                let text = if let Some(&q) = other.get(&d) {
-                    format!(
-                        "{} is also driven by {}",
-                        e.leaf_name(l),
-                        e.proc_label(&e.procs[q])
+                let (text, also) = if let Some(&q) = other.get(&d) {
+                    let who = e.proc_label(&e.procs[q]);
+                    (
+                        format!(
+                            "a signal with two drivers: {} is driven by {who} too",
+                            e.leaf_name(l)
+                        ),
+                        Some((span(q), format!("{who} also drives {}", e.leaf_name(l)))),
                     )
                 } else if leaf.guard.is_some() {
-                    format!("{} is a guarded signal", e.leaf_name(l))
+                    (format!("a guarded signal: {}", e.leaf_name(l)), None)
                 } else if matches!(leaf.resolution, Some(LeafRes::Func(_) | LeafRes::Whole(_))) {
-                    format!("{} has a resolution function of its own", e.leaf_name(l))
+                    let t = format!(
+                        "a signal with a resolution function of its own: {}",
+                        e.leaf_name(l)
+                    );
+                    (t, None)
                 } else {
                     continue;
                 };
-                return Some((
-                    pi,
-                    Reason {
-                        code: crate::codes::SHARED,
-                        span: span(pi),
-                        text,
-                    },
-                ));
+                let mut r = Reason::new(crate::codes::SHARED, span(pi), text);
+                r.also = also;
+                return Some((pi, r));
             }
             None
         })
@@ -556,11 +559,12 @@ pub(crate) fn subset(db: &Db, e: &Elaborated) -> Subset {
             if let Some((l, what)) = f.clock.map(|c| (c.0, "clock")) {
                 for &(q, _, _) in drivers.get(&l).into_iter().flatten() {
                     let Some(m) = fits.get(&q) else { continue };
-                    let (who, text) = if m.form == Form::Comb {
+                    let (who, other, text) = if m.form == Form::Comb {
                         (
                             q,
+                            *pi,
                             format!(
-                                "it drives {}, the {what} of {}: clocks come from outside the region",
+                                "a clock made inside the design: this logic makes {}, the {what} of {}",
                                 e.leaf_name(l),
                                 e.proc_label(&e.procs[*pi])
                             ),
@@ -568,22 +572,28 @@ pub(crate) fn subset(db: &Db, e: &Elaborated) -> Subset {
                     } else {
                         (
                             *pi,
+                            q,
                             format!(
-                                "its {what} {} is made by a register of the region ({}); clocks come \
-                             from outside the region",
+                                "a clock made inside the design: the {what} {} comes from the register {}",
                                 e.leaf_name(l),
                                 e.proc_label(&e.procs[q])
                             ),
                         )
                     };
                     if !made.iter().any(|m| m.0 == who) {
+                        let also = if other == q {
+                            format!("{} makes {}", e.proc_label(&e.procs[q]), e.leaf_name(l))
+                        } else {
+                            format!(
+                                "{} is clocked by {}",
+                                e.proc_label(&e.procs[other]),
+                                e.leaf_name(l)
+                            )
+                        };
                         made.push((
                             who,
-                            Reason {
-                                code: crate::codes::CLOCK_MADE,
-                                span: span(who),
-                                text,
-                            },
+                            Reason::new(crate::codes::CLOCK_MADE, span(who), text)
+                                .also(span(other), also),
                         ));
                     }
                 }
@@ -598,11 +608,11 @@ pub(crate) fn subset(db: &Db, e: &Elaborated) -> Subset {
                 if !made.iter().any(|m| m.0 == q) {
                     made.push((
                         q,
-                        Reason {
-                            code: crate::codes::LOOP,
-                            span: span(q),
-                            text: format!("it is in a combinational loop: {path}"),
-                        },
+                        Reason::new(
+                            crate::codes::LOOP,
+                            span(q),
+                            format!("a combinational loop: {path}"),
+                        ),
                     ));
                 }
             }
@@ -705,7 +715,8 @@ fn differs(e: &Elaborated, f: &Fit, b: &Body) -> Option<String> {
     };
     if !shape || !reset {
         return Some(
-            "the lowering takes it for another shape, clock or reset than the subset checker"
+            "an internal mismatch in yavs (please report it): the two passes of yavs read the \
+             process's shape, clock or reset differently"
                 .into(),
         );
     }
@@ -715,7 +726,8 @@ fn differs(e: &Elaborated, f: &Fit, b: &Body) -> Option<String> {
             .map(|x| (l, x))
     })?;
     Some(format!(
-        "the lowering reads element {x} of {}, which the subset checker did not count",
+        "an internal mismatch in yavs (please report it): a read of element {x} of {} that the \
+         first pass of yavs missed",
         e.leaf_name(l)
     ))
 }
@@ -842,17 +854,18 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
     };
     stat(|| format!("select: subset done {} ms", t0.elapsed().as_millis()));
     let mut nfits = fits.len();
-    let forced = !db.facts().forces.is_empty();
     let mut taken: BTreeMap<usize, (Fit, Body)> = BTreeMap::new();
+    let pspan = |pi: usize| db.stmts[e.procs[pi].stmt].span;
     for (pi, f) in fits {
-        if forced {
+        if let Some(&s) = db.facts().forces.first() {
+            let r = Reason::new(
+                crate::codes::FORCED,
+                pspan(pi),
+                "`force` or `release` in the design",
+            );
             out.push((
                 pi,
-                Why::NotYet(
-                    "the design uses `force` or `release`, which cycle mode \
-                does not combine with a region yet"
-                        .into(),
-                ),
+                Why::NotYet(r.also(db.stmts[s].span, "the design forces a signal here")),
             ));
             continue;
         }
@@ -864,14 +877,26 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             && let name = e.proc_name(&e.procs[pi])
             && x.split(',').any(|t| !t.is_empty() && name.contains(t))
         {
-            out.push((pi, Why::NotYet("excluded by YAVS_CYCLE_EXCLUDE".into())));
+            out.push((
+                pi,
+                Why::NotYet(Reason::new(
+                    crate::codes::LEFT_OUT,
+                    pspan(pi),
+                    "a process excluded by the developer variable YAVS_CYCLE_EXCLUDE",
+                )),
+            ));
             continue;
         }
         match lower::lower(db, e, pi) {
             // The lowering must see the shape the checker proved, clock included.
-            Ok(b) if differs(e, &f, &b).is_some() => {
-                out.push((pi, Why::NotYet(differs(e, &f, &b).expect("checked"))))
-            }
+            Ok(b) if differs(e, &f, &b).is_some() => out.push((
+                pi,
+                Why::NotYet(Reason::new(
+                    crate::codes::LEFT_OUT,
+                    pspan(pi),
+                    differs(e, &f, &b).expect("checked"),
+                )),
+            )),
             // The asserts and reports of the top-level unit are evaluated (A19): at a clock edge
             // in region code, else the process stays in the event kernel.
             Ok(b) if b.dropped > 0 && in_top_unit(e, pi) => {
@@ -890,7 +915,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             Ok(b) => {
                 taken.insert(pi, (f, b));
             }
-            Err(w) => out.push((pi, Why::NotYet(w))),
+            Err(w) => out.push((pi, Why::NotYet(lower::reason(w, pspan(pi))))),
         }
     }
     stat(|| format!("select: lowered {} ms", t0.elapsed().as_millis()));
@@ -919,9 +944,9 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
     // Developers (`YAVS_CYCLE_RUNCOUNT=off`): no cone, to show what the rule protects (wrong
     // results) and what it costs.
     let off = std::env::var_os("YAVS_CYCLE_RUNCOUNT").is_some_and(|v| v == "off");
-    for (pi, w) in run_count_cone(db, e, &out, if off { &[] } else { &seeds }) {
+    for (pi, r) in run_count_cone(db, e, &out, if off { &[] } else { &seeds }) {
         if taken.remove(&pi).is_some() {
-            out.push((pi, Why::NotYet(w)));
+            out.push((pi, Why::NotYet(r)));
         }
     }
     // The history processes read (A10), and the sources of implicit signals.
@@ -947,7 +972,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
     // Leave out what the set as a whole does not allow yet, until nothing changes.
     loop {
         stat(|| format!("select: round at {} ms", t0.elapsed().as_millis()));
-        let mut gone: Vec<(usize, String)> = Vec::new();
+        let mut gone: Vec<(usize, Reason)> = Vec::new();
         // A signal whose history a process outside reads keeps its drivers out: the region
         // keeps no history of what it drives (outside the subset).
         let hist_gone = history_rule(db, e, &taken, &hist, &implicit);
@@ -997,10 +1022,14 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             if let Some(l) = src {
                 gone.push((
                     pi,
-                    format!(
-                        "{} has a port or other source cycle mode does not model \
-                    yet",
-                        e.leaf_name(l)
+                    Reason::new(
+                        crate::codes::PORT_SOURCE,
+                        pspan(pi),
+                        format!(
+                            "a signal with a port or constant source: the process drives {}, which also gets a \
+                             value from a port connection or a constant",
+                            e.leaf_name(l)
+                        ),
                     ),
                 ));
                 continue;
@@ -1013,11 +1042,18 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             if let Some((l, q)) = split {
                 gone.push((
                     pi,
-                    format!(
-                        "other elements of {} are driven by {}, outside the region; cycle mode \
-                         does not split a signal between the region and the kernel yet",
-                        e.leaf_name(l),
-                        e.proc_label(&e.procs[q])
+                    Reason::new(
+                        crate::codes::SPLIT,
+                        pspan(pi),
+                        format!(
+                            "a signal driven partly outside the region: other elements of {} come from {}",
+                            e.leaf_name(l),
+                            e.proc_label(&e.procs[q])
+                        ),
+                    )
+                    .also(
+                        pspan(q),
+                        format!("{} drives other elements of {}", e.proc_label(&e.procs[q]), e.leaf_name(l)),
                     ),
                 ));
                 continue;
@@ -1037,10 +1073,13 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             {
                 gone.push((
                     pi,
-                    format!(
-                        "it checks {}, which is not driven by the region alone; its asserts and \
-                         reports run in the event kernel, on the values the kernel has",
-                        e.leaf_name(l)
+                    Reason::new(
+                        crate::codes::CHECK_OUTSIDE,
+                        pspan(pi),
+                        format!(
+                            "an assert reading a signal the region does not drive alone: {}",
+                            e.leaf_name(l)
+                        ),
                     ),
                 ));
                 continue;
@@ -1049,9 +1088,11 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             if b.reset.is_some() && reset_piece(&b.ops).is_none() {
                 gone.push((
                     pi,
-                    "the lowering gives its asynchronous reset another shape than the settle \
-                     takes it in"
-                        .into(),
+                    Reason::new(
+                        crate::codes::LEFT_OUT,
+                        pspan(pi),
+                        "an asynchronous reset branch of this form",
+                    ),
                 ));
             }
         }
@@ -1070,7 +1111,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         }
         stat(|| format!("select: ram {} ms", t0.elapsed().as_millis()));
         if gone.is_empty() {
-            gone = pulse_rule(e, &taken);
+            gone = pulse_rule(db, e, &taken);
         }
         if gone.is_empty() {
             gone = cross_delta(db, e, &taken, &out);
@@ -1168,9 +1209,9 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             sel.fits = nfits;
             return sel;
         }
-        for (pi, w) in gone {
+        for (pi, r) in gone {
             if taken.remove(&pi).is_some() {
-                out.push((pi, Why::NotYet(w)));
+                out.push((pi, Why::NotYet(r)));
             }
         }
     }
@@ -1213,7 +1254,7 @@ fn meta_rule(
     taken: &BTreeMap<usize, (Fit, Body)>,
     zclaim: &BTreeSet<(usize, LeafId)>,
     out: &[(usize, Why)],
-) -> Vec<(usize, String)> {
+) -> Vec<(usize, Reason)> {
     let reads = |f: &Fit, b: &Body| -> Vec<LeafId> {
         let fit = f.reads.iter().map(|(k, _, _)| LeafId(k as u32));
         b.reads.iter().copied().chain(fit).collect()
@@ -1274,17 +1315,17 @@ fn meta_rule(
         };
         let what = match z {
             Some(z) if taken[&pi].1.meta_out == 0 => format!(
-                "it passes on {}, which a process outside may set to 'Z',",
+                "a 'Z' passed on to a signal the testbench reads: {}, which a process outside sets to 'Z', reaches",
                 e.leaf_name(z)
             ),
-            _ => "it assigns a metavalue literal".to_string(),
+            _ => "a metavalue literal assigned to a signal the testbench reads:".to_string(),
         };
         gone.push((
             pi,
-            format!(
-                "{what} and drives signals the testbench reads (the first: {}), to which \
-                 two-state values would give '0' or '1' instead",
-                e.leaf_name(o)
+            Reason::new(
+                crate::codes::META_OUT,
+                db.stmts[e.procs[pi].stmt].span,
+                format!("{what} {}", e.leaf_name(o)),
             ),
         ));
     }
@@ -1747,13 +1788,20 @@ fn one_step(db: &Db, e: &Elaborated, pi: usize) -> Option<ExprId> {
 /// the normal mode: at the edge, then at the reset a delta later (a pulse of one delta). The region
 /// settles both at once, so where that register's output is the clock or the asynchronous reset of
 /// a process (in the region or outside), that process would miss the pulse: the register stays out.
-fn pulse_rule(e: &Elaborated, taken: &BTreeMap<usize, (Fit, Body)>) -> Vec<(usize, String)> {
+fn pulse_rule(
+    db: &Db,
+    e: &Elaborated,
+    taken: &BTreeMap<usize, (Fit, Body)>,
+) -> Vec<(usize, Reason)> {
     let sig = |l: LeafId| e.nets.loc[l.index()].signal;
-    let mut control: BTreeSet<yavs_kernel::SignalId> = BTreeSet::new();
-    for p in &e.procs {
+    // Each clock and asynchronous reset, with one process it clocks or resets.
+    let mut control: BTreeMap<yavs_kernel::SignalId, usize> = BTreeMap::new();
+    for (q, p) in e.procs.iter().enumerate() {
         if let Some(t) = &p.trigger {
-            control.insert(sig(t.leaf));
-            control.extend(t.reset.map(|r| sig(r.0)));
+            control.entry(sig(t.leaf)).or_insert(q);
+            if let Some(r) = t.reset {
+                control.entry(sig(r.0)).or_insert(q);
+            }
         }
     }
     let registers: BTreeSet<yavs_kernel::SignalId> = (e.nets.drivers.iter())
@@ -1768,19 +1816,26 @@ fn pulse_rule(e: &Elaborated, taken: &BTreeMap<usize, (Fit, Body)>) -> Vec<(usiz
         if !registers.contains(&sig(r)) {
             continue;
         }
-        if let Some(&d) =
-            (e.procs[pi].drivers.iter()).find(|&&d| control.contains(&sig(e.nets.drivers[d].leaf)))
+        if let Some((l, q)) = (e.procs[pi].drivers.iter())
+            .map(|&d| e.nets.drivers[d].leaf)
+            .find_map(|l| control.get(&sig(l)).map(|&q| (l, q)))
         {
+            let span = |p: usize| db.stmts[e.procs[p].stmt].span;
             gone.push((
                 pi,
-                format!(
-                    "its asynchronous reset {} is made by a register, so the normal mode can change \
-                     {} at the edge and again a delta later, and {} is the clock or asynchronous reset \
-                     of a process: the region would not show it that pulse",
-                    e.leaf_name(r),
-                    e.leaf_name(e.nets.drivers[d].leaf),
-                    e.leaf_name(e.nets.drivers[d].leaf)
-                ),
+                Reason::new(
+                    crate::codes::PULSE,
+                    span(pi),
+                    format!(
+                        "a register reset by another register that drives a clock or reset: its \
+                         asynchronous reset {} comes from a register, and it drives {}, the clock or \
+                         asynchronous reset of {}",
+                        e.leaf_name(r),
+                        e.leaf_name(l),
+                        e.proc_label(&e.procs[q])
+                    ),
+                )
+                .also(span(q), format!("{} is clocked or reset by {}", e.proc_label(&e.procs[q]), e.leaf_name(l))),
             ));
         }
     }
@@ -1797,7 +1852,7 @@ fn cross_delta(
     e: &Elaborated,
     taken: &BTreeMap<usize, (Fit, Body)>,
     out: &[(usize, Why)],
-) -> Vec<(usize, String)> {
+) -> Vec<(usize, Reason)> {
     let behavioural: BTreeSet<usize> = (out.iter())
         .filter(|(_, w)| matches!(w, Why::Behavioural(_)))
         .map(|(pi, _)| *pi)
@@ -1980,7 +2035,7 @@ fn cross_delta(
         pieces.extend(port(cp.mode, side(&cp.formal), side(&cp.actual)));
     }
     // Logic a clock is made from: two levels of it in the region give the edge in fewer deltas.
-    let mut gone = clock_logic(e, taken, &pieces);
+    let mut gone = clock_logic(db, e, taken, &pieces);
     if keys.len() < 2 && !unknown {
         return gone;
     }
@@ -1989,7 +2044,7 @@ fn cross_delta(
             .map(|(k, c)| format!("{} {k:?}", clock_name(e, c)))
             .collect();
         format!(
-            "cross_delta: {} pieces ({} ports), unknown {unknown}, read by an unknown scan {}, groups: {}",
+            "delta classes: {} pieces ({} ports), unknown {unknown}, read by an unknown scan {}, groups: {}",
             pieces.len(),
             e.nets.ports.len() + e.nets.conv_ports.len(),
             anywhere != 0,
@@ -2037,7 +2092,7 @@ fn cross_delta(
     }
     let name = |m: u64| match names.get(m.trailing_zeros() as usize) {
         Some(c) => clock_name(e, c),
-        None => "a clock cycle mode does not place".to_string(),
+        None => "a clock whose delta cycle yavs does not know".to_string(),
     };
     for (pi, rs, ws) in &pieces {
         let Some(pi) = pi else { continue };
@@ -2051,13 +2106,20 @@ fn cross_delta(
             continue;
         }
         if let Some((from, to)) = differ(t, f) {
-            gone.push((*pi, format!(
-                "it computes, from registers on {}, a value a register on {} samples, whose edges \
-                 may come in a later delta of the same time step: the normal mode samples it \
-                 before it settles, the region settles it at once (not modelled yet)",
-                name(from),
-                name(to)
-            )));
+            gone.push((
+                *pi,
+                Reason::new(
+                    crate::codes::CROSS_DELTA,
+                    db.stmts[e.procs[*pi].stmt].span,
+                    format!(
+                        "logic between clocks whose edges come in different delta cycles: registers \
+                         on {} feed it and a register on {} samples it, with its edge in a later \
+                         delta cycle",
+                        name(from),
+                        name(to)
+                    ),
+                ),
+            ));
         }
     }
     gone
@@ -2068,10 +2130,11 @@ fn cross_delta(
 /// normal mode takes a delta per level, so the edge would come early. One level reading only
 /// inputs changes in the same delta in both modes.
 fn clock_logic(
+    db: &Db,
     e: &Elaborated,
     taken: &BTreeMap<usize, (Fit, Body)>,
     pieces: &[(Option<usize>, Vec<LeafId>, Vec<LeafId>)],
-) -> Vec<(usize, String)> {
+) -> Vec<(usize, Reason)> {
     let mut clocks: BTreeSet<LeafId> = (e.procs.iter())
         .filter_map(|p| p.trigger.as_ref().map(|t| t.leaf))
         .collect();
@@ -2102,11 +2165,15 @@ fn clock_logic(
             {
                 gone.push((
                     *pi,
-                    format!(
-                        "it computes, from {}, which the region drives, part of the clock {}: the \
-                         region would give its edge in fewer deltas than the normal mode",
-                        e.leaf_name(m),
-                        e.leaf_name(c)
+                    Reason::new(
+                        crate::codes::CLOCK_LOGIC,
+                        db.stmts[e.procs[*pi].stmt].span,
+                        format!(
+                            "logic in a clock path: it computes part of the clock {} from {}, which \
+                             the region drives",
+                            e.leaf_name(c),
+                            e.leaf_name(m)
+                        ),
                     ),
                 ));
             }
@@ -2174,7 +2241,7 @@ pub(crate) fn sig_writes(ops: &[Op], out: &mut BTreeMap<u32, How>) {
 /// Clocked members writing a memory both at run-time indices and otherwise, or one read outside
 /// the region: not implemented yet. A big signal no clocked member writes at a run-time index is
 /// no memory (whole writes go through a next-state block, as for any signal).
-fn ram_rule(db: &Db, e: &Elaborated, taken: &BTreeMap<usize, (Fit, Body)>) -> Vec<(usize, String)> {
+fn ram_rule(db: &Db, e: &Elaborated, taken: &BTreeMap<usize, (Fit, Body)>) -> Vec<(usize, Reason)> {
     let mut rams: BTreeMap<u32, Vec<(usize, bool, bool)>> = BTreeMap::new();
     for (&pi, (_, b)) in taken.iter().filter(|(_, (_, b))| b.kind == Kind::Clocked) {
         let mut w = BTreeMap::new();
@@ -2211,31 +2278,17 @@ fn ram_rule(db: &Db, e: &Elaborated, taken: &BTreeMap<usize, (Fit, Body)>) -> Ve
                 .as_ref()
                 .is_none_or(|s| (a.0..z.0).any(|l| s.contains(&LeafId(l))));
         for (pi, ok, in_reset) in ws {
-            if in_reset {
-                gone.push((
-                    pi,
-                    format!(
-                        "its asynchronous reset branch writes the memory {name}, which cycle mode \
-                         does not take yet"
-                    ),
-                ));
+            let text = if in_reset {
+                format!("a memory written in an asynchronous reset branch: {name}")
             } else if !ok {
-                gone.push((
-                    pi,
-                    format!(
-                        "it writes the memory {name} both at indices chosen at run time and \
-                         otherwise, which cycle mode does not take for a signal of this size yet"
-                    ),
-                ));
+                format!("a memory written both at run-time indices and at fixed ones: {name}")
             } else if outside {
-                gone.push((
-                    pi,
-                    format!(
-                        "the memory {name} it writes is read outside the region, which cycle mode \
-                         does not export yet"
-                    ),
-                ));
-            }
+                format!("a memory read outside the region: {name}")
+            } else {
+                continue;
+            };
+            let span = db.stmts[e.procs[pi].stmt].span;
+            gone.push((pi, Reason::new(crate::codes::MEMORY, span, text)));
         }
     }
     gone
@@ -2639,7 +2692,7 @@ fn delta_seeds(
                 // A loop of elements (a latch written as feedback, `l <= d when en else l`)
                 // keeps a value too, even when its processes fit one by one.
                 Why::Subset(r) if r.code == crate::codes::LOOP => {
-                    "it is in a combinational loop, which keeps a value of an earlier run"
+                    "is in a combinational loop, which keeps a value from its previous run"
                 }
                 // ponytail: an edge-only process without a trigger (a sensitivity list with
                 // edge tests) is taken as early; find its clock if the fuzzer shows one.
@@ -2647,16 +2700,16 @@ fn delta_seeds(
                 _ if plain_assignment(db, e, *pi) => return None,
                 Why::Behavioural(_) => return None,
                 Why::Subset(r) if [crate::codes::LATCH, crate::codes::STATE].contains(&r.code) => {
-                    "it keeps a value of an earlier run"
+                    "keeps a value from its previous run (a latch, or a variable read before it is assigned)"
                 }
                 // A testbench process sees the region's settled values earlier by contract
                 // ("Delta cycles inside the region are not visible" of the user guide): one of
                 // the top-level unit, and below it one that drives nothing (a monitor).
                 _ if in_top_unit(e, *pi) || e.procs[*pi].drivers.is_empty() => return None,
                 Why::Subset(r) if r.code == crate::codes::SENSITIVITY => {
-                    "it reads a signal its sensitivity list does not name"
+                    "has an incomplete sensitivity list"
                 }
-                _ => "cycle mode could not show that it keeps no value of an earlier run",
+                _ => "is outside the region for another reason (see its own error), which yavs treats as keeping a value from its previous run",
             };
             Some((*pi, how))
         })
@@ -2681,7 +2734,7 @@ fn run_count_cone(
     e: &Elaborated,
     out: &[(usize, Why)],
     sensitive: &[(usize, &str)],
-) -> Vec<(usize, String)> {
+) -> Vec<(usize, Reason)> {
     if sensitive.is_empty() {
         return Vec::new();
     }
@@ -2714,20 +2767,26 @@ fn run_count_cone(
             if edge_only(db, e, d) || behavioural.contains(&d) || !procs.insert(d) {
                 continue;
             }
+            let reader = e.proc_label(&e.procs[sensitive[q].0]);
             gone.push((
                 d,
-                format!(
-                    "it computes, {}, {}, in the fan-in of {}, a process outside \
-                     the region whose result may depend on the deltas its inputs change in ({}): \
-                     the region would change them at other deltas",
-                    if e.procs[d].trigger.is_some() {
-                        "as a register with an asynchronous reset"
-                    } else {
-                        "combinationally"
-                    },
-                    e.leaf_name(l),
-                    e.proc_label(&e.procs[sensitive[q].0]),
-                    sensitive[q].1
+                Reason::new(
+                    crate::codes::DELTA_FANIN,
+                    db.stmts[e.procs[d].stmt].span,
+                    format!(
+                        "{} feeding a process that depends on delta cycles: it drives {}, which \
+                         {reader} reads through logic",
+                        if e.procs[d].trigger.is_some() {
+                            "a register with an asynchronous reset"
+                        } else {
+                            "combinational logic"
+                        },
+                        e.leaf_name(l),
+                    ),
+                )
+                .also(
+                    db.stmts[e.procs[sensitive[q].0].stmt].span,
+                    format!("{reader}, outside the region, {}", sensitive[q].1),
                 ),
             ));
             // A register's data comes at the edge in both modes: only what its list waits on
@@ -2881,42 +2940,40 @@ fn history_rule(
             let text = match read.get(&l).or(every.as_ref()) {
                 Some(&(q, span, what)) => {
                     let how = if what == "a call" {
-                        "calls a subprogram that reads the history of".to_string()
+                        "a call of a subprogram reading the history".to_string()
                     } else if what == "an implicit signal" {
-                        "reads an implicit signal (`'stable`, `'quiet`, `'delayed` or \
-                         `'transaction`) of"
+                        "an implicit signal (`'stable`, `'quiet`, `'delayed` or `'transaction`)"
                             .to_string()
                     } else {
-                        format!("reads `'{what}` of")
+                        format!("`'{what}`")
                     };
                     (
                         span,
                         format!(
-                            "{} {how} {}, and the region keeps no history of the signals it \
-                             drives: its drivers stay in the event kernel",
-                            e.proc_label(&e.procs[q]),
-                            e.leaf_name(l)
+                            "history of a signal read outside the region: {how} of {}, read by {}",
+                            e.leaf_name(l),
+                            e.proc_label(&e.procs[q])
                         ),
                     )
                 }
                 None if implicit.contains(&l) => (
                     db.stmts[e.procs[pi].stmt].span,
                     format!(
-                        "an implicit signal (`'stable`, `'quiet`, `'delayed` or `'transaction`) \
-                         of {} is read, and the region keeps no history of the signals it drives",
+                        "history of a signal read outside the region: an implicit signal \
+                         (`'stable`, `'quiet`, `'delayed` or `'transaction`) of {}",
                         e.leaf_name(l)
                     ),
                 ),
                 None => continue,
             };
-            gone.push((
-                pi,
-                Reason {
-                    code: crate::codes::HISTORY_READ,
-                    span: text.0,
-                    text: text.1,
-                },
-            ));
+            let mut r = Reason::new(crate::codes::HISTORY_READ, text.0, text.1);
+            if r.span != db.stmts[e.procs[pi].stmt].span {
+                r = r.also(
+                    db.stmts[e.procs[pi].stmt].span,
+                    format!("{} drives {}", e.proc_label(&e.procs[pi]), e.leaf_name(l)),
+                );
+            }
+            gone.push((pi, r));
             break;
         }
     }
@@ -3335,16 +3392,23 @@ fn shared_rule(db: &Db, e: &Elaborated, fits: &BTreeMap<usize, Fit>) -> Vec<(usi
             if let Some(q) = other {
                 gone.push((
                     pi,
-                    Reason {
-                        code: crate::codes::TESTBENCH,
-                        span: span(pi),
-                        text: format!(
-                            "the shared variable `{}` is also used by {}: written and read on one \
-                             edge, the normal mode's result would depend on the order the two run in",
+                    Reason::new(
+                        crate::codes::TESTBENCH,
+                        span(pi),
+                        format!(
+                            "a shared variable used by two processes: `{}` is also used by {}",
                             db.decls[k.1].name,
                             e.proc_label(&e.procs[q])
                         ),
-                    },
+                    )
+                    .also(
+                        span(q),
+                        format!(
+                            "{} uses `{}` too",
+                            e.proc_label(&e.procs[q]),
+                            db.decls[k.1].name
+                        ),
+                    ),
                 ));
                 break;
             }

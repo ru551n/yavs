@@ -237,8 +237,10 @@ pub struct RunArgs {
     cycle: bool,
     /// Cycle mode in its strict form, instead of `--cycle`: the same selection, but a process
     /// below the top-level design unit that is not behavioural and cannot run cycle-based is an
-    /// error, all of them listed, and the run stops before simulation: outside the subset with
-    /// the code of the reason (E4110 to E4127), not implemented yet E4101.
+    /// error, and the run stops before simulation. Each error names the construct that is not
+    /// supported, points at its statement, and says why and how to fix it, with the code of the
+    /// reason (E4110 to E4139; E4101 for what yavs does not implement yet); one error per
+    /// statement lists the processes it keeps out, sorted by file and line, at most 40.
     #[arg(long)]
     cycle_strict: bool,
     /// Analyse the design for cycle mode and print the region report to standard error, or

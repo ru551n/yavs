@@ -1,0 +1,12 @@
+error[E4120]: a variable read before it is assigned is not supported in cycle mode
+   --> $DIR/strict.vhd:183:10
+    |
+183 |     q <= v;
+    |          ^ the variable `v` is read here before it is assigned on every path
+    |
+    = note: in process t_e4120.dut.p (strict.vhd:180)
+    = note: why: a variable read before it is assigned keeps its value from the previous run, which is state, not combinational logic
+    = help: assign the variable at the start of the process, before any read; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 1 previous error
+

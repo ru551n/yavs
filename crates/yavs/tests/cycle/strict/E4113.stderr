@@ -1,0 +1,12 @@
+error[E4113]: the real or physical (time) object `acc` is not supported in cycle mode
+  --> $DIR/strict.vhd:77:14
+   |
+77 |     variable acc : real := 0.0;
+   |              ^^^
+   |
+   = note: in process t_e4113.dut.p (strict.vhd:76)
+   = note: why: cycle-based code computes logic values, integers and enumerations only
+   = help: use an integer or a constant (constant expressions are computed during elaboration), or move the model into the testbench; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 1 previous error
+

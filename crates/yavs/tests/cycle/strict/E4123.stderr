@@ -1,0 +1,12 @@
+error[E4123]: a clocked process of another shape is not supported in cycle mode
+   --> $DIR/strict.vhd:231:8
+    |
+231 |     if rising_edge(clk) then
+    |        ^^^^^^^^^^^^^^^^ an edge test outside the clock-edge template
+    |
+    = note: in process t_e4123.dut.p (strict.vhd:229)
+    = note: why: a clocked process runs cycle-based only in the clock-edge template
+    = help: write it as `if rising_edge(clk) then ... end if;`, optionally with an asynchronous reset branch first (`if rst = '1' then ... elsif rising_edge(clk) then`), nothing else in the process, and the clock and reset in its sensitivity list; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 1 previous error
+

@@ -1,0 +1,12 @@
+error[E4138]: an external name is not supported in cycle mode
+   --> $DIR/strict.vhd:418:8
+    |
+418 |   q <= <<signal .t_e4138.marker : std_ulogic>>;
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: in process t_e4138.dut.q <= ... (strict.vhd:418)
+    = note: why: yavs does not follow external names in cycle-based code yet
+    = help: this is a limitation of yavs, not a problem in your design: pass the signal through a port, or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 1 previous error
+

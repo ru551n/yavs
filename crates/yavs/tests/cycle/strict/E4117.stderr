@@ -1,0 +1,17 @@
+warning[W0108]: symbol `outside` of foreign subprogram `outside` is not defined
+ |
+ = note: searched the yavs executable
+ = help: load the shared library that defines it with `--load=LIB`; calling the subprogram is an error (E0107)
+
+error[E4117]: a call of `outside` is not supported in cycle mode
+   --> $DIR/strict.vhd:139:8
+    |
+139 |   q <= outside(a);
+    |        ^^^^^^^^^^ it is a foreign subprogram
+    |
+    = note: in process t_e4117.dut.q <= ... (strict.vhd:139)
+    = note: why: cycle-based code inlines every call, so it needs the subprogram's VHDL body and must see everything the call changes
+    = help: give the subprogram a VHDL body; in a combinational process, pass what it changes as parameters; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 1 previous error
+

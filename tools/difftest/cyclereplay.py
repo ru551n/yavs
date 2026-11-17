@@ -76,6 +76,7 @@ LIB_ARG = re.compile(r"^(--(?:work|map)=[^:]+:)(.+)$")
 def private_libs(todo, root):
     """Point every `--work=`/`--map=` library outside a run's own directory at a copy under `root` (one per
     library, without its `yavs-cache/`): runs write their caches there, never into the recorded libraries."""
+    shutil.rmtree(root, ignore_errors=True)  # left by a replay that was killed
     copies = {}
     for e in todo:
         own = e.get("dir", "").rstrip("/")

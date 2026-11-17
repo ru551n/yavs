@@ -156,7 +156,7 @@ directory) and runs each normal and with `--cycle` with one binary (`--bin` or `
 copy of the run's output directory (its path is replaced in every argument, so the files a test
 writes land in the copy). The libraries the runs name (`--work=` and `--map=` outside the output directory) are
 copied once per replay, without their `yavs-cache/`, and the runs use the copies: the caches a run writes land
-there, so a recorded or shared library is never written. It compares the exit status, the simulation end time (the times of the `stop` and
+there, so a recorded or shared library is never written. A `--std-cache=DIR` of a run is replaced by the replay's own. It compares the exit status, the simulation end time (the times of the `stop` and
 `finish` events, else the last report), the console in the canonical form and every file the run wrote
 (a `?` in the normal mode's file matches any character). From the console it takes out the delta of report
 stamps, the cycle summary line and the reports and asserts of cycle-based processes, found through a

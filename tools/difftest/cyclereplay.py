@@ -73,15 +73,19 @@ def load(path, filt):
 LIB_ARG = re.compile(r"^(--(?:work|map)=[^:]+:)(.+)$")
 
 
-def private_libs(todo, root):
+def private_libs(todo, root, std):
     """Point every `--work=`/`--map=` library outside a run's own directory at a copy under `root` (one per
-    library, without its `yavs-cache/`): runs write their caches there, never into the recorded libraries."""
+    library, without its `yavs-cache/`), and a `--std-cache=DIR` at `std`: runs write their caches there,
+    never into the recorded libraries."""
     shutil.rmtree(root, ignore_errors=True)  # left by a replay that was killed
     copies = {}
     for e in todo:
         own = e.get("dir", "").rstrip("/")
         for i, x in enumerate(e["argv"]):
-            if x in ("--work", "--map"):
+            if x.startswith("--std-cache=") and x != "--std-cache=off":
+                e["argv"][i] = f"--std-cache={std}"
+                continue
+            if x in ("--work", "--map", "--std-cache"):
                 sys.exit(f"cyclereplay: {e['name']}: `{x} LIB:DIR` as two arguments is not supported: record it as `{x}=LIB:DIR`")
             m = LIB_ARG.match(x)
             if not m or (own and (m.group(2) + "/").startswith(own + "/")):
@@ -372,9 +376,11 @@ def selftest():
         assert e[0]["name"] == "t" and e[0]["argv"] == ["yavs", "run", "--work=w:/x", "-gp=a b"] and e[0]["dir"].endswith("0" * 40)
         (d / "L" / "yavs-cache").mkdir(parents=True)
         (d / "L" / "u").write_text("unit")
-        e = [{"name": "t", "dir": str(t), "argv": ["yavs", "run", f"--work=w:{d}/L", f"--map=v:{d}/L/", f"--map=o:{t}/lib"]}]
-        private_libs(e, d / "priv")
-        assert e[0]["argv"][2:] == [f"--work=w:{d}/priv/0_L", f"--map=v:{d}/priv/0_L", f"--map=o:{t}/lib"], e
+        e = [{"name": "t", "dir": str(t), "argv": ["yavs", "run", f"--work=w:{d}/L", f"--map=v:{d}/L/", f"--map=o:{t}/lib",
+                                                    f"--std-cache={d}/S", "--std-cache=off"]}]
+        private_libs(e, d / "priv", d / "std")
+        assert e[0]["argv"][2:] == [f"--work=w:{d}/priv/0_L", f"--map=v:{d}/priv/0_L", f"--map=o:{t}/lib", f"--std-cache={d}/std",
+                                    "--std-cache=off"], e
         assert (d / "priv" / "0_L" / "u").is_file() and not (d / "priv" / "0_L" / "yavs-cache").exists()
     print("selftest ok")
 
@@ -421,7 +427,7 @@ def main():
         random.Random(a.shuffle).shuffle(todo)
     D.guard(D.CACHE)
     atexit.register(shutil.rmtree, D.CACHE / "libs", ignore_errors=True)  # runs before D.cleanup
-    print(f"cycle replay: {len(private_libs(todo, D.CACHE / 'libs'))} libraries copied", flush=True)
+    print(f"cycle replay: {len(private_libs(todo, D.CACHE / 'libs', D.CACHE / 'std'))} libraries copied", flush=True)
     res = []
     with cf.ThreadPoolExecutor(max(1, min(a.jobs, D.MAX_JOBS))) as ex:
         try:

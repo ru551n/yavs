@@ -18,7 +18,6 @@ use std::rc::Rc;
 use std::sync::{Mutex, PoisonError};
 
 use cranelift_codegen::entity::SecondaryMap;
-use cranelift_codegen::incremental_cache::CacheKvStore;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::{I32, I64};
 use cranelift_codegen::ir::{
@@ -27,7 +26,7 @@ use cranelift_codegen::ir::{
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module, ModuleReloc};
+use cranelift_module::{FuncId, Linkage, Module};
 use yavs_cache::{Key, KeyBuilder, Store};
 
 use crate::lower::{Arith, Cmp, Gate, Op, Ref, ShiftK};
@@ -450,63 +449,85 @@ pub fn set_cache(lib: Option<&Path>) {
     *STORE.lock().unwrap_or_else(PoisonError::into_inner) = lib.map(Store::cycle_of_library);
 }
 
-/// The store as Cranelift's cache of compiled functions. Cranelift's key covers the function body
-/// (every operation and image offset, so the checks and the cut too) and the target with its
-/// flags and host features; [`KeyBuilder`] adds the yavs build. A missing or damaged entry is a
-/// miss, and Cranelift rejects an entry of another version of itself.
-struct Kv<'a>(&'a Store);
-
-impl Kv<'_> {
-    fn key(k: &[u8]) -> Key {
-        let mut b = KeyBuilder::new(KIND);
-        b.text(cranelift_codegen::VERSION).part(k);
-        b.finish()
+/// The key of a function's machine code in the store: the yavs build ([`KeyBuilder`]), Cranelift's
+/// version, the target with its flags (`isa`), `head` (the signature, checks, error and log words,
+/// the register cap, a shared body's blocks) and every part's operations and live-out words. The
+/// words' `keep` bits are not in it: the entry lists those the code generator read ([`entry`]).
+fn fun_key(isa: &str, head: &[i64], parts: &[Part<'_>]) -> Option<Key> {
+    let mut b = KeyBuilder::new("cycle-fn");
+    b.text(cranelift_codegen::VERSION).text(isa);
+    b.part(
+        &head
+            .iter()
+            .flat_map(|x| x.to_le_bytes())
+            .collect::<Vec<u8>>(),
+    );
+    // An empty part only empties the registers, so leading and trailing ones and all but the first
+    // of a run change no code (a trigger function of nothing has one per member).
+    let empty = |p: &Part<'_>| p.0.is_empty() && p.1.is_none();
+    let (lo, hi) = (
+        parts.iter().position(|p| !empty(p)).unwrap_or(parts.len()),
+        parts.iter().rposition(|p| !empty(p)).map_or(0, |i| i + 1),
+    );
+    let mut last_empty = false;
+    for p @ (ops, later) in &parts[lo..hi.max(lo)] {
+        if std::mem::replace(&mut last_empty, empty(p)) && empty(p) {
+            continue;
+        }
+        b.part(&postcard::to_allocvec(&**ops).ok()?);
+        let mut w: Vec<i32> = later.iter().flat_map(|l| l.keys().copied()).collect();
+        w.sort_unstable();
+        w.insert(0, i32::from(later.is_some()));
+        b.part(&w.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>());
     }
+    Some(b.finish())
 }
 
-impl CacheKvStore for Kv<'_> {
-    fn get(&self, key: &[u8]) -> Option<Cow<'_, [u8]>> {
-        self.0
-            .get(KIND, &Self::key(key))
-            .map(|e| Cow::Owned(e.to_vec()))
+/// A function's entry: what of the error and log words it uses (`used`, [`Gen::err`],
+/// [`Gen::log`]) with their places, the `keep` bits read (by byte offset), the alignment and the
+/// code.
+fn entry(seen: &Words<bool>, used: u8, at: (u32, (u32, u32)), align: u64, code: &[u8]) -> Vec<u8> {
+    let mut v: Vec<(i32, bool)> = seen.iter().map(|(&o, &k)| (o, k)).collect();
+    v.sort_unstable();
+    let mut out = Vec::with_capacity(28 + 5 * v.len() + code.len());
+    out.push(used);
+    for x in [at.0, at.1.0, at.1.1] {
+        out.extend(x.to_le_bytes());
     }
-
-    fn insert(&mut self, key: &[u8], val: Vec<u8>) {
-        self.0.put(KIND, &Self::key(key), &val);
+    out.extend((v.len() as u32).to_le_bytes());
+    for (o, k) in v {
+        out.extend(o.to_le_bytes());
+        out.push(u8::from(k));
     }
+    out.extend(align.to_le_bytes());
+    out.extend(code);
+    out
 }
 
-/// Compile `ctx` into `id`: from `store` when it has the function (whether it did), else compiled
-/// and stored there.
-fn define(
-    module: &mut JITModule,
-    id: FuncId,
-    ctx: &mut cranelift_codegen::Context,
-    store: Option<&Store>,
-) -> Result<bool, String> {
-    let Some(s) = store else {
-        module
-            .define_function(id, ctx)
-            .map_err(|e| format!("{e:?}"))?;
-        return Ok(false);
-    };
-    let hit = ctx
-        .compile_with_cache(module.isa(), &mut Kv(s), &mut Default::default())
-        .map_err(|e| format!("{:?}", e.inner))?
-        .1;
-    let code = ctx.compiled_code().ok_or("no compiled code")?;
-    let relocs: Vec<ModuleReloc> = (code.buffer.relocs().iter())
-        .map(|r| ModuleReloc::from_mach_reloc(r, &ctx.func, id))
-        .collect();
-    module
-        .define_function_bytes(
-            id,
-            u64::from(code.buffer.min_alignment),
-            code.code_buffer(),
-            &relocs,
-        )
-        .map_err(|e| format!("{e:?}"))?;
-    Ok(hit)
+/// The alignment and code of entry `e` when every place it used and every `keep` bit it read is
+/// the same here.
+fn from_entry(e: &[u8], keep: &[bool], at: (u32, (u32, u32))) -> Option<(u64, Vec<u8>)> {
+    let word = |i: usize| Some(u32::from_le_bytes(e.get(i..i + 4)?.try_into().ok()?));
+    let used = *e.first()?;
+    if (used & 1 != 0 && word(1)? != at.0) || (used & 2 != 0 && (word(5)?, word(9)?) != at.1) {
+        return None;
+    }
+    let n = word(13)? as usize;
+    let seen = e.get(17..17 + 5 * n)?;
+    for r in seen.as_chunks::<5>().0 {
+        let off = i32::from_le_bytes([r[0], r[1], r[2], r[3]]);
+        if kept(keep, off) != (r[4] == 1) {
+            return None;
+        }
+    }
+    let rest = &e[17 + 5 * n..];
+    let align = u64::from_le_bytes(rest.get(..8)?.try_into().ok()?);
+    Some((align, rest[8..].to_vec()))
+}
+
+/// Whether word `off` (a byte offset) holds state between calls.
+fn kept(keep: &[bool], off: i32) -> bool {
+    keep.get(off as usize / 8).is_some_and(|&k| k)
 }
 
 /// For `n` blocks of a shared body, given every instance's table (the byte offset of each block):
@@ -932,7 +953,7 @@ pub(crate) fn compile<'a>(
     name: &str,
 ) -> Result<(Code, CodePlan, Option<crate::store::Blob>), String> {
     let words = keep.len();
-    let (mut module, _) = module()?;
+    let (mut module, isa) = module()?;
     let ptr = module.target_config().pointer_type();
     let checks = checks_on();
     // The functions to compile (label, parts, whether checks exit), the loop bodies first; and
@@ -1190,6 +1211,8 @@ pub(crate) fn compile<'a>(
     // Developers: `YAVS_CYCLE_DISASM=1` prints the machine code of each function (compiled, never
     // taken from the cache).
     let disasm = std::env::var_os("YAVS_CYCLE_DISASM").is_some();
+    // `YAVS_CYCLE_CACHE_CHECK=1`: every function compiled, and its entry must hold that code.
+    let cache_check = std::env::var_os("YAVS_CYCLE_CACHE_CHECK").is_some_and(|v| v == "1");
     // More functions than the store holds can never all be in it, so a rerun is no warmer: it
     // would only write entries that push out other designs', and pay a file per function.
     let store = STORE
@@ -1243,9 +1266,47 @@ pub(crate) fn compile<'a>(
             ids.push((id, sym, bytes.len() as u32));
             continue;
         }
+        let fkeep = shape.map_or(keep, |k| &shapes[k].keep[..]);
+        let key = store.as_ref().filter(|_| !disasm).and_then(|_| {
+            let mut head = vec![
+                i64::from(shape.is_some()),
+                i64::from(checks && *checked),
+                i64::from(*checked),
+                cache_cap() as i64,
+            ];
+            if let Some(k) = shape {
+                for (&(v, n), &(r, d)) in shapes[*k].blocks.iter().zip(&based[*k]) {
+                    head.extend([i64::from(v), i64::from(n), r as i64, i64::from(d)]);
+                }
+            }
+            fun_key(&isa, &head, ops)
+        });
+        let cached = (store.as_ref().zip(key.as_ref()))
+            .and_then(|(s, key)| s.get(KIND, key))
+            .and_then(|e| from_entry(&e, fkeep, (err, log)));
+        if let Some((align, bytes)) = cached.as_ref().filter(|_| !cache_check) {
+            module
+                .define_function_bytes(id, *align, bytes, &[])
+                .map_err(|e| format!("{e:?}"))?;
+            if let Some(m) = made.as_mut() {
+                m.push((*align, bytes.clone()));
+            }
+            hits += 1;
+            if stats {
+                eprintln!(
+                    "cycle stats: {sym}: {} operations, {} bytes, {} us, from the cache",
+                    ops.iter().map(|(p, _)| weight(p)).sum::<usize>(),
+                    bytes.len(),
+                    t.elapsed().as_micros(),
+                );
+            }
+            ids.push((id, sym, bytes.len() as u32));
+            continue;
+        }
         let mut ctx = module.make_context();
         ctx.func.signature = sig;
         let mut fbc = FunctionBuilderContext::new();
+        let seen: (Words<bool>, u8);
         {
             let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
             let blk = b.create_block();
@@ -1283,7 +1344,9 @@ pub(crate) fn compile<'a>(
                 cache: BTreeMap::new(),
                 cap: CACHE_MAX,
                 blocks,
-                keep: shape.map_or(keep, |k| &shapes[k].keep[..]),
+                keep: fkeep,
+                seen: Default::default(),
+                used: Default::default(),
                 zeros: std::collections::HashMap::new(),
                 fields: SecondaryMap::new(),
                 born: SecondaryMap::new(),
@@ -1328,22 +1391,31 @@ pub(crate) fn compile<'a>(
             let zero = g.b.ins().iconst(I32, 0);
             g.b.ins().return_(&[zero]);
             g.b.finalize(module.target_config());
+            seen = (g.seen.into_inner(), g.used.get());
         }
         ctx.set_disasm(disasm);
         let n_ir = ctx.func.dfg.num_insts();
-        let hit = define(
-            &mut module,
-            id,
-            &mut ctx,
-            store.as_ref().filter(|_| !disasm),
-        )?;
-        hits += usize::from(hit);
-        if let (Some(m), Some(c)) = (made.as_mut(), ctx.compiled_code()) {
-            if c.buffer.relocs().is_empty() {
-                m.push((u64::from(c.buffer.min_alignment), c.code_buffer().to_vec()));
-            } else {
-                made = None;
-            }
+        module
+            .define_function(id, &mut ctx)
+            .map_err(|e| format!("{e:?}"))?;
+        let c = ctx.compiled_code().ok_or("no compiled code")?;
+        let (align, code) = (u64::from(c.buffer.min_alignment), c.code_buffer());
+        let relocs = !c.buffer.relocs().is_empty();
+        if relocs {
+            made = None;
+        } else if let Some(m) = made.as_mut() {
+            m.push((align, code.to_vec()));
+        }
+        if let Some((a, b)) = &cached
+            && (*a, &b[..]) != (align, code)
+        {
+            return Err(format!(
+                "YAVS_CYCLE_CACHE_CHECK: the machine code of {sym} in the cache differs from the one compiled now"
+            ));
+        }
+        // A function with relocations is not kept: its code alone does not link.
+        if let (Some(s), Some(key), false) = (&store, &key, relocs) {
+            s.put(KIND, key, &entry(&seen.0, seen.1, (err, log), align, code));
         }
         if disasm && let Some(text) = ctx.compiled_code().and_then(|c| c.vcode.as_ref()) {
             eprintln!("{sym}:\n{text}");
@@ -1351,10 +1423,9 @@ pub(crate) fn compile<'a>(
         let bytes = ctx.compiled_code().map_or(0, |c| c.code_info().total_size);
         if stats {
             eprintln!(
-                "cycle stats: {sym}: {} operations, {n_ir} instructions, {bytes} bytes, {} us{}",
+                "cycle stats: {sym}: {} operations, {n_ir} instructions, {bytes} bytes, {} us",
                 ops.iter().map(|(p, _)| weight(p)).sum::<usize>(),
                 t.elapsed().as_micros(),
-                if hit { ", from the cache" } else { "" }
             );
         }
         ids.push((id, sym, bytes));
@@ -1578,6 +1649,10 @@ struct Gen<'a> {
     /// or below it (`at`).
     blocks: Vec<(i32, Value, i32)>,
     keep: &'a [bool],
+    /// The `keep` bits read, by byte offset, and whether the error words (bit 0) or the log
+    /// (bit 1) were: the code is the same wherever those are ([`entry`]).
+    seen: std::cell::RefCell<Words<bool>>,
+    used: std::cell::Cell<u8>,
     /// Bits known to be zero of some values (constants, extracted bits, words built by inserts).
     zeros: std::collections::HashMap<Value, u64>,
     /// Values known to be bits `s .. s + n` of a word `v` in their low bits: `(v, s, n)`.
@@ -1628,8 +1703,24 @@ impl Gen<'_> {
 
     /// Whether word `off` must outlive the part: state, or read by a later part.
     fn state(&self, off: i32) -> bool {
-        self.keep.get(off as usize / 8).is_some_and(|&k| k)
-            || self.later.as_ref().is_some_and(|l| l.contains_key(&off))
+        self.kept(off) || self.later.as_ref().is_some_and(|l| l.contains_key(&off))
+    }
+
+    /// Whether word `off` holds state between calls, noted in `seen`.
+    fn kept(&self, off: i32) -> bool {
+        let k = kept(self.keep, off);
+        self.seen.borrow_mut().insert(off, k);
+        k
+    }
+
+    fn err(&self) -> i32 {
+        self.used.set(self.used.get() | 1);
+        self.err
+    }
+
+    fn log(&self) -> (i32, u32) {
+        self.used.set(self.used.get() | 2);
+        self.log
     }
 
     /// Word `off` is dead: out of the registers, never stored.
@@ -1722,7 +1813,7 @@ impl Gen<'_> {
     /// The words that hold state, into memory (the end of the function).
     fn write_back(&mut self) {
         let dirty: Vec<(i32, Value)> = (self.cache.iter())
-            .filter(|(off, (_, d))| *d && self.keep[**off as usize / 8])
+            .filter(|(off, (_, d))| *d && self.kept(**off))
             .map(|(&off, &(v, _))| (off, v))
             .collect();
         for (off, v) in dirty {
@@ -1946,13 +2037,11 @@ impl Gen<'_> {
         self.b.ins().brif(fail, bad, &[], ok, &[]);
         self.b.switch_to_block(bad);
         self.b.seal_block(bad);
+        let err = self.err();
         for (k, &v) in vals.iter().enumerate() {
-            self.b.ins().store(
-                MemFlagsData::trusted(),
-                v,
-                self.base,
-                self.err + k as i32 * 8,
-            );
+            self.b
+                .ins()
+                .store(MemFlagsData::trusted(), v, self.base, err + k as i32 * 8);
         }
         let s = self.b.ins().iconst(I32, i64::from(site) + 1);
         self.b.ins().return_(&[s]);
@@ -2770,7 +2859,7 @@ impl Gen<'_> {
                 }
                 // log[min(count, cap)] = site; count += 1 (the run reads a count over the cap
                 // as an internal error).
-                let (at, cap) = self.log;
+                let (at, cap) = self.log();
                 let cnt = self
                     .b
                     .ins()

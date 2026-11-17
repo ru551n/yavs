@@ -116,8 +116,8 @@ the region, and the summary counts the tests with at least one member. `--only c
 `--jobs`, `-v`, `--json FILE`, `--selftest`. `--warm` runs every cycle run first in a library of its own, then the compared run on a copy of
 that library, with the region's machine code from the compilation cache, compares the two (a difference fails the test)
 and counts the tests that ran with region code in the cache; with
-`YAVS_CYCLE_FLAGS=enable_incremental_compilation_cache_checks=true` Cranelift also compiles every function it
-takes from the cache again and stops when the code differs:
+`YAVS_CYCLE_CACHE_CHECK=1` every hit is made again (the analysis, the region and each function's code) and the
+run stops when it differs:
 
     YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclegate.py [--warm]
 

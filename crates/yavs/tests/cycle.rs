@@ -3372,6 +3372,11 @@ fn region_code_from_the_cache_gives_the_same_result() {
         let (got, n2, hits) = cached(&dir, env, flags);
         assert_eq!((&got, n2, hits), (want, n, n), "{what}, warm");
     }
+    // The register cap is in the key: the check compiles every function again and fails on
+    // code made for another cap.
+    let regs = [("YAVS_CYCLE_REGS", "2"), ("YAVS_CYCLE_CACHE_CHECK", "1")];
+    let (got, _, hits) = cached(&dir, &regs, &["--cycle"]);
+    assert_eq!((&got, hits), (&want, 0), "two words in registers");
     analyze(
         &dir,
         "cache.vhd",

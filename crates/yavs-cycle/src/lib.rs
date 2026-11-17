@@ -22,6 +22,7 @@ use yavs_sem::Db;
 
 pub use codegen::{set_cache, set_threads};
 use lower::{Kind, Op, Ref};
+pub use region::set_exact_meta;
 pub use store::analysis_cache;
 
 /// Codes of cycle mode. Under `--cycle-strict` every reason a process below the top-level unit
@@ -183,6 +184,7 @@ fn at(db: &Db, span: yavs_diag::Span) -> String {
 /// compiled.
 pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>> {
     codegen::skip_check().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
+    region::exact_clocks().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
     let sel = match store::select(db, e)? {
         store::Got::Sel(sel) => *sel,
         // `--cycle` on a hit: the region as it was built, its code as it was compiled.

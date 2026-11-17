@@ -513,6 +513,10 @@ Arguments:
 
    Cannot be combined with ``--cycle``, ``--cycle-strict``.
 
+.. option:: --cycle-exact-meta
+
+   With ``--cycle``, ``--cycle-strict`` or ``--cycle-report``: keep the exact metavalue rules. By default a metavalue (``'U'``, ``'X'``, ``'Z'``, ...) reaching the region is read as ``0`` and no process stays out for one; with this option a process that would hide a metavalue from the testbench (it assigns a metavalue literal to a signal the testbench reads, or passes on a ``'Z'`` from outside) stays in the event kernel, so the testbench sees what the normal mode gives it.
+
 .. option:: --tier=interp|auto|clift|clift-auto
 
    Execution tier: ``interp`` runs the interpreter alone; ``auto`` runs it and compiles the functions that become hot (see ``--tier-compile``); ``clift`` compiles every function before time 0; ``clift-auto`` is another name for ``auto``. A tier needs its code generator in the build (error E0120 otherwise): this yavs has the tiers ``yavs --version`` names. Default: ``auto`` with a compiled tier, ``interp`` with ``--dap``, ``--interactive`` or ``--do``, and without one.

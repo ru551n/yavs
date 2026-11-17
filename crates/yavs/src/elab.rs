@@ -113,6 +113,8 @@ enum ResolutionArg {
 
 #[cfg_attr(test, derive(Debug))]
 #[derive(ClapArgs)]
+#[command(group(clap::ArgGroup::new("cycle_mode").multiple(true)
+    .args(["cycle", "cycle_strict", "cycle_report"])))]
 pub struct RunArgs {
     #[command(flatten)]
     common: Common,
@@ -248,6 +250,14 @@ pub struct RunArgs {
     #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true,
           conflicts_with_all = ["cycle", "cycle_strict"])]
     cycle_report: Option<Option<String>>,
+    /// With `--cycle`, `--cycle-strict` or `--cycle-report`: keep the exact metavalue rules. By
+    /// default a metavalue (`'U'`, `'X'`, `'Z'`, ...) reaching the region is read as `0` and no
+    /// process stays out for one; with this option a process that would hide a metavalue from
+    /// the testbench (it assigns a metavalue literal to a signal the testbench reads, or passes
+    /// on a `'Z'` from outside) stays in the event kernel, so the testbench sees what the normal
+    /// mode gives it.
+    #[arg(long, requires = "cycle_mode")]
+    cycle_exact_meta: bool,
     // The text names the tiers this build has, so it is built by `tier_help`.
     #[arg(long, value_enum, help = tier_help())]
     tier: Option<TierArg>,
@@ -1537,7 +1547,7 @@ fn prepare(
         let work = c.work.split_once(':').map_or("", |(_, d)| d);
         // Not the library paths: the analysis key names every file of the closure and its library.
         let part = format!(
-            "{}|{}|{}|{:?}|{}|{:?}|{:?}|{:?}|{:?}",
+            "{}|{}|{}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}",
             c.top,
             collapse && !c.no_collapse_ports,
             compile_all,
@@ -1547,6 +1557,7 @@ fn prepare(
             c.load,
             a.plusargs,
             a.source_map,
+            a.cycle_exact_meta,
         );
         yavs_cycle::analysis_cache(
             (!c.no_cache && !work.is_empty()).then(|| std::path::Path::new(work)),
@@ -2024,6 +2035,7 @@ fn run_design(
                 .clone()
                 .map(|p| p as std::sync::Arc<dyn yavs_kernel::Tokens>),
         );
+        yavs_cycle::set_exact_meta(a.cycle_exact_meta);
         match yavs_cycle::plan(&db, &e, mode) {
             Ok(plan) => {
                 if mode == yavs_cycle::Mode::Report {

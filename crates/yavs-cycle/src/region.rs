@@ -94,6 +94,328 @@ type Subset = (
     BTreeSet<usize>,
 );
 
+/// Clock elements that are copies of another: (leaf, element) to its source.
+type Copies = BTreeMap<(LeafId, u32), (LeafId, u32)>;
+
+/// `--cycle-exact-meta` (A31): the metavalue rules keep processes out. Off: two-state values at
+/// the boundary too, nothing kept out for a metavalue.
+static EXACT_META: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Keep the metavalue rules of `--cycle-exact-meta` (true) or drop them (the default).
+pub fn set_exact_meta(on: bool) {
+    EXACT_META.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `YAVS_CYCLE_EXACT_CLOCKS=1` (tests and gates only): a clock copied by assignment stays a
+/// clock of its own, as the normal mode's delta order has it (A32).
+pub(crate) fn exact_clocks() -> Result<bool, String> {
+    let v = std::env::var_os("YAVS_CYCLE_EXACT_CLOCKS").unwrap_or_default();
+    match &*v.to_string_lossy() {
+        "" => Ok(false),
+        "1" => Ok(true),
+        v => Err(format!(
+            "YAVS_CYCLE_EXACT_CLOCKS takes `1`, not `{v}`{}",
+            yavs_diag::suggest::tail(v, "value", ["1"].into_iter())
+        )),
+    }
+}
+
+/// The elements of signals copied unchanged from one signal element each (A32): a concurrent
+/// assignment without delay of a name, or of an aggregate of scalar names with static index
+/// choices and `others`, to a name with static indices, the only driver of what it assigns; and
+/// the formal of an `in` port without conversion. Anything computed (`not clk`, `clk and en`) is
+/// no copy.
+fn clock_copies(db: &Db, e: &Elaborated) -> Copies {
+    use yavs_sem::hir::{Choice, Delay, Rhs, Waveform};
+    let mut sourced: BTreeSet<LeafId> = e.nets.consts.iter().map(|c| c.0).collect();
+    for pe in &e.nets.ports {
+        sourced.insert(pe.formal.0);
+        if pe.mode != yavs_kernel::PortMode::In {
+            sourced.insert(pe.actual.0);
+        }
+    }
+    for cp in &e.nets.conv_ports {
+        sourced.extend(cp.formal.iter().chain(&cp.actual).map(|x| x.0));
+    }
+    let mut map = Copies::new();
+    for (pi, p) in e.procs.iter().enumerate() {
+        let StmtKind::ConcSignalAssign {
+            postponed: false,
+            guarded: false,
+            target,
+            delay: Delay::Default,
+            rhs,
+            ..
+        } = &db.stmts[p.stmt].kind
+        else {
+            continue;
+        };
+        // One waveform, or the first whose condition elaboration knows to hold.
+        let w = match rhs {
+            Rhs::Simple(w) => Some(w),
+            Rhs::Conditional(alts) => (alts.iter())
+                .map(|(w, c)| match c {
+                    None => Some(Some(w)),
+                    Some(c) => match int_of(db, e, pi, *c)? {
+                        0 => Some(None),
+                        _ => Some(Some(w)),
+                    },
+                })
+                .find(|x| !matches!(x, Some(None)))
+                .flatten()
+                .flatten(),
+            Rhs::Selected { .. } => None,
+        };
+        let Some(Waveform::Elements(els)) = w else {
+            continue;
+        };
+        let ([el], None) = (&els[..], &p.actual) else {
+            continue;
+        };
+        let (Some(v), None) = (el.value, el.after) else {
+            continue;
+        };
+        let Some(t) = name_elems(db, e, pi, target.expr, &[]) else {
+            continue;
+        };
+        let pairs: Vec<((LeafId, u32), (LeafId, u32))> = match &db.exprs[v].kind {
+            ExprKind::Aggregate { assocs, .. } => {
+                let mut named: Vec<((LeafId, u32), (LeafId, u32))> = Vec::new();
+                let mut others = None;
+                let mut ok = true;
+                for a in assocs.iter() {
+                    let src = match name_elems(db, e, pi, a.value, &[]).as_deref() {
+                        Some([x]) if !a.slice_piece => *x,
+                        _ => {
+                            ok = false;
+                            break;
+                        }
+                    };
+                    for c in a.choices.iter() {
+                        match c {
+                            Choice::Expr(x) => match index_elems(db, e, pi, target.expr, *x) {
+                                Some(ts) => named.extend(ts.into_iter().map(|t| (t, src))),
+                                None => ok = false,
+                            },
+                            Choice::Others => others = Some(src),
+                            _ => ok = false,
+                        }
+                    }
+                    ok &= !a.choices.is_empty();
+                }
+                if !ok {
+                    continue;
+                }
+                let mut all: Vec<_> = named.clone();
+                if let Some(src) = others {
+                    all.extend(
+                        (t.iter())
+                            .filter(|x| !named.iter().any(|n| n.0 == **x))
+                            .map(|&x| (x, src)),
+                    );
+                }
+                all
+            }
+            _ => match name_elems(db, e, pi, v, &[]) {
+                Some(s) if s.len() == t.len() => t.iter().copied().zip(s).collect(),
+                _ => continue,
+            },
+        };
+        // Every element of the target exactly once, driven by this process alone.
+        if pairs.len() != t.len()
+            || pairs.iter().any(|(x, _)| {
+                sourced.contains(&x.0)
+                    || (e.nets.drivers.iter()).any(|d| {
+                        d.leaf == x.0
+                            && d.range.offset <= x.1
+                            && x.1 < d.range.end()
+                            && d.proc.index() != pi
+                    })
+            })
+        {
+            continue;
+        }
+        map.extend(pairs);
+    }
+    for pe in &e.nets.ports {
+        let (fl, fr) = pe.formal;
+        let (al, ar) = pe.actual;
+        if pe.mode == yavs_kernel::PortMode::In
+            && pe.to_formal.is_none()
+            && pe.to_actual.is_none()
+            && fr.len == ar.len
+        {
+            for j in 0..fr.len {
+                map.insert((fl, fr.offset + j), (al, ar.offset + j));
+            }
+        }
+    }
+    map
+}
+
+/// The signal elements name `x` of process `pi` names, with selectors `more` after it: a signal
+/// with indices elaboration knows, in a layout of its own (not a port collapsed into another's).
+fn name_elems(
+    db: &Db,
+    e: &Elaborated,
+    pi: usize,
+    x: ExprId,
+    more: &[yavs_elab::Sel],
+) -> Option<Vec<(LeafId, u32)>> {
+    let mut sels: Vec<yavs_elab::Sel> = Vec::new();
+    let mut at = x;
+    loop {
+        match &db.exprs[at].kind {
+            ExprKind::Obj(d) => {
+                let o = e.signal(e.procs[pi].scope, *d)?;
+                let obj = e.nets.obj(o);
+                if !obj.parts.is_empty()
+                    || (obj.leaves.0 != obj.leaves.1 && e.nets.leaf(obj.leaves.0).obj != o)
+                {
+                    // A port collapsed into its actual: whole, its leaves or parts of them.
+                    if !sels.is_empty() || !more.is_empty() {
+                        return None;
+                    }
+                    return Some(
+                        (obj.leaves.0.0..obj.leaves.1.0)
+                            .enumerate()
+                            .flat_map(|(k, l)| {
+                                let l = LeafId(l);
+                                let r = obj
+                                    .part(k)
+                                    .unwrap_or(yavs_kernel::Range::new(0, e.nets.leaf(l).ty.len));
+                                (r.offset..r.end()).map(move |j| (l, j))
+                            })
+                            .collect(),
+                    );
+                }
+                sels.reverse();
+                sels.extend_from_slice(more);
+                let (ps, _) = e.nets.select(o, &sels).ok()?;
+                return Some(
+                    (ps.iter())
+                        .flat_map(|(l, r)| (r.offset..r.end()).map(move |j| (*l, j)))
+                        .collect(),
+                );
+            }
+            ExprKind::Index { prefix, indices } => {
+                let v = (indices.iter())
+                    .map(|&i| int_of(db, e, pi, i))
+                    .collect::<Option<Vec<i64>>>()?;
+                sels.push(yavs_elab::Sel::Index(v));
+                at = *prefix;
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// The elements of `target(c)`, `c` a choice elaboration knows.
+fn index_elems(
+    db: &Db,
+    e: &Elaborated,
+    pi: usize,
+    target: ExprId,
+    c: ExprId,
+) -> Option<Vec<(LeafId, u32)>> {
+    name_elems(
+        db,
+        e,
+        pi,
+        target,
+        &[yavs_elab::Sel::Index(vec![int_of(db, e, pi, c)?])],
+    )
+}
+
+fn int_of(db: &Db, e: &Elaborated, pi: usize, x: ExprId) -> Option<i64> {
+    check::const_value(
+        db,
+        e,
+        &e.procs[pi],
+        Default::default(),
+        &mut Default::default(),
+        x,
+    )?
+    .as_int()
+}
+
+/// The copy chain of clock `c` (`c` first): each a copy of the next, ending where a copy's start
+/// value would give it an edge at time 0 that its source does not have (`'event and c = '1'`
+/// sees one from any other start, `rising_edge` only from `'0'` or `'L'`), and before a source
+/// a member drives (clocks come from outside the region).
+fn copy_chain(
+    e: &Elaborated,
+    copies: &Copies,
+    made: &BTreeSet<LeafId>,
+    c: Clock,
+) -> Vec<(LeafId, u32)> {
+    let init = |(l, i): (LeafId, u32)| {
+        (e.nets.leaf(l).init.as_logic()).map(|v| v.get(i as usize).to_char())
+    };
+    let (on, off) = if c.rising {
+        (['1', 'H'], ['0', 'L'])
+    } else {
+        (['0', 'L'], ['1', 'H'])
+    };
+    let mut chain = vec![(c.leaf, c.elem)];
+    while chain.len() < 64 {
+        let at = chain[chain.len() - 1];
+        let Some(&src) = copies.get(&at) else { break };
+        let spurious = match (init(at), init(src)) {
+            (Some(a), Some(b)) if c.legacy => a != b && b == on[0],
+            (Some(a), Some(b)) => off.contains(&a) && on.contains(&b),
+            _ => true,
+        };
+        if spurious || made.contains(&src.0) || chain.contains(&src) {
+            break;
+        }
+        chain.push(src);
+    }
+    chain
+}
+
+/// The clocks of `taken` as their sources (A32): the last element of each copy chain whose
+/// kernel signal keeps the event history an edge test needs; where none above the clock does,
+/// copies of one source at the same distance from it (they change in the same delta) share the
+/// first of them.
+fn same_clocks(e: &Elaborated, copies: &Copies, taken: &mut BTreeMap<usize, (Fit, Body)>) {
+    type El = (LeafId, u32);
+    // Copies of one source at one distance, with one start value.
+    type Sib = (El, usize, Option<char>);
+    let made: BTreeSet<LeafId> = (taken.keys())
+        .flat_map(|&pi| e.procs[pi].drivers.iter().map(|&d| e.nets.drivers[d].leaf))
+        .collect();
+    let history = |x: &El| e.bare.get(x.0.index()) != Some(&true);
+    let init = |x: El| (e.nets.leaf(x.0).init.as_logic()).map(|v| v.get(x.1 as usize).to_char());
+    let mut to: BTreeMap<usize, Result<El, Sib>> = BTreeMap::new();
+    for (&pi, (_, b)) in taken.iter() {
+        let Some(c) = b.clock else { continue };
+        let chain = copy_chain(e, copies, &made, c);
+        if chain.len() < 2 {
+            continue;
+        }
+        let t = match (1..chain.len()).rev().find(|&k| history(&chain[k])) {
+            Some(k) => Ok(chain[k]),
+            None => Err((chain[chain.len() - 1], chain.len(), init(chain[0]))),
+        };
+        to.insert(pi, t);
+    }
+    let mut first: BTreeMap<Sib, El> = BTreeMap::new();
+    for (pi, t) in &to {
+        if let (Err(k), Some(c)) = (t, taken[pi].1.clock) {
+            let x = first.entry(*k).or_insert((c.leaf, c.elem));
+            *x = (*x).min((c.leaf, c.elem));
+        }
+    }
+    for (pi, t) in to {
+        let b = &mut taken.get_mut(&pi).expect("listed").1;
+        if let Some(c) = b.clock {
+            let (leaf, elem) = t.unwrap_or_else(|k| first[&k]);
+            b.clock = Some(Clock { leaf, elem, ..c });
+        }
+    }
+}
+
 /// The subset verdict of every process: what fits, and why the others do not.
 pub(crate) fn subset(db: &Db, e: &Elaborated) -> Subset {
     let t0 = std::time::Instant::now();
@@ -456,6 +778,11 @@ fn stat(what: impl FnOnce() -> String) {
 pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
     let t0 = std::time::Instant::now();
     let (fits, mut out, groups, checked) = subset(db, e);
+    let copies = if exact_clocks().unwrap_or(true) {
+        Copies::new()
+    } else {
+        clock_copies(db, e)
+    };
     stat(|| format!("select: subset done {} ms", t0.elapsed().as_millis()));
     let mut nfits = fits.len();
     let forced = !db.facts().forces.is_empty();
@@ -510,6 +837,12 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         }
     }
     stat(|| format!("select: lowered {} ms", t0.elapsed().as_millis()));
+    // A copied clock is its source (A32): one edge class, in the source's delta. The copy
+    // itself stays exempt where a rule exempts a member's own clock.
+    let own_clock: BTreeMap<usize, LeafId> = (taken.iter())
+        .filter_map(|(&pi, (_, b))| Some((pi, b.clock?.leaf)))
+        .collect();
+    same_clocks(e, &copies, &mut taken);
     // Combinational logic feeding a process outside whose result depends on how often it runs.
     let seeds = delta_seeds(db, e, &out, &checked);
     // Developers (`YAVS_CYCLE_SEEDS=FILE`): the signals those processes drive, one leaf a line,
@@ -552,8 +885,9 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
     stat(|| format!("select: history {} ms", t0.elapsed().as_millis()));
     // The drivers (process, leaf) of processes outside that may give a 'Z' (no member can:
     // two-state values have none).
+    let exact_meta = EXACT_META.load(std::sync::atomic::Ordering::Relaxed);
     let zsrc: BTreeSet<(usize, LeafId)> = (0..e.procs.len())
-        .filter(|pi| !taken.contains_key(pi))
+        .filter(|pi| exact_meta && !taken.contains_key(pi))
         .flat_map(|pi| z_leaves(db, e, pi).into_iter().map(move |l| (pi, l)))
         .collect();
     // Leave out what the set as a whole does not allow yet, until nothing changes.
@@ -643,6 +977,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             if b.notes > 0
                 && let Some(l) = (b.reads.iter().copied()).chain(fit_reads).find(|&l| {
                     b.clock.is_none_or(|c| c.leaf != l)
+                        && own_clock.get(&pi).is_none_or(|&c| c != l)
                         && (outside.contains_key(&l) || !inside.contains(&l) || consts.contains(&l))
                 })
             {
@@ -670,7 +1005,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         // The testbench sees the metavalues the normal mode gives it: a member that assigns a
         // metavalue literal, or passes on a 'Z' from outside, to a leaf a process outside reads
         // stays out (the region gives back '0' and '1' only).
-        if gone.is_empty() {
+        if gone.is_empty() && exact_meta {
             gone = meta_rule(db, e, &taken, &zsrc, &out);
         }
         if gone.is_empty() {

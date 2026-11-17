@@ -48,15 +48,28 @@ fn analyze(dir: &Path, file: &str, text: &str) {
 /// `err`, the standard error of a run with `flags`, followed by the region report of the same
 /// design when it ran in cycle mode (a `--cycle-report` run, which analyses and stops): the
 /// membership rows are read there, a cycle run prints one line.
-fn with_report(dir: &Path, flags: &[&str], top: &str, mut err: String) -> String {
+fn with_report(dir: &Path, flags: &[&str], top: &str, err: String) -> String {
+    with_report_env(dir, flags, top, err, &[])
+}
+
+/// [`with_report`] with the environment of the run.
+fn with_report_env(
+    dir: &Path,
+    flags: &[&str],
+    top: &str,
+    mut err: String,
+    env: &[(&str, &str)],
+) -> String {
     if flags
         .iter()
         .any(|f| matches!(*f, "--cycle" | "--cycle-strict"))
     {
         let mut args = vec!["run", "--work=work:lib", "--no-cache"];
-        args.extend(flags.iter().filter(|f| !f.starts_with("--cycle")));
+        args.extend(
+            (flags.iter()).filter(|f| !f.starts_with("--cycle") || **f == "--cycle-exact-meta"),
+        );
         args.extend(["--cycle-report", top]);
-        let o = yavs(dir, &args);
+        let o = yavs_env(dir, &args, env);
         let report = String::from_utf8_lossy(&o.stderr);
         assert!(o.status.success() && o.stdout.is_empty(), "{top}: {report}");
         err.push_str(&report);
@@ -79,7 +92,7 @@ fn run_vars(dir: &Path, flags: &[&str], top: &str, env: &[(&str, &str)]) -> (Vec
         String::from_utf8_lossy(&o.stderr).into_owned(),
     );
     assert!(o.status.success(), "{top} {flags:?}: {out}{err}");
-    let err = with_report(dir, flags, top, err);
+    let err = with_report_env(dir, flags, top, err, env);
     let lines = out
         .lines()
         .filter(|l| l.contains("="))
@@ -564,6 +577,35 @@ fn cycle_mode_allows_the_options_that_do_not_see_inside_the_region() {
         assert!(o.status.success(), "{opt}: {err}");
         assert!(!err.contains("E4102"), "{opt}: {err}");
     }
+}
+
+/// `--cycle-exact-meta` needs one of the three modes, and a misspelling names it.
+#[test]
+fn cycle_exact_meta_needs_a_cycle_mode() {
+    let dir = tempdir("cycle-exactmeta");
+    let o = yavs(
+        &dir,
+        &["run", "--work=work:lib", "--cycle-exact-meta", "top"],
+    );
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(2), "{err}");
+    assert!(
+        err.contains("<--cycle|--cycle-strict|--cycle-report"),
+        "{err}"
+    );
+    let o = yavs(
+        &dir,
+        &[
+            "run",
+            "--work=work:lib",
+            "--cycle",
+            "--cycle-exact-mta",
+            "top",
+        ],
+    );
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(2), "{err}");
+    assert!(err.contains("`--cycle-exact-meta`"), "{err}");
 }
 
 #[test]
@@ -1681,7 +1723,21 @@ fn a_z_passed_on_by_a_process_outside_keeps_its_reader_out() {
                 v.into_iter().filter(|l| l.contains("k=")).collect()
             };
             let (normal, _) = run(&dir, &t, "cycle_zpass");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_zpass");
+            // The default reads every metavalue as 0 and keeps nothing out for one (A31).
+            let (two, terr) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_zpass");
+            assert!(
+                terr.contains("cycle mode: 8 of 20 processes run cycle-based"),
+                "{w}: {terr}"
+            );
+            let zeros: Vec<String> = (k(normal.clone()).iter())
+                .map(|l| l.replace(['Z', 'X'], "0"))
+                .collect();
+            assert_eq!(k(two), zeros, "width {w} {t:?}\n{terr}");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--cycle-exact-meta"]].concat(),
+                "cycle_zpass",
+            );
             let (normal, cycle) = (k(normal), k(cycle));
             assert_eq!(normal.len(), 8, "{w} {t:?} {normal:?}");
             assert!(normal.iter().any(|l| l.contains("q=Z")), "{normal:?}");
@@ -1701,6 +1757,90 @@ fn a_z_passed_on_by_a_process_outside_keeps_its_reader_out() {
             }
         }
     }
+}
+
+/// Clocks copied by assignment are their source (A32): an aggregate of the clock, a port
+/// connection and a plain copy give one edge class with it, so the logic between the source's
+/// registers and the copies' joins and is sampled before it settles, as in the normal mode; a
+/// register of the source read directly on a copy gives its value before the edge (the normal
+/// mode, a delta later, the new one: the documented delta-order loss). Copies inside an entity
+/// of its clock port chosen by a generic, a falling edge of a copy starting at `'U'`, and two
+/// copies of a clock nothing else tests (one class of the two) are copies too. An inverted and a
+/// gated clock, a copy of a clock a register of the region makes, and a copy whose start value
+/// gives it an edge at time 0 its source does not have keep classes of their own.
+/// `YAVS_CYCLE_EXACT_CLOCKS=1` keeps every copy a clock of its own: then the logic stays out and
+/// every value is the normal mode's.
+#[test]
+fn clocks_copied_by_assignment_are_their_source() {
+    let dir = tempdir("cycle-clkcopy");
+    analyze(&dir, "clkcopy.vhd", include_str!("cycle/clkcopy.vhd"));
+    let no_c = |v: &[String]| -> Vec<String> {
+        (v.iter())
+            .map(|l| {
+                let (a, b) = (l.split(" c=").next(), l.split(" d=").nth(1));
+                format!("{} d={}", a.unwrap_or(""), b.unwrap_or(""))
+            })
+            .collect()
+    };
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_clkcopy");
+        assert_eq!(normal.len(), 13, "{normal:?}");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_clkcopy");
+        assert!(
+            err.contains("cycle mode: 20 of 33 processes run cycle-based"),
+            "{err}"
+        );
+        let edges = err.lines().find(|l| l.contains(", on the ")).unwrap_or("");
+        for copy in ["element 1", "element 3", ".one", "dist.cl", ".b2"] {
+            assert!(!edges.contains(copy), "{copy}: {edges}");
+        }
+        for own in [
+            ".inv",
+            ".gated",
+            "(element 2)",
+            ".hcopy",
+            ".dcopy",
+            ".b1",
+            "falling edge of cycle_clkcopy.clk",
+        ] {
+            assert!(edges.contains(own), "{own}: {edges}");
+        }
+        assert_eq!(no_c(&cycle), no_c(&normal), "{t:?}\n{err}");
+        // `c` samples `a` before the edge: three less than the normal mode's, after the first.
+        assert!(
+            cycle[2].contains(" c=3 ") && normal[2].contains(" c=6 "),
+            "{cycle:?}"
+        );
+        let exact = [("YAVS_CYCLE_EXACT_CLOCKS", "1")];
+        let (cycle, err) = run_vars(
+            &dir,
+            &[&t[..], &["--cycle"]].concat(),
+            "cycle_clkcopy",
+            &exact,
+        );
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 17 of 33 processes run cycle-based"),
+            "{err}"
+        );
+        for out in [
+            "cycle_clkcopy.m <= ...",
+            "dist.s <= ...",
+            "cycle_clkcopy.v <= ...",
+        ] {
+            assert!(err.contains(out), "{out}: {err}");
+        }
+    }
+    let o = yavs_env(
+        &dir,
+        &["run", "--work=work:lib", "--cycle", "cycle_clkcopy"],
+        &[("YAVS_CYCLE_EXACT_CLOCKS", "yes")],
+    );
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success() && err.contains("E4104") && err.contains("takes `1`"),
+        "{err}"
+    );
 }
 
 /// Records holding arrays of records (register-file converters): an inlined function's local of
@@ -5330,10 +5470,33 @@ fn metavalues_the_testbench_reads_are_kept() {
             let mut args = vec!["run", "--work=work:lib", "--no-cache", &g];
             args.extend(&t);
             let normal = yavs(&dir, &[&args[..], &["cycle_metaout"]].concat());
-            let cycle = yavs(&dir, &[&args[..], &["--cycle", "cycle_metaout"]].concat());
-            let report = yavs(
+            let exact = ["--cycle-exact-meta", "cycle_metaout"];
+            let cycle = yavs(&dir, &[&args[..], &["--cycle"], &exact].concat());
+            let report = yavs(&dir, &[&args[..], &["--cycle-report"], &exact].concat());
+            // The default: the members join and give '0' for the metavalues (A31).
+            let two = yavs(&dir, &[&args[..], &["--cycle", "cycle_metaout"]].concat());
+            let two_rep = yavs(
                 &dir,
                 &[&args[..], &["--cycle-report", "cycle_metaout"]].concat(),
+            );
+            let two_rep = String::from_utf8_lossy(&two_rep.stderr);
+            assert!(
+                two_rep.contains("cycle mode: 6 of 10 processes run cycle-based"),
+                "{two_rep}"
+            );
+            assert_eq!(
+                (
+                    two.status.code(),
+                    String::from_utf8_lossy(&two.stdout).into_owned()
+                ),
+                (
+                    normal.status.code(),
+                    (String::from_utf8_lossy(&normal.stdout))
+                        .replace("'Z'", "'0'")
+                        .replace('X', "0")
+                        .replace("x=true", "x=false")
+                ),
+                "{w} {t:?}\n{two_rep}"
             );
             let (n, c) = (
                 String::from_utf8_lossy(&normal.stdout),

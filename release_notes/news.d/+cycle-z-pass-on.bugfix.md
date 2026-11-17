@@ -1,1 +1,1 @@
-Cycle mode keeps a process out of the region when it passes a `'Z'` to a signal the testbench reads that a copy outside the region carried there (a delayed copy of a tri-state line, say), so the testbench sees the `'Z'` as in the normal mode.
+With `--cycle-exact-meta`, cycle mode keeps a process out of the region when it passes a `'Z'` to a signal the testbench reads that a copy outside the region carried there (a delayed copy of a tri-state line, say), so the testbench sees the `'Z'` as in the normal mode.

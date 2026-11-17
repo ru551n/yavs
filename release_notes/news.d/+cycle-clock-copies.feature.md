@@ -1,0 +1,1 @@
+In cycle mode a clock copied by an assignment (a plain copy, an aggregate of clocks, a port) is the same clock as its source, so the logic between registers of the two runs cycle-based; a register on the copy now samples the source's registers before the edge, where the normal mode gives their new values a delta cycle later.

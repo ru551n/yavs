@@ -72,6 +72,12 @@ There are three flags of ``yavs run``. They are alternatives; giving two is a us
   and ends with exit status 0 before anything is compiled or simulated (:ref:`cycle-report`).
   ``--cycle-report=FILE`` writes the report to a file instead of standard error.
 
+``--cycle-exact-meta``, given with any of the three, keeps the testbench's metavalues exact (:ref:`cycle-contract`):
+
+.. code-block:: bash
+
+    yavs run --cycle --cycle-exact-meta --work=work:build/work tb_counter
+
 ``yavs analyze`` takes none of them, and ``yavs elab`` does not take them. The region is compiled whatever
 ``--tier`` says, and ``--threads`` and ``--shuffle`` are accepted. The options ``--wave``, ``--cov``, ``--vhpi`` and
 a debug session are refused (:ref:`cycle-changes`).
@@ -90,7 +96,8 @@ is an error at the time of the call. The line ``cycle mode: N of M processes run
 output, shown with ``-v`` for a test that passes. A test that also asks for coverage, a debug session,
 ``--yavs-interactive`` or ``--yavs-surfer`` fails before yavs starts, with a message that names both options. To see
 the report of one test, give it ``yavs.sim_flags`` ``["--cycle-report"]``: yavs prints the report and does not
-simulate, so that test fails on purpose. :doc:`vunit-yavs` has the option in its table.
+simulate, so that test fails on purpose. ``yavs.sim_flags`` ``["--cycle-exact-meta"]`` with ``yavs.cycle`` on gives a
+test the exact metavalue rules. :doc:`vunit-yavs` has the option in its table.
 
 A first run
 -----------
@@ -218,7 +225,8 @@ body. A signal needs one source: one process drives each element of it.
    * - Shares a signal element with another process, or the signal has a resolution function of its own
      - E4124.
    * - Is combinational logic between the registers of two clocks whose edges may come in different delta
-       cycles of one time step (a clock copied by an assignment comes one delta cycle after its source). The edges
+       cycles of one time step (a clock gated or computed by an assignment comes one delta cycle after its
+       source; a plain copy is its source, :ref:`cycle-clock-copies`). The edges
        of clocks made by assignments with a delay (``clk <= not clk after 5 ns;``) all come in the first delta
        cycle of their time step, and those of clocks made by clock processes that wait for a time and assign
        without a delay in the second, when yavs knows the delays and times when the design is elaborated:
@@ -228,9 +236,10 @@ body. A signal needs one source: one process drives each element of it.
        settled value.
    * - Is clocked in a form that is not one of those above, or uses a clock made inside the region
      - E4123, E4125.
-   * - Compares with a metavalue literal (``= 'U'``), assigns one to a signal the testbench reads, passes on a
-       ``'Z'`` from outside to such a signal, has a ``while`` loop or a ``for`` loop whose bounds are not known when
-       the design is elaborated, or another construct cycle mode cannot take *yet*
+   * - Compares with a metavalue literal (``= 'U'``), has a ``while`` loop or a ``for`` loop whose bounds are not
+       known when the design is elaborated, or another construct cycle mode cannot take *yet*; with
+       ``--cycle-exact-meta`` also a process that assigns a metavalue literal to a signal the testbench reads or
+       passes on a ``'Z'`` from outside to such a signal
      - E4101: in the subset, not implemented yet. This is the one reason that is expected to shrink.
 
 .. _cycle-report:
@@ -305,6 +314,27 @@ This is the whole list of differences for the processes that run cycle-based. Pr
 simulation behave exactly as before. If a test of yours differs between ``--cycle`` and the normal mode, the cause is
 here, or it is a bug in cycle mode: please report it with the smallest design that shows it.
 
+.. _cycle-contract:
+
+The contract in short
+~~~~~~~~~~~~~~~~~~~~~
+
+Cycle mode is for speed. By default it gives up these, and nothing else, in the processes that run cycle-based:
+
+* **Metavalues.** ``'U'``, ``'X'``, ``'Z'``, ``'W'`` and ``'-'`` read as ``0`` and ``'H'`` as ``1`` where they reach
+  the region, and the region gives back only ``'0'`` and ``'1'``, also to the testbench: a testbench that expects an
+  ``'X'`` or a ``'Z'`` from the design sees ``'0'`` (:ref:`cycle-two-state`). ``--cycle-exact-meta`` keeps the
+  processes that would hide a metavalue from the testbench in the event simulation instead.
+* **Delta order.** The region settles its logic at once, and a clock copied by an assignment is its source, so a
+  register on the copy samples the source's registers before the edge where the normal mode, a delta cycle later,
+  gives their new values (:ref:`cycle-deltas`, :ref:`cycle-clock-copies`).
+* **Library warnings.** The ``numeric_std`` and other ``ieee`` warnings (metavalues, truncation) are not given by
+  cycle-based processes, nor are their reports and assertions below the top-level unit (:ref:`cycle-reports`).
+* **Message wording.** A failed check (overflow, range, index) stops the run with the normal mode's error code,
+  source line, time and process; the wording of its message may differ (:ref:`cycle-checks`).
+
+.. _cycle-two-state:
+
 Two-state values
 ~~~~~~~~~~~~~~~~
 
@@ -319,17 +349,18 @@ A cycle-based process computes with ``0`` and ``1`` only.
   reads gives the testbench ``'1'`` where the normal mode gives ``'H'``. ``to_x01`` makes ``'1'`` of both; a test
   that compares the signal with ``'1'`` or ``'H'`` directly sees the difference.
 * Everything the region gives back to the kernel is ``'0'`` or ``'1'``. A testbench never sees ``'X'`` or ``'Z'``
-  from a cycle-based process. So a process that assigns a metavalue literal (``(others => 'X')`` on invalid data,
-  say) to a signal the testbench reads (a process of the top-level unit, or a behavioural one) stays out, and so
-  does one that passes on to such a signal a signal a process outside sets to ``'Z'`` in its own statements, or
-  that any process outside but a behavioural one passes on in a value it assigns (a copy of a tri-state line, also
-  one that stays out for another reason, such as a delay; a line another driver pulls up never holds a ``'Z'``; a
-  ``'Z'`` made in a called subprogram, given by a generic or passed on by a behavioural process is not seen): the
-  testbench sees what the normal mode
-  gives it. A metavalue literal on a signal only cycle-based processes read is read as ``0``, as are values computed
-  from it.
+  from a cycle-based process: a process that assigns a metavalue literal (``(others => 'X')`` on invalid data, say)
+  gives ``'0'`` there, and so does one that copies a tri-state line some process outside sets to ``'Z'``. A metavalue
+  literal reads as ``0``, as do values computed from it.
+* With ``--cycle-exact-meta`` the testbench sees what the normal mode gives it in those two cases: a process that
+  assigns a metavalue literal to a signal the testbench reads (a process of the top-level unit, or a behavioural
+  one) stays out, and so does one that passes on to such a signal a signal a process outside sets to ``'Z'`` in its
+  own statements, or that any process outside but a behavioural one passes on in a value it assigns (a copy of a
+  tri-state line, also one that stays out for another reason, such as a delay; a line another driver pulls up never
+  holds a ``'Z'``; a ``'Z'`` made in a called subprogram, given by a generic or passed on by a behavioural process is
+  not seen). The price is speed: those processes, and often their neighbours, run in the event simulation.
 * An ``'X'`` or ``'U'`` that a process outside the region sets is read as ``0`` as well, also when a cycle-based
-  process copies it on to a signal the testbench reads. Unlike a ``'Z'``, such a copy joins the region, so the
+  process copies it on to a signal the testbench reads, with ``--cycle-exact-meta`` too. Such a copy joins the region, so the
   testbench sees ``'0'`` where the normal mode gives ``'X'``. A bus model that checks the read data it is handed
   against an expected ``'X'`` (a read of a location nothing wrote, say) reports "got ``0``, expected ``X``" under
   ``--cycle``; run such tests in the normal mode.
@@ -387,6 +418,8 @@ A cycle-based process computes with ``0`` and ``1`` only.
 
 The first block is the normal mode, the second ``--cycle``. The comparison of ``a`` with ``b`` is true in cycle mode
 because the ``'X'`` on ``a`` read as ``0``, and the library's warning about it is not produced either.
+
+.. _cycle-reports:
 
 Reports, assertions and library warnings
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -454,6 +487,8 @@ the testbench's own end at 1022 ns with status 0.
   of the design's own, the region's constants are not evaluated in the run, so a warning of the ``ieee`` libraries
   they give (a truncating ``to_unsigned``) is not made, and one that fails (an overflow) does not stop the run.
 
+.. _cycle-deltas:
+
 Delta cycles inside the region are not visible
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -494,6 +529,30 @@ Sample later: after a time step (``wait for 1 ns``), or at the falling edge. A t
 reads values at a clock edge, or a time after it, gives the same result in both modes. A testbench that is correct
 by timing instead of by delta order has nothing to change.
 
+.. _cycle-clock-copies:
+
+Clocks copied by an assignment
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A clock copied without change is the same clock as its source in cycle mode: a concurrent assignment without a delay
+of the clock's name (``clk_b <= clk;``), of an aggregate of clock names (``clks <= (2 => clk_cpu, others =>
+clk_ctrl);``, also chosen by a condition the design's generics decide), or a port the clock is connected to. The
+registers on the copy run at the source's edge, together with the source's registers, on the values before that edge,
+and the logic between them joins the region. In the normal mode the copy changes one delta cycle after its source, so
+there:
+
+* a register on the copy that samples logic of the source's registers gets the value before the edge, as in cycle
+  mode;
+* a register on the copy that reads a register of the source directly gets the *new* value, which the source's
+  register took one delta cycle earlier. Cycle mode gives the value before the edge, as the hardware does. A design
+  that works only in the normal mode because of that delta (or that adds a signal assignment as a delay of one delta
+  cycle to make up for it) can give other values in cycle mode.
+
+A clock computed from another (``not clk``, ``clk and en``, a divider) is no copy: it keeps its own edges, and logic
+between it and its source stays in the event simulation as before. Nor is a copy whose start value would give it an
+edge at time 0 that its source does not have (a ``clk'event and clk = '1'`` user of a copy of a clock that starts at
+``'1'``).
+
 Signal history
 ~~~~~~~~~~~~~~
 
@@ -530,12 +589,15 @@ region's time shows as the kernel's and only the processes outside the region ar
 counts the asserts that run, and cycle-based processes drop theirs), ``--shuffle``, ``--hang-report`` and
 ``--time-report``.
 
+.. _cycle-checks:
+
 Checks that stay
 ~~~~~~~~~~~~~~~~
 
 Integer overflow, subtype range checks and array index checks are still made in cycle-based processes. A failure
-stops the run with the same error and exit status as in the normal mode, with the source line, the time and the
-process. A check inside a function or procedure that was inlined also lists the statements it was called from, as the
+stops the run with the same error code and exit status as in the normal mode, with the source line, the time and the
+process. The wording of the message is the normal mode's today, but only the code, the source line, the time and
+the process are promised: a later version may shorten the text for speed. A check inside a function or procedure that was inlined also lists the statements it was called from, as the
 normal mode does. With several clocks, the processes of each clock edge run together, one clock after the other:
 when checks of two clocks fail at the same edge, the run stops with that of the clock that runs first, which need
 not be the one the normal mode reports. In the same way a message of a top-level checker on one clock can come before
@@ -694,10 +756,13 @@ Troubleshooting
 **The results differ from the normal mode.** Go through the list:
 
 1. Does the end of the run say that metavalues were read as ``0``? Then ``'U'``, ``'X'`` or an uninitialised
-   register mattered. Fix the design or the test, or check it in the normal mode.
+   register mattered. Fix the design or the test, check it in the normal mode, or run with ``--cycle-exact-meta``
+   when the testbench checks for an ``'X'`` or a ``'Z'`` from the design.
 2. Does ``--cycle-report`` list asserts and reports as not evaluated? Then RTL code that used to report, fail, or end
    the test does not do it now (:ref:`cycle-changes`).
-3. Does the testbench read a value a delta after the edge, or depend on delta numbers? Sample later.
+3. Does the testbench read a value a delta after the edge, or depend on delta numbers? Sample later. Does the
+   design copy a clock by an assignment and read registers of the source on the copy? See
+   :ref:`cycle-clock-copies`.
 4. Does the testbench read a signal that has no initial value at time 0? It reads ``'U'`` at delta 0 in both modes
    and ``0`` from the next delta on in cycle mode.
 
@@ -723,7 +788,7 @@ that raises the message joined.
 See also
 --------
 
-* :doc:`cli-reference`: ``--cycle``, ``--cycle-strict`` and ``--cycle-report``.
+* :doc:`cli-reference`: ``--cycle``, ``--cycle-strict``, ``--cycle-report`` and ``--cycle-exact-meta``.
 * :doc:`vunit-yavs`: the ``yavs.cycle`` sim option.
 * :doc:`error-codes`: the codes E4101 to E4127.
 * :doc:`running-faster`: the other ways to a faster run.

@@ -260,6 +260,10 @@ identical to a run without it, at any `--threads`.
   16384 objects and 256 MiB, apart from the 4 GiB of entries, under the same rule at the limit. (The removed
   LLVM tier kept its modules there as `obj-<key>.img`.) `route-<key>.img`, one per design, holds how each compiled function
   first called the others, so that an unchanged design makes the same bodies in every run (#1035).
+- `--cycle-exact-meta` (with `--cycle`, `--cycle-strict` or `--cycle-report`, else a usage error, exit 2) keeps the
+  metavalue rules that hold processes out of the cycle region so the testbench sees the normal mode's metavalues;
+  without it metavalues read as `0` at the region's boundary (user, 2026-11-17). It is part of the key
+  of the cached analysis.
 - With `--cycle` or `--cycle-strict` the machine code of every function of the cycle region is kept in
   `<dir>/yavs-cache/cycle/cycle-<key>.img` of the work library (the function's body, the target with its Cranelift
   settings, the yavs build); a later run that makes a function with the same key links it instead of compiling it,
@@ -699,7 +703,8 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   `yavs.tier_compile` (before `yavs.sim_flags`, which win).
 - Cycle mode: the sim option `yavs.cycle` (`off`, `on`, `strict`) becomes `--cycle` or `--cycle-strict` on `yavs run`
   (never `elab`), before `yavs.sim_flags`. With a debug session, coverage or `--wave` the runner fails the test before
-  starting yavs, naming both (yavs itself answers E4102).
+  starting yavs, naming both (yavs itself answers E4102). `--cycle-exact-meta` has no sim option of its own:
+  `yavs.sim_flags` passes it after the cycle flag.
 - Threads: yavs defaults to `--threads=1`. The sim
   option `yavs.max_threads` (or the runner argument `--yavs-max-threads N` for every test; both
   take a number or `auto`) becomes `--threads=N` before the raw flags, so `--threads` in

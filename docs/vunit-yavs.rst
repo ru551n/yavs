@@ -51,7 +51,7 @@ as ``--name=value``.
        processes drop their ``report`` and ``assert`` statements and library warnings, read metavalues as ``'0'`` and
        have no waves; what it changes is in :doc:`cycle-mode`, and the flags are in the :doc:`cli-reference` (``--cycle``). A test that also has coverage,
        ``--yavs-debug``, ``--yavs-interactive`` or ``--yavs-surfer`` fails before yavs starts, naming both. Not passed
-       to ``elab``. To see what would join, set ``yavs.sim_flags`` to ``["--cycle-report"]`` for one test with ``yavs.cycle`` ``"off"``: yavs prints the report and does not simulate, so that test fails.
+       to ``elab``. To see what would join, set ``yavs.sim_flags`` to ``["--cycle-report"]`` for one test with ``yavs.cycle`` ``"off"``: yavs prints the report and does not simulate, so that test fails. ``yavs.sim_flags`` ``["--cycle-exact-meta"]`` with ``yavs.cycle`` ``"on"`` or ``"strict"`` keeps the exact metavalue rules for a test.
    * - ``yavs.cov_embed_sources``
      - ``yavs run --cov-embed-sources``: store the source text in the database, so the HTML report needs no
        checkout. The source text then travels with the database (:doc:`coverage`).

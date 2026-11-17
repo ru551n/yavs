@@ -1,0 +1,1 @@
+`yavs run --cycle` is two-state by default: a metavalue reaching the region reads as `0` (`'H'` as `1`) and no process stays in the event simulation to show the testbench an `'X'` or `'Z'` the design gives it, so more of a design runs cycle-based. The new option `--cycle-exact-meta` keeps the earlier exact rules.

@@ -2889,6 +2889,10 @@ fn forces_keep_out_only_the_drivers_of_what_they_force() {
                     let (exact, err) = run(d, &ex, top);
                     assert_eq!(exact, normal, "width {w} {top} {t:?}\n{err}");
                     assert!(err.contains("cycle mode: 0 of 9 processes"), "{err}");
+                    assert!(
+                        err.contains("under `--cycle-exact-meta` no process joins"),
+                        "{err}"
+                    );
                 }
             }
         }

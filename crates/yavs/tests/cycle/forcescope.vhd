@@ -1,9 +1,9 @@
 -- Forces and releases keep out only the drivers of what they can force (E4128): a force in a
 -- unit the design never instantiates, or in a package procedure no process calls, keeps nothing
--- out; one through an external name (in a process or a package procedure) keeps the drivers of
--- its target out while members read the forced value. A force of a signal parameter keeps every
--- process out: `forcescopef.vhd`, in a library of its own (it keeps every port of the library's
--- designs apart). W is the width.
+-- out; one through an external name (in a process, or in a package procedure called through an
+-- alias) keeps the drivers of its target out while members read the forced value. A force of a
+-- signal parameter keeps every process out: `forcescopef.vhd`, in a library of its own (it
+-- keeps every port of the library's designs apart). W is the width.
 library ieee;
 use ieee.std_logic_1164.all;
 package fsc_pkg is
@@ -122,15 +122,18 @@ begin
   end generate;
   g1 : if how = 1 generate
     forcer : process
+      -- Called through aliases only.
+      alias poke2 is poke [std_ulogic_vector];
+      alias unpoke2 is unpoke [];
     begin
       wait for 20 ns;
-      poke(ones);
+      poke2(ones);
       wait for 30 ns;
-      unpoke;
+      unpoke2;
       wait for 32 ns;
-      poke(thirds);
+      poke2(thirds);
       wait for 30 ns;
-      unpoke;
+      unpoke2;
       wait;
     end process;
   end generate;

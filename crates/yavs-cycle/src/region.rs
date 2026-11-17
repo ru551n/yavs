@@ -714,20 +714,21 @@ fn differs(e: &Elaborated, f: &Fit, b: &Body) -> Option<String> {
         None => f.reset.is_empty(),
     };
     if !shape || !reset {
-        return Some(format!(
-            "{}the two passes of yavs read the process's shape, clock or reset differently",
-            lower::BUG
-        ));
+        return Some(
+            "an internal mismatch in yavs (please report it): the two passes of yavs read the \
+             process's shape, clock or reset differently"
+                .into(),
+        );
     }
     let (l, x) = (b.rparts.iter()).find_map(|&(l, lo, n)| {
         f.reads
             .first_missing(u64::from(l.0), lo, lo + n)
             .map(|x| (l, x))
     })?;
-    // Reached (2026-11-17) by a call with a mode view in a concurrent statement: no assertion.
+    // Reached (2026-11-17) by a call with a mode view in a concurrent statement.
     Some(format!(
-        "{}a read of element {x} of {} that the first pass of yavs missed",
-        lower::BUG,
+        "an internal mismatch in yavs (please report it): a read of element {x} of {} that the \
+         first pass of yavs missed",
         e.leaf_name(l)
     ))
 }
@@ -886,7 +887,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             // The lowering must see the shape the checker proved, clock included.
             Ok(b) if let Some(w) = differs(e, &f, &b) => out.push((
                 pi,
-                Why::NotYet(Reason::new(crate::codes::INTERNAL, pspan(pi), w)),
+                Why::NotYet(Reason::new(crate::codes::LEFT_OUT, pspan(pi), w)),
             )),
             // The asserts and reports of the top-level unit are evaluated (A19): at a clock edge
             // in region code, else the process stays in the event kernel.
@@ -3476,6 +3477,12 @@ impl Forced {
 
     fn reason(&self, db: &Db, e: &Elaborated, pi: usize, span: yavs_diag::Span) -> Option<Reason> {
         let (text, s) = match self {
+            Forced::All(s) if exact_meta() => (
+                "`force` or `release` in the design: under `--cycle-exact-meta` no process joins \
+                 a design that forces a signal"
+                    .to_string(),
+                *s,
+            ),
             Forced::All(s) => ("`force` or `release` in the design".to_string(), *s),
             Forced::Leaves(m) => {
                 let (l, s) = (e.procs[pi].drivers.iter())

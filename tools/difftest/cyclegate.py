@@ -58,6 +58,7 @@ CYCLE_TESTS = {
     "intelem1.vhd": [("cycle_intelem1", "", None)],
     "intarr.vhd": [("cycle_intarr", "", None)],
     "ints.vhd": [("cycle_ints", "", None)],
+    "joinif.vhd": [("cycle_joinif", f"-gW={w}", None) for w in (1, 64, 65)],
     "numeric.vhd": [("cycle_ops2", "", lambda s, w=w: W.sub(str(w), s)) for w in (8, 63, 65)],
     "partial.vhd": [("cycle_partial", "", None)],
     "ports.vhd": [("cycle_ports", "", None)],

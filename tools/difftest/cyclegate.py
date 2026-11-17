@@ -236,30 +236,144 @@ def classify(nl, cl, lost):
     return "differs", "the output differs\n" + first_diff(ns, cs)
 
 
+# ---------------------------------------------------------------- contract classes (README "Contract classes")
+IEEE_MSG = re.compile(r"^[A-Z][A-Z0-9_]*\.\S.*(metavalue|null) detected|^[A-Z][A-Z0-9_]*\.\S.*non logical")
+LIB_META = re.compile(r"^[A-Z][A-Z0-9_]*\.\S.*metavalue detected")
+RECORD = re.compile(r"^\*\* (\w+): \S+: (.*)$")
+DIGITS = set("0123456789ABCDEF")
+
+
+def member_paths(rep):
+    """The LRM paths of every cycle-based process of a region report (its last section)."""
+    out, on = set(), False
+    for l in rep:
+        if re.match(r"^  \S", l):
+            on = bool(re.match(r"^  cycle-based, \d+ process", l))
+        elif on:
+            m = re.match(r"^    (.*?) \(\S+:\d+\)  \S", l)
+            if m:
+                out.update({D.lrm_path(m.group(1)), D.lrm_path(re.sub(r" <= \.\.\.$", "", m.group(1)))})
+    return out
+
+
+def drop_ieee(lines, members):
+    """Without the library warnings of cycle-based processes (A6, A33: none are given at any severity)."""
+    keep = []
+    for l in lines:
+        f = l.split("\t")
+        if not (f[0] == "diag" and len(f) == 6 and f[4] in members and IEEE_MSG.match(f[5].replace("\\n", " "))):
+            keep.append(l)
+    return keep
+
+
+def read_down(path):
+    """The names of YAVS_CYCLE_DOWNSTREAM's file (processes outside that read what the region exports),
+    as the console prints them, with and without their `(file:line)`."""
+    return read_down_text(Path(path).read_text() if Path(path).is_file() else "")
+
+
+def read_down_text(text):
+    names = text.splitlines()
+    return set(names) | {re.sub(r" \(\S+:\d+\)$", "", n) for n in names}
+
+
+def drop_down(text, down):
+    """(text without the library metavalue warnings of the processes in `down`, the records taken out).
+    A record is its `** Severity: time: message` line and the `    Process NAME` line after it."""
+    out, gone, ls, i = [], [], text.splitlines(keepends=True), 0
+    while i < len(ls):
+        m = RECORD.match(ls[i])
+        if m and m.group(1) in ("Note", "Warning") and i + 1 < len(ls) and ls[i + 1].startswith("    Process ") \
+                and LIB_META.match(m.group(2)) and ls[i + 1][len("    Process "):].strip() in down:
+            gone.append(ls[i] + ls[i + 1])
+            i += 2
+            continue
+        out.append(ls[i])
+        i += 1
+    return "".join(out), gone
+
+
+def meta_pair(n, c):
+    """Whether line c (cycle mode) is line n (normal mode) with its metavalues read two-state: of one
+    length, and where they differ n holds 'U', 'X', 'Z', 'W' or '-' and c a digit (a bit, or a hex or
+    octal digit of the value computed from it), or n 'H' and c '1', or n 'L' and c '0'. Never the reverse."""
+    return len(n) == len(c) and all(a == b or (a in "UXZW-" and b in DIGITS) or (a, b) in (("H", "1"), ("L", "0"))
+                                    for a, b in zip(n, c))
+
+
+def meta_align(nl, cl):
+    """(cl with every line meta_pair explains replaced by its normal line, how many). Lines are paired by
+    their text with digits and metavalues masked, in order."""
+    shape = lambda l: re.sub(r"[0-9A-FUXZWHL-]", "#", l)
+    out, k = list(cl), 0
+    sm = difflib.SequenceMatcher(None, [shape(x) for x in nl], [shape(x) for x in cl], autojunk=False)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            for i, j in zip(range(i1, i2), range(j1, j2)):
+                if nl[i] != cl[j] and meta_pair(nl[i], cl[j]):
+                    out[j], k = nl[i], k + 1
+    return out, k
+
+
+def meta_evidence(cerr, rep):
+    """Whether the region read a metavalue two-state: the run's count line, a metavalue literal of a member
+    or an input nothing drives in its report. Without it no line is explained as a metavalue."""
+    return bool(re.search(r"^cycle mode: \d+ metavalue element", cerr, re.M)) or any(
+        "with a metavalue read as 0" in l or "driven by nothing" in l or "the region reads without a driver" in l for l in rep)
+
+
+def lib_class(gone_n, gone_c):
+    """The class of library warnings of processes outside taken out, when the two runs' differ."""
+    return ["library metavalue warnings of processes outside that read the region"] if sorted(gone_n) != sorted(gone_c) else []
+
+
+def contract_lines(nrc, nout, nerr, crc, cout, cerr, raw_cerr, rep, down, default):
+    """(normal lines, cycle lines, classes used): the canonical lines of both runs without the library
+    warnings of members (A33) and, where the runs differ in them, those of processes outside reading
+    the region (`down`); under the default contract with the cycle line of a metavalue read two-state
+    replaced by the normal one (`meta_pair`) when the run shows it read one (`meta_evidence`)."""
+    nout, a = drop_down(nout, down)
+    nerr, b = drop_down(nerr, down)
+    cout, c = drop_down(cout, down)
+    cerr, d = drop_down(cerr, down)
+    classes = lib_class(a + b, c + d)
+    mem = member_paths(rep)
+    nl = drop_ieee(D.normalise(nrc, nout, nerr, yavs=True), mem)
+    cl = drop_ieee(D.normalise(crc, cout, cerr, yavs=True), mem)
+    if default and nl != cl and meta_evidence(raw_cerr, rep):
+        cl, k = meta_align(nl, cl)
+        if k:
+            classes.append("metavalues read as 0 or 1")
+    return nl, cl, classes
+
+
+def contract_bucket(bucket, why, classes, default):
+    """A test the classes explained: `contract` under the default contract, `documented` under the exact
+    one (only the library warning class applies there); else as it was."""
+    if bucket in ("identical", "documented") and classes:
+        return ("contract" if default else "documented"), "explained by " + "; ".join(classes) + (f" ({why})" if why else "")
+    return bucket, why
+
+
 def load_expected():
-    """name -> (crc of the diff, cause) of cyclegate.expected: differences someone reviewed."""
+    """name -> {crc of the diff: cause} of cyclegate.expected: differences someone reviewed."""
     out = {}
     for l in (HERE / "cyclegate.expected").read_text().splitlines():
         if l.strip() and not l.startswith("#"):
             name, crc, cause = l.split("\t", 2)
-            out[name] = (crc, cause)
+            for c in crc.split(","):  # several per setting (a line each per contract where the causes differ)
+                out.setdefault(name, {})[c] = cause
     return out
 
 
 def known(r, expected):
     """A difference that is listed with the same diff is known; a listed one that changed is not."""
     if r["bucket"] == "differs" and r["name"] in expected:
-        crc, cause = expected[r["name"]]
-        if r.get("crc") in crc.split(","):  # one per contract or setting where they differ
-            r.update(bucket="known", why=cause)
+        crcs = expected[r["name"]]
+        if r.get("crc") in crcs:
+            r.update(bucket="known", why=crcs[r["crc"]])
         else:
-            r["why"] = f"the listed difference changed (checksum {crc} before, {r.get('crc')} now): review it\n" + r["why"]
-
-
-def region_diff(x, d):
-    """The first lines of the region report under the exact rules (`x`) that the default's (`d`) lacks."""
-    gone = [l.strip() for l in x if l not in d][:3]
-    return "; ".join(gone) or "the clocks or the members' order differ"
+            r["why"] = f"the listed difference changed (checksum {', '.join(crcs)} before, {r.get('crc')} now): review it\n" + r["why"]
 
 
 def first_diff(a, b):
@@ -275,9 +389,7 @@ def one(item, jobs_args):
     try:
         outs = []
         tr = tc.replace("--cycle ", "--cycle-report ", 1)  # the members: analysis only
-        runs = [("normal", tn), ("cycle", tc), ("report", tr)]
-        if jobs_args.contract == "default":  # the members under the exact rules, to compare
-            runs.append(("xreport", "export YAVS_CYCLE_EXACT_CLOCKS=1; " + tr.replace("--cycle-report ", f"--cycle-report {EXACT} ", 1)))
+        runs = [("normal", tn), ("cycle", tc), ("report", "export YAVS_CYCLE_DOWNSTREAM=down.txt; " + tr)]
         for kind, t in runs:
             if kind == "cycle" and jobs_args.warm:
                 # A cold run first, then the run compared in a fresh directory with its library: the
@@ -315,15 +427,14 @@ def one(item, jobs_args):
             if crc != 0 and nrc == 0 and re.search(r"E41\d\d", cerr) and "E9999" not in cerr:
                 res.update(bucket="refused", why=re.search(r"E41\d\d", cerr).group(0))
             else:
-                if jobs_args.contract == "default":  # a failed check by code and place (A34)
+                default = jobs_args.contract == "default"
+                if default:  # a failed check by code and place (A34)
                     nerr, cerr = D.code_loc(nerr), D.code_loc(cerr)
-                nl = D.normalise(nrc, nout, nerr, yavs=True)
-                cl = D.normalise(crc, cout, cerr, yavs=True)
+                nl, cl, classes = contract_lines(nrc, nout, nerr, crc, cout, cerr, outs[1][2], rep,
+                                                 read_down(base / "report" / "down.txt"), default)
                 lost = lambda path: dropped > 0 and (path in members or (path == "-" and "-" in members))
-                res["bucket"], res["why"] = classify(nl, cl, lost)
-                if res["bucket"] == "differs" and len(outs) > 3 and split_report(outs[3][2])[1] != rep:
-                    res.update(bucket="contract", why="differs where the default contract changes the region: "
-                               + region_diff(split_report(outs[3][2])[1], rep) + "\n" + res["why"].partition("\n")[2])
+                res["bucket"], res["why"] = contract_bucket(*classify(nl, cl, lost), classes, default)
+                res["classes"] = classes
         if res["bucket"] == "differs":
             res["crc"] = "%08x" % zlib.crc32("\n".join(difflib.unified_diff(nl, cl, lineterm="", n=1)).encode())
             res["dir"] = str(base)
@@ -369,7 +480,25 @@ def selftest():
     assert EXACT in CYCLE and os.environ.get("YAVS_CYCLE_EXACT_CLOCKS") == "1"
     exact(False)
     assert EXACT not in CYCLE and "YAVS_CYCLE_EXACT_CLOCKS" not in os.environ
-    assert region_diff(["a", "  b", "  c"], ["a", "  c"]) == "b"
+    # The contract classes: each explains only its own shape, one way.
+    assert meta_pair("q=ZZ x='U' h='H'", "q=3F x='0' h='1'") and meta_pair("v=0X", "v=0A")
+    assert not meta_pair("q=3F", "q=ZZ") and not meta_pair("q=10", "q=11") and not meta_pair("q=Z", "q=00")
+    assert not meta_pair("h='H'", "h='0'") and not meta_pair("t=5", "t=6")
+    n = ["exit\t0", "out\t1 q=ZZ r=05", "out\t2 q=ZZ r=06"]
+    assert meta_align(n, ["exit\t0", "out\t1 q=00 r=05", "out\t2 q=1F r=06"]) == (n, 2)
+    bad = ["exit\t0", "out\t1 q=00 r=05", "out\t2 q=00 r=07"]  # a wrong bit where the normal mode has none
+    assert meta_align(n, bad)[0] != n and classify(n, meta_align(n, bad)[0], lambda p: False)[0] == "differs"
+    assert meta_evidence("cycle mode: 3 metavalue elements read as 0 (3 at initialisation)", [])
+    assert not meta_evidence("cycle mode: 2 of 5 processes run cycle-based", ["  cycle-based, 2 processes:"])
+    w = "** Warning: 0fs+1: NUMERIC_STD.TO_INTEGER: metavalue detected, returning 0\n    Process tb.u.rd (a.vhd:9)\n"
+    t = "** Note: 5ns+0: done\n    Process tb.p\n"
+    assert drop_down(w + t, read_down_text("tb.u.rd (a.vhd:9)\n")) == (t, [w])
+    assert drop_down(w + t, read_down_text("tb.other (a.vhd:3)\n"))[0] == w + t  # it reads nothing the region exports
+    assert drop_down(t, {"tb.p"})[0] == t  # only library metavalue warnings
+    assert lib_class([w], []) and not lib_class([w], [w])
+    assert contract_bucket("identical", "", ["x"], True)[0] == "contract"
+    assert contract_bucket("identical", "", ["x"], False)[0] == "documented"
+    assert contract_bucket("differs", "y", ["x"], True)[0] == "differs"
     print("selftest ok")
 
 
@@ -386,8 +515,8 @@ def main():
                          "library, with the region's code from the compilation cache, and fail when the two differ")
     ap.add_argument("--contract", choices=("exact", "default"), default="exact",
                     help="exact (default): cycle runs keep the normal mode's metavalue rules and copied clocks "
-                         "(--cycle-exact-meta, YAVS_CYCLE_EXACT_CLOCKS=1); default: plain --cycle, a difference where "
-                         "the exact rules give another region is bucket contract, not a failure")
+                         "(--cycle-exact-meta, YAVS_CYCLE_EXACT_CLOCKS=1); default: plain --cycle, a difference the "
+                         "contract classes explain fully is bucket contract (README), any other fails")
     ap.add_argument("-v", "--verbose", action="store_true", help="one line per test with its membership")
     a = ap.parse_args()
     if a.selftest:

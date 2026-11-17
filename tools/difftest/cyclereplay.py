@@ -122,22 +122,6 @@ def sev(l):
     return l.split("\t")[1]
 
 
-IEEE_MSG = re.compile(r"^[A-Z][A-Z0-9_]*\.\S.*(metavalue|null) detected|^[A-Z][A-Z0-9_]*\.\S.*non logical")
-
-
-def member_paths(rep):
-    """The LRM paths of every cycle-based process of a region report (its last section)."""
-    out, on = set(), False
-    for l in rep:
-        if re.match(r"^  \S", l):
-            on = bool(re.match(r"^  cycle-based, \d+ process", l))
-        elif on:
-            m = re.match(r"^    (.*?) \(\S+:\d+\)  \S", l)
-            if m:
-                out.update({D.lrm_path(m.group(1)), D.lrm_path(re.sub(r" <= \.\.\.$", "", m.group(1)))})
-    return out
-
-
 def raw_names(rep):
     """(held, members): the process names of a region report as the console prints them, with and without
     their `(file:line)`: the processes holding asserts and reports that are not evaluated, and every cycle-based one."""
@@ -165,22 +149,12 @@ def strip_records(text, held, members):
         m = RECORD.match(ls[i])
         if m and i + 1 < len(ls) and ls[i + 1].startswith("    Process "):
             who = ls[i + 1][len("    Process "):].strip()
-            if (m.group(1) in ("Note", "Warning") and who in held) or (who in members and IEEE_MSG.match(m.group(2))):
+            if (m.group(1) in ("Note", "Warning") and who in held) or (who in members and G.IEEE_MSG.match(m.group(2))):
                 i += 2
                 continue
         out.append(ls[i])
         i += 1
     return "".join(out)
-
-
-def drop_ieee(lines, members):
-    """Without the library warnings of cycle-based processes (A6: none are given at any severity)."""
-    keep = []
-    for l in lines:
-        f = l.split("\t")
-        if not (f[0] == "diag" and len(f) == 6 and f[4] in members and IEEE_MSG.match(f[5].replace("\\n", " "))):
-            keep.append(l)
-    return keep
 
 
 def strip(lines, lost, drop_delta=True):
@@ -209,9 +183,10 @@ def ends(lines):
     return [f"last report {t[-1]}"] if t else ["no report"]
 
 
-def same_text(a, b, ra="", rb=""):
+def same_text(a, b, ra="", rb="", meta=False):
     """None when file a (normal) and b (cycle) are equal, a `?` in a matching any character (a metavalue
-    digit, read as 0 in cycle mode), the run directories ra and rb (in the texts) taken as one; else where they differ."""
+    digit, read as 0 in cycle mode), the run directories ra and rb (in the texts) taken as one, with `meta` a line
+    `G.meta_pair` explains (the default contract read a metavalue two-state); else where they differ."""
     xa, xb = a.read_bytes(), b.read_bytes()
     if ra and rb:
         xa, xb = xa.replace(ra.encode(), b"<dir>"), xb.replace(rb.encode(), b"<dir>")
@@ -221,17 +196,18 @@ def same_text(a, b, ra="", rb=""):
         return None
     la, lb = xa.decode(errors="replace").splitlines(), xb.decode(errors="replace").splitlines()
     for i, (x, y) in enumerate(zip(la + [None] * len(lb), lb + [None] * len(la)), 1):
-        if x != y and (x is None or y is None or len(x) != len(y) or any(c != d and c != "?" for c, d in zip(x, y))):
+        if x != y and (x is None or y is None or len(x) != len(y) or any(c != d and c != "?" for c, d in zip(x, y))) \
+                and not (meta and x is not None and y is not None and G.meta_pair(x, y)):
             return f"line {i}: {x!r} against {y!r}"
     return None
 
 
-def compare(nrc, nl, nfiles, crc, cl, cfiles, lost, members=frozenset(), roots=("", "")):
+def compare(nrc, nl, nfiles, crc, cl, cfiles, lost, members=frozenset(), roots=("", ""), meta=False):
     """(bucket, [what differs]) of the two runs: exit status, canonical console lines, written files
     ({relative name: path}). `lost(path)` says whether a report of a process at that path may be missing;
     `members` are the paths of all cycle-based processes, whose library warnings are always missing."""
     same = nl == cl
-    nl, cl = drop_ieee(nl, members), drop_ieee(cl, members)
+    nl, cl = G.drop_ieee(nl, members), G.drop_ieee(cl, members)
     why = []
     # a lost error, failure or fatal of a cycle-based process may change the exit status (A12)
     lost_err = any(l.startswith("diag\t") and sev(l) in ("error", "failure", "fatal") and lost(l.split("\t")[4]) for l in nl)
@@ -251,7 +227,7 @@ def compare(nrc, nl, nfiles, crc, cl, cfiles, lost, members=frozenset(), roots=(
             why.append(f"end time {ends(nl)} normal, {ends(cl)} cycle")
         if set(nfiles) != set(cfiles):
             why.append(f"files written: {sorted(set(nfiles) ^ set(cfiles))[:4]} in one mode only")
-        why += [f"file {k}: {w}" for k in sorted(set(nfiles) & set(cfiles)) if (w := same_text(nfiles[k], cfiles[k], *roots))]
+        why += [f"file {k}: {w}" for k in sorted(set(nfiles) & set(cfiles)) if (w := same_text(nfiles[k], cfiles[k], *roots, meta=meta))]
     if why:
         return "differs", why
     if same:
@@ -356,8 +332,8 @@ def one_run(e, mode, base, a, stats=True, perf=None):
             s = s.replace(k, v)
         return s
 
-    exact = a.contract == "exact" or mode == "xreport"
-    flag = {"normal": [], "cycle": ["--cycle"], "report": ["--cycle-report"], "xreport": ["--cycle-report"]}[mode]
+    exact = a.contract == "exact"
+    flag = {"normal": [], "cycle": ["--cycle"], "report": ["--cycle-report"]}[mode]
     flag += [G.EXACT] if exact and mode != "normal" else []
     argv = [a.bin, "run", *flag, *[fix(x) for x in e["argv"][2:]]]
     env = {**os.environ, **{k: fix(v) for k, v in e.get("env", {}).items()}, **dict(x.split("=", 1) for x in a.env),
@@ -366,6 +342,8 @@ def one_run(e, mode, base, a, stats=True, perf=None):
         env["YAVS_CYCLE_EXACT_CLOCKS"] = "1"
     else:
         env.pop("YAVS_CYCLE_EXACT_CLOCKS", None)
+    if mode == "report":
+        env["YAVS_CYCLE_DOWNSTREAM"] = str(base / "down.txt")  # the contract classes' processes outside
     if mode == "cycle" and a.warm and stats:
         env["YAVS_CYCLE_STATS"] = "1"  # the cache hits; its lines are taken out below
     cmd = shlex.split(a.prefix) + [shutil.which("timeout"), str(a.timeout)]
@@ -398,24 +376,41 @@ def one(e, a):
         else:
             (crc, cout, cerr, cf_) = one_run(e, "cycle", base, a)
             rerr = one_run(e, "report", base, a)[2]
+            raw_cerr = cerr
             cerr, _ = G.split_report(cerr)
             rep = G.split_report(rerr)[1]
             held, dropped = G.held_asserts(rep)
             res["members"], res["procs"] = G.count_members(rep)
             lost = lambda path: dropped > 0 and path != "-" and path in held
             hr, mr = raw_names(rep)
-            if a.contract == "default":  # a failed check by code and place (A34)
+            default = a.contract == "default"
+            if default:  # a failed check by code and place (A34)
                 nerr, cerr = D.code_loc(nerr), D.code_loc(cerr)
-            nl = D.normalise(nrc, strip_records(nout, hr, mr), strip_records(nerr, hr, mr), yavs=True)
-            cl = D.normalise(crc, strip_records(cout, hr, mr), strip_records(cerr, hr, mr), yavs=True)
+            down = G.read_down(base / "down.txt")
+            texts, gone = [], [[], []]
+            for k, t in enumerate((nout, nerr, cout, cerr)):
+                t, g = G.drop_down(strip_records(t, hr, mr), down)
+                texts.append(t)
+                gone[k // 2] += g
+            classes = G.lib_class(*gone)
+            nl = D.normalise(nrc, texts[0], texts[1], yavs=True)
+            cl = D.normalise(crc, texts[2], texts[3], yavs=True)
+            meta = default and G.meta_evidence(raw_cerr, rep)
+            if meta and nl != cl:
+                cl, k = G.meta_align(nl, cl)
+                if k:
+                    classes.append("metavalues read as 0 or 1")
             res["end"] = ends(nl)[-1] if ends(nl) == ends(cl) else f"{ends(nl)[-1]} normal, {ends(cl)[-1]} cycle"
-            res["bucket"], res["why"] = compare(nrc, nl, nf, crc, cl, cf_, lost, member_paths(rep), (str(base / "normal"), str(base / "cycle")))
+            res["bucket"], res["why"] = compare(nrc, nl, nf, crc, cl, cf_, lost, G.member_paths(rep), (str(base / "normal"), str(base / "cycle")), meta)
+            if meta and res["bucket"] != "differs" and any(same_text(nf[f], cf_[f], str(base / "normal"), str(base / "cycle"))
+                                                          for f in set(nf) & set(cf_)):
+                classes.append("metavalues read as 0 or 1 in a written file")
+            res["classes"] = classes
+            b, w = G.contract_bucket(res["bucket"], "; ".join(res["why"]), classes, default)
+            if b != res["bucket"]:
+                res.update(bucket=b, why=[w])
             if G.CRASH.search(cerr + rerr):
                 res.update(bucket="differs", why=["cycle mode crashed or failed internally"] + cerr.splitlines()[-10:])
-            elif res["bucket"] == "differs" and a.contract == "default":
-                xrep = G.split_report(one_run(e, "xreport", base, a)[2])[1]
-                if xrep != rep:
-                    res.update(bucket="contract", why=["the default contract changes the region: " + G.region_diff(xrep, rep)] + res["why"])
             if res["bucket"] == "identical" and (nout, nerr) != tuple(strip_records(t, hr, mr) for t in (nout, nerr)):
                 res.update(bucket="documented", why=["reports and library warnings of cycle-based processes"])
             h = res["hits"] = a.hits.get(e["name"], {})
@@ -464,7 +459,7 @@ def selftest():
     w = "diag\twarning\t0\t1\t:tb:d:r\tNUMERIC_STD.\">\": metavalue detected, returning FALSE"
     assert cmp(n + [w], n, members={":tb:d:r"}) == "documented"  # a library warning of a cycle-based process
     assert cmp(n + [w], n) == "differs" and cmp(n + [w], n, members={":tb:x"}) == "differs"
-    assert member_paths(["cycle mode: 1 of 2 processes", "  cycle-based, 2 processes:", "    tb.d.r (a.vhd:3)  clocked", "    tb.q <= ... (a.vhd:4)  combinational", "  next"]) == {":tb:d:r", D.lrm_path("tb.q <= ..."), ":tb:q"}
+    assert G.member_paths(["cycle mode: 1 of 2 processes", "  cycle-based, 2 processes:", "    tb.d.r (a.vhd:3)  clocked", "    tb.q <= ... (a.vhd:4)  combinational", "  next"]) == {":tb:d:r", D.lrm_path("tb.q <= ..."), ":tb:q"}
     rep = ["cycle mode: 2 of 5 processes run cycle-based", "  2 asserts and reports not evaluated in cycle mode, held by 2 cycle-based processes:",
            "       1  tb.q <= ... (a.vhd:3)", "       1  tb.p", "  cycle-based, 3 processes:", "    tb.q <= ... (a.vhd:3)  combinational",
            "    tb.p (a.vhd:9)  clocked", "    tb.r (a.vhd:12)  clocked", "  subset"]

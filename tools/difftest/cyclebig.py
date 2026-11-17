@@ -12,8 +12,8 @@ are made by tools/realbench/run.py --prepare. Stdlib only. See README.md.
 
 `--contract exact` (the default) runs cycle mode under the exact rules (`--cycle-exact-meta`,
 YAVS_CYCLE_EXACT_CLOCKS=1), which `GATE` holds. `--contract default` runs plain `--cycle`: the member
-count is shown, not checked, a difference of the output is listed as `CONTRACT`, and only a crash, an
-internal error or another exit status fails.
+count is shown, not checked, and a line of a file that differs only where the normal mode has a
+metavalue and cycle mode a digit (`cyclegate.meta_pair`) is `CONTRACT`; every other difference fails.
 """
 import argparse, itertools, os, re, shutil, subprocess, sys, time
 from pathlib import Path
@@ -21,6 +21,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "realbench"))
 import run as R  # noqa: E402  (tools/realbench/run.py: tests.toml, the yavs command of a world, console_of)
+sys.path.insert(0, str(HERE))
+import cyclegate as G  # noqa: E402  (the contract classes)
 
 DEFAULT = "neorv32_dual_full,microwatt_coremark_short"
 MEMBERS = re.compile(r"(\d+) of (\d+) processes")
@@ -40,13 +42,18 @@ GATE = {
 }
 
 
-def same_lines(a, b):
-    """None when the text files a (normal) and b (cycle) are equal, a `?` of a matching anything; else where."""
+def same_lines(a, b, meta=None):
+    """None when the text files a (normal) and b (cycle) are equal, a `?` of a matching anything; else where.
+    With a list `meta` (the default contract) a line the metavalue class explains (`cyclegate.meta_pair`)
+    matches too, and is counted in it."""
     with open(a, errors="replace") as fa, open(b, errors="replace") as fb:
         for i, (x, y) in enumerate(itertools.zip_longest(fa, fb), 1):
             if x is None or y is None:
                 return f"line {i}: one file ends earlier"
             if x != y and (len(x) != len(y) or any(c != d and c != "?" for c, d in zip(x, y))):
+                if meta is not None and G.meta_pair(x, y):
+                    meta.append(i)
+                    continue
                 return f"line {i}: {x.rstrip()!r} against {y.rstrip()!r}"
     return None
 
@@ -62,6 +69,10 @@ def selftest(d):
     assert same_lines(n, f("x", "a 0x00000002\nb\n")).startswith("line 1")
     assert same_lines(n, f("s", "a 0x00000001\n")).startswith("line 2")
     assert same_lines(f("e", ""), f("e2", "")) is None
+    m, u = [], f("u", "a 0xUUUU0001\nb\n")
+    assert same_lines(u, f("c2", "a 0x00000001\nb\n"), m) is None and m == [1]
+    assert same_lines(u, f("c3", "a 0x00000001\nb\n")).startswith("line 1")  # exact: no metavalue class
+    assert same_lines(u, f("c4", "a 0x00000002\nb\n"), []).startswith("line 1")
     shutil.rmtree(d)
     print("selftest ok")
 
@@ -103,7 +114,7 @@ def main():
     ap.add_argument("--keep", action="store_true", help="keep the scratch directory")
     ap.add_argument("--contract", choices=("exact", "default"), default="exact",
                     help="exact (default): --cycle-exact-meta and YAVS_CYCLE_EXACT_CLOCKS=1, members checked against GATE; "
-                         "default: plain --cycle, differences listed, only a crash or another exit status fails")
+                         "default: plain --cycle, lines that differ only by metavalues read two-state are CONTRACT, any other difference fails")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.contract == "exact":
@@ -144,13 +155,13 @@ def main():
         why += [f"the normal console lacks /{e}/" for e in t.get("expect", []) if not re.search(e, con, re.M)]
         if set(nf) != set(cf):
             why.append(f"files written: {sorted(nf)} normal, {sorted(cf)} cycle")
-        diffs = [f"{k}: {d}" for k in sorted(set(nf) & set(cf)) if (d := same_lines(nf[k], cf[k]))]
+        meta = [] if a.contract == "default" else None
+        why += [f"{k}: {d}" for k in sorted(set(nf) & set(cf)) if (d := same_lines(nf[k], cf[k], meta))]
         crashed = any(l.startswith("crashed: ") for l in ctail)
         if crashed:
             why.append("the cycle run crashed: " + " / ".join(ctail))
-        contract = a.contract == "default" and not why and diffs
-        if not contract:
-            why += diffs
+        contract = not why and bool(meta)
+        diffs = [f"{len(meta)} lines differ only where the normal mode has a metavalue (read as 0 or 1)"] if contract else []
         lines = {k: sum(1 for l in open(p, errors="replace") if l.strip()) for k, p in nf.items()}
         if not mem or mem.startswith("0 "):
             why.append("no process joined the region: nothing was compared")

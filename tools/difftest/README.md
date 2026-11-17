@@ -125,17 +125,34 @@ run stops when it differs:
 Every comparing tool here (`cyclegate.py`, `cyclereplay.py`, `cyclebig.py`, `cyclefuzz.py`, `seeddiff.py`) compares
 exactly by default, `--contract exact`: its cycle runs take `--cycle-exact-meta` and `YAVS_CYCLE_EXACT_CLOCKS=1`,
 which keep the normal mode's metavalue rules, a copied clock a clock of its own and the values in a failed check's
-message, so a difference is a bug. The default contract of `--cycle` gives up all three (`docs/cycle-mode.rst`, "The
-contract in short"): `--contract default` runs plain `--cycle` to show it does not crash. `cyclegate.py` and
-`cyclereplay.py` compare a failed check (E3009) there by its code and source place only (`difftest.code_loc`, both
-modes), and also make the region report
-under the exact rules: where it equals the default's, the test must pass as under the exact gate; where it differs,
-a difference of the output is bucket `contract` (listed with the first rows the exact region has and the default's
-lacks, not failing); a crash or an internal error (`E9999`) always fails. `cyclebig.py --contract default` lists a
-difference as `CONTRACT` and checks no member count; `cyclefuzz.py` and `seeddiff.py` only change the flags. Run the
-gates exact before a push, and default once to see that it runs:
+message, so a difference is a bug. The default contract of `--cycle` gives up those (`docs/cycle-mode.rst`, "The
+contract in short"): `--contract default` runs plain `--cycle`, and a difference is bucket (fuzzer verdict)
+`contract` only when the contract classes below explain all of it; whatever is left fails, as under the exact
+contract. Run the gates in both contracts before a push:
 
     YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclegate.py --contract default -v
+
+### Contract classes
+
+The classes are normalisations, each applied one way and only where its evidence holds; after them the two runs
+must be identical (or differ only by what the exact gate calls documented). `cyclegate.py` holds them
+(`contract_lines`, `meta_pair`, `drop_down`, with `--selftest` cases for each, negatives included); the gate, the
+replay (console and written files), the fuzzer (`explained`) and `cyclebig.py` (written files) use them.
+
+| Class | Rule | Evidence | Contracts |
+|---|---|---|---|
+| metavalue read as 0 or 1 | a cycle line equals the normal line but where the normal line holds `U`, `X`, `Z`, `W` or `-` and the cycle line a digit (`0`-`9`, `A`-`F`: a bit, or a hex digit of a value computed from it), or `H` against `1`, `L` against `0`; lines of one length, paired in order by their text with digits and metavalues masked; never a metavalue on the cycle side | the cycle run's `metavalue elements read as 0` line, a member's metavalue literal or an input nothing drives in the region report (`meta_evidence`); `cyclebig.py` has no report and applies it to files only | default |
+| library metavalue warnings of processes outside | a `NUMERIC_STD...: metavalue detected` note or warning record (`** ...` and its `Process NAME` line) of a process in the region's downstream set is taken out of both runs; the class is used when the two runs' records differ. The downstream set (`YAVS_CYCLE_DOWNSTREAM=FILE` on the report run, `region::downstream`) is every process outside that reads a leaf the region exports, directly or through other processes outside, port edges (both ways) and implicit signals: only those can see a value the region gave two-state (the default contract, A31) or a `'U'` start it gave as 0 (A21, A23c; also under the exact contract). A warning of any other process outside must be the same in both runs | the downstream set | default: `contract`; exact: `documented` |
+| library warnings of members | as A33: the region gives none; taken out of both runs (`drop_ieee`) | the region report's members | both (documented) |
+| message of a failed check | `E3009` compared by its code and source place (`difftest.code_loc`) | none needed: the code and place stay | default |
+
+Not automatic, and so a failure until reviewed: a copied clock's delta order (A32: a register of the source read
+directly on a copy gives its value before the edge; the values shift, no text rule can tell them from a wrong one;
+`cyclegate.expected` takes a reviewed entry per contract, keyed by the diff's checksum), and a testbench or process
+outside whose control flow depends on a metavalue the region now gives as 0 (an assert on a `'Z'`, a wait for
+`valid /= '0'`): its extra or missing lines are reviewed by hand with `cyclereplay.py -v` and the run's directory.
+The fuzzer keeps its checker off the outputs that pass on a `'Z'` for this reason.
+
 
 The gate has no large design. `cyclebig.py` is its companion for the big ones, required before every push that
 changes which processes join the region: it runs realbench worlds (made by

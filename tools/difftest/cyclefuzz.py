@@ -12,6 +12,9 @@ Stdlib only. See README.md "Cycle mode fuzzer".
 import argparse, hashlib, json, os, random, re, shutil, subprocess, sys, time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cyclegate as G  # noqa: E402  (the contract classes)
+
 GEN = hashlib.sha1(Path(__file__).read_bytes()).hexdigest()[:10]  # the generator a seed's design came from
 
 WIDTHS = [1, 1, 2, 3, 4, 5, 7, 8, 8, 12, 16, 31, 32, 33, 63, 64, 64, 65, 65, 100, 127, 128, 128, 129]
@@ -2030,8 +2033,11 @@ def render_tb(g, top, cycles):
         clocks = "  clk0 <= not clk0 after 5 ns;\n  clk1 <= not clk1 after 7 ns;"
         n_tb = 4
     chk = ""
-    if "assert" in g.feat and shown:  # a checker of the top-level unit: evaluated at the clock edge, same messages
-        o = rng.choice(shown)
+    # A checker of the top-level unit: evaluated at the clock edge, same messages. Not on a zpass output: its
+    # 'Z' reads '0' under the default contract, so the check would decide another way (README "Contract classes").
+    checked = [o for o in shown if not o.name.startswith("zo")]
+    if "assert" in g.feat and checked:
+        o = rng.choice(checked)
         e = {"sl": f"{o.name} = '1'", "int": f"{o.name} > {o.t.lo}"}.get(o.t.k)
         if o.t.k == "enum":
             e = f"{o.name} = {o.t.lits[0]}"
@@ -2047,7 +2053,7 @@ def render_tb(g, top, cycles):
 """
             n_tb += 1
     hx = """  function hx(v : std_ulogic_vector) return string is
-    constant d : string(1 to 16) := "0123456789ABCDEF";
+    constant d : string(1 to 17) := "0123456789ABCDEFX";
     variable r : string(1 to (v'length + 3) / 4);
     variable x : std_ulogic_vector(4 * r'length - 1 downto 0) := (others => '0');
     variable k : natural;
@@ -2060,7 +2066,8 @@ def render_tb(g, top, cycles):
         if x(4 * (r'length - i) + j) = '1' then
           k := k + 1;
         elsif x(4 * (r'length - i) + j) /= '0' then
-          return "X";
+          k := 16;  -- a digit with a metavalue is 'X', as to_hstring gives it
+          exit;
         end if;
       end loop;
       r(i) := d(k + 1);
@@ -2165,7 +2172,7 @@ def script(binary, tiers, warm, checks, std="2008"):
     x = CONTRACT["exact"]
     y = ("export YAVS_CYCLE_EXACT_CLOCKS=1; " if x else "unset YAVS_CYCLE_EXACT_CLOCKS; ") + f"Y={binary}; S='--std={std} --work=work:lib{' ' + EXACT if x else ''}'; "
     st = ['$Y analyze $S d.vhd > a.out 2>&1 || exit 97', '$Y elab $S fz_tb > e.out 2>&1 || exit 98',
-          '$Y run $S --cycle-report fz_tb > report.out 2> report.err']
+          'YAVS_CYCLE_DOWNSTREAM=down.txt $Y run $S --cycle-report fz_tb > report.out 2> report.err']
     st[:2] = [c.replace("$S", "$A") for c in st[:2]]  # analyze and elab take no cycle flag
     y += f"A='--std={std} --work=work:lib'; "
     runs = []
@@ -2260,11 +2267,32 @@ def check(d, a, binary, seed=None):
         for n in [r for r in runs if r.endswith("-" + t) and not r.startswith("normal")] + (["checks"] if t == tiers[0] and "checks" in runs else []):
             got = (rd(n, "rc"), rd(n, "out"), rd(n, "err"))
             if got[0] != ref[0] or got[1] != ref[1] or strip(got[2]) != strip(ref[2]):
-                res.update(verdict="differs", run=n, why=first_diff(ref, got))
-                return res
+                ok, cls = explained(ref, got, d, rd("report", "err"))
+                if not ok:
+                    res.update(verdict="differs", run=n, why=first_diff(ref, got))
+                    return res
+                res["classes"] = sorted(set(res.get("classes", [])) | set(cls))
+    if res.get("classes"):
+        res["verdict"] = "contract" if not CONTRACT["exact"] else "documented"
     if res["members"] == 0:
         res["verdict"] = "vacuous"
     return res
+
+
+def explained(ref, got, d, rep):
+    """(whether the contract classes explain every difference of a cycle run `got` from the normal run
+    `ref`, the classes used): library metavalue warnings of processes outside that read the region, and
+    under the default contract metavalues read two-state (tools/difftest/cyclegate.py, README)."""
+    if got[0] != ref[0] or strip(got[2]) != strip(ref[2]):
+        return False, []
+    down = G.read_down(d / "down.txt")
+    (n, a), (c, b) = G.drop_down(ref[1], down), G.drop_down(got[1], down)
+    cls = G.lib_class(a, b)
+    nl, cl = n.splitlines(), c.splitlines()
+    if nl != cl and not CONTRACT["exact"] and G.meta_evidence(got[2], rep.splitlines()):
+        cl, k = G.meta_align(nl, cl)
+        cls += ["metavalues read as 0 or 1"] if k else []
+    return nl == cl, cls
 
 
 def first_diff(ref, got):
@@ -2372,7 +2400,7 @@ def main():
     if a.cmd == "check":
         r = check(Path(a.dir), a, binary)
         print(json.dumps(r, indent=1))
-        return 0 if r["verdict"] in ("same", "vacuous") else 1
+        return 0 if r["verdict"] in ("same", "vacuous", "contract", "documented") else 1
     for f in a.feat or []:
         if f not in FEATS:
             ap.error(f"unknown construct {f!r} in --feat; known: {', '.join(FEATS)}")
@@ -2431,7 +2459,7 @@ def report(futs, tot, reasons_all, bad, a, wait=False):
         if a.json:
             with open(a.json, "a") as fh:
                 fh.write(json.dumps(r) + "\n")
-        if r["verdict"] not in ("same", "vacuous"):
+        if r["verdict"] not in ("same", "vacuous", "contract", "documented"):
             bad.append(r)
             print(f"{r['verdict']}: seed {r['seed']} {r.get('run', '')}", flush=True)
         elif not a.keep:

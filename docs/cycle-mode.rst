@@ -395,8 +395,12 @@ the testbench's own end at 1022 ns with status 0.
   unrolled loop or an enclosing call knows joins only when its assertions are shown to hold; otherwise its process
   stays in the event simulation. In a process of the top-level unit any such message keeps the process in the event
   simulation.
-* A known gap: a message made while a constant is evaluated during elaboration (``constant c : t := f(3);`` where
-  ``f`` reports) can appear twice in cycle mode (``** Warning: (init): ...`` and the like, on standard error).
+* A message made while a constant is evaluated (``constant c : t := f(3);`` where ``f`` reports, ``** Warning:
+  (init): ...`` on standard error) appears once, as in the normal mode, also when every process of the constant's
+  region runs cycle-based. ``--cycle-report`` does not run the design and does not show these messages. A known
+  gap: when every process of the region runs cycle-based and the constant's function has no ``report`` or ``assert``
+  of the design's own, the region's constants are not evaluated in the run, so a warning of the ``ieee`` libraries
+  they give (a truncating ``to_unsigned``) is not made, and one that fails (an overflow) does not stop the run.
 
 Delta cycles inside the region are not visible
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

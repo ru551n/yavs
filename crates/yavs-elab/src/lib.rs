@@ -521,6 +521,10 @@ pub struct Elaborated {
     pub region_calls: std::collections::HashMap<(ScopeId, yavs_sem::ExprId), RegionCall>,
     /// With [`ElabConfig::keep_values`]: the top-level generics elaboration read.
     pub generic_reads: GenericReads,
+    /// With [`ElabConfig::keep_values`]: the scopes declaring a constant only the run-time
+    /// evaluation gives whose initial value calls a subprogram that may report; the build runs
+    /// such a region's declarative part when only cycle region members use it.
+    pub loud_consts: std::collections::HashSet<ScopeId>,
     /// Per leaf: nothing asks for the event history of single elements of this signal, so
     /// the kernel keeps only each block's last event (`lean.rs`). Clear it to keep the history
     /// of every signal; empty means the same.

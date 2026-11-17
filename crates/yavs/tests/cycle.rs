@@ -4438,3 +4438,97 @@ fn a_resolution_function_of_the_design_runs_on_out_ports() {
         }
     }
 }
+
+/// The reports of constants' initial values are made once under `--cycle`, as in the normal
+/// mode, with and without the call cache: the value passes of cycle mode evaluate constants
+/// apart from the model and neither print nor count what they report (they printed every
+/// report a second time). A process calling a function that reports an error stays out.
+#[test]
+fn reports_of_constants_are_made_once() {
+    let dir = tempdir("cycle-constrep");
+    analyze(&dir, "constrep.vhd", include_str!("cycle/constrep.vhd"));
+    let go = |flags: &[&str]| {
+        let mut args = vec!["run", "--work=work:lib"];
+        args.extend(flags);
+        args.push("cycle_constrep");
+        let o = yavs(&dir, &args);
+        let err = String::from_utf8_lossy(&o.stderr).into_owned();
+        let init: Vec<String> = (err.lines())
+            .filter(|l| l.contains("(init)"))
+            .map(String::from)
+            .collect();
+        (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            init,
+            err,
+        )
+    };
+    for t in tiers() {
+        for cache in [&["--no-cache"][..], &[]] {
+            let f = [&t[..], cache].concat();
+            let normal = go(&f);
+            assert_eq!(normal.2.len(), 9, "{:?}", normal.2);
+            let cycle = go(&[&f[..], &["--cycle"]].concat());
+            let members = "cycle mode: 2 of 5 processes run cycle-based";
+            assert!(cycle.3.contains(members), "{}", cycle.3);
+            assert_eq!(
+                (&cycle.0, &cycle.1, &cycle.2),
+                (&normal.0, &normal.1, &normal.2),
+                "{f:?}\n{}",
+                cycle.3
+            );
+            // The member-only instance's constant fails: the run stops in both modes.
+            let normal = go(&[&f[..], &["-gbad=true"]].concat());
+            let cycle = go(&[&f[..], &["-gbad=true", "--cycle"]].concat());
+            assert!(normal.3.contains("leaf constant fails"), "{}", normal.3);
+            assert_ne!(normal.0, Some(0), "{}", normal.3);
+            assert_eq!((&cycle.0, &cycle.2), (&normal.0, &normal.2), "{}", cycle.3);
+        }
+    }
+}
+
+/// A constant whose value needs an impure call on the way, left to the run by elaboration: the
+/// value pass of cycle mode undoes that call (the package state is made again), so the run
+/// makes it once.
+#[test]
+fn impure_calls_of_the_value_pass_are_undone() {
+    let dir = tempdir("cycle-undo");
+    std::fs::write(dir.join("undo.vhd"), include_str!("cycle/undo.vhd")).expect("write design");
+    let o = yavs(
+        &dir,
+        &[
+            "analyze",
+            "--std=2008",
+            "--relaxed",
+            "--work=work:lib",
+            "undo.vhd",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    for t in tiers() {
+        for cycle in [false, true] {
+            let mut args = vec!["run", "--relaxed", "--work=work:lib", "--no-cache"];
+            args.extend(&t);
+            if cycle {
+                args.push("--cycle");
+            }
+            args.push("cycle_undo");
+            let o = yavs(&dir, &args);
+            let (out, err) = (
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr),
+            );
+            assert!(
+                out.contains("D=4 C=14 q=14 next=2"),
+                "{args:?}\n{out}\n{err}"
+            );
+            if cycle {
+                assert!(
+                    err.contains("cycle mode: 0 of 3 processes run cycle-based"),
+                    "{err}"
+                );
+            }
+        }
+    }
+}

@@ -731,13 +731,20 @@ pub(crate) fn elaborate(
             .sum::<u64>()
     };
     let before = printed();
+    // Cycle mode's value passes evaluate apart from the model: what they report is not printed,
+    // the run makes each report as a plain run does.
     let (region_vals, region_ranges) = if values {
-        e.region_values()
+        yavs_interp::capture_elab_reports(|| e.region_values()).0
     } else {
         Default::default()
     };
     let region_calls = if values {
         e.process_calls()
+    } else {
+        Default::default()
+    };
+    let loud_consts = if e.cfg.keep_values {
+        crate::sim::loud_scopes(e.db, &e.m.regions)
     } else {
         Default::default()
     };
@@ -763,6 +770,7 @@ pub(crate) fn elaborate(
         region_ranges,
         region_calls,
         generic_reads: reads,
+        loud_consts,
         sigs: e.m.sigs,
         regions: e.m.regions,
         var_ports: e.m.var_ports,
@@ -6491,7 +6499,7 @@ fn length_differs(shape: &Shape, v: &Val) -> Option<(u64, u64)> {
 /// Whether `f` is a pure function (`ieee` and `std` count), every function of the design it calls
 /// is one, and, with `quiet`, none of them holds an `assert` or `report`; `false` for a body the
 /// scan cannot see.
-fn pure_function(
+pub(crate) fn pure_function(
     db: &Db,
     f: DeclId,
     memo: &mut HashMap<DeclId, bool>,

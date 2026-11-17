@@ -271,61 +271,84 @@ impl Db {
 
     // -- walks ------------------------------------------------------------------
 
-    /// Visit `e` and every expression below it, prefix first.
+    /// Visit `e` and every expression below it, prefix first. An explicit stack: an operator
+    /// chain of many thousand operands nests that deep.
     pub fn walk_expr(&self, e: ExprId, f: &mut dyn FnMut(ExprId)) {
-        f(e);
+        let mut work = vec![e];
+        let mut kids = Vec::new();
+        while let Some(e) = work.pop() {
+            f(e);
+            self.expr_children(e, &mut kids);
+            work.extend(kids.drain(..).rev());
+        }
+    }
+
+    /// The expressions directly below `e`, in the order `walk_expr` visits them.
+    fn expr_children(&self, e: ExprId, out: &mut Vec<ExprId>) {
+        let range = |r: &RangeC, out: &mut Vec<ExprId>| match r {
+            RangeC::Explicit { left, right, .. } => out.extend([*left, *right]),
+            RangeC::Attr {
+                prefix: AttrPrefix::Expr(p),
+                ..
+            } => out.push(*p),
+            RangeC::Attr { .. } => {}
+        };
         match &self.exprs[e].kind {
             ExprKind::Index { prefix, indices } => {
-                self.walk_expr(*prefix, f);
-                for &i in indices.iter() {
-                    self.walk_expr(i, f);
-                }
+                out.push(*prefix);
+                out.extend(indices.iter().copied());
             }
-            ExprKind::Slice { prefix, range } => {
-                self.walk_expr(*prefix, f);
-                self.walk_range(range, f);
+            ExprKind::Slice { prefix, range: r } => {
+                out.push(*prefix);
+                range(r, out);
             }
             ExprKind::Field { prefix, .. }
             | ExprKind::Deref { prefix }
-            | ExprKind::PrivateVar { object: prefix, .. } => self.walk_expr(*prefix, f),
+            | ExprKind::PrivateVar { object: prefix, .. } => out.push(*prefix),
             ExprKind::Call {
                 args, method_of, ..
             } => {
-                if let Some(m) = method_of {
-                    self.walk_expr(*m, f);
-                }
+                out.extend(*method_of);
                 for a in args.iter() {
-                    self.walk_actual(&a.actual, f);
+                    match &a.actual {
+                        Actual::Expr(e) | Actual::Converted { actual: e, .. } => out.push(*e),
+                        Actual::Individual(parts) => out.extend(parts.iter().map(|p| p.1)),
+                        Actual::Default
+                        | Actual::Open
+                        | Actual::Subtype(_)
+                        | Actual::Subprogram(_)
+                        | Actual::Package(_) => {}
+                    }
                 }
             }
             ExprKind::Attr { prefix, args, .. } => {
                 if let AttrPrefix::Expr(p) = prefix {
-                    self.walk_expr(*p, f);
+                    out.push(*p);
                 }
-                for &a in args.iter() {
-                    self.walk_expr(a, f);
-                }
+                out.extend(args.iter().copied());
             }
             ExprKind::Aggregate { assocs, .. } => {
                 for a in assocs.iter() {
                     for c in a.choices.iter() {
-                        self.walk_choice(c, f);
+                        match c {
+                            Choice::Expr(e) => out.push(*e),
+                            Choice::Range(r) => range(r, out),
+                            Choice::Element(_) | Choice::Others => {}
+                        }
                     }
-                    self.walk_expr(a.value, f);
+                    out.push(a.value);
                 }
             }
             ExprKind::Qualified { operand, .. }
             | ExprKind::Conv { operand, .. }
-            | ExprKind::ImplicitConv { operand } => self.walk_expr(*operand, f),
+            | ExprKind::ImplicitConv { operand } => out.push(*operand),
             ExprKind::New {
                 init: NewInit::Value(v),
-            } => self.walk_expr(*v, f),
+            } => out.push(*v),
             ExprKind::Conditional { alts } => {
                 for (v, c) in alts.iter() {
-                    self.walk_expr(*v, f);
-                    if let Some(c) = c {
-                        self.walk_expr(*c, f);
-                    }
+                    out.push(*v);
+                    out.extend(*c);
                 }
             }
             ExprKind::Const(_)
@@ -623,6 +646,32 @@ impl Db {
 
     /// Add the LSP of every signal read by evaluating `e` (10.2).
     pub fn reads(&self, e: ExprId, out: &mut Vec<Lsp>) {
+        self.read_walk(Read::Value(e), out);
+    }
+
+    /// Signals read by the index and slice expressions of a name, and by a
+    /// prefix that is not a name (`f(x)(i)`).
+    fn name_reads(&self, e: ExprId, out: &mut Vec<Lsp>) {
+        self.read_walk(Read::Name(e), out);
+    }
+
+    /// `reads` and `name_reads` over an explicit stack, in evaluation order: an operator chain
+    /// of many thousand operands nests that deep.
+    fn read_walk(&self, start: Read, out: &mut Vec<Lsp>) {
+        let mut work = vec![start];
+        let mut next = Vec::new();
+        while let Some(w) = work.pop() {
+            match w {
+                Read::Value(e) => self.reads_of(e, out, &mut next),
+                Read::Name(e) => self.name_reads_of(e, &mut next),
+            }
+            work.extend(next.drain(..).rev());
+        }
+    }
+
+    /// One step of `read_walk` for the value of `e`: what it reads itself goes to `out`, the
+    /// expressions it reads through to `next`, in order.
+    fn reads_of(&self, e: ExprId, out: &mut Vec<Lsp>, next: &mut Vec<Read>) {
         match &self.exprs[e].kind {
             ExprKind::Obj(_)
             | ExprKind::External(_)
@@ -634,7 +683,7 @@ impl Db {
                 if let Some(l) = self.signal_lsp(e) {
                     push_unique(self, out, l);
                 }
-                self.name_reads(e, out);
+                next.push(Read::Name(e));
             }
             ExprKind::Attr { attr, prefix, args } => {
                 use PredefAttr::*;
@@ -654,20 +703,20 @@ impl Db {
                             | Transaction
                     )
                 {
-                    self.reads(*p, out);
+                    next.push(Read::Value(*p));
                 }
-                for &a in args.iter() {
-                    self.reads(a, out);
-                }
+                next.extend(args.iter().map(|&a| Read::Value(a)));
             }
             ExprKind::Call {
                 args, method_of, ..
             } => {
                 if let Some(m) = method_of {
-                    self.reads(*m, out);
+                    next.push(Read::Value(*m));
                 }
                 for a in args.iter() {
-                    self.actual_reads(&a.actual, out);
+                    self.walk_actual_top(&a.actual, Use::Value, &mut |e, _| {
+                        next.push(Read::Value(e))
+                    });
                 }
             }
             ExprKind::Aggregate { assocs, .. } => {
@@ -675,28 +724,28 @@ impl Db {
                     // Choices are read too (10.2): `(1 to i => '1')` is sensitive to `i`.
                     for c in a.choices.iter() {
                         match c {
-                            Choice::Expr(e) => self.reads(*e, out),
+                            Choice::Expr(e) => next.push(Read::Value(*e)),
                             Choice::Range(RangeC::Explicit { left, right, .. }) => {
-                                self.reads(*left, out);
-                                self.reads(*right, out);
+                                next.push(Read::Value(*left));
+                                next.push(Read::Value(*right));
                             }
                             _ => {}
                         }
                     }
-                    self.reads(a.value, out);
+                    next.push(Read::Value(a.value));
                 }
             }
             ExprKind::Qualified { operand, .. }
             | ExprKind::Conv { operand, .. }
-            | ExprKind::ImplicitConv { operand } => self.reads(*operand, out),
+            | ExprKind::ImplicitConv { operand } => next.push(Read::Value(*operand)),
             ExprKind::New {
                 init: NewInit::Value(v),
-            } => self.reads(*v, out),
+            } => next.push(Read::Value(*v)),
             ExprKind::Conditional { alts } => {
                 for (v, c) in alts.iter() {
-                    self.reads(*v, out);
+                    next.push(Read::Value(*v));
                     if let Some(c) = c {
-                        self.reads(*c, out);
+                        next.push(Read::Value(*c));
                     }
                 }
             }
@@ -709,37 +758,26 @@ impl Db {
         }
     }
 
-    /// Signals read by the index and slice expressions of a name, and by a
-    /// prefix that is not a name (`f(x)(i)`).
-    fn name_reads(&self, e: ExprId, out: &mut Vec<Lsp>) {
+    /// One step of `read_walk` for the name `e`.
+    fn name_reads_of(&self, e: ExprId, next: &mut Vec<Read>) {
         match &self.exprs[e].kind {
             ExprKind::Index { prefix, indices } => {
-                for &i in indices.iter() {
-                    self.reads(i, out);
-                }
-                self.name_reads(*prefix, out);
+                next.extend(indices.iter().map(|&i| Read::Value(i)));
+                next.push(Read::Name(*prefix));
             }
             ExprKind::Slice { prefix, range } => {
                 if let RangeC::Explicit { left, right, .. } = range {
-                    self.reads(*left, out);
-                    self.reads(*right, out);
+                    next.push(Read::Value(*left));
+                    next.push(Read::Value(*right));
                 }
-                self.name_reads(*prefix, out);
+                next.push(Read::Name(*prefix));
             }
             ExprKind::Field { prefix, .. } | ExprKind::Deref { prefix } => {
-                self.name_reads(*prefix, out)
+                next.push(Read::Name(*prefix))
             }
             ExprKind::Obj(_) | ExprKind::External(_) => {}
-            ExprKind::PrivateVar { object, .. } => self.name_reads(*object, out),
-            _ => self.reads(e, out),
-        }
-    }
-
-    fn actual_reads(&self, a: &Actual, out: &mut Vec<Lsp>) {
-        let mut v = Vec::new();
-        self.walk_actual_top(a, Use::Value, &mut |e, _| v.push(e));
-        for e in v {
-            self.reads(e, out);
+            ExprKind::PrivateVar { object, .. } => next.push(Read::Name(*object)),
+            _ => next.push(Read::Value(e)),
         }
     }
 
@@ -2002,4 +2040,12 @@ fn push_unique(db: &Db, out: &mut Vec<Lsp>, l: Lsp) {
     if !out.iter().any(|o| db.same_lsp(o, &l)) {
         out.push(l);
     }
+}
+
+/// A step of `Db::read_walk`: the signals read by the value of an expression, or by the
+/// indices and prefixes of a name.
+#[derive(Clone, Copy)]
+enum Read {
+    Value(ExprId),
+    Name(ExprId),
 }

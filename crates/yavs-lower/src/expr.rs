@@ -1,6 +1,8 @@
 //! Expressions (DESIGN.md "Expressions"): values, ranges and descriptors, calls, implicit
 //! operations, attributes, names and conversions.
 
+use std::collections::HashMap;
+
 use yavs_diag::Span;
 use yavs_ir::{
     AttrKind, BoolOp, CmpOp, ConstData, Dir, FOp, FUnOp, IntOp, IntUnOp, LOp, PhysOp, Reg, RegTy,
@@ -235,7 +237,16 @@ impl<'a> Fx<'a, '_> {
     }
 
     pub fn expr(&mut self, id: ExprId) -> R<V> {
+        if let Some(v) = self.ahead.remove(&id) {
+            return Ok(v);
+        }
+        let spine = self.chain_ahead(id)?;
         let v = self.expr_value(id)?;
+        if spine.iter().any(|x| self.ahead.remove(x).is_some()) {
+            return Err(self
+                .cx
+                .ice(self.db.exprs[id].span, "an operand lowered ahead is unused"));
+        }
         if !self.cov_inputs.is_empty() {
             self.cov_input(id, v);
         }
@@ -4117,7 +4128,7 @@ impl<'a> Fx<'a, '_> {
         let real = ty::is_real(db, op.ty);
         // Static operands keep exact values up to the outermost operation (#872).
         let wide = res
-            .filter(|_| ex.iter().all(|&e| elab_known(db, e)))
+            .filter(|_| ex.iter().all(|&e| elab_known(db, &mut self.known, e)))
             .map(|st| db.base(st));
         let a = self.arith_operand(ex[0], wide)?;
         let b = match ex.get(1) {
@@ -4236,6 +4247,15 @@ impl<'a> Fx<'a, '_> {
     /// integer or physical type itself, its value is not checked against the base range, only
     /// the outermost operation's is (#872, lrm-checks.md L156).
     fn arith_operand(&mut self, e: ExprId, wide: Option<TypeId>) -> R<Reg> {
+        match self.ahead.remove(&e) {
+            Some(V::S(r)) => return Ok(r),
+            Some(V::A(..)) => {
+                return Err(self
+                    .cx
+                    .ice(self.db.exprs[e].span, "a composite arithmetic operand"));
+            }
+            None => {}
+        }
         let db = self.db;
         let x = &db.exprs[e];
         if let Some(t) = wide
@@ -4281,6 +4301,35 @@ impl<'a> Fx<'a, '_> {
             return Ok(r);
         }
         self.scalar_expr(e)
+    }
+
+    /// Lower the left spine of a long chain of calls below `top` (`a + b + c + ...` nests to
+    /// the left) ahead, deepest first, each operand as its parent takes it (`Fx::ahead`): the
+    /// lowering of every call then finds its left operand done and recursion stays shallow.
+    /// Returns the operands lowered, empty for a short chain.
+    fn chain_ahead(&mut self, top: ExprId) -> R<Vec<ExprId>> {
+        let db = self.db;
+        let mut spine = Vec::new();
+        let mut at = chain_left(db, top);
+        while let Some(x) = at {
+            if self.ahead.contains_key(&x) {
+                break;
+            }
+            spine.push(x);
+            at = chain_left(db, x);
+        }
+        if spine.len() < CHAIN_AHEAD {
+            return Ok(Vec::new());
+        }
+        for (i, &x) in spine.iter().enumerate().rev() {
+            let parent = if i == 0 { top } else { spine[i - 1] };
+            let v = match arith_wide(db, &mut self.known, parent) {
+                Some(t) => V::S(self.arith_operand(x, Some(t))?),
+                None => self.expr(x)?,
+            };
+            self.ahead.insert(x, v);
+        }
+        Ok(spine)
     }
 
     /// Element `i` (0-based from the left) of a 1-D array with `n` elements.
@@ -6550,47 +6599,140 @@ pub(crate) fn index_subtypes(db: &Db, t: yavs_sem::TypeId) -> Option<Vec<Subtype
     }
 }
 
-/// `e`'s value is fixed once the design is elaborated: locally static, or built from generics
-/// and constants whose own values are (#872). A parameter, or a constant computed from one, is
-/// globally static too but varies per call; a generate parameter is excluded too.
-fn elab_known(db: &Db, e: ExprId) -> bool {
-    let x = &db.exprs[e];
-    if x.value.is_some() || x.stat == Staticness::Locally {
-        return true;
-    }
-    if x.stat == Staticness::None {
-        return false;
-    }
-    match &x.kind {
-        ExprKind::Obj(d) => match &db.decls[*d].kind {
-            DeclKind::Object(o) => match o.role {
-                ObjRole::Generic => true,
-                ObjRole::Plain => {
-                    o.class == ObjClass::Constant && o.default.is_some_and(|i| elab_known(db, i))
-                }
-                _ => false,
-            },
-            _ => false,
+/// How long a chain of calls nested to the left must be to be lowered ahead (`chain_ahead`).
+const CHAIN_AHEAD: usize = 256;
+
+/// The left operand of call `e` when it is a call itself (one link of a chain). A `&` of
+/// scalar elements is no link: its lowering takes the chain below it in one (`cat_items`).
+fn chain_left(db: &Db, e: ExprId) -> Option<ExprId> {
+    let flat_cat = |callee: DeclId| match db.decls[callee].kind.subprogram().map(|s| &s.body) {
+        Some(Body::Implicit(op)) if op.family == Family::Cat => match &db.types[op.ty].kind {
+            TypeKind::Array { elem, .. } => !matches!(
+                db.types[db.base(*elem)].kind,
+                TypeKind::Array { .. } | TypeKind::Record { .. }
+            ),
+            _ => true,
         },
+        _ => false,
+    };
+    let call = |e: ExprId| match &db.exprs[e].kind {
         ExprKind::Call {
             callee,
             args,
             method_of: None,
             ..
-        } => {
-            db.decls[*callee]
-                .kind
-                .subprogram()
-                .is_some_and(|sp| matches!(sp.body, Body::Implicit(_)))
-                && args
-                    .iter()
-                    .all(|a| matches!(a.actual, Actual::Expr(i) if elab_known(db, i)))
-        }
-        ExprKind::ImplicitConv { operand }
-        | ExprKind::Qualified { operand, .. }
-        | ExprKind::Conv { operand, .. } => elab_known(db, *operand),
-        _ => false,
+        } if db.exprs[e].value.is_none() && !flat_cat(*callee) => Some(args),
+        _ => None,
+    };
+    match call(e)?.first()? {
+        Arg {
+            actual: Actual::Expr(x),
+            formal: 0,
+            ..
+        } => call(*x).map(|_| *x),
+        _ => None,
     }
+}
+
+/// The type in which predefined arithmetic call `e` takes its operands unchecked (`arith`,
+/// `arith_operand`): all operands known at elaboration.
+fn arith_wide(db: &Db, known: &mut HashMap<ExprId, bool>, e: ExprId) -> Option<TypeId> {
+    let ExprKind::Call { callee, args, .. } = &db.exprs[e].kind else {
+        return None;
+    };
+    let sp = db.decls[*callee].kind.subprogram()?;
+    let Body::Implicit(op) = &sp.body else {
+        return None;
+    };
+    use Family::*;
+    if !matches!(
+        op.family,
+        Add | Sub | Mul | Div | Rem | Mod | Exp | Neg | Pos | Abs
+    ) {
+        return None;
+    }
+    let known = args
+        .iter()
+        .all(|a| matches!(a.actual, Actual::Expr(i) if elab_known(db, known, i)));
+    sp.ret.filter(|_| known).map(|st| db.base(st))
+}
+
+/// `e`'s value is fixed once the design is elaborated: locally static, or built from generics
+/// and constants whose own values are (#872). A parameter, or a constant computed from one, is
+/// globally static too but varies per call; a generate parameter is excluded too.
+fn elab_known(db: &Db, known: &mut HashMap<ExprId, bool>, mut e: ExprId) -> bool {
+    // A loop over the first operand, a chain of operators nests to the left; the answers of
+    // the calls on the way are kept, so a chain's operations ask once each.
+    let mut path = Vec::new();
+    let r = loop {
+        if let Some(&r) = known.get(&e) {
+            break r;
+        }
+        let x = &db.exprs[e];
+        if x.value.is_some() || x.stat == Staticness::Locally {
+            break true;
+        }
+        if x.stat == Staticness::None {
+            break false;
+        }
+        match &x.kind {
+            ExprKind::Obj(d) => {
+                break match &db.decls[*d].kind {
+                    DeclKind::Object(o) => match o.role {
+                        ObjRole::Generic => true,
+                        ObjRole::Plain => {
+                            o.class == ObjClass::Constant
+                                && o.default.is_some_and(|i| elab_known(db, known, i))
+                        }
+                        _ => false,
+                    },
+                    _ => false,
+                };
+            }
+            ExprKind::Call {
+                callee,
+                args,
+                method_of: None,
+                ..
+            } => {
+                if !db.decls[*callee]
+                    .kind
+                    .subprogram()
+                    .is_some_and(|sp| matches!(sp.body, Body::Implicit(_)))
+                {
+                    break false;
+                }
+                let mut first = None;
+                let mut rest = true;
+                for a in args.iter() {
+                    match a.actual {
+                        Actual::Expr(i) if first.is_none() => first = Some(i),
+                        Actual::Expr(i) if elab_known(db, known, i) => {}
+                        _ => rest = false,
+                    }
+                }
+                if !rest {
+                    break false;
+                }
+                path.push(e);
+                match first {
+                    Some(i) => e = i,
+                    None => break true,
+                }
+            }
+            ExprKind::ImplicitConv { operand }
+            | ExprKind::Qualified { operand, .. }
+            | ExprKind::Conv { operand, .. } => {
+                path.push(e);
+                e = *operand;
+            }
+            _ => break false,
+        }
+    };
+    for p in path {
+        known.insert(p, r);
+    }
+    r
 }
 
 /// Whether composite constant `v` has a null array as an element or field.

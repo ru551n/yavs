@@ -136,6 +136,9 @@ pub struct Model {
     pub(crate) pkg_range_owners: Option<HashMap<ExprId, (DeclId, i64, Direction)>>,
     /// Unit count when the range-owner index was built; later packages invalidate it.
     pub(crate) pkg_range_units: usize,
+    /// The left operands of a long chain of predefined scalar operations evaluated ahead,
+    /// deepest first, each taken by its parent (`Model::chain_ahead`).
+    pub(crate) ahead: HashMap<(ExprId, Option<ScopeId>), Val>,
 }
 
 /// How a scalar crosses the kernel: its element and its class.
@@ -642,6 +645,10 @@ pub(crate) struct Lowered1 {
 
 pub(crate) type R<T> = Result<T, Box<Diagnostic>>;
 
+/// How long a chain of predefined operations nested to the left must be to be evaluated ahead
+/// (`Model::chain_ahead`).
+const CHAIN_AHEAD: usize = 256;
+
 pub(crate) fn err(
     code: &'static str,
     span: Span,
@@ -697,6 +704,75 @@ impl Model {
         if let Some(c) = ex.value {
             return Ok(db.consts[c].clone());
         }
+        if !self.ahead.is_empty()
+            && let Some(v) = self.ahead.remove(&(e, scope))
+        {
+            return Ok(v);
+        }
+        let spine = self.chain_ahead(db, e, scope)?;
+        let v = self.eval_here(db, e, scope);
+        let unused = (spine.iter())
+            .filter(|&&x| self.ahead.remove(&(x, scope)).is_some())
+            .count();
+        if unused > 0 && v.is_ok() {
+            return Err(err(
+                codes::INTERNAL,
+                ex.span,
+                "internal error: an operand evaluated ahead is unused",
+                "this is a bug in yavs",
+            ));
+        }
+        v
+    }
+
+    /// Evaluate the left spine of a long chain of predefined scalar operations below `top`
+    /// (`g + g + ...` nests to the left) ahead, deepest first (`Model::ahead`): `fold_with`
+    /// then finds each left operand done, and recursion stays shallow. The operands lowered,
+    /// empty for a short chain.
+    fn chain_ahead(&mut self, db: &Db, top: ExprId, scope: Option<ScopeId>) -> R<Vec<ExprId>> {
+        let left = |e: ExprId| -> Option<ExprId> {
+            let x = &db.exprs[e];
+            let ExprKind::Call {
+                callee,
+                args,
+                method_of: None,
+                ..
+            } = &x.kind
+            else {
+                return None;
+            };
+            let sp = db.decls[*callee].kind.subprogram()?;
+            if !matches!(sp.body, yavs_sem::decl::Body::Implicit(_))
+                || !db.types[db.base(x.subtype)].kind.is_scalar()
+            {
+                return None;
+            }
+            match args.first()?.actual {
+                yavs_sem::hir::Actual::Expr(l) if db.exprs[l].value.is_none() => Some(l),
+                _ => None,
+            }
+        };
+        let mut spine = Vec::new();
+        let mut at = left(top).filter(|&l| left(l).is_some());
+        while let Some(x) = at {
+            if self.ahead.contains_key(&(x, scope)) {
+                break;
+            }
+            spine.push(x);
+            at = left(x).filter(|&l| left(l).is_some());
+        }
+        if spine.len() < CHAIN_AHEAD {
+            return Ok(Vec::new());
+        }
+        for &x in spine.iter().rev() {
+            let v = self.eval(db, x, scope)?;
+            self.ahead.insert((x, scope), v);
+        }
+        Ok(spine)
+    }
+
+    fn eval_here(&mut self, db: &Db, e: ExprId, scope: Option<ScopeId>) -> R<Val> {
+        let ex = &db.exprs[e];
         match &ex.kind {
             ExprKind::Const(c) => return Ok(db.consts[*c].clone()),
             ExprKind::Obj(d) => return self.value_of(db, *d, scope, ex.span),

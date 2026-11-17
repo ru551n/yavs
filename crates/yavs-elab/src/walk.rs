@@ -293,6 +293,9 @@ fn no_generic_actual(db: &Db, d: DeclId, at: Span) -> Box<Diagnostic> {
     )
 }
 
+/// How deep an expression a kernel program takes (`Elab::prog_shape`).
+const PROG_DEPTH: u32 = 256;
+
 fn ice(span: Span, what: &str) -> Diagnostic {
     Diagnostic::error(codes::INTERNAL, format!("internal error: {what}"))
         .with_primary(span, "while elaborating this")
@@ -4022,6 +4025,16 @@ impl Elab<'_> {
     /// `prog_node` knows over such. It keeps the statements that cannot be programs from costing
     /// a probe each at elaboration.
     fn prog_shape(&self, e: ExprId) -> bool {
+        self.prog_shape_at(e, 0)
+    }
+
+    /// `prog_shape` of `e` at `depth`: an expression nested deeper than `PROG_DEPTH` stays a
+    /// lowered process, which loses nothing against a program of it, and the walk stays
+    /// shallow (#1167).
+    fn prog_shape_at(&self, e: ExprId, depth: u32) -> bool {
+        if depth > PROG_DEPTH {
+            return false;
+        }
         let db: &Db = self.db;
         if db.exprs[e].stat != Staticness::None {
             return self.static_cheap(e);
@@ -4050,7 +4063,7 @@ impl Elab<'_> {
                         | "\"/=\""
                         | "\"??\""
                 ) && args.iter().all(|a| match a.actual {
-                    Actual::Expr(x) => self.prog_shape(x),
+                    Actual::Expr(x) => self.prog_shape_at(x, depth + 1),
                     _ => false,
                 })
             }

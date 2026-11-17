@@ -49,11 +49,18 @@ not elaborated passes, where both references reject it at analysis (lrm-checks L
 
 Overload resolution takes the left operands of an operator chain (`a & b & c & ...`, nested to the left) in a loop
 (`Db::resolve`, `resolve_head`, and the bottom-up spine walk in `cands`), and elaboration joins a chain of predefined
-`&` in one pass (`Model::concat`). A concatenation of 8000 and more operands analyses, elaborates (a signal's initial
-value) and runs: analysis had overflowed its stack at about 3800. Still recursive, so still a cliff at a few thousand
-levels (release build, 8 MB stack, measured 2026-11-17): lowering of a chain of declared operator calls (about 3900)
-and of predefined integer arithmetic (about 4000), and elaboration's folding of a generic arithmetic chain (about
-5600). `crates/yavs/tests/cli.rs` `long_operator_chains`.
+`&` in one pass (`Model::concat`). The later stages no longer recurse per operand either (#1167): lowering lowers the
+left spine of a chain of 256 calls or more ahead, deepest first, so each call finds its left operand done
+(`Fx::chain_ahead`, `Fx::ahead`; arithmetic of operands known at elaboration takes them as `arith_operand` does, and
+whether an operand is known is kept per expression, `Fx::known`); elaboration does the same for chains of predefined
+scalar operations (`Model::chain_ahead`); the signals a statement reads and the expression walk of the analysis use
+explicit stacks (`Db::read_walk`, `walk_expr`); a kernel program of a concurrent assignment takes expressions up to 256
+deep (`PROG_DEPTH`; a deeper one stays a lowered process). Measured on a release and a debug build, 8 MB stack: chains
+of 32000 operands of a declared `+`, integer `+` of a signal, of a generic in a signal's initial value and in a
+process, `&` in a process, and 60001 operands of `xor` read by a concurrent statement analyse, elaborate and run.
+Still open: a chain of short-circuit `and`/`or` needs memory in the verifier that grows with its square (#1168, about
+800 MB at 16000 operands); integer `+` of a signal was run up to 120000 operands, nothing longer.
+`crates/yavs/tests/cli.rs` `long_operator_chains` (8000 operands of each form, 60001 of `xor`).
 
 ### Port actuals and `wait until` wait on signals read through aliases (2026-11-17)
 

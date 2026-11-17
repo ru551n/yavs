@@ -255,6 +255,11 @@ pub(crate) struct Fx<'a, 'b> {
     /// The inputs of the conditions being lowered (`covcond.rs`): the state register, the
     /// shift of the input in it and whether it is a `std_ulogic`.
     pub cov_inputs: std::collections::HashMap<yavs_sem::ExprId, (Reg, u8, bool)>,
+    /// The left operands of a long operator chain lowered ahead, deepest first, each taken by
+    /// its parent's lowering (`Fx::chain_ahead`).
+    pub ahead: std::collections::HashMap<yavs_sem::ExprId, crate::expr::V>,
+    /// Which expressions are known at elaboration (`expr::elab_known`), asked by arithmetic.
+    pub known: std::collections::HashMap<yavs_sem::ExprId, bool>,
     /// In a protected type method: the frame depth and slot of `self`.
     pub prot_self: Option<(u8, u32)>,
     /// `default_into` gives protected subelements new objects (2019 composites of
@@ -329,6 +334,8 @@ impl<'a, 'b> Fx<'a, 'b> {
             cov_parent: None,
             cov_arm: None,
             cov_inputs: std::collections::HashMap::new(),
+            ahead: std::collections::HashMap::new(),
+            known: std::collections::HashMap::new(),
             prot_self: None,
             prot_defaults: true,
             guard: None,

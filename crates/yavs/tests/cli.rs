@@ -994,32 +994,45 @@ fn alias_slice_out_of_range() {
 }
 
 /// Chains of thousands of operators (`a & b & c & ...`, nested to the left) analyse, elaborate
-/// and run: the predefined `&` of a process and of a signal's initial value, and a declared `+`
-/// (found by the cycle mode fuzzer: the analyser overflowed its stack at about 3800 levels).
+/// and run: `&` in a process and in a signal's initial value, a declared `+`, integer `+` of a
+/// signal and of a generic, a long `xor` read by a concurrent statement. Each stage overflowed
+/// its stack at a few thousand levels (the analyser at about 3800: cycle mode fuzzer; #1167).
 #[test]
 fn long_operator_chains() {
     const N: usize = 8000;
-    let cat = |f: &dyn Fn(usize) -> String| (0..N).map(f).collect::<Vec<_>>().join(" & ");
-    let hex = cat(&|i| format!("to_hstring(q({}))", i % 4));
-    let init = cat(&|i| format!("to_hstring(k({}))", i % 4));
-    // A declared operator's chain is shorter: lowering still recurses per call (about 3900 levels).
-    const M: usize = 1000;
-    let sum = (0..M).map(|_| "u").collect::<Vec<_>>().join(" + ");
+    let chain = |op: &str, f: &dyn Fn(usize) -> String| (0..N).map(f).collect::<Vec<_>>().join(op);
+    let hex = chain(" & ", &|i| format!("to_hstring(q({}))", i % 4));
+    let init = chain(" & ", &|i| format!("to_hstring(k({}))", i % 4));
+    // A declared operator, predefined integer arithmetic of a signal and of a generic (folded
+    // at elaboration), and a sensitivity of `all` over a long condition (#1167).
+    let sum = chain(" + ", &|_| "u".into());
+    let isum = chain(" + ", &|_| "i".into());
+    let gsum = chain(" + ", &|_| "g".into());
+    // The signals a statement reads were collected by recursion too (about 57000 levels); an
+    // odd count of `xor` keeps `b`.
+    let conj = vec!["b"; 60001].join(" xor ");
     let src = format!(
         "library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
-entity chains is end;
+entity chains is generic (g : integer := 1); end;
 architecture a of chains is
   type mem is array (0 to 3) of std_logic_vector(7 downto 0);
   constant k : mem := (x\"01\", x\"23\", x\"45\", x\"67\");
   signal q : mem := (x\"89\", x\"AB\", x\"CD\", x\"EF\");
   signal h : string(1 to {}) := {init};
   signal u : unsigned(15 downto 0) := to_unsigned(3, 16);
+  signal i : integer := 2;
+  signal gs : integer := {gsum};
+  signal b, c : boolean := true;
 begin
+  c <= {conj};
   process
     variable s : string(1 to {});
   begin
     s := {hex};
-    report \"s \" & s(1 to 8) & s({} to {}) & \" h \" & h(1 to 8) & \" sum \" & to_string(to_integer({sum}));
+    b <= false;
+    wait for 1 ns;
+    report \"s \" & s(1 to 8) & s({} to {}) & \" h \" & h(1 to 8) & \" sum \" & to_string(to_integer({sum}))
+      & \" isum \" & integer'image({isum}) & \" gs \" & integer'image(gs) & \" c \" & boolean'image(c);
     wait;
   end process;
 end;",
@@ -1045,7 +1058,12 @@ end;",
     let err = String::from_utf8_lossy(&r.stderr);
     assert!(r.status.success(), "{err}");
     let out = String::from_utf8_lossy(&r.stdout);
-    let want = format!("s 89ABCDEF89ABCDEF h 01234567 sum {}", 3 * M);
+    let want = format!(
+        "s 89ABCDEF89ABCDEF h 01234567 sum {} isum {} gs {} c false",
+        (3 * N) % 65536,
+        2 * N,
+        N
+    );
     assert!(out.contains(&want), "{out}{err}");
 }
 

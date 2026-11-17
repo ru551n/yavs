@@ -1,0 +1,1 @@
+An expression as the actual of an `in` port that reads a signal through an alias (`b => resize(rf(3 to 7), 16)` with `alias rf is r.f0`) now follows that signal; a `wait until` reading a signal through an alias waits on it too. Both had not waited on the signal and kept their first value.

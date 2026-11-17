@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:tb_port_actual_alias:u:_p0	b=XXXX c=UUUU
+diag	note	0	1	:tb_port_actual_alias:u:_p0	b=0000 c=0001
+diag	note	1000000	2	:tb_port_actual_alias:u:_p0	b=0796 c=0001
+diag	note	2000000	1	:tb_port_actual_alias:waiter	vh(0) = '1' at v=A5
+diag	note	2000000	2	:tb_port_actual_alias:u:_p0	b=0796 c=1011
+diag	note	3000000	2	:tb_port_actual_alias:u:_p0	b=04D5 c=1011

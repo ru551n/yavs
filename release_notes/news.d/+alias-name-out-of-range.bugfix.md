@@ -1,0 +1,1 @@
+An object alias whose name has an index or a slice bound outside the prefix's index range (`alias a : signed(0 to 18) is s(32 downto 14)` of a one-bit `s`) is now an error when the alias is elaborated, also when nothing reads its value; it had only been warned about at analysis and then run.

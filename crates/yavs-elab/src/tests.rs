@@ -3661,3 +3661,52 @@ fn a_block_resolver_without_processes_is_lowered() {
     assert_eq!(e.hier.path_name(region, Case::Lrm), ":t:b:");
     e.build(yavs_kernel::Config::default()).expect("build");
 }
+
+/// The name an object alias denotes is checked when the alias is elaborated: an index or a slice
+/// bound outside the prefix's range is an error whether the alias is read or not (LRM 6.6.2, 8.5),
+/// in an architecture, a process or a `for` generate; a null slice and a generate that is not
+/// elaborated are fine.
+#[test]
+fn alias_name_outside_its_prefix() {
+    let src =
+        "entity t is generic (hi : integer := 3; lo : integer := 0; g : boolean := false); end;
+      architecture a of t is
+        signal s : bit_vector(3 downto 0);
+        constant c : bit_vector(3 downto 0) := \"1010\";
+      begin
+        arch : block
+          alias al : bit_vector is s(hi downto lo);
+          alias ac : bit_vector is c(hi downto lo);
+          alias an : bit_vector is s(lo - 1 downto lo);
+        begin end block;
+        gen : if g generate
+          alias ag : bit is s(hi + 10);
+        begin end generate;
+        p : process
+          alias ap : bit is s(hi);
+        begin wait; end process;
+        lp : for i in 0 to 1 generate
+          alias ai : bit is s(i + lo);
+        begin end generate;
+        re : block
+          signal w : bit_vector(15 downto 0);
+          alias ra : bit_vector(0 to 7) is w(15 downto 8);
+          alias rb : bit is ra(0);
+          alias rc : bit_vector(0 to 3) is ra(4 to 7);
+          impure function f return integer is begin return hi; end;
+          constant k : integer := f;
+          alias rk : bit is s(k);
+        begin end block;
+      end;";
+    elab("alias_in_range", src, "t", &[]);
+    for (k, (name, value)) in [("hi", "4"), ("lo", "-1"), ("lo", "3")].iter().enumerate() {
+        let codes = err_codes(&format!("alias_out_{k}"), src, "t", &[(*name, *value)]);
+        assert!(
+            codes
+                .iter()
+                .all(|&c| c == codes::BAD_NAME || c == codes::EVAL_FAILED)
+                && !codes.is_empty(),
+            "{name}={value}: {codes:?}"
+        );
+    }
+}

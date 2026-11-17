@@ -986,6 +986,13 @@ fn run_snapshot(name: &str, code: i32) {
     }
 }
 
+/// An alias of a static slice outside its prefix's range is E2113 when it is elaborated, not only
+/// the W1404 of analysis (LRM 6.6.2, 8.5; found by the cycle mode fuzzer).
+#[test]
+fn alias_slice_out_of_range() {
+    run_snapshot("alias_slice_out_of_range", 2);
+}
+
 /// Chains of thousands of operators (`a & b & c & ...`, nested to the left) analyse, elaborate
 /// and run: the predefined `&` of a process and of a signal's initial value, and a declared `+`
 /// (found by the cycle mode fuzzer: the analyser overflowed its stack at about 3800 levels).

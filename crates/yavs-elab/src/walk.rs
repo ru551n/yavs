@@ -1297,6 +1297,44 @@ impl Elab<'_> {
         Ok(())
     }
 
+    /// The name an object alias `d` denotes, evaluated at its declaration: an index or slice
+    /// outside its prefix's range is an error here, read or not (LRM 6.6.2, 8.4, 8.5).
+    fn alias_in_range(&mut self, s: ScopeId, d: DeclId, target: ExprId) -> R<()> {
+        let db: &Db = self.db;
+        let span = db.exprs[target].span;
+        let note = |x: Box<Diagnostic>| {
+            Box::new(
+                x.with_note(format!(
+                    "while elaborating the alias declaration `{}`",
+                    db.decls[d].name
+                ))
+                .with_note("LRM 8.4, 8.5: an index value, or a bound of a non-null slice, belongs to the index range of the array"),
+            )
+        };
+        let root = match db.name_root(target) {
+            Some(yavs_sem::lsp::NameRoot::Obj(r)) => r,
+            _ => return Ok(()),
+        };
+        // A name elaboration cannot evaluate yet (a constant kept for run time) is checked
+        // when it is read.
+        let r = if db.is_signal(root) {
+            match self.m.name_ref(db, target, s) {
+                Ok(Some((o, sels))) => self.m.select(o, &sels, span).map(|_| ()),
+                r => r.map(|_| ()),
+            }
+        } else if let ObjRoot::Decl(c) = root
+            && matches!(&db.decls[c].kind, DeclKind::Object(o) if o.class == ObjClass::Constant)
+        {
+            self.m.eval(db, target, Some(s)).map(|_| ())
+        } else {
+            Ok(())
+        };
+        match r {
+            Err(x) if x.code == codes::NOT_EVALUATED => Ok(()),
+            r => r.map_err(note),
+        }
+    }
+
     /// Signal declarations of a declarative region (constants are evaluated on demand).
     fn decls(&mut self, s: ScopeId, region: yavs_sem::ScopeId) -> R<()> {
         if self.db.scopes[region].kind != yavs_sem::scope::ScopeKind::Process {
@@ -1328,6 +1366,9 @@ impl Elab<'_> {
                         .db
                         .alias_external_uses(ExtOwner::Alias(d), region)
                         .to_vec();
+                    if hs.is_empty() {
+                        self.alias_in_range(s, d, target)?;
+                    }
                     for h in hs {
                         if late {
                             self.pending.push((s, h));

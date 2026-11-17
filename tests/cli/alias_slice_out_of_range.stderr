@@ -1,0 +1,20 @@
+warning[W1404]: slice 32 downto 14 is outside range 0 downto 0
+  --> $DIR/alias_slice_out_of_range.vhd:10:33
+   |
+10 |   alias al : signed(0 to 18) is i6(32 downto 14);
+   |                                 ^^^^^^^^^^^^^^^^ outside the index range
+   |
+   = note: the code may never run, so this is checked again at run time (LRM 8.4, 8.5)
+
+error[E2113]: invalid static name: index 32 is outside 0 downto 0
+  --> $DIR/alias_slice_out_of_range.vhd:10:33
+   |
+10 |   alias al : signed(0 to 18) is i6(32 downto 14);
+   |                                 ^^^^^^^^^^^^^^^^ this name
+   |
+   = note: while elaborating the alias declaration `al`
+   = note: LRM 8.4, 8.5: an index value, or a bound of a non-null slice, belongs to the index range of the array
+   = note: in instance alias_slice_out_of_range
+
+error: aborting due to 1 previous error
+

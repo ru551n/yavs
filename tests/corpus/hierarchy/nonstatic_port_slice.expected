@@ -1,0 +1,11 @@
+exit	0
+diag	note	0	0	:tb_nonstatic_port_slice:u:_p0	b=UU c=10UU u=UUU
+diag	note	0	1	:tb_nonstatic_port_slice:u:_p0	b=10 c=1001 u=001
+diag	note	1000000	1	:tb_nonstatic_port_slice:waiter	x(k + 1 downto k) = 01 at k=1
+diag	note	1000000	2	:tb_nonstatic_port_slice:u:_p0	b=01 c=1010 u=011
+diag	note	2000000	2	:tb_nonstatic_port_slice:u:_p0	b=10 c=1001 u=111
+diag	note	3000000	1	:tb_nonstatic_port_slice:waiter	x(k + 1 downto k) = 01 at k=3
+diag	note	3000000	2	:tb_nonstatic_port_slice:u:_p0	b=01 c=1010 u=110
+diag	note	4000000	2	:tb_nonstatic_port_slice:u:_p0	b=10 c=1001 u=100
+diag	note	5000000	1	:tb_nonstatic_port_slice:waiter	x(k + 1 downto k) = 01 at k=5
+diag	note	5000000	2	:tb_nonstatic_port_slice:u:_p0	b=01 c=1010 u=001

@@ -1,0 +1,1 @@
+A slice whose bounds read a signal, as the actual of an `in` port (`d => x(k + 1 downto k)`), now follows the signal: it had been taken once at the bounds of elaboration. A `wait until` on such a slice, and the equivalent process of such an actual, now also wait on the signals of its bounds and of an aggregate's choices.

@@ -4162,6 +4162,31 @@ fn parts_of_elements_chosen_at_run_time_equal_the_normal_mode() {
     }
 }
 
+/// `numeric_std` shifts and rotations by a count chosen at run time, of any width (a byte
+/// rotation of a vector of more than 64 elements was not implemented), against the normal mode at
+/// widths 1 to 128, counts from 0 past twice the width and 1000.
+#[test]
+fn shifts_by_a_count_chosen_at_run_time_equal_the_normal_mode() {
+    let dir = tempdir("cycle-wideshift");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("wideshift{w}.vhd"),
+            &with_width(include_str!("cycle/wideshift.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_wideshift");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_wideshift");
+            assert_eq!(normal.len() as u32, 2 * w + 4, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 2 of 3 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// Processes outside the region whose result depends on the deltas their inputs change in (a
 /// variable's value of the previous run; a signal the sensitivity list does not name; state in a
 /// process rejected for a `'Z'` first, with a sensitivity list or a wait), fed by a register and

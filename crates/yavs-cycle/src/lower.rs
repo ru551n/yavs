@@ -4807,6 +4807,108 @@ impl Lx<'_> {
         })
     }
 
+    /// A shift or rotation of `p` (any width) by the integer `n`, at least 0: `p` beside itself,
+    /// zeros or its sign, read `p.len` elements wide from a position chosen at run time.
+    fn wide_shift(&mut self, k: ShiftK, p: Part, n: IntV) -> Part {
+        let len = i64::from(p.len);
+        let a = self.whole(p);
+        let fill = match k {
+            ShiftK::Rol | ShiftK::Ror => a,
+            ShiftK::Sll | ShiftK::Srl => {
+                let z = self.loc(words(p.len));
+                self.ops.push(Op::Lit {
+                    dst: z,
+                    val: vec![0; words(p.len) as usize].into(),
+                });
+                z
+            }
+            ShiftK::Sra => {
+                let s = self.loc(1);
+                self.ops.push(Op::Extract {
+                    dst: s,
+                    src: a,
+                    lo: p.len - 1,
+                    len: 1,
+                    full: p.len,
+                });
+                let f = self.loc(words(p.len));
+                self.ops.push(Op::Splat {
+                    dst: f,
+                    a: s,
+                    len: p.len,
+                });
+                f
+            }
+        };
+        // `x & x` for rotations and left shifts (`x & 0`), `fill & x` for right ones.
+        let (hi, lo) = if k == ShiftK::Sll {
+            (a, fill)
+        } else {
+            (fill, a)
+        };
+        let d = self.loc(words(2 * p.len));
+        self.ops.push(Op::Cat {
+            dst: d,
+            hi,
+            lo,
+            lo_len: p.len,
+            len: 2 * p.len,
+        });
+        // The position of the result's rightmost element in `d`, in 0 ..= len.
+        let l = self.int_lit(len);
+        let at = match k {
+            ShiftK::Ror => self.int_step(Arith::Rem, n.r, l.r),
+            ShiftK::Rol => {
+                let m = self.int_step(Arith::Rem, n.r, l.r);
+                self.int_step(Arith::Sub, l.r, m)
+            }
+            _ => {
+                let c = self.loc(1);
+                self.ops.push(Op::IntCmp {
+                    op: Cmp::Lt,
+                    dst: c,
+                    a: n.r,
+                    b: l.r,
+                });
+                let m = self.loc(1);
+                self.ops.push(Op::Select {
+                    dst: m,
+                    c,
+                    a: n.r,
+                    b: l.r,
+                    len: 64,
+                });
+                if k == ShiftK::Sll {
+                    self.int_step(Arith::Sub, l.r, m)
+                } else {
+                    m
+                }
+            }
+        };
+        let t = self.tmp(p.len);
+        let site = self.site(Check::Index {
+            b: Bounds {
+                left: 2 * len - 1,
+                dir: Direction::Downto,
+                right: 0,
+            },
+            what: String::new(),
+        });
+        self.ops.push(Op::IndexRead {
+            dst: t.r,
+            src: d,
+            lo: 0,
+            n: 2 * p.len,
+            stride: 1,
+            w: p.len,
+            idx: at,
+            left: 2 * len - 1,
+            down: true,
+            site,
+        });
+        t
+    }
+
     /// A shift of `p` by a count known during elaboration: element moves only.
     fn static_shift(&mut self, k: ShiftK, p: Part, n: i64) -> Part {
         let len = p.len;
@@ -5581,17 +5683,20 @@ impl Lx<'_> {
                         if let Ok(k) = self.static_int(nx) {
                             return Ok(Val::Part(self.static_shift(shift(s), a, k)));
                         }
-                        // A count chosen at run time: `NATURAL` (the functions) and one word.
-                        if !matches!(op, I::ShiftFn(_)) || a.len > 64 {
+                        // A count chosen at run time: `NATURAL` (the functions).
+                        if !matches!(op, I::ShiftFn(_)) {
                             return Err(
-                                "a shift by a count chosen at run time of an operator or of more \
-                                 than 64 elements is not supported in cycle mode yet"
+                                "a shift by a count chosen at run time of an operator is not \
+                                 supported in cycle mode yet"
                                     .into(),
                             );
                         }
                         let n = self.expr(nx)?;
                         let n = self.int(n)?;
                         self.natural(n);
+                        if a.len > 64 {
+                            return Ok(Val::Part(self.wide_shift(shift(s), a, n)));
+                        }
                         let ra = self.whole(a);
                         let t = self.tmp(a.len);
                         self.ops.push(Op::Shift {

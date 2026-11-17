@@ -176,6 +176,49 @@ A test runner that has run the tests already needs no second run to record them:
 exits at `run` still leaves each test's response file. The files are copied before each run; files written
 outside the output directory, or relative to the working directory, are not isolated or compared.
 
+## Cycle mode fuzzer
+
+`cyclefuzz.py` generates random synchronous designs in the subset of cycle mode, each with a testbench
+that drives seeded random stimulus and prints every output of the design twice a clock, between clock
+edges, and runs each design normal and `--cycle` with one binary (`--bin`, default `YAVS_BIN`). A design
+is deterministic from its seed (and the version of the generator, whose hash each JSON line records).
+
+    python3 -I tools/difftest/cyclefuzz.py gen 7                      # the design of seed 7
+    python3 -I tools/difftest/cyclefuzz.py run --seeds 0:400 --warm --checks 5 --bin target/release/yavs
+    python3 -I tools/difftest/cyclefuzz.py shrink 7 --bin ...          # a failing seed reduced to a small reproducer
+    python3 -I tools/difftest/cyclefuzz.py shrink 7 --reason "did not count" --bin ...  # reduced while the report holds the text
+    python3 -I tools/difftest/cyclefuzz.py check DIR --bin ...         # a reproducer `DIR/d.vhd` edited by hand
+
+The designs hold what cycle mode must give the normal result for: `std_ulogic`, vectors, `unsigned`,
+`signed`, integer subtypes, enumerations, records and arrays of all of these (constants, generics, both
+directions, bounds not at 0, widths around 1, 63, 64, 65 and 128), `numeric_std` arithmetic, shifts,
+`resize`, comparisons, slices, concatenations, aggregates (`others`, named and range choices), `if`,
+`case`, `for` loops with `exit` and `next`, package functions and procedures, clocked processes (both
+edges, both edge forms, `wait until`, `q <= d when rising_edge(c)`, synchronous and asynchronous resets,
+enables, memories written at run-time indices), combinational processes, concurrent assignments of
+all three kinds, `for generate`, hierarchy with generics, expression actuals and partial associations
+of ports, two clocks (made by two concurrent assignments or by one process), and processes cycle mode
+must leave in the event kernel (latches, variables keeping state, incomplete sensitivity lists, waits
+in time). They hold no asserts or reports in the region, every signal and variable is initialised and
+the inputs are `'0'` and `'1'`, so any difference is a bug; the metavalue warnings of time 0 (an
+expression actual is `'U'` until its equivalent process runs) are not compared. The generator also
+avoids the `numeric_std` "vector truncated" warnings: cycle mode gives them at other deltas or, for a
+call folded during elaboration, once at time 0.
+
+Each seed runs, per tier of `--tiers` (default `interp,clift`), the normal mode and `--cycle` cold (no
+region code in the cache); `--warm` runs it again with the region from the cache (a cold run that left
+no code in the cache fails); `--checks N` runs every Nth seed once more with `YAVS_CYCLE_CHECKS=all`,
+`YAVS_CYCLE_SKIP_CHECK=1`, `YAVS_CYCLE_IMPORT_CHECK=1` and `YAVS_CYCLE_GUARD=all`. Compared: exit status,
+standard output and standard error without the summary line. A `--cycle-report` run gives the members; the
+summary prints how many of the design's processes joined the region and the most common reasons of the
+others, so a pass is not vacuous (a seed with no member is `vacuous`). Simulations run under
+`systemd-run --user --scope -p MemoryMax=2G`, at most 2 at a time, and wait while less than 20 GB of
+memory is available. Passing seeds' directories are removed (`--keep` keeps them); `--json FILE` appends
+a line per seed. `shrink` deletes processes, statements, signals, ports, constants and subprograms,
+replaces expressions by a constant or an operand, halves the widths of vectors and shortens the run,
+keeping each step that still differs in the same run (or, with `--reason`, still shows the reason);
+`shrink` regenerates the seed from the current generator, so shrink a seed with the version that found it.
+
 ## Plugging yavs in
 
 `--candidate` takes a reference label (`sim1`, `sim2`: key `difftest` of its section in the untracked `tools/sims.local.conf`, with keys `difftest_relaxed` and `difftest_ignore`), `yavs` or any bash command template. The built-in `yavs`

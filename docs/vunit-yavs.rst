@@ -33,7 +33,7 @@ as ``--name=value``.
    * - ``yavs.max_threads``
      - ``yavs run --threads=N``: the most threads one simulation uses, an integer of at least 1, or ``"auto"`` for
        ``--threads=auto`` (more threads only while they make the run faster; the default with the token server, which is on
-       by default when ``-p`` leaves CPUs idle). With the server the threads past the first run on lent tokens only; ``1`` takes none.
+       by default). With the server the threads past the first run on lent tokens only; ``1`` takes none.
        It overrides ``--yavs-max-threads`` for a test. Not passed under ``--yavs-debug`` or to
        ``elab``. A ``--threads`` in ``yavs.sim_flags`` comes after it and wins.
    * - ``yavs.tier_compile``
@@ -140,12 +140,12 @@ out stops the run script with one ``error:`` line that says why and what to drop
      - ``results.merge_coverage()`` reads exclusion files, root and kinds from this YAML file
        (``yavs cov report --config``). No file is read without it.
    * - ``--yavs-no-jobserver``
-     - Runs without the token server. By default, when ``-p N`` is below the CPU count, a token server lends the CPUs
-       that the N test slots leave idle to the running simulations (:doc:`threads`).
+     - Runs without the token server. By default a token server lends the CPUs that no test uses to the running
+       simulations, with one slot for each CPU the run may use (:doc:`threads`).
    * - ``--yavs-jobserver``
      - The token server, which is the default; accepted for scripts written when it was not.
 
-With the token server (the default when ``-p`` leaves CPUs idle) every simulation gets ``--threads=auto`` unless ``yavs.max_threads`` or
+With the token server (the default) every simulation gets ``--threads=auto`` unless ``yavs.max_threads`` or
 ``--yavs-max-threads`` gives a number, and its threads past the first run only on lent tokens. Without the
 server and without those options no thread count is passed and yavs runs with its default, one thread.
 

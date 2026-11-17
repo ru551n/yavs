@@ -45,7 +45,7 @@ from vunit_yavs import (
     usable_cpus,
     write_response_file,
 )
-from vunit_yavs.tokens import TokenServer
+from vunit_yavs.tokens import GRACE, TokenServer
 
 FAKE_BIN = Path(__file__).parent / "fake_bin"
 # The fake yavs runs as a script; Windows finds and starts only yavs.exe
@@ -957,16 +957,15 @@ class TestYavsInterface(unittest.TestCase):
 
     @NEEDS_FAKE_BIN
     def test_token_server_is_on_by_default_with_one_slot_per_usable_cpu(self):
-        # The budget is the CPUs the run may use; each -p worker keeps one, so -p N at or above it has no server.
-        # A namespace without package arguments is -p 1; -p 0 is one job per CPU.
+        # The budget is the CPUs the run may use, at any -p; the workers are -p (-p 0 is one per CPU), and a
+        # namespace without package arguments is -p 1
         with mock.patch("vunit_yavs.usable_cpus", return_value=6), mock.patch("vunit_yavs.cpu_count", return_value=6):
-            cases = (({}, 1), ({"num_threads": 1}, 1), ({"num_threads": 4}, 4), ({"yavs_jobserver": True}, 1))
-            for kwargs, reserve in cases:
+            cases = (({}, 1), ({"num_threads": 1}, 1), ({"num_threads": 4}, 4), ({"num_threads": 0}, 6))
+            for kwargs, workers in cases + (({"num_threads": 12}, 12), ({"yavs_jobserver": True}, 1)):
                 with self.subTest(**kwargs):
                     tokens = self._from_args(**kwargs)._tokens  # pylint: disable=protected-access
-                    self.assertEqual((tokens.num_threads, tokens.reserve), (6, reserve))
-            for jobs in (0, 6, 12):
-                self.assertIsNone(self._from_args(num_threads=jobs)._tokens)  # pylint: disable=protected-access
+                    self.assertEqual((tokens.num_threads, len(tokens._idle)), (6, workers))
+                    self.assertEqual(tokens.grace, GRACE)
         with mock.patch("vunit_yavs.usable_cpus", return_value=1):
             self.assertIsNone(self._from_args(num_threads=1)._tokens)  # pylint: disable=protected-access
 

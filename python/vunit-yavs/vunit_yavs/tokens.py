@@ -20,9 +20,13 @@ import secrets
 import selectors
 import socket
 import threading
+import time
 
 LOGGER = logging.getLogger(__name__)
 ENV = "YAVS_TOKENS"
+# Seconds a test slot must stay free before its CPU is lent: 3 times the longest gap from one test's end to the next
+# test's start of its worker measured under the test runner (0.33 s; median 2 ms, 2026-11-17, package README)
+GRACE = 1.0
 
 
 def lend_order(free, held, limits=None):
@@ -75,16 +79,18 @@ class Connection:
 class TokenServer:
     """
     The CPU budget of a run of num_threads slots (the usable CPUs), make style: each running test takes one slot,
-    and reserve slots (the -p workers of the run) are never lent, so with k tests running
-    num_threads - max(k, reserve) tokens are lent to the simulations. A worker starting its next test always finds
-    its slot, so the slots are never oversubscribed through a token lent between two tests.
+    and so does each of the runner's workers (the -p N slots) whose test ended less than grace seconds ago, since
+    its next test usually follows within that time. The other slots are lent to the simulations. So a worker
+    starting its next test finds its slot free, and the slots of workers out of tests are lent in the tail.
     Tokens in use are never taken back: a test starting while every token is in use runs at once, so the
     total is num_threads in the steady state, not at every instant.
     """
 
-    def __init__(self, num_threads, reserve=1):
+    def __init__(self, num_threads, workers=1, grace=GRACE):
         self.num_threads = num_threads
-        self.reserve = reserve
+        self.grace = grace
+        # When each worker without a test lost its last one (the first test's start for none yet), oldest first
+        self._idle = [None] * workers
         self._clients = []  # Oldest first
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -107,6 +113,10 @@ class TokenServer:
         client = Client(cap)
         with self._lock:
             self._clients.append(client)
+            if None in self._idle:  # The first test: the other workers start theirs now
+                self._idle = [time.monotonic()] * len(self._idle)
+            if self._idle:
+                self._idle.pop()  # Its worker's slot, freed last
         return client
 
     def remove(self, client):
@@ -115,6 +125,7 @@ class TokenServer:
             for conn in client.conns:
                 self._kill(conn)
             self._clients.remove(client)
+            self._idle.append(time.monotonic())
             self._send(self._rebalance())
 
     def close(self):
@@ -124,11 +135,13 @@ class TokenServer:
 
     def _run(self):
         while not self._stop.is_set():
-            for key, _ in self._selector.select(timeout=0.1):
+            for key, _ in self._selector.select(timeout=0.05):
                 if key.data is None:
                     self._accept()
                 else:
                     self._read(key.data)
+            with self._lock:  # Slots whose grace ran out are lent
+                self._send(self._rebalance())
         for key in list(self._selector.get_map().values()):
             key.fileobj.close()
         self._selector.close()
@@ -194,7 +207,9 @@ class TokenServer:
     def _rebalance(self):
         """Lend the free tokens by priority and return the connections lent more"""
         conns = [conn for client in self._clients for conn in client.conns]
-        free = self.num_threads - max(len(self._clients), self.reserve) - sum(conn.lent for conn in conns)
+        now = time.monotonic()
+        waiting = sum(1 for freed in self._idle if freed is None or now - freed < self.grace)
+        free = self.num_threads - max(len(self._clients) + waiting, 1) - sum(conn.lent for conn in conns)
         changed = []
         for conn, count in zip(conns, lend_order(free, [conn.lent for conn in conns], [c.limit() for c in conns])):
             if count:

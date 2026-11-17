@@ -709,12 +709,13 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   option `yavs.max_threads` (or the runner argument `--yavs-max-threads N` for every test; both
   take a number or `auto`) becomes `--threads=N` before the raw flags, so `--threads` in
   `yavs.sim_flags` still wins; none under `--dap` or for `elab`. The runner starts a token server
-  by default (owner, 2026-11-17; before that only with `--yavs-jobserver` and `-p N` above 1)
-  when `-p N` (`-p 0` = the CPU count) is below the CPUs the runner may use (its affinity), with one
-  slot per such CPU; none under `--yavs-debug` or `--yavs-interactive`, or with `--yavs-no-jobserver` or
+  by default (owner, 2026-11-17; before that only with `--yavs-jobserver` and `-p N` above 1) at
+  any `-p`, with one slot per CPU the runner may use (its affinity); none with one CPU, under
+  `--yavs-debug` or `--yavs-interactive`, or with `--yavs-no-jobserver` or
   `VUNIT_YAVS_JOBSERVER=off`. Under it every `yavs run`
   gets `--threads=auto` (or `yavs.max_threads` when set, before the raw flags) and its own
-  `YAVS_TOKENS`: the runner lends as tokens the slots left after max(N, running tests), at most
+  `YAVS_TOKENS`: the runner lends as tokens the slots left after the running tests and the `-p`
+  workers whose test ended less than a second ago (`GRACE`; all N until the first test starts), at most
   `min(slots, 8) - 1` per test with `auto` and `yavs.max_threads - 1` with a number, breadth first,
   newest test first, and never takes back a token in use (python/vunit-yavs/README.md "Token
   server"). Before 2026-11-07 the default under the server was `--threads=min(N, 4)`.

@@ -746,9 +746,9 @@ A run that compiles compiles the region's functions on as many threads as ``--th
 ``auto`` up to 8, at most the CPUs the run may use; under a test runner's token server the threads past the first
 only on the tokens it lends, :doc:`threads`). The machine code, and so the result and what goes into the cache, is
 the same on any number of threads; only the start-up of a run that finds nothing in the cache is shorter. Under
-VUnit with ``-p N`` below the CPU count the token server of ``vunit-yavs`` is on by default and every test runs
-with ``--threads=auto``, so a test compiles on the CPUs the ``-p`` slots leave idle, never more than the machine
-has (``--yavs-no-jobserver`` turns it off, :doc:`vunit-yavs`).
+VUnit the token server of ``vunit-yavs`` is on by default and every test runs with ``--threads=auto``, so a test
+compiles on the CPUs no other test uses, not more than the machine has (``--yavs-no-jobserver`` turns it off,
+:doc:`vunit-yavs`).
 
 When several tests start at once on a cold cache, each of them compiles the region. Run one test of the suite first, or
 keep ``yavs-cache`` between CI runs (:doc:`ci`), so that the others find the code.

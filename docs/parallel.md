@@ -130,29 +130,37 @@ costs it 2 percent even with seven cores free ([#882](https://github.com/ru551n/
 
 ### Token server on by default, measured 2026-11-17
 
-`vunit-yavs` starts the server by default when `-p N` is below the CPU count; each `-p` slot keeps its CPU, the rest
-are lent. 172 tests of seven CNN-accelerator module benches (0.03 s to 5 s each), the whole run pinned to 4 cores
-(so 4 slots), daytime on a shared host (load 8 to 25), median of 3 runs, `--yavs-no-jobserver` (as before) against
-the default, each with its own output, a cold run (run caches removed) and a warm one. Wall and CPU (user + sys of
-the whole run) in seconds:
+`vunit-yavs` starts the server by default at any `-p`; a test slot keeps its CPU for a second after its test ends
+(`GRACE`), the rest are lent. 172 tests of seven CNN-accelerator module benches (0.03 s to 5 s each), the whole run
+pinned to 4 cores (so 4 slots), on a shared host in the evening (load 12 to 21), median of 3 runs, arms in
+alternating order, `--yavs-no-jobserver` (as before) against the default, each with its own output, a cold run (run
+caches removed) and a warm one. Wall and CPU (user + sys of the whole run) in seconds:
 
 | Case | Wall before | Wall default | CPU before | CPU default |
 |---|---|---|---|---|
-| `-p 1`, cold | 144.7 | 131.1 (0.91x) | 159.8 | 176.6 (1.11x) |
-| `-p 1`, warm | 139.9 | 121.9 (0.87x) | 153.0 | 180.4 (1.18x) |
-| `-p 2`, cold | 76.2 | 87.8 (1.15x) | 159.2 | 198.0 (1.24x) |
-| `-p 2`, warm | 77.3 | 78.2 (1.01x) | 158.9 | 183.9 (1.16x) |
-| `--cycle`, `-p 1`, cold | 79.6 | 72.0 (0.90x) | 95.2 | 90.1 (0.95x) |
-| `--cycle`, `-p 1`, warm | 59.0 | 56.2 (0.95x) | 72.8 | 70.7 (0.97x) |
-| `--cycle`, `-p 2`, cold | 47.5 | 46.9 (0.99x) | 100.5 | 100.7 (1.00x) |
-| `--cycle`, `-p 2`, warm | 36.5 | 34.3 (0.94x) | 78.0 | 72.1 (0.92x) |
+| `-p 1`, cold | 159.0 | 157.3 (0.99x) | 172.3 | 207.6 (1.21x) |
+| `-p 1`, warm | 151.4 | 140.7 (0.93x) | 164.7 | 195.0 (1.18x) |
+| `-p 2`, cold | 89.5 | 88.7 (0.99x) | 184.5 | 193.9 (1.05x) |
+| `-p 2`, warm | 86.7 | 81.4 (0.94x) | 174.8 | 188.1 (1.08x) |
+| `-p 4` (= the CPUs), cold | 53.4 | 56.8 (1.06x) | 182.3 | 196.9 (1.08x) |
+| `-p 4` (= the CPUs), warm | 55.2 | 51.3 (0.93x) | 190.4 | 178.8 (0.94x) |
+| `--cycle`, `-p 1`, cold | 90.7 | 78.8 (0.87x) | 104.2 | 97.9 (0.94x) |
+| `--cycle`, `-p 1`, warm | 71.0 | 68.3 (0.96x) | 83.4 | 82.5 (0.99x) |
+| `--cycle`, `-p 2`, cold | 48.7 | 48.0 (0.99x) | 100.7 | 102.4 (1.02x) |
+| `--cycle`, `-p 2`, warm | 39.5 | 37.4 (0.95x) | 80.4 | 79.3 (0.99x) |
+| `--cycle`, `-p 4` (= the CPUs), cold | 31.4 | 37.5 (1.19x) | 101.8 | 121.9 (1.20x) |
+| `--cycle`, `-p 4` (= the CPUs), warm | 25.9 | 24.2 (0.94x) | 80.8 | 73.4 (0.91x) |
 
-`-p 4` on 4 cores starts no server, so it runs as before. Its runs with the server of the first version (one slot
-per running test, before the reserve) were 4 to 8 percent slower in wall and 8 to 10 percent dearer in CPU: a slot
-freed between two tests was lent at once and the next test started on a full machine (45 of 172 test starts).
-Only the longest tests gain from threads (a 5.8 s test ran in 4.6 s for 8.5 s of CPU instead of 6.1); the short ones
-decide early not to. The `-p 2` cold wall spread (77.6 to 88.8 s with the server, 75.6 to 93.6 s without) is as
-wide as the difference: a series on a quiet host is still to do.
+The spread of the three runs of one case is often wider than the difference (`-p 4` cold before: 48.8 to 69.3 s;
+`--cycle` `-p 4` cold with the server: 28.5 to 37.6 s), so read single cells with care; a series on a quiet host
+is still to do. A probe in the server counted, per send, the running tests plus the lent tokens: in a normal `-p 4`
+run it never exceeded the 4 CPUs, and tokens went out only when fewer than 4 tests ran (up to 3 to the last test);
+in a cold `--cycle` `-p 4` run (26.8 s) no token was lent at all, so that row's 1.19x is load. The first version of
+the default lent a slot the moment its test ended: 45 of 172 test starts of a normal `-p 4` run began on a full
+machine, 4 to 8 percent slower. The grace is three times the longest gap from a test's end to its worker's next
+start measured under the test runner (0.33 s; median 2 ms; 336 starts of `-p 4` runs, normal and cycle mode).
+Only the longest tests gain from threads (a 5.8 s test ran in 4.6 s for 8.5 s of CPU instead of 6.1); the short
+ones decide early not to.
 
 ## `--threads=auto`
 

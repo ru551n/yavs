@@ -14821,16 +14821,18 @@ whole-signal read, the call, the result's check and copy, the wide drive).
   simulation whose threads do not gain gives its tokens back after its trial and asks for none until the next one, so
   the cap no longer has to protect the processor tests; a gaining one can use up to 8. `yavs.max_threads` and
   `--yavs-max-threads` take a number or `auto`.
-- **Decision: the vunit-yavs token server is on by default, sized to the usable CPUs, and each `-p` worker keeps its
-  slot** (owner, 2026-11-17: on by default, from the CPUs and not from `-p` alone, no oversubscription; the reserve is
-  the agent's, for the owner to confirm). Slots = the CPUs of the runner's affinity; free = slots - max(`-p`, running)
-  - lent; no server when `-p` (`-p 0` = the CPU count) is not below the slots, under `--yavs-debug` or
-  `--yavs-interactive`, or with `--yavs-no-jobserver` / `VUNIT_YAVS_JOBSERVER=off`. Why the reserve: with one slot
-  per running test, a slot freed between two tests of a worker was lent at once to a simulation with a standing want,
-  and lent tokens are never taken back, so the next test started on a full machine: 45 of 172 test starts of a
-  `-p 4` run on 4 CPUs (measured with a probe). Cost: the tail of a regression no longer lends the slots of workers
-  that ran out of tests (the old opt-in server's aim); keeping it would need a freed slot to stay free for a while
-  before it is lent (not built).
+- **Decision: the vunit-yavs token server is on by default, sized to the usable CPUs, and a worker's slot is lent only
+  after it stayed free for `GRACE` (1 s)** (owner, 2026-11-17: on by default, from the CPUs and not from `-p` alone,
+  no oversubscription, and the grace so the tail is lent at any `-p`). Slots = the CPUs of the runner's affinity;
+  free = slots - max(running + waiting, 1) - lent, `waiting` = the `-p` workers whose test ended less than the grace
+  ago (all of them until the first test starts); no server with one CPU, under `--yavs-debug` or
+  `--yavs-interactive`, or with `--yavs-no-jobserver` / `VUNIT_YAVS_JOBSERVER=off`. Why: with one slot per running
+  test, a slot freed between two tests of a worker was lent at once to a simulation with a standing want, and lent
+  tokens are never taken back, so the next test started on a full machine: 45 of 172 test starts of a `-p 4` run on
+  4 CPUs (probe). A reserve of `-p` slots (the first fix) stopped that but lent nothing in the tail. The grace is three
+  times the longest gap measured from a test's end to its worker's next start (0.33 s, median 2 ms, 336 starts of
+  `-p 4` runs, normal and cycle mode). Limit: a worker idle past the grace that starts a test again shares its slot
+  until a simulation lowers its want.
 
 ## Copies of subprograms by the descriptors of their arguments (`opt/subcopy.rs`, `copies.rs`, 2026-11-03; landed with the maintainer's ruling of 2026-11-07)
 

@@ -23,9 +23,10 @@ BIG = 1 << 30
 # ifgen: if-generate; cgen: composite generics; gwidth: one entity at several widths; assert: asserts and
 # reports; zpass: a 'Z' of the testbench passed on, and a metavalue read only when valid; inout: a tri-state
 # pin with a pull; dclk: clocks made by the design; xout: concurrent assignments `after 0 ns` (outside the region in
-# both contracts, on paths between clocks) and clocks gated twice.
+# both contracts, on paths between clocks) and clocks gated twice. view (VHDL-2019 seeds only, drawn apart so that
+# other seeds keep their designs): concurrent calls through a mode view and its converse.
 FEATS = ["rtslice", "md", "bigmem", "ucon", "alias", "while", "caseq", "impure", "sigparam", "ifgen", "cgen",
-         "gwidth", "assert", "zpass", "inout", "dclk", "xout"]
+         "gwidth", "assert", "zpass", "inout", "dclk", "xout", "view"]
 NOT93 = {"ucon", "caseq"}  # VHDL-2008 only
 MSG = "fzmsg"  # the text of the region's asserts and reports, filtered from both outputs (cycle mode drops them)
 
@@ -155,13 +156,18 @@ class Gen:
     def __init__(s, seed, scale=1.0, feat=None, std=None):
         s.rng = random.Random(seed)
         s.seed, s.scale = seed, scale
-        s.feat = {f for f in FEATS if s.rng.random() < 0.3} if feat is None else set(feat)
+        s.feat = {f for f in FEATS if f != "view" and s.rng.random() < 0.3} if feat is None else set(feat)
         r = s.rng.random()
         s.std = std or ("1993" if r < 0.1 else "2019" if r < 0.2 else "2008")
+        if feat is None and random.Random(f"view{seed}").random() < 0.5:
+            s.feat.add("view")
+        if s.std != "2019":
+            s.feat.discard("view")
         s.v93 = s.std == "1993"
         if s.v93:
             s.feat -= NOT93
         s.used, s.extra, s.sprocs, s.gw, s.in_actual = set(), [], [], None, False
+        s.views = []
         s.ent = None
         s.n = 0
         s.enums, s.recs, s.arrs, s.pconsts, s.funcs, s.procs = [], [], [], [], [], []
@@ -792,6 +798,40 @@ class Gen:
             return St("call", p["name"], args + outs)
         return p["name"], args, outs
 
+    def view_calls(s, ent, avail, sigs):
+        """A record signal whose x a concurrent call drives through a mode view (x out, y in) that reads
+        y; y comes from a concurrent assignment, or from a call through the converse view (which the
+        subset checker takes for reading x, a loop: that pair stays out)."""
+        rng = s.rng
+        ins = [o for o in avail if o.cls == "sig" and o.t.k != "int"]
+        if not ins:
+            return False
+        i = len(s.views)
+        vt = T("rec", name=f"vw{i}_t", fields=[("x", s.scalar_type()), ("y", s.scalar_type())])
+        a1, a2 = rng.choice(ins), rng.choice(ins)
+        procs, conv = [], s.chance(0.3)
+        for k, a, tgt, rd in (("a", a1, "x", ["y"]), ("b", a2, "y", []))[: 2 if conv else 1]:
+            saved = (s.read, s.write, s.depth, s.loopv, s.in_func, s.used)
+            ft = dict(vt.fields)
+            s.read = [Obj("a", a.t, "sig")] + [Obj(f"m.{f}", ft[f], "sig") for f in rd] + s.pconsts
+            s.write, s.depth, s.loopv, s.in_func, s.used = [], 2, [], True, set()
+            try:
+                e = s.expr(ft[tgt])
+            finally:
+                s.read, s.write, s.depth, s.loopv, s.in_func, s.used = saved
+            procs.append((f"vp{i}{k}", a, k, tgt, e))
+        s.views.append({"t": vt, "procs": [(n, a.t, k, tgt, e) for n, a, k, tgt, e in procs]})
+        v = Obj(s.fresh("v"), vt, "sig")
+        for n, a, *_ in procs:
+            ent.procs.append(Proc("ccall", name=n, args=[Ex(a.name, a.t, sig=a.base)], outs=[v], used={"view"}))
+        if not conv:
+            s.read, s.depth, s.used = [o for o in avail], rng.randint(1, 3), {"view"}
+            y = Obj(f"{v.name}.y", dict(vt.fields)["y"], "sig")
+            ent.procs.append(Proc("conc", tgt=y, e=s.expr(y.t), used=s.used))
+        avail.append(v)
+        sigs.append(v)
+        return True
+
     def make_sproc(s, t):
         """A package procedure: signal and constant inputs, signal outputs assigned on every path."""
         rng = s.rng
@@ -1108,6 +1148,8 @@ class Gen:
                 continue
             outs = [Obj(s.fresh("c"), s.any_type(), "sig") for _ in range(rng.randint(1, 2))]
             s.read = [o for o in avail]
+            if "view" in s.feat and r < 0.3 and s.view_calls(ent, avail, sigs):
+                continue
             if "sigparam" in s.feat and r < 0.3:
                 c = s.sproc_call(seq=False)
                 if c:
@@ -1762,8 +1804,12 @@ def render_pkg(g):
                 out.append(f"  subtype {t.name} is {t.name}_b({rng_of(t)})({rng_of(t.elem)});")
             else:
                 out.append(f"  type {t.name} is array ({rng_of(t)}) of {t.elem.mark()};")
-    for t in g.recs + g.arrs:
+    for t in g.recs + g.arrs + [v["t"] for v in g.views]:
         decl(t)
+    for i, v in enumerate(g.views):
+        out.append(f"  view vw{i}_v of {v['t'].name} is\n    x : out;\n    y : in;\n  end view;")
+    conv = lambda k: "" if k == "a" else "'converse"
+    vproc = lambda i, n, at, k: f"procedure {n}(signal a : in {at.mark()}; signal m : view vw{i}_v{conv(k)})"
     for w in range(1, 5):  # selectors of case statements (a locally static subtype, for VHDL-1993)
         out.append(f"  subtype fzu{w}_t is unsigned({w - 1} downto 0);")
     out.append("  function b2l(b : boolean) return std_ulogic;")
@@ -1778,6 +1824,8 @@ def render_pkg(g):
         out.append(f"  procedure {p['name']}(" + "; ".join([f"{a.name} : in {a.t.mark()}" for a in p["params"]] + [f"{y.name} : out {y.t.mark()}" for y in p["outs"]]) + ");")
     for p in g.sprocs:
         out.append(f"  procedure {p['name']}({sig(p)});")
+    for i, v in enumerate(g.views):
+        out += [f"  {vproc(i, n, at, k)};" for n, at, k, _, _ in v["procs"]]
     out.append("end package;")
     out.append("package body fz_pkg is")
     out.append("  function b2l(b : boolean) return std_ulogic is\n  begin\n    if b then\n      return '1';\n    end if;\n    return '0';\n  end function;")
@@ -1800,6 +1848,9 @@ def render_pkg(g):
         out.append("  begin")
         out += render_stmts(p["body"], 2)
         out.append("  end procedure;")
+    for i, v in enumerate(g.views):
+        for n, at, k, tgt, e in v["procs"]:
+            out += [f"  {vproc(i, n, at, k)} is", "  begin", f"    m.{tgt} <= {e.text()};", "  end procedure;"]
     out.append("end package body;")
     return "\n".join(out)
 

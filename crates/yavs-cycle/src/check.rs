@@ -450,6 +450,9 @@ pub(crate) struct Callee {
     sig_reads: Vec<DeclId>,
     /// Per parameter: an `out` one assigned as a whole by a statement every call runs.
     must_out: Vec<bool>,
+    /// The parameter and record fields (a mode view's element) a statement every call runs
+    /// assigns as a whole.
+    must_fields: Vec<(usize, Vec<u32>)>,
     /// It calls `std.env` or another simulator procedure.
     control: bool,
     /// What it does that no process of the region may: the code and what.
@@ -2737,16 +2740,32 @@ impl Cx<'_> {
                     rhs: Rhs::Simple(_),
                     ..
                 } => {
-                    if let ExprKind::Obj(x) = db.exprs[target.expr].kind
+                    let mut t = target.expr;
+                    let mut fields = Vec::new();
+                    while let ExprKind::Field { prefix, elem } = db.exprs[t].kind {
+                        fields.insert(0, elem);
+                        t = prefix;
+                    }
+                    if let ExprKind::Obj(x) = db.exprs[t].kind
                         && let Some(i) = formal(x)
                         && i < c.must_out.len()
                     {
-                        c.must_out[i] = true;
+                        if fields.is_empty() {
+                            c.must_out[i] = true;
+                        } else {
+                            c.must_fields.push((i, fields));
+                        }
                     }
                 }
                 StmtKind::Return(_) => break,
-                _ if db.stmt_children(s).is_empty() => {}
-                _ => {}
+                // A `return` inside it may skip the statements after it.
+                _ => {
+                    let mut inner = Vec::new();
+                    deep(db, &db.stmt_children(s), &mut inner);
+                    if (inner.iter()).any(|&x| matches!(db.stmts[x].kind, StmtKind::Return(_))) {
+                        break;
+                    }
+                }
             }
         }
         let mut all = Vec::new();
@@ -3488,6 +3507,30 @@ impl Cx<'_> {
         let Some(p) = self.place(t, st)? else {
             return bug(db.exprs[t].span, "an assignment target of this form");
         };
+        self.assign_place(st, p, val);
+        Ok(())
+    }
+
+    /// The element of signal actual `x` that `path` of its mode view names.
+    fn view_place(
+        &mut self,
+        x: ExprId,
+        path: &[yavs_sem::hir::LspStep],
+        st: &St,
+    ) -> R<Option<Place>> {
+        let Some(mut n) = self.name(x, st)? else {
+            return Ok(None);
+        };
+        for step in path {
+            match step {
+                yavs_sem::hir::LspStep::Field(f) => n.sels.push(Sel::Field(*f)),
+                _ => n.stopped = true,
+            }
+        }
+        Ok(self.place_of(n))
+    }
+
+    fn assign_place(&mut self, st: &mut St, p: Place, val: Dv) {
         let mut extra = (*st.ctl).clone();
         extra.union(&p.idx);
         let extra = Rc::new(extra);
@@ -3527,7 +3570,6 @@ impl Cx<'_> {
                 self.var_any.add(k, a, z);
             }
         }
-        Ok(())
     }
 
     fn proc_call(
@@ -3556,6 +3598,20 @@ impl Cx<'_> {
                     ins.union(&self.flat(&d));
                 }
             }
+            // A mode view reads its `in` and `inout` elements (6.5.2).
+            if let (Mode::View { .. }, Actual::Expr(x)) = (mode, &a.actual) {
+                for path in db.view_read_paths(mode) {
+                    let Some(p) = self.view_place(*x, &path, &st)? else {
+                        continue;
+                    };
+                    for &(k, a, z) in &p.parts {
+                        self.reads.add(k, a, z);
+                        self.read_at.entry(k).or_insert(span);
+                        ins.add(k, a, z);
+                    }
+                    ins.union(&p.idx);
+                }
+            }
         }
         for &d in &c.sig_reads {
             let Some(o) = self.e.signal(self.p.scope, d) else {
@@ -3579,7 +3635,10 @@ impl Cx<'_> {
             let Some(p) = sp.params.get(usize::from(a.formal)) else {
                 continue;
             };
-            if !matches!(p.mode, Mode::Out | Mode::Inout | Mode::Buffer) {
+            if !matches!(
+                p.mode,
+                Mode::Out | Mode::Inout | Mode::Buffer | Mode::View { .. }
+            ) {
                 continue;
             }
             let x = match &a.actual {
@@ -3595,6 +3654,41 @@ impl Cx<'_> {
                 }
             };
             let before = st.def.clone();
+            if matches!(p.mode, Mode::View { .. }) {
+                // A mode view drives its `out`, `inout` and `buffer` elements; assigned for sure
+                // only where it says so.
+                let mut def = before.clone();
+                for path in db.view_driven_paths(p.mode) {
+                    let fields: Vec<u32> = (path.iter())
+                        .filter_map(|s| match s {
+                            yavs_sem::hir::LspStep::Field(f) => Some(*f),
+                            _ => None,
+                        })
+                        .collect();
+                    let whole = c.must_out.get(usize::from(a.formal)) == Some(&true)
+                        || (c.must_fields.iter())
+                            .any(|(i, f)| *i == usize::from(a.formal) && fields.starts_with(f));
+                    match self.view_place(x, &path, &st)? {
+                        Some(t) if t.precise => {
+                            if whole {
+                                for &(k, a, z) in &t.parts {
+                                    def.add(k, a, z);
+                                }
+                            }
+                            self.assign_place(&mut st, t, Dv::Flat(ins.clone()))
+                        }
+                        _ => {
+                            return out(
+                                codes::ANALYSIS,
+                                span,
+                                "a mode view whose elements yavs cannot place one by one",
+                            );
+                        }
+                    }
+                }
+                st.def = def;
+                continue;
+            }
             self.assign(&mut st, x, Dv::Flat(ins.clone()))?;
             // Assigned for sure only when every call assigns the formal.
             let whole = c

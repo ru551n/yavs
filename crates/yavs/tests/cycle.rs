@@ -2224,6 +2224,44 @@ fn a_signal_assigned_itself_after_an_earlier_assignment_keeps_its_value() {
     }
 }
 
+/// Procedure calls with mode views (VHDL-2019): a view reads its `in` and `inout` elements and
+/// drives its `out` ones. A concurrent call driving only through a view had no outputs in the
+/// region, so the logic reading them was a wake late; calls through a nested view, a converse
+/// view and an alias join with the normal result. A procedure that may return before it assigns
+/// its `out` is a latch, not a member.
+#[test]
+fn procedure_calls_with_mode_views_read_and_drive_their_elements() {
+    let dir = tempdir("cycle-views");
+    std::fs::write(dir.join("views.vhd"), include_str!("cycle/views.vhd")).expect("write design");
+    let o = yavs(
+        &dir,
+        &["analyze", "--std=2019", "--work=work:lib", "views.vhd"],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    for w in [1, 63, 64, 65, 128] {
+        let g = format!("-gW={w}");
+        for t in tiers() {
+            let t = [&t[..], &[&g[..]]].concat();
+            let (normal, _) = run(&dir, &t, "cycle_views");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_views");
+            assert_eq!(normal.len(), 24, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 7 of 11 processes run cycle-based"),
+                "{w}: {err}"
+            );
+            for p in ["outs", "c1", "c2", "clocked", "comb"] {
+                let member = err.lines().any(|l| {
+                    l.trim_start().starts_with(&format!("cycle_views.{p} ("))
+                        && (l.ends_with("clocked") || l.ends_with("combinational"))
+                });
+                assert!(member, "{p}: {err}");
+            }
+            assert!(err.contains("E4119 a latch: cycle_views.lt"), "{err}");
+        }
+    }
+}
+
 /// A logical right shift by a count known during elaboration (of 1, 63, 64, 65, 100 and the width
 /// less one) gives zeros above the bits that remain, also into a signal or variable that held
 /// another value in the same run: the region wrote only the words of the remaining bits.

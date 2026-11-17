@@ -725,7 +725,7 @@ fn differs(e: &Elaborated, f: &Fit, b: &Body) -> Option<String> {
             .first_missing(u64::from(l.0), lo, lo + n)
             .map(|x| (l, x))
     })?;
-    // Reached (2026-11-17) by a call with a mode view in a concurrent statement.
+    // Reached until 2026-11-18 by a call with a mode view, whose elements the checker did not count.
     Some(format!(
         "an internal mismatch in yavs (please report it): a read of element {x} of {} that the \
          first pass of yavs missed",

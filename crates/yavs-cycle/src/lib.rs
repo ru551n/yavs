@@ -578,22 +578,6 @@ fn built(
         let n = nets.signal_len(yavs_kernel::SignalId(k));
         if logic(k) { n } else { 64 * n }
     };
-    // Image: the words of each kernel signal of the region (its leaves at their kernel offsets),
-    // then next-state words, then the slots of each member, then two words for a failed check.
-    let mut cur: BTreeMap<u32, u32> = BTreeMap::new();
-    let mut n = 0u32;
-    let leaves = (sel.driven.iter().chain(&sel.inputs)).chain(
-        sel.members
-            .iter()
-            .flat_map(|(_, b)| b.reads.iter().chain(&b.writes)),
-    );
-    for &l in leaves {
-        let k = ksig(l);
-        cur.entry(k).or_insert_with(|| {
-            n += codegen::words(klen(k));
-            n - codegen::words(klen(k))
-        });
-    }
     // Memories clocked members write: their writes wait for the commit (`defer`), so they need no
     // next-state block (`region::ram_rule` kept only writes at run-time indices).
     let mut rams: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
@@ -606,12 +590,58 @@ fn built(
                 .map(|(k, _)| k),
         );
     }
-    let mut next: BTreeMap<u32, u32> = BTreeMap::new();
-    for &l in &sel.next {
-        let k = ksig(l);
-        if rams.contains(&k) {
+    let several = sel.clocks.len() > 1;
+    // Per next-state signal, with several classes: the classes whose clocked members write it
+    // (`u32::MAX`: a member without one, every class). Its copies run after an edge of one of
+    // them only (twice when two had one).
+    let named = named_sigs(sel);
+    let mut writers: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+    for (k, (_, b)) in sel.members.iter().enumerate() {
+        if !several || b.kind != Kind::Clocked {
             continue;
         }
+        let c = (b.clock)
+            .and_then(|c| sel.clocks.iter().position(|&x| x == c))
+            .map_or(u32::MAX, |c| c as u32);
+        for s in b
+            .writes
+            .iter()
+            .map(|&l| ksig(l))
+            .chain(named[k][1].iter().copied())
+        {
+            writers.entry(s).or_default().insert(c);
+        }
+    }
+    // The next-state signals by the classes that write them: their current words lie first in
+    // this order, and their next-state words in the same, so the copies of one set of classes are
+    // one run each way (`codegen::Step::Copy`).
+    let mut nexts: Vec<(Vec<u32>, u32)> = (sel.next.iter())
+        .map(|&l| ksig(l))
+        .filter(|k| !rams.contains(k))
+        .map(|k| {
+            let ws = writers.get(&k).into_iter().flatten().copied().collect();
+            (ws, k)
+        })
+        .collect();
+    nexts.sort_unstable();
+    nexts.dedup();
+    // Image: the words of each kernel signal of the region (its leaves at their kernel offsets),
+    // then next-state words, then the slots of each member, then two words for a failed check.
+    let mut cur: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut n = 0u32;
+    let leaves = (sel.driven.iter().chain(&sel.inputs)).chain(
+        sel.members
+            .iter()
+            .flat_map(|(_, b)| b.reads.iter().chain(&b.writes)),
+    );
+    for k in nexts.iter().map(|x| x.1).chain(leaves.map(|&l| ksig(l))) {
+        cur.entry(k).or_insert_with(|| {
+            n += codegen::words(klen(k));
+            n - codegen::words(klen(k))
+        });
+    }
+    let mut next: BTreeMap<u32, u32> = BTreeMap::new();
+    for &(_, k) in &nexts {
         next.entry(k).or_insert_with(|| {
             n += codegen::words(klen(k));
             n - codegen::words(klen(k))
@@ -623,53 +653,40 @@ fn built(
     // members).
     let edge_words: Vec<u32> = (0..sel.clocks.len() as u32).map(|k| n + k).collect();
     n += sel.clocks.len().max(1) as u32;
-    let several = sel.clocks.len() > 1;
     let mut state: Vec<(u32, u32)> = Vec::new();
     // Each function as pieces, a member's body each (`codegen::compile` cuts between them).
     // Each step with the member it runs (`codegen::compile`'s units; `u32::MAX`: none).
     let mut settle: Vec<(codegen::Step, u32)> = Vec::new();
     let mut edge: Vec<codegen::Step> = Vec::new();
     let mut init_fn: Vec<codegen::Step> = Vec::new();
-    // Per next-state signal, with several classes: the edge words of the classes whose clocked
-    // members write it. Its copies run after an edge of one of them only (twice when two had one).
-    let named = named_sigs(sel);
-    let mut writers: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
-    for (k, (_, b)) in sel.members.iter().enumerate() {
-        if !several || b.kind != Kind::Clocked {
-            continue;
+    // The edge words of a set of classes.
+    let class_words = |ws: &[u32]| -> Vec<u32> {
+        if ws.contains(&u32::MAX) {
+            edge_words.clone()
+        } else {
+            ws.iter().map(|&c| edge_words[c as usize]).collect()
         }
-        let words = match b
-            .clock
-            .and_then(|c| sel.clocks.iter().position(|&x| x == c))
-        {
-            Some(c) => vec![edge_words[c]],
-            None => edge_words.clone(),
-        };
-        for s in b
-            .writes
-            .iter()
-            .map(|&l| ksig(l))
-            .chain(named[k][1].iter().copied())
-        {
-            writers.entry(s).or_default().extend(&words);
-        }
-    }
+    };
     // The copies into the next-state blocks (`into`) or back, behind one gate per set of classes
-    // whose members write them (`codegen::Step::Gate`: any of them had an edge).
+    // whose members write them (`codegen::Step::Gate`: any of them had an edge); adjacent words
+    // join into one run.
     let copies = |into: bool| -> Vec<codegen::Step> {
-        let mut by: BTreeMap<Vec<u32>, Vec<Op>> = BTreeMap::new();
-        for (&k, &s) in &next {
-            let (dst, src) = if into { (s, cur[&k]) } else { (cur[&k], s) };
-            let copy = Op::Copy {
-                dst: Ref::Loc(dst),
-                src: Ref::Loc(src),
-                len: klen(k),
+        let mut by: BTreeMap<Vec<u32>, Vec<(u32, u32, u32)>> = BTreeMap::new();
+        for (ws, k) in &nexts {
+            let (dst, src) = if into {
+                (next[k], cur[k])
+            } else {
+                (cur[k], next[k])
             };
-            let ws: Vec<u32> = writers.get(&k).into_iter().flatten().copied().collect();
-            by.entry(ws).or_default().push(copy);
+            let len = codegen::words(klen(*k));
+            let runs = by.entry(class_words(ws)).or_default();
+            match runs.last_mut() {
+                Some(r) if r.0 + r.2 == dst && r.1 + r.2 == src => r.2 += len,
+                _ => runs.push((dst, src, len)),
+            }
         }
         (by.into_iter())
-            .flat_map(|(w, ops)| [codegen::Step::Gate(w), codegen::Step::Ops(ops)])
+            .flat_map(|(w, runs)| [codegen::Step::Gate(w), codegen::Step::Copy(runs)])
             .collect()
     };
     edge.extend(copies(true));
@@ -1095,10 +1112,17 @@ fn built(
         let (a, z) = nets.packs[k as usize];
         (a.0..z.0).any(|l| sel.outputs.contains(&LeafId(l)))
     };
-    let mut writes = Vec::new();
+    // By the set of classes whose edge runs them (a member's flags are set only at its edge),
+    // each in member and program order: an edge of another class skips them.
+    let mut writes: BTreeMap<Vec<u32>, Vec<Op>> = BTreeMap::new();
     let mut ram_writes: BTreeMap<u32, Vec<rt::RamWrite>> = BTreeMap::new();
     for (k, (_, pend)) in deferred.iter().enumerate() {
         let r = &rs[k];
+        let gate = match class_word(k) {
+            _ if !several => Vec::new(),
+            Some(w) => vec![w],
+            None => edge_words.clone(),
+        };
         for p in pend {
             let Op::IndexWrite {
                 dst: Ref::Sig(sig),
@@ -1137,16 +1161,16 @@ fn built(
                     val: Box::new([0]),
                 });
             }
-            writes.push(r.op(&Op::If {
+            writes.entry(gate.clone()).or_default().push(r.op(&Op::If {
                 cond: Ref::Loc(p.flag),
                 then,
                 else_: Vec::new(),
             }));
         }
     }
-    if !writes.is_empty() {
-        edge.push(codegen::Step::Gate(Vec::new()));
-        edge.push(codegen::Step::Ops(writes));
+    for (w, ops) in writes {
+        edge.push(codegen::Step::Gate(w));
+        edge.push(codegen::Step::Ops(ops));
     }
     edge.extend(copies(false));
     let err = n;

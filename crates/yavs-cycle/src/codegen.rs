@@ -48,6 +48,8 @@ pub(crate) struct Code {
     edge_parts: Vec<(Vec<u32>, std::ops::Range<usize>)>,
     /// The words each loop group drives: (first, count), and where [`Run::Save`] copies them.
     groups: Vec<(Vec<(u32, u32)>, u32)>,
+    /// The runs of words each [`Run::Copy`] copies: (to, from, count).
+    copies: Vec<Vec<(u32, u32, u32)>>,
     /// The words the code addresses.
     words: usize,
     /// By instance of a shared body: the byte offset in the image of each of its blocks.
@@ -102,6 +104,8 @@ enum Run {
     Shared(SharedEntry, u32, u32),
     /// Guard `g` of the next `n` steps, a run with checks or without.
     Guard(usize, usize, bool),
+    /// The runs of words of [`Code::copies`] `c`, copied.
+    Copy(usize),
 }
 
 /// A step of the settle as [`compile`] takes it.
@@ -127,6 +131,9 @@ pub(crate) enum Step {
     /// The edge's steps after it, up to the next gate, run only when one of these words is not 0
     /// (edge classes' words; none: always).
     Gate(Vec<u32>),
+    /// Runs of words copied (to, from, count): a commit's next-state copies, as one copy each in
+    /// the runner instead of a load and a store per word in the code.
+    Copy(Vec<(u32, u32, u32)>),
 }
 
 /// One compiled body for several members whose code is the same but for where their words lie:
@@ -286,6 +293,11 @@ impl Code {
                     match unsafe { e(img.as_mut_ptr(), self.tables[t as usize].as_ptr()) } {
                         0 => {}
                         s => return Err(sites + s - 1),
+                    }
+                }
+                Run::Copy(c) => {
+                    for &(d, s, n) in &self.copies[c] {
+                        img.copy_within(s as usize..(s + n) as usize, d as usize);
                     }
                 }
                 Run::Same(g) => {
@@ -1357,6 +1369,7 @@ pub(crate) fn compile<'a>(
     // What each trigger function runs: a function by its index, a function of a shared body
     // with its table and first site, or a step of the runner.
     let mut tables: Vec<Box<[usize]>> = Vec::new();
+    let mut copies: Vec<Vec<(u32, u32, u32)>> = Vec::new();
     let mut runs: [Vec<Pend>; 3] = Default::default();
     let mut settle_units: Vec<Vec<u32>> = Vec::new();
     let mut edge_parts = Vec::new();
@@ -1485,6 +1498,21 @@ pub(crate) fn compile<'a>(
                     runs[f].push(Pend::Same(*g));
                     eunits.push(Vec::new());
                 }
+                Step::Copy(c) => {
+                    flush(
+                        &mut funs,
+                        &mut cur,
+                        &mut cur_units,
+                        &mut runs[f],
+                        &mut eunits,
+                    );
+                    if (c.iter()).any(|&(d, s, n)| (d.max(s) + n) as usize > words) {
+                        return Err("a copy's words do not fit the image".into());
+                    }
+                    runs[f].push(Pend::Copy(copies.len()));
+                    copies.push(c.clone());
+                    eunits.push(Vec::new());
+                }
             }
             // A guarded step in functions of its own: the guard skips them all.
             for o in &mut open {
@@ -1582,6 +1610,7 @@ pub(crate) fn compile<'a>(
         runs,
         edge_parts,
         groups,
+        copies,
         words,
         tables,
         guards,
@@ -2057,6 +2086,7 @@ fn finish(
                     }
                     Pend::Save(g) => Run::Save(g),
                     Pend::Same(g) => Run::Same(g),
+                    Pend::Copy(c) if c < plan.copies.len() => Run::Copy(c),
                     Pend::Guard(g, n, c) => Run::Guard(g, n, c),
                     _ => return Err("a step of another signature than its function".to_string()),
                 })
@@ -2081,6 +2111,9 @@ fn finish(
     for (i, _) in settle_units.iter().enumerate().filter(|x| !x.1.is_empty()) {
         every[i / 64] |= 1 << (i % 64);
     }
+    if (plan.copies.iter().flatten()).any(|&(d, s, n)| (d.max(s) + n) as usize > words) {
+        return Err("a copy's words do not fit the image".into());
+    }
     if (plan.edge_parts.iter()).any(|(ws, _)| ws.iter().any(|&w| w as usize >= words)) {
         return Err("an edge gate's word does not fit the image".into());
     }
@@ -2089,6 +2122,7 @@ fn finish(
         entries,
         edge_parts: plan.edge_parts,
         groups: plan.groups,
+        copies: plan.copies,
         words,
         tables: plan.tables,
         guards,
@@ -2115,6 +2149,7 @@ pub(crate) struct CodePlan {
     /// [`Code::edge_parts`].
     edge_parts: Vec<(Vec<u32>, std::ops::Range<usize>)>,
     groups: Vec<(Vec<(u32, u32)>, u32)>,
+    copies: Vec<Vec<(u32, u32, u32)>>,
     words: usize,
     tables: Vec<Box<[usize]>>,
     guards: Vec<Guard>,
@@ -2142,6 +2177,7 @@ enum Pend {
     Save(usize),
     Same(usize),
     Guard(usize, usize, bool),
+    Copy(usize),
 }
 
 /// Most words a piece keeps in registers at once (`Gen::keep_in`), and for a piece of more than

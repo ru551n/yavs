@@ -1,0 +1,1 @@
+A signal assigned a variable's value keeps that value when the variable is assigned again later in the same process run and the signal may be assigned again after that (`s <= v; v := x; if c then s <= ...`): the signal had taken the variable's new value.

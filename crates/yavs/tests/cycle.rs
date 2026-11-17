@@ -227,6 +227,75 @@ fn region_outputs_seen_every_clock_on_events_and_through_local_subprograms() {
     }
 }
 
+#[test]
+fn external_names_export_only_what_they_name() {
+    // One library each: a package in the library is part of every run's design.
+    let dir = tempdir("cycle-xname");
+    analyze(&dir, "xname.vhd", include_str!("cycle/xname.vhd"));
+    analyze(&dir, "xname2.vhd", include_str!("cycle/xname2.vhd"));
+    let pdir = tempdir("cycle-xnamepkg");
+    analyze(&pdir, "xnamepkg.vhd", include_str!("cycle/xnamepkg.vhd"));
+    // Hand-checked: `cnt` steps by 3, `hid` takes `hid xor cnt` at each of 20 edges from 5A;
+    // the sums are of `dbl + 3 * cnt` and of `hid` after each edge; `fast` changes at time 0
+    // and at every edge. Exported: `q`, `dbl` and `cnt`; `fast` stays out with the actual that
+    // reads it (an external name in a member is not followed), and its readers' result may depend
+    // on its deltas. Through the package procedure every signal of the design is exported.
+    let cases = [
+        (
+            &dir,
+            "cycle_xname",
+            "sum=4304 q=66 fast=21 last=3D",
+            "3 of 7",
+            "3 signal leaves exported (2 nothing",
+        ),
+        // `fast` waited on directly, `dbl` by the concurrent assertion.
+        (
+            &dir,
+            "cycle_xname_wait",
+            "fast=21",
+            "4 of 7",
+            "2 signal leaves exported (0 nothing",
+        ),
+        (
+            &dir,
+            "cycle_xname_fn",
+            "sum=1784",
+            "4 of 5",
+            "5 signal leaves exported (0 nothing",
+        ),
+        (
+            &dir,
+            "cycle_xname_lpkg",
+            "sum=1784",
+            "4 of 5",
+            "5 signal leaves exported (0 nothing",
+        ),
+        (
+            &pdir,
+            "cycle_xname_pkg",
+            "sum=1784",
+            "4 of 5",
+            "5 signal leaves exported (0 nothing",
+        ),
+    ];
+    for (d, top, sum, members, exported) in cases {
+        for t in tiers() {
+            let (normal, _) = run(d, &t, top);
+            assert!(
+                normal.last().is_some_and(|l| l.ends_with(sum)),
+                "{t:?} {normal:?}"
+            );
+            let (cycle, err) = run(d, &[&t[..], &["--cycle"]].concat(), top);
+            assert_eq!(cycle, normal, "{t:?}\n{err}");
+            assert!(
+                err.contains(&format!("cycle mode: {members} processes run cycle-based")),
+                "{err}"
+            );
+            assert!(err.contains(exported), "{err}");
+        }
+    }
+}
+
 /// A subprogram of a package declared in an architecture reads that architecture's signals: the
 /// testbench calling it reads `acc`, which must be exported (it read 0 in cycle mode before).
 #[test]

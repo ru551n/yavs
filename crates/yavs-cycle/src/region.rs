@@ -834,7 +834,9 @@ fn meta_rule(
         return Vec::new();
     }
     let members: BTreeSet<usize> = taken.keys().copied().collect();
-    let mut all = outside_reads_all(db, e, &members);
+    // ponytail: any external name still counts as reading every signal here; resolved, ac701 boot
+    // joins 57 processes and loses 387 to `cross_delta`, for no gain (owner decision pending).
+    let mut all = !db.externals.is_empty();
     let tb: BTreeSet<usize> = (out.iter())
         .filter(|(pi, w)| matches!(w, Why::Behavioural(_)) || in_top_unit(e, *pi))
         .map(|(pi, _)| *pi)
@@ -1594,7 +1596,7 @@ fn ram_rule(db: &Db, e: &Elaborated, taken: &BTreeMap<usize, (Fit, Body)>) -> Ve
         return Vec::new();
     }
     let members: BTreeSet<usize> = taken.keys().copied().collect();
-    let seen = (!outside_reads_all(db, e, &members)).then(|| outside_reads(db, e, &members).0);
+    let seen = (!outside_reads_all(db)).then(|| outside_reads(db, e, &members).0);
     let mut gone = Vec::new();
     for (k, ws) in rams {
         let (a, z) = e.nets.packs[k as usize];
@@ -1679,7 +1681,7 @@ fn boundary(
         .intersection(&clocked_reads)
         .copied()
         .collect();
-    let (outputs, waited, readers) = if outside_reads_all(db, e, &is_member) {
+    let (outputs, waited, readers) = if outside_reads_all(db) {
         (driven.clone(), driven.clone(), BTreeMap::new())
     } else {
         let (seen, waited, readers) = outside_reads(db, e, &is_member);
@@ -1759,9 +1761,92 @@ fn at_once(
     out
 }
 
-/// Something may read any signal: an external name anywhere in the design.
-fn outside_reads_all(db: &Db, _e: &Elaborated, _members: &BTreeSet<usize>) -> bool {
-    !db.externals.is_empty()
+/// Something may read any signal: an external signal name in a subprogram of a package, which
+/// the scan of outside reads does not follow. Elaboration binds the other external names to
+/// aliases the scan resolves like any name; one it cannot resolve makes `proc_reads` give `None`.
+fn outside_reads_all(db: &Db) -> bool {
+    use yavs_sem::decl::{Alias, Body as B, DeclKind};
+    use yavs_sem::external::ExtOwner;
+    use yavs_syntax::ast::ExternalClass;
+    if db.externals.is_empty() {
+        return false;
+    }
+    let signal = |x: yavs_sem::ids::ExternalId| db.externals[x].class == ExternalClass::Signal;
+    let alias = |d| db.external_alias(d).is_some_and(signal);
+    // Subprogram `m` or one nested in it names an external signal.
+    fn names(
+        db: &Db,
+        m: yavs_sem::DeclId,
+        hit: &dyn Fn(ExprId) -> bool,
+        alias: &dyn Fn(yavs_sem::DeclId) -> bool,
+    ) -> bool {
+        let Some(sp) = db.decls[m].kind.subprogram() else {
+            return false;
+        };
+        let B::Hir { scope, stmts } = &sp.body else {
+            return false;
+        };
+        if db.external_uses(ExtOwner::Sub(m)).iter().any(|&d| alias(d))
+            || sp.params.iter().filter_map(|p| p.default).any(hit)
+        {
+            return true;
+        }
+        for &x in &db.scopes[*scope].order {
+            match &db.decls[x].kind {
+                DeclKind::Object(o) => {
+                    let mut xs: Vec<ExprId> = o.default.into_iter().collect();
+                    constraint_exprs(&db.subtypes[o.subtype].constraint, &mut xs);
+                    if xs.into_iter().any(hit) {
+                        return true;
+                    }
+                }
+                DeclKind::Alias(Alias::Object { target, .. }) if alias(x) || hit(*target) => {
+                    return true;
+                }
+                _ if db
+                    .decl_subprograms(x)
+                    .into_iter()
+                    .any(|n| names(db, n, hit, alias)) =>
+                {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        let mut all = Vec::new();
+        deep(db, stmts, &mut all);
+        all.iter().any(|&s| {
+            let mut xs = Vec::new();
+            db.stmt_exprs(s, &mut |x, _| xs.push(x));
+            // Also the names of waits and drivers that are no expression.
+            let mut lsps = Vec::new();
+            db.stmt_reads(s, &mut lsps);
+            xs.into_iter().any(hit)
+                || lsps.iter().any(|l| match l.root {
+                    ObjRoot::External(x) => db.externals[x].class == ExternalClass::Signal,
+                    ObjRoot::Decl(d) => alias(d),
+                    ObjRoot::ImplicitSignal(_) => false,
+                })
+        })
+    }
+    let hit = |e: ExprId| {
+        let mut found = false;
+        db.walk_expr(e, &mut |x| {
+            found |= match db.exprs[x].kind {
+                ExprKind::External(x) => signal(x),
+                ExprKind::Obj(d) => alias(d),
+                _ => false,
+            };
+        });
+        found
+    };
+    (db.units.iter()).any(|(u, unit)| {
+        db.libs[unit.lib].name.key.as_str() != "std"
+            && (db.package_regions(u).unwrap_or_default().into_iter())
+                .flat_map(|r| db.decls_with_instances(r))
+                .flat_map(|d| db.decl_subprograms(d))
+                .any(|m| names(db, m, &hit, &alias))
+    })
 }
 
 /// The leaves anything that is not a member may read, and of those the ones something outside
@@ -1826,7 +1911,8 @@ fn outside_reads(
 
 /// The signal leaves process `pi` may read (its names, whole objects, and those of the local
 /// subprograms it calls), and of those the ones it waits on; `None` when the scan cannot follow
-/// it (an external name, a call it cannot see into): it may read every leaf.
+/// it (an external name without the alias elaboration bound it to, a call it cannot see into):
+/// it may read every leaf.
 fn proc_reads(
     db: &Db,
     e: &Elaborated,
@@ -1888,12 +1974,40 @@ fn proc_reads(
             waits.extend(actual_reads(db, args));
         }
     }
+    let ext_alias = |x: yavs_sem::ids::ExternalId| {
+        let mut cands: Vec<yavs_sem::DeclId> = db
+            .external_uses(yavs_sem::external::ExtOwner::Stmt(p.stmt))
+            .to_vec();
+        if let StmtKind::Process { scope, .. } = &db.stmts[p.stmt].kind {
+            cands.extend(&db.scopes[*scope].order);
+        }
+        // The declarative regions of the process's region and of those around it.
+        let mut sc = Some(p.scope);
+        while let Some(s) = sc {
+            for &r in e.regions.get(&s).into_iter().flatten() {
+                cands.extend(&db.scopes[r].order);
+            }
+            sc = e.hier.scope(s).parent;
+        }
+        let span = db.externals[x].span;
+        cands.into_iter().find(|&d| {
+            db.external_alias(d)
+                .is_some_and(|y| db.externals[y].span == span)
+        })
+    };
     for (l, wait) in lsps
         .iter()
         .map(|l| (l, false))
         .chain(waits.iter().map(|l| (l, true)))
     {
-        match l.root {
+        // A root that is an external name (a wait on one, a declared alias of one): the alias
+        // elaboration bound it to, for the same name in the source (sem may give the root an
+        // id of its own).
+        let root = match l.root {
+            ObjRoot::External(x) => ObjRoot::Decl(ext_alias(x)?),
+            r => r,
+        };
+        match root {
             ObjRoot::Decl(d) => {
                 let (a, z) = e.nets.obj(e.signal(p.scope, d)?).leaves;
                 let leaves = (a.0..z.0).map(LeafId);
@@ -1902,8 +2016,7 @@ fn proc_reads(
                 }
                 seen.extend(leaves);
             }
-            ObjRoot::External(_) => return None,
-            ObjRoot::ImplicitSignal(_) => {}
+            ObjRoot::External(_) | ObjRoot::ImplicitSignal(_) => {}
         }
     }
     Some((seen, waited))

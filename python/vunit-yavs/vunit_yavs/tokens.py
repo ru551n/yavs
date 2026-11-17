@@ -5,7 +5,7 @@
 # Copyright (c) 2014-2026, Lars Asplund lars.anders.asplund@gmail.com
 
 """
-A token server lending the spare CPU of a parallel run (-p N) to the yavs simulations.
+A token server lending the CPUs that no running test takes to the yavs simulations.
 
 It listens on 127.0.0.1 at a free port. Each running test gets a secret of its own, passed with the port as
 YAVS_TOKENS=<port>:<secret>. A simulation connects, sends the secret (answered with "0 0"), then a line
@@ -74,8 +74,8 @@ class Connection:
 
 class TokenServer:
     """
-    The CPU budget of a run with num_threads workers, make style: one running test is free and each further
-    running test takes one slot, so with k tests running num_threads - k tokens are lent to the simulations.
+    The CPU budget of a run of num_threads slots (the usable CPUs), make style: one running test is free and each
+    further running test takes one slot, so with k tests running num_threads - k tokens are lent to the simulations.
     Tokens in use are never taken back: a test starting while every token is in use runs at once, so the
     total is num_threads in the steady state, not at every instant.
     """

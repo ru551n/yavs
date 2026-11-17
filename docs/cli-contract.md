@@ -700,15 +700,17 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
 - Cycle mode: the sim option `yavs.cycle` (`off`, `on`, `strict`) becomes `--cycle` or `--cycle-strict` on `yavs run`
   (never `elab`), before `yavs.sim_flags`. With a debug session, coverage or `--wave` the runner fails the test before
   starting yavs, naming both (yavs itself answers E4102).
-- Threads: yavs defaults to `--threads=1`. The test runner already runs `-p N`
-  simulations in parallel and passes a thread count only when the user sets one: the sim
+- Threads: yavs defaults to `--threads=1`. The sim
   option `yavs.max_threads` (or the runner argument `--yavs-max-threads N` for every test; both
   take a number or `auto`) becomes `--threads=N` before the raw flags, so `--threads` in
-  `yavs.sim_flags` still wins; none under `--dap` or for `elab`. With the runner's
-  `--yavs-jobserver` and `-p N` above 1 (`-p 0` is one job per CPU), the runner starts a token server and every `yavs run`
+  `yavs.sim_flags` still wins; none under `--dap` or for `elab`. The runner starts a token server
+  by default (owner, 2026-11-17; before that only with `--yavs-jobserver` and `-p N` above 1), at
+  any `-p`, with one slot per CPU the runner may use (its affinity), none with one CPU, under
+  `--yavs-debug` or `--yavs-interactive`, or with `--yavs-no-jobserver` or
+  `VUNIT_YAVS_JOBSERVER=off`. Under it every `yavs run`
   gets `--threads=auto` (or `yavs.max_threads` when set, before the raw flags) and its own
-  `YAVS_TOKENS`: the runner lends the CPU slots no test uses as tokens, at most
-  `min(N, 8) - 1` per test with `auto` and `yavs.max_threads - 1` with a number, breadth first,
+  `YAVS_TOKENS`: the runner lends the slots no running test takes as tokens, at most
+  `min(slots, 8) - 1` per test with `auto` and `yavs.max_threads - 1` with a number, breadth first,
   newest test first, and never takes back a token in use (python/vunit-yavs/README.md "Token
   server"). Before 2026-11-07 the default under the server was `--threads=min(N, 4)`.
 - `--threads=auto` (#884): at most 8 threads, and no more than the CPUs the process may run on
@@ -1007,7 +1009,7 @@ While a call is under way, the simulation stays at its end if it gets there. If 
 
 ## 7. Environment
 
-The test runner sets no yavs environment variables (only `YAVS_TOKENS` under `--yavs-jobserver`, section 5). `YAVS_STDLIB` overrides the std/ieee
+The test runner sets no yavs environment variables (only `YAVS_TOKENS` under its token server, on by default, section 5). `YAVS_STDLIB` overrides the std/ieee
 tree (section 3); `YAVS_STD_CACHE` names the directory of the shared std/ieee units, or `off`; `--std-cache` overrides it (section 3). Simulator hooks from the test runner packages
 can add `elab_flags`, `run_flags` and run environment; the test runner applies
 `elab_flags` to both `run` and `elab`, and `run_flags` only to `run`. `YAVS_HUGE_HEAP=0` stops yavs

@@ -36,7 +36,15 @@ from vunit.vhdl_standard import VHDL
 
 import vunit
 from vunit_yavs.console import HELP
-from vunit_yavs import YAVS_MIN_VERSION, CoverageArgs, YavsInterface, YavsVersion, check_debug_args, write_response_file
+from vunit_yavs import (
+    YAVS_MIN_VERSION,
+    CoverageArgs,
+    YavsInterface,
+    YavsVersion,
+    check_debug_args,
+    usable_cpus,
+    write_response_file,
+)
 from vunit_yavs.tokens import TokenServer
 
 FAKE_BIN = Path(__file__).parent / "fake_bin"
@@ -932,7 +940,10 @@ class TestYavsInterface(unittest.TestCase):
 
     def _from_args(self, **kwargs):
         with mock.patch.dict("os.environ", {"VUNIT_YAVS_PATH": str(FAKE_BIN)}):
-            return YavsInterface.from_args(SimpleNamespace(gui=False, **kwargs), self.output_path)
+            simif = YavsInterface.from_args(SimpleNamespace(gui=False, **kwargs), self.output_path)
+        if simif._tokens is not None:  # pylint: disable=protected-access
+            self.addCleanup(simif._tokens.close)  # pylint: disable=protected-access
+        return simif
 
     @NEEDS_FAKE_BIN
     def test_max_threads_from_the_environment_for_scripts_with_their_own_command_line(self):
@@ -945,23 +956,43 @@ class TestYavsInterface(unittest.TestCase):
                 self._from_args()
 
     @NEEDS_FAKE_BIN
-    def test_token_server_only_with_the_flag_and_parallel_runs(self):
-        self.assertIsNone(self._from_args(num_threads=4)._tokens)  # pylint: disable=protected-access
-        self.assertIsNone(self._from_args(num_threads=1, yavs_jobserver=True)._tokens)
-        tokens = self._from_args(num_threads=4, yavs_jobserver=True)._tokens
-        self.assertEqual(tokens.num_threads, 4)
-        tokens.close()
+    def test_token_server_is_on_by_default_with_one_slot_per_usable_cpu(self):
+        # The budget is the CPUs the run may use, whatever -p says, and a namespace without package arguments too
+        with mock.patch("vunit_yavs.usable_cpus", return_value=6):
+            for kwargs in ({}, {"num_threads": 1}, {"num_threads": 4}, {"num_threads": 0}, {"num_threads": 12}):
+                with self.subTest(**kwargs):
+                    self.assertEqual(self._from_args(**kwargs)._tokens.num_threads, 6)  # pylint: disable=protected-access
+            # The old flag is the default
+            self.assertEqual(self._from_args(yavs_jobserver=True)._tokens.num_threads, 6)
+        with mock.patch("vunit_yavs.usable_cpus", return_value=1):
+            self.assertIsNone(self._from_args(num_threads=4)._tokens)
 
     @NEEDS_FAKE_BIN
-    def test_token_server_with_p_0_is_one_slot_per_cpu(self):
-        # -p 0 is one job per CPU for the test runner, so the token server has that many slots (#1141)
-        with mock.patch("os.cpu_count", return_value=6):
-            tokens = self._from_args(num_threads=0, yavs_jobserver=True)._tokens
-            self.assertEqual(tokens.num_threads, 6)
-            tokens.close()
-            self.assertIsNone(self._from_args(num_threads=0)._tokens)
-        with mock.patch("os.cpu_count", return_value=1):
-            self.assertIsNone(self._from_args(num_threads=0, yavs_jobserver=True)._tokens)
+    def test_usable_cpus_follow_the_affinity(self):
+        if not hasattr(os, "sched_getaffinity"):
+            self.skipTest("no CPU affinity on this platform")
+        self.assertEqual(usable_cpus(), len(os.sched_getaffinity(0)))
+        with mock.patch("os.sched_getaffinity", return_value={0, 3}):
+            self.assertEqual(self._from_args(num_threads=8)._tokens.num_threads, 2)  # pylint: disable=protected-access
+
+    @NEEDS_FAKE_BIN
+    def test_token_server_opt_out(self):
+        self.assertIsNone(self._from_args(num_threads=4, yavs_no_jobserver=True)._tokens)  # pylint: disable=protected-access
+        with mock.patch.dict("os.environ", {"VUNIT_YAVS_JOBSERVER": "off"}):
+            self.assertIsNone(self._from_args(num_threads=4)._tokens)  # pylint: disable=protected-access
+        with mock.patch.dict("os.environ", {"VUNIT_YAVS_JOBSERVER": "on"}):
+            self.assertIsNotNone(self._from_args(num_threads=4)._tokens)  # pylint: disable=protected-access
+            self.assertIsNone(self._from_args(yavs_no_jobserver=True)._tokens)  # pylint: disable=protected-access
+        for wrong, hint in (("of", " Did you mean 'off'?"), ("yes", "")):
+            with mock.patch.dict("os.environ", {"VUNIT_YAVS_JOBSERVER": wrong}):
+                message = f"VUNIT_YAVS_JOBSERVER must be 'on' (the default) or 'off', got {wrong!r}.{hint}"
+                with refused(self, re.escape(message)):
+                    self._from_args()
+
+    @NEEDS_FAKE_BIN
+    def test_no_token_server_for_a_debugger_session(self):
+        self.assertIsNone(self._from_args(num_threads=1, yavs_debug=0)._tokens)  # pylint: disable=protected-access
+        self.assertIsNone(self._from_args(num_threads=1, yavs_interactive=True)._tokens)  # pylint: disable=protected-access
 
     def _simulate_with_tokens(self, config, elaborate_only=False):
         tokens = TokenServer(4)
@@ -998,7 +1029,7 @@ class TestYavsInterface(unittest.TestCase):
         with mock.patch("vunit_yavs.TokenServer", side_effect=OSError("no loopback")), self.assertLogs(
             "vunit_yavs", "WARNING"
         ) as logs:
-            simif = self._from_args(num_threads=4, yavs_jobserver=True)
+            simif = self._from_args(num_threads=4)
         self.assertIsNone(simif._tokens)  # pylint: disable=protected-access
         self.assertIn("no loopback", logs.output[0])
         self.assertIn("one thread", logs.output[0])

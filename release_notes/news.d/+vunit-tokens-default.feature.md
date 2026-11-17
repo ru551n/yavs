@@ -1,0 +1,1 @@
+The test runner package `vunit-yavs` starts its token server by default, with one slot for each CPU the run may use, at any `-p`: every simulation runs with `--threads=auto` and takes the CPUs no other test uses only while its threads gain, so a parallel suite never keeps more CPUs busy than the machine has. `--yavs-no-jobserver` or `VUNIT_YAVS_JOBSERVER=off` turns it off.

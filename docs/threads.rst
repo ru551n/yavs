@@ -101,16 +101,17 @@ faster at 4 threads and 3.25 at 8, whole run, measured 2026-10-28. The measured 
 Regressions: threads or parallel tests
 --------------------------------------
 
-Running tests side by side uses cores better than threads inside one test. Nothing shares the CPU
-between simulations by itself: with ``-p 8`` and ``--threads=8`` the threads of all runs add up. So leave
-``--threads`` at 1 when a runner already runs tests in parallel, or use the token server.
+Running tests side by side uses cores better than threads inside one test. yavs alone does not share the CPU
+between simulations: with ``-p 8`` and ``--threads=8`` the threads of all runs add up. A test runner's token
+server shares it, and the ``vunit-yavs`` package starts one by default (`With VUnit`_).
 
 The token server
 ----------------
 
-With ``-p N`` a test runner runs N tests side by side. Near the end of a regression most of those N
-slots are idle while a few long simulations finish alone. The token server lends the idle slots to
-those simulations as extra threads, so the tail ends sooner.
+With ``-p N`` a test runner runs N tests side by side. Near the end of a regression most of the CPUs
+are idle while a few long simulations finish alone, and with ``-p 1`` all but one are. The token server
+lends the idle CPUs to those simulations as extra threads, so they end sooner, without more threads in
+all than the machine has.
 
 * It is a small server of the test runner on ``127.0.0.1``. The ``vunit-yavs`` package has one
   (next section). It works on Linux and Windows alike.
@@ -120,36 +121,43 @@ those simulations as extra threads, so the tail ends sooner.
 * ``--threads=N`` is the cap. The simulation owns its main thread and can use up to N - 1 more, as tokens
   are lent. It starts its extra threads with the first token. With no token lent, it runs as with
   ``--threads=1``.
-* yavs asks for a token only when a group of processes is worth sharing, and never waits for one. It gives
-  tokens back when the groups stay small, and all of them when the simulation ends, however it ends.
+* yavs asks for a token only when a group of processes is worth sharing, or, under ``--cycle``, while it
+  compiles the region (:doc:`cycle-mode`), and never waits for one. It gives tokens back when the groups
+  stay small, and all of them when the simulation ends, however it ends.
 * The output does not depend on the tokens.
 
 With VUnit
 ----------
 
-Turn it on with ``--yavs-jobserver`` together with ``-p`` above 1. With ``-p 1`` there is nothing to lend
-and the flag does nothing:
+The ``vunit-yavs`` package starts the token server for every run, at any ``-p``, with one slot for each CPU the
+run may use (a ``taskset`` or CPU affinity counts): one slot per running test, the rest lent. A run of ``-p N``
+with N at or above the CPU count lends nothing.
 
 .. code-block:: bash
 
-    python run.py -p 8 --yavs-jobserver
-    python run.py -p 8 --yavs-jobserver --yavs-max-threads 4
+    python run.py -p 8
+    python run.py -p 8 --yavs-max-threads 4
+    python run.py -p 8 --yavs-no-jobserver
 
-With the server every simulation runs with ``--threads=auto``: it asks for tokens only while its threads
+Under the server every simulation runs with ``--threads=auto``: it asks for tokens only while its threads
 gain, and gives them back when they do not. ``--yavs-max-threads N`` gives every simulation ``--threads=N``
-instead (``--yavs-max-threads auto`` is the default). A test can have its own value with
-``vu.set_sim_option("yavs.max_threads", 2)`` or ``"auto"``. Without the server ``--yavs-max-threads N`` simply runs
-each simulation with ``--threads=N``. If the server cannot start (a blocked local socket), the run prints a
-warning and goes on without a server, as if ``--yavs-jobserver`` had not been given. A run script with a command line of its own can set
-``VUNIT_YAVS_MAX_THREADS`` instead of the flag.
+instead (``--yavs-max-threads auto`` is the default); those threads past the first also run only on lent tokens.
+A test can have its own value with ``vu.set_sim_option("yavs.max_threads", 2)`` or ``"auto"``; with ``1`` it
+takes no tokens and still counts as a running test. If the server cannot start (a blocked local socket), the run
+prints a warning and every simulation runs on one thread.
 
-A run never keeps more than N threads busy once it has settled. A test that starts while every slot is
-lent starts at once, so the total can briefly exceed N.
+``--yavs-no-jobserver`` runs without the server: then nothing is passed unless ``--yavs-max-threads`` or
+``yavs.max_threads`` is set, and ``--yavs-max-threads N`` gives each simulation N threads of its own, whatever
+the others use. A run script with a command line of its own sets ``VUNIT_YAVS_JOBSERVER=off`` for the same, and
+``VUNIT_YAVS_MAX_THREADS`` for ``--yavs-max-threads``. ``--yavs-jobserver``, from the time the server was not the
+default, is still accepted and changes nothing.
 
-Turn the server on only for a regression whose longest tests gain from threads when run alone (`How to
-decide`_): the gain is in the tail, and the server gives nothing to a tail of processor models or
-testbench-style tests. The measurements are in
-`parallel.md <https://github.com/ru551n/yavs/blob/main/docs/parallel.md>`__.
+A run never keeps more threads busy than it has slots once it has settled. A test that starts while every slot
+is lent starts at once, so the total can briefly exceed the CPU count.
+
+The gain is on designs whose threads gain when run alone (`How to decide`_): in the tail of a regression and
+in a run of ``-p 1``. Processor models and testbench-style tests ask for no tokens after a short trial. The
+measurements are in `parallel.md <https://github.com/ru551n/yavs/blob/main/docs/parallel.md>`__.
 
 See also
 --------

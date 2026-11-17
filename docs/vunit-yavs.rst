@@ -32,7 +32,8 @@ as ``--name=value``.
      - ``yavs run`` (sim option).
    * - ``yavs.max_threads``
      - ``yavs run --threads=N``: the most threads one simulation uses, an integer of at least 1, or ``"auto"`` for
-       ``--threads=auto`` (more threads only while they make the run faster; the default with the token server).
+       ``--threads=auto`` (more threads only while they make the run faster; the default with the token server, which is on
+       by default). With the server the threads past the first run on lent tokens only; ``1`` takes none.
        It overrides ``--yavs-max-threads`` for a test. Not passed under ``--yavs-debug`` or to
        ``elab``. A ``--threads`` in ``yavs.sim_flags`` comes after it and wins.
    * - ``yavs.tier_compile``
@@ -138,12 +139,15 @@ out stops the run script with one ``error:`` line that says why and what to drop
    * - ``--yavs-cov-config FILE``
      - ``results.merge_coverage()`` reads exclusion files, root and kinds from this YAML file
        (``yavs cov report --config``). No file is read without it.
+   * - ``--yavs-no-jobserver``
+     - Runs without the token server. By default a token server lends the CPUs that no test uses to the running
+       simulations, at any ``-p``, with one slot for each CPU the run may use (:doc:`threads`).
    * - ``--yavs-jobserver``
-     - With ``-p N`` above 1 (``-p 0``, one job per CPU, counts as the CPU count): lends the CPU slots that no test uses to the running simulations
-       through a token server (:doc:`threads`).
+     - The token server, which is the default; accepted for scripts written when it was not.
 
-Without ``yavs.max_threads`` or ``--yavs-max-threads`` no thread count is passed and yavs runs
-with its default, one thread, unless the token server runs: then every simulation gets ``--threads=auto``.
+With the token server (the default) every simulation gets ``--threads=auto`` unless ``yavs.max_threads`` or
+``--yavs-max-threads`` gives a number, and its threads past the first run only on lent tokens. Without the
+server and without those options no thread count is passed and yavs runs with its default, one thread.
 
 .. _vunit-compiling:
 
@@ -215,8 +219,8 @@ note:
 * The simulator registry is global to the Python process: a script that creates two ``VUnit`` objects
   can add the package only once (the second ``add_package`` fails with "already registered"), so the
   wrapper catches that error for the second object.
-* A script with a command line of its own has no ``--yavs-max-threads``: set the environment variable
-  ``VUNIT_YAVS_MAX_THREADS`` instead.
+* A script with a command line of its own has no ``--yavs-max-threads`` or ``--yavs-no-jobserver``: set the
+  environment variables ``VUNIT_YAVS_MAX_THREADS`` and ``VUNIT_YAVS_JOBSERVER=off`` instead.
 * ``yavs.max_threads`` is one integer, not a list: ``set_sim_option("yavs.max_threads", 4)``. VUnit's
   ``overwrite=False`` appends to a list option and fails for an integer.
 * Scripts that turn on relaxed mode or VHDL-2019 only for the simulators they know need it told for
@@ -226,8 +230,8 @@ note:
 Environment variables
 ---------------------
 
-``VUNIT_SIMULATOR=yavs`` selects the simulator. ``VUNIT_YAVS_MAX_THREADS=N`` is ``--yavs-max-threads`` for a run script that
-parses its own command line. ``VUNIT_YAVS_PATH`` names the directory of the
+``VUNIT_SIMULATOR=yavs`` selects the simulator. ``VUNIT_YAVS_MAX_THREADS=N`` is ``--yavs-max-threads`` and
+``VUNIT_YAVS_JOBSERVER=off`` is ``--yavs-no-jobserver`` for a run script that parses its own command line. ``VUNIT_YAVS_PATH`` names the directory of the
 ``yavs`` executable (otherwise it is found on ``PATH``). :doc:`environment` lists all of them.
 
 See also

@@ -142,6 +142,12 @@ Read by vunit-yavs and VUnit
      - unset
      - ``vunit-yavs``
      - 0.12.0
+   * - ``VUNIT_YAVS_JOBSERVER``
+     - ``off`` is ``--yavs-no-jobserver`` (no token server), for a run script with a command line of its own.
+     - ``on`` or ``off``
+     - ``on``
+     - ``vunit-yavs``
+     - 0.21.0
    * - ``VUNIT_VHDL_STANDARD``
      - The default standard of the files of a run script (:doc:`mixing-standards`).
      - ``1993``, ``2008``, ``2019``

@@ -14,11 +14,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from multiprocessing import cpu_count
 from pathlib import Path
 from xml.etree import ElementTree
 
-from vunit_yavs import YAVS_MIN_VERSION
+from vunit_yavs import YAVS_MIN_VERSION, usable_cpus
 
 HERE = Path(__file__).parent
 PASS = "lib.tb_yavs.test_pass"
@@ -91,7 +90,9 @@ class TestFakeYavs(unittest.TestCase):
         self.assertEqual(len(runs), 2)
         self.assertIn("tb_yavs.tb", runs[0])
         self.assertIn("--exit-severity=error", runs[0])
-        self.assertFalse(any(arg.startswith(("--threads", "--dap")) for arg in runs[0]))
+        self.assertFalse(any(arg.startswith("--dap") for arg in runs[0]))
+        # The token server is on by default: every simulation runs with --threads=auto
+        self.assertEqual("--threads=auto" in runs[0], usable_cpus() > 1)
         for cmd in calls:
             if cmd[0] in ("analyze", "elab", "run"):
                 flags = [arg for arg in cmd if arg.startswith("--std-cache=")]
@@ -143,33 +144,40 @@ class TestFakeYavs(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertIn("--threads=3", self._runs(calls)[0])
 
-    def test_token_server(self):
-        exit_code, output, results, calls = self._run("-p", "2", "--yavs-jobserver")
+    @unittest.skipIf(usable_cpus() < 2, "one CPU: nothing to lend")
+    def test_token_server_is_on_by_default(self):
+        exit_code, output, results, calls = self._run("-p", "2")
         self.assertEqual(exit_code, 0, output)
         self.assertEqual(set(results.values()), {"passed"})
         self.assertEqual(len([call for call in calls if call[0] == "tokens"]), 3)
-        # Every simulation may use the -p slots while its threads gain; a test running alone gets the one free
-        # slot of -p 2
+        # Every simulation may use the idle CPUs while its threads gain
         self.assertTrue(all("--threads=auto" in run for run in self._runs(calls)))
         self.assertIn(["tokens", 1], calls)
 
-    def test_token_server_for_every_job_count(self):
-        # -p 0 is one job per CPU: the same as -p N for N the CPU count (#1141)
-        for jobs, slots in (("0", cpu_count()), ("1", 1), ("4", 4)):
-            for flag in (True, False):
-                with self.subTest(p=jobs, jobserver=flag):
-                    exit_code, output, _, calls = self._run("-p", jobs, *(["--yavs-jobserver"] if flag else []), PASS)
+    def test_token_server_for_every_job_count_and_opt_out(self):
+        # The budget is the usable CPUs at any -p; -p 0 is one job per CPU (#1141)
+        opt_outs = {"default": ((), None), "flag": (("--yavs-no-jobserver",), None)}
+        opt_outs["environment"] = ((), {"VUNIT_YAVS_JOBSERVER": "off"})
+        opt_outs["old flag"] = (("--yavs-jobserver",), None)
+        for jobs in ("0", "1", "4"):
+            for name, (flags, env) in opt_outs.items():
+                with self.subTest(p=jobs, how=name):
+                    exit_code, output, _, calls = self._run("-p", jobs, *flags, PASS, env=env)
                     self.assertEqual(exit_code, 0, output)
                     runs = self._runs(calls)
                     self.assertEqual(len(runs), 1)
-                    served = flag and slots > 1
+                    served = name in ("default", "old flag") and usable_cpus() > 1
                     self.assertEqual(bool([call for call in calls if call[0] == "tokens"]), served)
                     self.assertEqual("--threads=auto" in runs[0], served)
+                    if not served:
+                        self.assertFalse(any(arg.startswith("--threads") for arg in runs[0]))
 
-    def test_no_token_server_without_the_flag(self):
-        _, _, _, calls = self._run("-p", "2", PASS, COMMA)
-        self.assertFalse([call for call in calls if call[0] == "tokens"])
-        self.assertFalse(any(arg.startswith("--threads") for run in self._runs(calls) for arg in run))
+    def test_a_misspelt_opt_out_value_is_refused(self):
+        exit_code, output, _, calls = self._run(PASS, env={"VUNIT_YAVS_JOBSERVER": "of"})
+        self.assertNotEqual(exit_code, 0, output)
+        self.assertIn("VUNIT_YAVS_JOBSERVER must be 'on' (the default) or 'off', got 'of'. Did you mean 'off'?", output)
+        self.assertNotIn("Traceback", output)
+        self.assertFalse(self._runs(calls))
 
     def test_coverage_is_collected_merged_and_reported(self):
         merged = "merged"

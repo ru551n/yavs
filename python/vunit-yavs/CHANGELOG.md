@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- The token server is on by default, at any `-p`, with one slot for each CPU the run may use (not `-p`): the CPUs no
+  running test takes are lent to the simulations, which run with `--threads=auto`, and `-p N` never keeps more CPUs
+  busy than the machine has. `--yavs-no-jobserver` or `VUNIT_YAVS_JOBSERVER=off` turns it off; `--yavs-jobserver` is
+  still accepted. Under the server the threads of `--yavs-max-threads N` past the first run only on lent tokens.
+
 ## 0.20.1 (2026-11-14)
 
 - Compiling follows the project's dependency graph: the files of one library, standard and flags that are ready at the

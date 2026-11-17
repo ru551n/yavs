@@ -253,7 +253,7 @@ impl Check {
 
     /// The message without the operands' values.
     fn bare(&self) -> String {
-        const HINT: &str = " (--cycle-exact-meta shows the values)";
+        const HINT: &str = " (run without --cycle to see the values)";
         let what = |w: &str| {
             if w.is_empty() {
                 String::new()

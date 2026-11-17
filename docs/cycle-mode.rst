@@ -611,7 +611,7 @@ the failure of a process on another clock at that edge. ``overflow.vhd`` counts 
 .. code-block:: text
 
     cycle mode: 1 of 3 processes run cycle-based, 2 in the event kernel (see --cycle-report)
-    error[E3009]: result of + cannot be represented as INTEGER (--cycle-exact-meta shows the values)
+    error[E3009]: result of + cannot be represented as INTEGER (run without --cycle to see the values)
       --> overflow.vhd:11:12
        |
     11 |       n <= n + 1;  -- overflows at the third edge

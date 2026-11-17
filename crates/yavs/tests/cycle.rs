@@ -42,7 +42,7 @@ fn yavs_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
 /// `err` with each failed check's message as plain `--cycle` gives it (A34): without the
 /// operands' values, which only `--cycle-exact-meta` keeps.
 fn bare(err: &str) -> String {
-    const HINT: &str = " (--cycle-exact-meta shows the values)";
+    const HINT: &str = " (run without --cycle to see the values)";
     let one = |l: &str| -> String {
         let Some(m) = l.trim_start().strip_prefix("error[E3009]: ") else {
             return l.to_string();

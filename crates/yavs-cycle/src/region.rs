@@ -1741,8 +1741,9 @@ fn delta_seeds(
 /// signal its sensitivity list does not name (E4121: it sees that signal as of the delta a
 /// listed one changed in), or be rejected for another reason before the checker could show it
 /// does neither. Back from its reads through every combinational process driving them, up to
-/// registers (edge-triggered processes, whose outputs come in the delta after the edge in both
-/// modes). The region settles such logic in one delta where the normal mode spreads it over
+/// registers (`edge_only`, whose outputs come in the delta after the edge in both modes). A register
+/// with an asynchronous reset stays out too (the normal mode changes it twice in a time step when a
+/// reset made by another register follows the edge), the walk going on through what it waits on. The region settles such logic in one delta where the normal mode spreads it over
 /// several, so the reader would see other values or run another number of times (Microwatt's
 /// `dcache_request` gives `req_nc` the `nc` of its previous run). Each with the reason; `None`
 /// reads (a name the scan cannot follow) reach every leaf.
@@ -1781,25 +1782,30 @@ fn run_count_cone(
             continue;
         }
         for &d in drivers.get(&l).into_iter().flatten() {
-            if e.procs[d].trigger.is_some()
-                || edge_only(db, e, d)
-                || behavioural.contains(&d)
-                || !procs.insert(d)
-            {
+            if edge_only(db, e, d) || behavioural.contains(&d) || !procs.insert(d) {
                 continue;
             }
             gone.push((
                 d,
                 format!(
-                    "it computes, combinationally, {}, in the fan-in of {}, a process outside \
+                    "it computes, {}, {}, in the fan-in of {}, a process outside \
                      the region whose result may depend on the deltas its inputs change in ({}): \
                      the region would change them at other deltas",
+                    if e.procs[d].trigger.is_some() {
+                        "as a register with an asynchronous reset"
+                    } else {
+                        "combinationally"
+                    },
                     e.leaf_name(l),
                     e.proc_label(&e.procs[sensitive[q].0]),
                     sensitive[q].1
                 ),
             ));
+            // A register's data comes at the edge in both modes: only what its list waits on
+            // (the reset; its reset branch reads no more where the checker fitted it) is logic.
+            let reg = e.procs[d].trigger.is_some();
             match proc_reads(db, e, d, &mut memo) {
+                Some((_, w)) if reg => work.extend(w.into_iter().map(|x| (x, q))),
                 Some((r, _)) => work.extend(r.into_iter().map(|x| (x, q))),
                 None => work.extend(every().map(|x| (x, q))),
             }

@@ -1803,6 +1803,30 @@ fn a_variable_given_to_an_array_of_one_integer_keeps_its_value() {
     }
 }
 
+/// A register reset asynchronously by another register changes twice in one time step in the
+/// normal mode; a process below the top whose list names it alone and that reads logic following
+/// it sees the value between. The register stays out with that logic (it joined, and the
+/// process's output differed).
+#[test]
+fn a_register_with_an_internal_reset_feeding_a_short_list_stays_out() {
+    let dir = tempdir("cycle-runreset");
+    analyze(&dir, "runreset.vhd", include_str!("cycle/runreset.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_runreset");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_runreset");
+        assert_eq!(normal.len(), 12, "{t:?} {normal:?}");
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 2 of 7 processes run cycle-based")
+                && err.contains(
+                    "it computes, as a register with an asynchronous reset, cycle_runreset.q, in \
+                     the fan-in of cycle_runreset.dut.list"
+                ),
+            "{err}"
+        );
+    }
+}
+
 /// Arrays of integers and enumerations in variables, constants and signals.
 #[test]
 fn arrays_of_integers_give_the_same_result() {

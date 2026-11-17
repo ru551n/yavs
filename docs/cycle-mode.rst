@@ -195,8 +195,9 @@ body. A signal needs one source: one process drives each element of it.
    * - Is a latch, reads a variable before assigning it, has an incomplete sensitivity list, is part of a
        combinational loop
      - E4119, E4120, E4121, E4122.
-   * - Is combinational logic that feeds, back to the registers (processes that act at clock edges alone), a
-       process outside the region whose result may depend on the delta cycles its inputs change in: one that
+   * - Is combinational logic, or a register with an asynchronous reset (the normal mode can change it twice in
+       one time step: at the edge and at a reset made by another register), that feeds, back to the registers
+       (processes that act at clock edges alone), a process outside the region whose result may depend on the delta cycles its inputs change in: one that
        keeps a value of an earlier run (a combinational loop included, such as ``l <= d when en = '1' else
        l;``), or, below the top-level unit, a process that drives a signal and has an incomplete sensitivity
        list or that cycle mode could not show keeps no value (a process with a ``'Z'`` and a variable, for

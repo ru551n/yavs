@@ -66,6 +66,7 @@ CYCLE_TESTS = {
     "recarr.vhd": [("cycle_recarr", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
     "reclit.vhd": [("cycle_reclit", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
     "reset.vhd": [("cycle_reset", "", None), ("cycle_reset", "-gCOMB=true", None)],
+    "runreset.vhd": [("cycle_runreset", "", None)],
     "selfassign.vhd": [("cycle_selfassign", f"-gW={w}", None) for w in (1, 64, 65)],
     "shapes.vhd": [("cycle_shapes", "", None)],
     "shiftfill.vhd": [("cycle_shiftfill", f"-gW={w}", None) for w in (1, 64, 65)],

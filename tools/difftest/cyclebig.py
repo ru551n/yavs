@@ -22,9 +22,11 @@ MEMBERS = re.compile(r"(\d+) of (\d+) processes")
 # Per test: the stop time of both runs (None: the test's own), the exit status of each mode (None: the
 # test's), and the members of the region. Microwatt ends at 1368.555 us with its RTL's `end of test`
 # failure, which cycle mode drops (A12, A21): both runs stop at 1369 us, past "Execution completed.".
-# A new member count is a decision, made in the commit that changes it.
+# A new member count is a decision, made in the commit that changes it. NEORV32 3822 -> 3795: the
+# registers with an asynchronous reset in the fan-in of run-count seeds stay out (the reset
+# sequencer making `rstn_sys`, the NEOTRNG ring-oscillator flip-flops).
 GATE = {
-    "neorv32_dual_full": dict(stop=None, normal=None, cycle=None, members="3822 of 3910"),
+    "neorv32_dual_full": dict(stop=None, normal=None, cycle=None, members="3795 of 3910"),
     "microwatt_coremark_short": dict(stop="1369us", normal=1, cycle=0, members="281 of 418"),
 }
 

@@ -409,4 +409,10 @@ begin
       report "r=" & real'image(1.5);
     end if;
   end process;
+  hex_signed : process (clk)
+  begin
+    if rising_edge(clk) then
+      report "h=" & to_hstring(signed(a));
+    end if;
+  end process;
 end architecture;

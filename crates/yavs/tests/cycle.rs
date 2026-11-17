@@ -6347,6 +6347,7 @@ fn rare_reasons_are_named_in_the_report_and_under_strict() {
                     "",
                     "a value of this type in a report message, which cycle mode cannot format in region code",
                 ),
+                ("hex_signed", "", "a report message of this form"),
             ],
         ),
     ];

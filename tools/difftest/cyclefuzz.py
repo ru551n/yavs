@@ -1843,7 +1843,8 @@ def shrink(a, binary):
                 shutil.rmtree(x) if x.is_dir() else x.unlink()
         r = check(d, a, binary, None)
         if a.reason:  # a reason of the region report, for a checker or lowering gap
-            return r if a.reason in (d / "report.err").read_text(errors="replace") else False
+            rep = d / "report.err"
+            return r if rep.exists() and a.reason in rep.read_text(errors="replace") else False
         if r["verdict"] == "differs" and (run is None or r["run"] == run):
             rr = r["run"]
             normal = (d / f"normal-{rr.split('-')[-1] if rr != 'checks' else a.tiers.split(',')[0]}.out").read_text(errors="replace")

@@ -789,6 +789,9 @@ enum Br<'b> {
 struct Frame {
     callee: DeclId,
     binds: HashMap<DeclId, Bind>,
+    /// Records of scalars elaboration knows, bound as values: `in` constant formals and local
+    /// constants (`a_fmt` of a fixed-point format), so calls and fields of them fold.
+    vals: HashMap<DeclId, ConstValue>,
     /// The result subtype of a function.
     ret_st: Option<SubtypeId>,
     /// The result: the place every `return` writes, or (`direct`) the value of the one `return`
@@ -3639,10 +3642,10 @@ impl Lx<'_> {
         }
         match &db.exprs[x].kind {
             ExprKind::Obj(d) => {
-                if let Some(b) = self.bound(*d) {
-                    return match b {
-                        Bind::Const(c) => Some(c),
-                        Bind::Val(v) => self.known_val(&v),
+                if let Some(f) = self.frames.iter().rev().find(|f| f.binds.contains_key(d)) {
+                    return match &f.binds[d] {
+                        Bind::Const(c) => Some(c.clone()),
+                        Bind::Val(v) => self.known_val(v).or_else(|| f.vals.get(d).cloned()),
                     };
                 }
                 if let Some(c) = self.consts.get(d) {
@@ -3712,8 +3715,15 @@ impl Lx<'_> {
                 let mut known = self.consts.clone();
                 for f in &self.frames {
                     for (d, b) in &f.binds {
-                        if let Bind::Const(c) = b {
-                            known.insert(*d, c.clone());
+                        match b {
+                            Bind::Const(c) => {
+                                known.insert(*d, c.clone());
+                            }
+                            Bind::Val(_) => {
+                                if let Some(c) = f.vals.get(d) {
+                                    known.insert(*d, c.clone());
+                                }
+                            }
                         }
                     }
                 }
@@ -3745,7 +3755,8 @@ impl Lx<'_> {
                     .collect();
                 crate::check::const_elem(a, &ix?)
             }
-            _ => db.fold_with(x, &mut |c| self.fold(c)).ok().flatten(),
+            _ => crate::check::record_fold(db, x, &mut |c| self.fold(c))
+                .or_else(|| db.fold_with(x, &mut |c| self.fold(c)).ok().flatten()),
         }
     }
 
@@ -6280,6 +6291,18 @@ impl Lx<'_> {
                 }
             });
         let mut binds = self.formals(callee, sp, args, !pure)?;
+        let mut vals = HashMap::new();
+        for a in args {
+            if let (Actual::Expr(x), Some(p)) = (&a.actual, sp.params.get(usize::from(a.formal)))
+                && let Some(d) = p.decl
+                && matches!(binds.get(&d), Some(Bind::Val(_)))
+                && p.class != yavs_sem::decl::ObjClass::Signal
+                && p.mode == yavs_sem::hir::Mode::In
+                && let Some(c) = self.fold(*x).filter(crate::check::scalar_record)
+            {
+                vals.insert(d, c);
+            }
+        }
         // A body apart from its declaration declares the formals again: the same, by position.
         let again: Vec<DeclId> = (db.scopes[*scope].order.iter().copied())
             .filter(|&d| {
@@ -6297,6 +6320,9 @@ impl Lx<'_> {
                     .and_then(|x| binds.get(&x).cloned())
                     .ok_or_else(not_yet)?;
                 binds.insert(*d, b);
+                if let Some(c) = p.decl.and_then(|x| vals.get(&x).cloned()) {
+                    vals.insert(*d, c);
+                }
             }
         }
         let returns: Vec<StmtId> = (all.iter().copied())
@@ -6320,6 +6346,7 @@ impl Lx<'_> {
         self.frames.push(Frame {
             callee,
             binds,
+            vals,
             ret_st: sp.ret,
             ret: None,
             direct,
@@ -6697,7 +6724,12 @@ impl Lx<'_> {
                         .ok_or_else(|| format!("the constant `{}` without a value", decl.name))?;
                     match self.fold(init) {
                         Some(c @ (ConstValue::Int(_) | ConstValue::Enum(_))) => Bind::Const(c),
-                        _ => {
+                        c => {
+                            if let Some(c) = c.filter(crate::check::scalar_record)
+                                && let Some(f) = self.frames.last_mut()
+                            {
+                                f.vals.insert(d, c);
+                            }
                             let open =
                                 matches!(db.types[db.base(o.subtype)].kind, TypeKind::Array { .. })
                                     && self.open_array(

@@ -4162,6 +4162,32 @@ fn parts_of_elements_chosen_at_run_time_equal_the_normal_mode() {
     }
 }
 
+/// Records of scalars known during elaboration given to an inlined function (a fixed-point
+/// format): a local sized by a function of one, a local format from an aggregate and from a
+/// function returning a record, one chosen by comparing records, an assert on them; widths 1 to
+/// 128 (the process stayed out with "a value that is not known during elaboration").
+#[test]
+fn records_of_scalars_given_to_a_function_fold() {
+    let dir = tempdir("cycle-recfmt");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("recfmt{w}.vhd"),
+            &with_width(include_str!("cycle/recfmt.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_recfmt");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_recfmt");
+            assert_eq!(normal.len(), 8, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 1 of 2 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// Clocks whose edges come in a known delta of their time step (made with a delay: the first;
 /// by clock processes waiting for a time: the second) share an edge group with logic between
 /// their registers, logic of the second kind's registers sampled by the first kind's joins, and

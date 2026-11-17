@@ -297,6 +297,81 @@ fn scalar(v: &ConstValue) -> bool {
     )
 }
 
+/// A record aggregate of scalar values that `fold` knows (positional, named, `others`), as a
+/// record of scalars, and the predefined `=` and `/=` of two such records; `None` for any other
+/// expression.
+pub(crate) fn record_fold(
+    db: &Db,
+    x: ExprId,
+    fold: &mut dyn FnMut(ExprId) -> Option<ConstValue>,
+) -> Option<ConstValue> {
+    use yavs_sem::hir::{AggBounds, Choice};
+    if let ExprKind::Call { callee, args, .. } = &db.exprs[x].kind
+        && db.decls[*callee].implicit
+        && let [a, b] = &args[..]
+        && let (Actual::Expr(a), Actual::Expr(b)) = (&a.actual, &b.actual)
+    {
+        let ne = match db.decls[*callee].name.key().as_str() {
+            "\"=\"" => false,
+            "\"/=\"" => true,
+            _ => return None,
+        };
+        let (a, b) = (
+            fold(*a).filter(scalar_record)?,
+            fold(*b).filter(scalar_record)?,
+        );
+        return Some(ConstValue::Enum(u32::from((a == b) != ne)));
+    }
+    let ExprKind::Aggregate {
+        assocs,
+        bounds: AggBounds::Record,
+    } = &db.exprs[x].kind
+    else {
+        return None;
+    };
+    let TypeKind::Record { elems } = &db.types[db.base(db.exprs[x].subtype)].kind else {
+        return None;
+    };
+    let mut out: Vec<Option<ConstValue>> = vec![None; elems.len()];
+    for (k, a) in assocs.iter().enumerate() {
+        let at: Vec<usize> = if a.choices.is_empty() {
+            vec![k]
+        } else if a.choices.iter().any(|c| matches!(c, Choice::Others)) {
+            (0..elems.len()).filter(|&f| out[f].is_none()).collect()
+        } else {
+            (a.choices.iter())
+                .map(|c| match c {
+                    Choice::Element(f) => Some(*f as usize),
+                    _ => None,
+                })
+                .collect::<Option<_>>()?
+        };
+        for f in at {
+            // A field outside its subtype is left to the code, which fails as the normal mode does.
+            let v = fold(a.value).filter(scalar)?;
+            let (l, dir, r) = db.static_bounds(elems.get(f)?.subtype)?;
+            let (l, r, x) = (l.as_int()?, r.as_int()?, v.as_int()?);
+            let (lo, hi) = if dir == Direction::Downto {
+                (r, l)
+            } else {
+                (l, r)
+            };
+            if !(lo..=hi).contains(&x) {
+                return None;
+            }
+            *out.get_mut(f)? = Some(v);
+        }
+    }
+    out.into_iter()
+        .collect::<Option<Vec<_>>>()
+        .map(|fs| ConstValue::Record(fs.into()))
+}
+
+/// A record whose fields are all scalars (a fixed-point format `(s, i, f)`).
+pub(crate) fn scalar_record(v: &ConstValue) -> bool {
+    matches!(v, ConstValue::Record(fs) if fs.iter().all(scalar))
+}
+
 /// What a call does, as far as a process cares (memoised per subprogram).
 #[derive(Clone, Default)]
 pub(crate) struct Callee {
@@ -1622,6 +1697,9 @@ impl Cx<'_> {
             }
             _ => {}
         }
+        if let Some(v) = record_fold(db, x, &mut |y| self.fold(y)) {
+            return Some(v);
+        }
         db.fold_with(x, &mut |y| self.fold(y)).ok().flatten()
     }
 
@@ -1651,7 +1729,7 @@ impl Cx<'_> {
                 Actual::Default => self.fold(p.default?)?,
                 _ => return None,
             };
-            if !scalar(&v) {
+            if !scalar(&v) && !scalar_record(&v) {
                 return None;
             }
             let d = if own.len() == sp.params.len() {
@@ -1671,7 +1749,9 @@ impl Cx<'_> {
                 && matches!(o.class, ObjClass::Constant | ObjClass::Variable)
                 && o.role == ObjRole::Plain
             {
-                match o.default.and_then(|x| self.fold(x)).filter(scalar) {
+                match (o.default.and_then(|x| self.fold(x)))
+                    .filter(|v| scalar(v) || scalar_record(v))
+                {
                     Some(v) => {
                         self.frames.last_mut().expect("pushed").insert(d, v);
                     }
@@ -1747,9 +1827,9 @@ impl Cx<'_> {
                     or_give_up!(self.frames.last_mut()).insert(d, v);
                     Pure::Fall
                 }
-                StmtKind::Return(Some(x)) => {
-                    Pure::Return(or_give_up!(self.fold(*x).filter(scalar)))
-                }
+                StmtKind::Return(Some(x)) => Pure::Return(or_give_up!(
+                    self.fold(*x).filter(|v| scalar(v) || scalar_record(v))
+                )),
                 StmtKind::If { branches, else_ } => {
                     let mut taken = else_.as_deref();
                     for (c, b) in branches.iter() {

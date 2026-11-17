@@ -3561,7 +3561,9 @@ fn forced(db: &Db, e: &Elaborated) -> Forced {
         else {
             return Forced::All(s);
         };
-        if target.lsps.is_empty() {
+        // ponytail: the 'Z' rules of `--cycle-exact-meta` (`z_leaves`, `pass_on_z`) do not follow
+        // forced values, so there a force keeps every process out; follow them if it matters.
+        if target.lsps.is_empty() || exact_meta() {
             return Forced::All(s);
         }
         for l in &target.lsps {

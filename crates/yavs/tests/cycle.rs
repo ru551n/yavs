@@ -2852,8 +2852,8 @@ fn force_is_outside_the_subset() {
 /// nothing out; one through an external name in a process or a package procedure keeps the
 /// forced register out while members read the forced value (forced and released in the delta of
 /// an edge and between edges); a forced clock copy keeps its register on the copy, and a forced
-/// clock its own delta class; a force of a signal parameter keeps every process out. Against the
-/// normal mode at widths 1 to 128.
+/// clock its own delta class; a force of a signal parameter, and any force under
+/// `--cycle-exact-meta`, keeps every process out. Against the normal mode at widths 1 to 128.
 #[test]
 fn forces_keep_out_only_the_drivers_of_what_they_force() {
     let dir = tempdir("cycle-force-scope");
@@ -2883,6 +2883,13 @@ fn forces_keep_out_only_the_drivers_of_what_they_force() {
                     err.contains(&format!("cycle mode: {members} processes run cycle-based")),
                     "{w} {top}: {err}"
                 );
+                // `--cycle-exact-meta` does not follow forced values: every process stays out.
+                if top == "fsc_ext_tb" {
+                    let ex = [&t[..], &["--cycle", "--cycle-exact-meta"]].concat();
+                    let (exact, err) = run(d, &ex, top);
+                    assert_eq!(exact, normal, "width {w} {top} {t:?}\n{err}");
+                    assert!(err.contains("cycle mode: 0 of 9 processes"), "{err}");
+                }
             }
         }
     }

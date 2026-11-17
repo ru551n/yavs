@@ -801,8 +801,8 @@ design: the process is fine for the normal mode, and ``--cycle`` leaves it in th
      - Let the reader keep its own copy, or use an edge test.
    * - E4128
      - A ``force`` or ``release`` the design can run changes a signal this process drives (one that names a
-       signal parameter keeps every process out); forces in units the design does not instantiate, and in
-       subprograms nothing calls, do not count
+       signal parameter, or any under ``--cycle-exact-meta``, keeps every process out); forces in units the
+       design does not instantiate, and in subprograms nothing calls, do not count
      - Limitation. Drive the signal from the testbench instead, or use ``--cycle``.
    * - E4129
      - Logic feeding a process outside the region whose result depends on delta cycles (the second marker

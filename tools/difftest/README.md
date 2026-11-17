@@ -189,7 +189,7 @@ and once under `perf stat` (user space: instructions, cycles, branch misses, L1 
 without `YAVS_CYCLE_STATS` (its counts are work, and every `YAVS_` variable is in the analysis cache's key). Each test
 line (`-v`) shows the ratios cycle over normal, the summary the geometric mean of each over the tests with members and
 the totals, and `--json` keeps the counts. Pin the runs with `--prefix 'tools/claim core --'`; a test whose counted run
-ends with another exit status than its compared one is not counted. Report cycles with instructions: the two diverge
+ends with another exit status than its compared one is not counted. Each count is one run at the recorded tier: under `--tier=auto` the compile thread's timing moves instructions and cycles by up to about 10 percent between runs of one binary (2026-11-17), so compare two binaries over repeated replays, or on commands recorded with `--tier=interp` (whose instruction counts repeat exactly). Report cycles with instructions: the two diverge
 where region code is large or branches unpredictably.
 
     YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclereplay.py cmds.jsonl --libs L --count --prefix 'tools/claim core --' -v

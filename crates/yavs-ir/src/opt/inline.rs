@@ -16,6 +16,12 @@
 //! markers go: a new frame has no temporaries to free), touch their frame beyond reading the
 //! parameters, suspend or are nested are not inlined. `YAVS_NO_INLINE=1` turns it off.
 //!
+//! The exception is a procedure that may suspend only in the call it ends with (`waits_last`):
+//! a library's forwarder in front of a procedure that waits. It may pass its signal parameters
+//! on and build an aggregate for the callee; nothing of it runs after the suspension, so the
+//! caller resumes where it resumed after the call it replaces. `YAVS_NO_WAIT_INLINE=1` keeps
+//! such calls.
+//!
 //! A body of one path is spliced in where the call was. A body with branches (a protected
 //! method: a case on the storage mode, one arm calling on) becomes blocks appended to the
 //! caller after its last block, so existing block ids, which the program's case tables name,
@@ -87,6 +93,8 @@ pub(crate) struct Forwarder {
     defs: Vec<u8>,
     /// The parameter registers only the cold blocks' calls read (any type, the argument itself).
     cold: Vec<Reg>,
+    /// A procedure that may suspend in the call it ends with (`waits_last`).
+    waits: bool,
 }
 
 impl Forwarder {
@@ -210,18 +218,27 @@ fn make(
     } else {
         None
     };
+    // A procedure that may suspend only through the call it ends with (`waits`): a forwarder
+    // in front of a procedure that waits.
+    let susp = raw.flags.contains(crate::FuncFlags::MAY_SUSPEND);
     // Cheap exits before optimising a function: not a small subprogram of the plain kind.
     if !matches!(raw.kind, FuncKind::Function | FuncKind::Procedure)
         || raw.nested
         || raw.parent.is_some()
         || raw.body.is_some()
-        || raw.flags.contains(crate::FuncFlags::MAY_SUSPEND)
+        || susp && (arm || wide || !waits_enabled())
         || raw
             .params
             .iter()
-            .any(|p| p.width != Width::B8 || p.width == Width::Sig)
+            .any(|p| p.width != Width::B8 && !(susp && p.width == Width::Sig))
+        // (Most procedures that may suspend are big: the size in the head says so without
+        // decoding a stored body. Coverage counters count there but not below.)
+        || susp
+            && !raw.flags.contains(crate::FuncFlags::HAS_COVER)
+            && raw.size as usize > 2 * max_multi
         || published.map_or_else(|| hot_size(raw.full()), |o| size(&o.code))
             > if wide { 4 } else { 2 } * max_multi
+        || susp && !ends_with_wait(prog, raw.full())
     {
         return None;
     }
@@ -234,16 +251,19 @@ fn make(
     if super::dopes::enabled() && !arm {
         super::dopes::run_regs(prog, &mut c);
     }
-    // (A body without calls has nothing to inline: the common leaf costs no second walk.)
+    // (A body without calls has nothing to inline: the common leaf costs no second walk. A body
+    // that may suspend is taken as it is: what it calls before its last call would make it too
+    // big for the limits, and the call it ends with is inlined, if at all, in its own copy.)
     if level > 0
         && !arm
+        && !susp
         && c.code
             .iter()
             .any(|i| matches!(i, Inst::Call { .. } | Inst::CallProt { .. }))
     {
         run(prog, callee, &mut c, level - 1);
     }
-    if c.reg_ty.contains(&RegTy::Sig)
+    if !susp && c.reg_ty.contains(&RegTy::Sig)
         || size(&c.code) > 4 * max_multi
         || c.blocks.len() > 4 * max_blocks
     {
@@ -259,6 +279,50 @@ fn make(
         } = *i
         {
             frame.insert(dst.0, off);
+        }
+    }
+    // A procedure that may suspend is barely optimised: it reads its parameters where the
+    // statements do, into registers it may define again. How many times the code defines each
+    // register outside the parameter loads, and each register holding a slot address must be
+    // defined only by its `AddrOf`.
+    let mut other = vec![0u8; c.reg_ty.len()];
+    if susp {
+        for i in &c.code {
+            let pload = matches!(*i, Inst::Load { addr, .. } if frame.contains_key(&addr.0));
+            let at_frame = matches!(
+                *i,
+                Inst::AddrOf {
+                    space: AddrSpace::Frame,
+                    ..
+                }
+            );
+            let mut bad = false;
+            i.visit(&mut |r, role, _| {
+                if role == Role::Def && !pload {
+                    bad |= !at_frame && frame.contains_key(&r.0);
+                    if let Some(d) = other.get_mut(r.0 as usize) {
+                        *d = d.saturating_add(1);
+                    }
+                }
+            });
+            if bad {
+                return None;
+            }
+        }
+        if frame.keys().any(|&r| other.get(r as usize) != Some(&1)) {
+            return None;
+        }
+        // A register loaded from two parameters' slots holds each in turn: it takes them as
+        // moves, as a register defined elsewhere does.
+        let mut from: HashMap<u32, u32> = HashMap::new();
+        for i in &c.code {
+            if let Inst::Load { dst, addr, .. } = *i
+                && let Some(&off) = frame.get(&addr.0)
+                && *from.entry(dst.0).or_insert(off) != off
+                && let Some(d) = other.get_mut(dst.0 as usize)
+            {
+                *d = d.saturating_add(1);
+            }
         }
     }
     let slot = |off: u32| c.params.iter().position(|p| p.slot == off);
@@ -348,8 +412,27 @@ fn make(
                     ..
                 } => continue,
                 Inst::Load { dst, addr, w } if frame.contains_key(&addr.0) => {
-                    // Parameters are read once, at the start of the entry block.
                     let p = slot(*frame.get(&addr.0)?)?;
+                    if susp {
+                        // Read anywhere: the argument does not change before the call that may
+                        // suspend, which ends the body. A register defined elsewhere too takes
+                        // the argument here (a signal reference must be the argument itself).
+                        if w != c.params[p].width {
+                            return None;
+                        }
+                        if other.get(dst.0 as usize) == Some(&0) {
+                            params[p].push(dst);
+                        } else if w == Width::Sig {
+                            return None;
+                        } else {
+                            let r = Reg(reg_ty.len() as u32);
+                            reg_ty.push(*reg_ty.get(dst.0 as usize)?);
+                            params[p].push(r);
+                            out.push((Inst::Move { dst, src: r }, loc, via));
+                        }
+                        continue;
+                    }
+                    // Parameters are read once, at the start of the entry block.
                     if w != Width::B8 || b.0 != 0 {
                         return None;
                     }
@@ -366,7 +449,7 @@ fn make(
                 }
                 _ => {}
             }
-            if !allowed(prog, &i) {
+            if !allowed(prog, &i, susp) {
                 return None;
             }
             // The frame is touched by the parameter loads only.
@@ -409,6 +492,9 @@ fn make(
         }
     }
     if !cold.is_empty() && !cold_path_clean(&blocks, &seen, &is_cold) {
+        return None;
+    }
+    if susp && !waits_last(prog, &blocks, &seen, &reg_ty, &params) {
         return None;
     }
     keep_definitions(&mut blocks, &seen, &operands);
@@ -471,6 +557,7 @@ fn make(
         params,
         defs,
         cold,
+        waits: susp,
     })
 }
 
@@ -865,6 +952,7 @@ fn tab_forwarder(prog: &crate::Program, callee: FuncId, t: &crate::CaseTab) -> O
         params: vec![vec![p]],
         defs,
         cold: Vec::new(),
+        waits: false,
     })
 }
 
@@ -1009,9 +1097,13 @@ fn is_cov(i: &Inst) -> bool {
     )
 }
 
-/// Instructions an inlined body may have: reads, computations, checks, calls, branches.
-fn allowed(prog: &crate::Program, i: &Inst) -> bool {
+/// Instructions an inlined body may have: reads, computations, checks, calls, branches. A body
+/// that may suspend (`susp`) also calls a procedure that may, reads attributes of its signal
+/// parameters and builds aggregates for it in temporary memory: the call already counted as one that leaves temporaries in the caller's
+/// statement (`opt::leaves_temps`), so the caller's markers free them as they freed the call's.
+fn allowed(prog: &crate::Program, i: &Inst, susp: bool) -> bool {
     match *i {
+        Inst::Alloc { .. } | Inst::Copy { .. } | Inst::SigAttr { .. } => susp,
         Inst::Const { .. }
         | Inst::ConstF { .. }
         | Inst::Move { .. }
@@ -1055,12 +1147,165 @@ fn allowed(prog: &crate::Program, i: &Inst) -> bool {
         // (A native runs the same in the caller's frame; the record of the inlined call keeps
         // its call path.)
         Inst::CallNative { .. } => true,
-        Inst::Call { func, .. } | Inst::CallProt { func, .. } => prog
+        Inst::Call { func, .. } => prog
+            .funcs
+            .get(func)
+            .is_some_and(|c| susp || !c.flags.contains(crate::FuncFlags::MAY_SUSPEND)),
+        Inst::CallProt { func, .. } => prog
             .funcs
             .get(func)
             .is_some_and(|c| !c.flags.contains(crate::FuncFlags::MAY_SUSPEND)),
         _ => false,
     }
+}
+
+/// The most calls a procedure that may suspend makes besides the one it ends with, to be taken
+/// as a forwarder: a check, a test of its arguments. (A library's message procedures that build
+/// a message call on more, and optimising each of them only to refuse it cost a short test of
+/// many such procedures about 3 M instructions, most of them never called.)
+const MAX_WAIT_CALLS: usize = 2;
+
+/// The lowered code of a procedure that may suspend ends with the call that may (the shape
+/// `waits_last` wants of the optimised code), calls little else (`MAX_WAIT_CALLS`) and has none
+/// of the effects no optimisation removes and no inlined body has (`never_inlined`): only then
+/// is it optimised to find out.
+fn ends_with_wait(prog: &crate::Program, f: &crate::Func) -> bool {
+    let mut any = false;
+    let mut calls = 0usize;
+    for (pc, i) in f.code.iter().enumerate() {
+        if never_inlined(i) {
+            return false;
+        }
+        let func = match *i {
+            Inst::Call { func, .. } => func,
+            Inst::CallProt { .. } => {
+                calls += 1;
+                continue;
+            }
+            _ => continue,
+        };
+        if !prog
+            .funcs
+            .get(func)
+            .is_some_and(|c| c.flags.contains(crate::FuncFlags::MAY_SUSPEND))
+        {
+            calls += 1;
+            continue;
+        }
+        any = true;
+        // What runs after it: statement markers, jumps, the return.
+        let mut p = pc + 1;
+        for _ in 0..=f.blocks.len() {
+            match f.code.get(p) {
+                Some(Inst::Stmt) => p += 1,
+                Some(Inst::Ret { v: None }) => break,
+                Some(Inst::Br { to }) => match f.blocks.get(*to) {
+                    Some(b) => p = b.start as usize,
+                    None => return false,
+                },
+                _ => return false,
+            }
+        }
+        if !matches!(f.code.get(p), Some(Inst::Ret { v: None })) {
+            return false;
+        }
+    }
+    any && calls <= MAX_WAIT_CALLS
+}
+
+/// An effect no optimisation removes and no inlined body has (`allowed`): a procedure that may
+/// suspend with one of these is not optimised to find out (a wait of its own, a report, a drive).
+fn never_inlined(i: &Inst) -> bool {
+    matches!(
+        i,
+        Inst::WaitOn { .. }
+            | Inst::WaitEdge { .. }
+            | Inst::WaitFor { .. }
+            | Inst::WaitAt { .. }
+            | Inst::Suspend { .. }
+            | Inst::TimedOut { .. }
+            | Inst::Now { .. }
+            | Inst::Delta { .. }
+            | Inst::Report { .. }
+            | Inst::Output { .. }
+            | Inst::Drive { .. }
+            | Inst::DriveSlot { .. }
+            | Inst::Disconnect { .. }
+            | Inst::DisconnectSlot { .. }
+            | Inst::Force { .. }
+            | Inst::Release { .. }
+            | Inst::Free { .. }
+            | Inst::CallIndirect { .. }
+            | Inst::CallForeign { .. }
+    )
+}
+
+/// Is inlining of procedures that may suspend on? `YAVS_NO_WAIT_INLINE=1` keeps them calls.
+pub(super) fn waits_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("YAVS_NO_WAIT_INLINE").map_or(true, |v| v.is_empty() || v == "0")
+    })
+}
+
+/// A return, or jumps through blocks that only jump, to one.
+fn only_ret<'a>(blocks: &'a [Vec<Ent>], mut b: &'a [Ent]) -> bool {
+    for _ in 0..=blocks.len() {
+        match b {
+            [(Inst::Ret { v: None }, ..)] => return true,
+            [(Inst::Br { to }, ..)] => match blocks.get(to.0 as usize) {
+                Some(t) => b = t,
+                None => return false,
+            },
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// The body of a procedure that may suspend ends with the call that may: nothing but the return
+/// follows it (in its block, or a jump to a block that only returns), so no register lives
+/// across the suspension in the caller, and the caller resumes where it resumed after the call
+/// it replaces. Its signal references are its parameters.
+fn waits_last(
+    prog: &crate::Program,
+    blocks: &[Vec<Ent>],
+    seen: &[bool],
+    reg_ty: &[RegTy],
+    params: &[Vec<Reg>],
+) -> bool {
+    let mut any = false;
+    for (b, blk) in blocks.iter().enumerate() {
+        if !seen[b] {
+            continue;
+        }
+        for (k, (i, ..)) in blk.iter().enumerate() {
+            let mut sig_ok = true;
+            i.visit(&mut |r, _, _| {
+                sig_ok &= reg_ty.get(r.0 as usize) != Some(&RegTy::Sig)
+                    || params.iter().any(|p| p.contains(&r));
+            });
+            if !sig_ok {
+                return false;
+            }
+            let Inst::Call { func, .. } = *i else {
+                continue;
+            };
+            if !prog
+                .funcs
+                .get(func)
+                .is_some_and(|c| c.flags.contains(crate::FuncFlags::MAY_SUSPEND))
+            {
+                continue;
+            }
+            any = true;
+            let ok = only_ret(blocks, &blk[k + 1..]);
+            if !ok {
+                return false;
+            }
+        }
+    }
+    any
 }
 
 /// Does the call at `pc` take an argument that `Cat` filled earlier in the same block?
@@ -1157,9 +1402,19 @@ fn place(site: &Site, reg_ty: &mut Vec<RegTy>) -> HashMap<u32, Reg> {
 
 type Out = (Inst, StmtId, u32);
 
-/// Inline the calls of `f` (function `id`) whose callee has a forwarder. `true`: the code
-/// changed.
-pub(super) fn run(prog: &crate::Program, id: FuncId, f: &mut crate::Func, level: u8) -> bool {
+/// What a round of inlining did to a function.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Inlined {
+    No,
+    /// Only procedures in front of procedures that wait (`waits_last`): their code ends with the
+    /// call, which nothing that follows it can fold, so another walk over the function would
+    /// cost its optimisation again for nothing.
+    Waits,
+    Yes,
+}
+
+/// Inline the calls of `f` (function `id`) whose callee has a forwarder.
+pub(super) fn run(prog: &crate::Program, id: FuncId, f: &mut crate::Func, level: u8) -> Inlined {
     run_with(prog, id, f, level, Round::All)
 }
 
@@ -1183,7 +1438,7 @@ pub(super) fn tab_calls(
     }
     let mut f = Box::new(raw.clone());
     // (A table read cannot fail, so the trace needs no frame for it: no `via` entries.)
-    if !run_with(prog, id, &mut f, 0, Round::Tabs) {
+    if run_with(prog, id, &mut f, 0, Round::Tabs) == Inlined::No {
         return None;
     }
     f.via.clear();
@@ -1209,7 +1464,7 @@ pub(super) fn run_wide(prog: &crate::Program, id: FuncId, f: &mut crate::Func) -
     f.code
         .iter()
         .any(|i| matches!(i, Inst::Cat { logic: false, .. }))
-        && run_with(prog, id, f, 0, Round::Wide)
+        && run_with(prog, id, f, 0, Round::Wide) != Inlined::No
 }
 
 /// The most instructions of the rest of a block copied for the hit path of a table read.
@@ -1452,7 +1707,7 @@ fn run_with(
     f: &mut crate::Func,
     level: u8,
     round: Round,
-) -> bool {
+) -> Inlined {
     let wide_only = round == Round::Wide;
     if !enabled()
         || super::keep_variables_on()
@@ -1461,7 +1716,7 @@ fn run_with(
             FuncKind::Function | FuncKind::Procedure | FuncKind::Process
         )
     {
-        return false;
+        return Inlined::No;
     }
     // The calls to inline and their callees.
     let mut sites: HashMap<usize, Site> = HashMap::new();
@@ -1558,8 +1813,9 @@ fn run_with(
         }
     }
     if sites.is_empty() {
-        return false;
+        return Inlined::No;
     }
+    let waits = sites.values().all(|s| s.fw.waits);
     // A table read that branches (a range test, a validity mask) takes the rest of its block
     // with it into the arm that reads the table, so that the loads of an array result there
     // find the stores that built it (the join of the two arms hides them); a long rest, or one
@@ -1605,7 +1861,7 @@ fn run_with(
     let mut nodes = f.via_nodes.clone();
     for b in 0..nb {
         let Some(blk) = f.blocks.get(BlockId(b as u32)) else {
-            return false;
+            return Inlined::No;
         };
         let mut cur: Vec<Out> = Vec::new();
         let mut cur_id = b;
@@ -1722,7 +1978,7 @@ fn run_with(
     let mut ranges = Vec::with_capacity(blocks.len());
     for b in blocks {
         let Some(ents) = b else {
-            return false;
+            return Inlined::No;
         };
         let start = code.len() as u32;
         for (i, l, v) in ents {
@@ -1749,5 +2005,5 @@ fn run_with(
     f.via_nodes = nodes;
     f.reg_ty = reg_ty;
     f.operands = operands;
-    true
+    if waits { Inlined::Waits } else { Inlined::Yes }
 }

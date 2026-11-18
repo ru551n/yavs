@@ -1,0 +1,1 @@
+Message passing of the verification library runs faster on every tier: the small procedures in front of the ones that wait (send, receive, get a message, notify) are inlined into their callers, while traces, call paths and timeouts stay those of the calls.

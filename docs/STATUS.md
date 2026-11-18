@@ -25,6 +25,20 @@
 | `yavs lint` | all rule classes, `--facts`, reports, configuration, waivers (#895): `crates/yavs-lint`, `crates/yavs/src/lint.rs`, `docs/lint.rst`, `--yavs-lint` in `vunit-yavs`, problem matcher `$yavs` in VS Code; pinned in `crates/yavs/tests/lint.rs`. `file_list` in the configuration reads the files to check; every unknown key, rule id and rule group in the configuration or waiver file is E0134, all listed in one run, and the four YAML files yavs reads (these two, the coverage exclusion file and `cov --config`) are checked against declared schemas by one reader, `yavs_diag::yaml`, so a configuration written for a style tool needs its style settings removed first (#895). Rule ids of analysis (lint_006, lint_782) stay nameable and report nothing. Definite findings on the corpora and the realbench designs are confirmed real (#895); known noise of the advisory rules: see the issues linked there. lint_720 follows statements (#989); the rules beyond the definite class were compared with the source project's tests (#1002, `docs/decisions.md`), with `rtl:` and `testbench:` rule blocks and a heuristic for what a testbench is. |
 | M5, M10 | M5 in progress, partial (#143; what works and what does not is in `docs/vhpi.md`): the `vhpi_*` export surface (#266), `yavs run --vhpi` (#267), the hierarchy (#269), values and types (#270), puts (#271), callbacks (#272), foreign models (#274, #330, #357) and plusargs (#298) are done, `crates/yavs-vhpi`, coverage in `docs/vhpi.md`; cocotb 2.1.0's own simulator regression passes on yavs (`tools/cocotb/run.py`, 78 of 78 jobs, 43 of them run VHDL tests, at 1 and 4 threads, run in the `conformance` CI workflow, #122); M10 (the graphical debugger) is dropped: `yavs-gui` was built (slices G1 #388 and G2 #399, 2026-10-19) and removed again with `yavs run --gui` and its release files (maintainer, 2026-10-29; #871 closed 2026-10-31; `docs/plan.md` M10); the DAP server slices made for it (#396, #397, #398) were closed 2026-10-30 and DAP clients cover debugging. Corrected 2026-11-14: this row described the GUI as in progress) |
 
+### Forwarders in front of procedures that wait are inlined (2026-11-18)
+
+A procedure that may suspend only in the call it ends with (`send`, `receive`, `get_message` and `notify_net` of the
+verification library's message passing, in front of the procedures that wait) is inlined into its callers
+(`opt/inline.rs` `waits_last`): signal parameters passed on, a one-element array built for the callee, a check or a test
+of `'active` before the call. Traces, `std.env` call paths, reports and timeouts read as the calls (CLI test
+`wait_forwarders_read_as_calls`, every tier, cold and cached; IR test
+`a_forwarder_in_front_of_a_waiting_procedure_takes_each_parameter`; perf design `wait_calls`, 100 calls instead of 200).
+`YAVS_NO_WAIT_INLINE=1` turns it off. Measured (instructions per operation against main): a message 1.3 percent fewer
+interpreted and 5.6 percent fewer under `--tier=clift`, a request 0.7 and 3.2 percent, an AXI-stream transfer 0.15 and 0.8
+percent; short whole runs of those cells under `--tier=auto` 0.2 to 1.1 percent fewer; bench designs level. A run that
+optimises the callers pays about 0.75 M instructions for making the forwarders (0.03 percent of a short test).
+decisions.md "A procedure in front of a procedure that waits is inlined".
+
 ### Edge waits through user `"and"`, `std_logic_1164` gates and concurrent assertions (2026-11-17)
 
 `Inst::WaitEdge` now also covers `wait until s2m.ready and m2s.valid and rising_edge(clk)` written with a user

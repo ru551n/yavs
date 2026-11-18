@@ -545,6 +545,104 @@ fn interp_arms_read_as_calls() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// Forwarders in front of procedures that wait are inlined (`opt/inline.rs` `waits_last`): call
+/// paths after a wait, timeouts, the trace of a failure after a wait two calls down and what a
+/// cached run prints are those of the calls, on every tier.
+#[test]
+fn wait_forwarders_read_as_calls() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli");
+    let tmp = tempdir("wait_forwarders");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let yavs = |env: &[(&str, &str)], args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never"])
+            .args(&args[..1])
+            .arg("--std=2019")
+            .args(&args[1..])
+            .envs(env.iter().copied())
+            .current_dir(&dir)
+            .output()
+            .expect("run")
+    };
+    assert!(
+        yavs(&[], &["analyze", &lib, "wait_forwarders.vhd"])
+            .status
+            .success()
+    );
+    let mut tiers = vec![vec!["--tier=interp"]];
+    if cfg!(feature = "clift") {
+        // (Compiled at the first entry too, and on four threads.)
+        tiers.extend([
+            vec!["--tier=clift"],
+            vec!["--tier=auto"],
+            vec!["--tier=clift-auto", "--tier-heat=1,0,0"],
+            vec!["--tier=clift-auto", "--tier-heat=1,0,0", "--threads=4"],
+        ]);
+    }
+    for bad in ["-gbad=0", "-gbad=3"] {
+        for tier in &tiers {
+            let run = |env: &[(&str, &str)], cache: &[&str]| {
+                let args = [&["run", &lib][..], tier, cache, &["wait_forwarders", bad]].concat();
+                let o = yavs(env, &args);
+                let text = String::from_utf8_lossy(&o.stdout).into_owned()
+                    + &String::from_utf8_lossy(&o.stderr);
+                (o.status.code(), text)
+            };
+            let base = run(&[("YAVS_NO_INLINE", "1")], &["--no-cache"]);
+            let calls = run(&[("YAVS_NO_WAIT_INLINE", "1")], &["--no-cache"]);
+            assert_eq!(calls, base, "{bad} {tier:?}");
+            assert_eq!(run(&[], &["--no-cache"]), base, "{bad} {tier:?}");
+            // (The forwarder is a frame of the call path printed after the wait.)
+            assert!(
+                base.1.contains("wait_forwarders.vhd:67:SEND_CHECKED"),
+                "{}",
+                base.1
+            );
+            assert!(base.1.contains("acc=21626"), "{}", base.1);
+            if bad.ends_with('3') {
+                assert!(
+                    base.1
+                        .contains("52 |     acc := acc + tab((acc mod 2) + bad);"),
+                    "{}",
+                    base.1
+                );
+                assert!(
+                    base.1
+                        .contains("67 |     inner(n, s, rec_vec'(0 => r), acc, 2 ns, bad);"),
+                    "{}",
+                    base.1
+                );
+            }
+            for _ in 0..3 {
+                assert_eq!(run(&[], &[]), base, "{bad} {tier:?} cached");
+            }
+        }
+    }
+    // The forwarders are inlined: fewer interpreted calls (debug builds count).
+    if cfg!(debug_assertions) {
+        let calls = |env: &[(&str, &str)]| {
+            let o = yavs(
+                &[env, &[("YAVS_COUNTERS", "1")]].concat(),
+                &[
+                    "run",
+                    &lib,
+                    "--tier=interp",
+                    "--threads=1",
+                    "--no-cache",
+                    "wait_forwarders",
+                ],
+            );
+            let e = String::from_utf8_lossy(&o.stderr).into_owned();
+            e.lines()
+                .find_map(|l| l.strip_prefix("counters: calls=")?.parse::<u64>().ok())
+                .expect("calls counter")
+        };
+        let (with, without) = (calls(&[]), calls(&[("YAVS_NO_WAIT_INLINE", "1")]));
+        assert!(with * 3 < without * 2, "{with} {without}");
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// Reports are written in blocks on a pipe, but a diagnostic on the same pipe still comes after
 /// every report that preceded it (#428).
 #[test]

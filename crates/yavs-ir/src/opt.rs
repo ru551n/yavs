@@ -259,14 +259,15 @@ pub fn fingerprint() -> String {
         dopes::enabled(),
         subcopy::enabled(),
         inline::cold_enabled(),
+        inline::waits_enabled(),
     ]);
     format!("{switches} huge={}", huge_body())
 }
 
-fn fingerprint_of(f: [bool; 15]) -> String {
+fn fingerprint_of(f: [bool; 16]) -> String {
     let names = [
         "iropt", "memo", "cfg", "inline", "keep", "compiled", "external", "layouts", "drives",
-        "slots", "blocks", "objects", "dopes", "subcopy", "cold",
+        "slots", "blocks", "objects", "dopes", "subcopy", "cold", "waits",
     ];
     let parts: Vec<String> = names
         .iter()
@@ -283,9 +284,9 @@ mod fingerprint_tests {
     /// Every switch is part of the fingerprint (#491).
     #[test]
     fn each_switch_changes_the_fingerprint() {
-        let base = fingerprint_of([false; 15]);
-        for i in 0..15 {
-            let mut f = [false; 15];
+        let base = fingerprint_of([false; 16]);
+        for i in 0..16 {
+            let mut f = [false; 16];
             f[i] = true;
             assert_ne!(fingerprint_of(f), base, "switch {i}");
         }
@@ -456,10 +457,13 @@ fn optimize_func_with(
         },
         Some(_) => optimize_body_with(prog, id, inst, Some(&mut facts))?,
     };
-    if inline::run(prog, id, &mut f, 1) | inline::run_wide(prog, id, &mut f) {
+    let did = inline::run(prog, id, &mut f, 1);
+    let wide = inline::run_wide(prog, id, &mut f);
+    if did != inline::Inlined::No || wide {
+        let walk = did == inline::Inlined::Yes || wide;
         // The inlined bodies are code of this function now: what is known at the call decides
         // their branches and repeated reads are shared.
-        if matches!(f.kind, FuncKind::Function | FuncKind::Procedure) {
+        if walk && matches!(f.kind, FuncKind::Function | FuncKind::Procedure) {
             let mut layouts = prog
                 .layouts
                 .0
@@ -468,7 +472,9 @@ fn optimize_func_with(
             tidy(prog, &mut f, &mut layouts, inst);
         }
         // What the inlined callees read only on one branch is computed there.
-        sink::run(prog, &mut f);
+        if walk {
+            sink::run(prog, &mut f);
+        }
         crate::build::number_func(&mut f, |c| {
             prog.funcs
                 .get(c)

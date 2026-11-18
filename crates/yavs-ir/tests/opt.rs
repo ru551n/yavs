@@ -3588,3 +3588,94 @@ fn a_gate_made_in_place_in_a_loop_keeps_the_marker_that_frees_it() {
     );
     assert_eq!(count(&code, |i| matches!(i, Inst::Stmt)), 1, "{code:?}");
 }
+
+/// The value a register holds at `pc` of `code`: the constant of the last `Const` that defines
+/// it, through `Move`s (straight code only).
+fn const_at(code: &[Inst], pc: usize, r: Reg) -> Option<i64> {
+    let mut want = r;
+    for i in code[..pc].iter().rev() {
+        match *i {
+            Inst::Const { dst, v } if dst == want => return Some(v),
+            Inst::Move { dst, src } if dst == want => want = src,
+            _ => {
+                let mut def = false;
+                i.visit(&mut |x, role, _| def |= role == Role::Def && x == want);
+                if def {
+                    return None;
+                }
+            }
+        }
+    }
+    None
+}
+
+/// A procedure that waits only in the call it ends with is inlined into its caller; one register
+/// it loads from two parameters in turn holds each of them where it is read (the forwarders of a
+/// library procedure that may suspend read their parameters where the statements do).
+#[test]
+fn a_forwarder_in_front_of_a_waiting_procedure_takes_each_parameter() {
+    if !on() {
+        return;
+    }
+    let mut pb = ProgramBuilder::new();
+    let w = pb.declare("w", FuncKind::Procedure, None);
+    let mut wb = pb.define(w);
+    let wa = wb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+    let wbp = wb.param("b", Width::B8, ParamClass::Value, Mode::In, None);
+    wb.stmt(StmtKind::Wait, sp());
+    let (_, _) = (load(&mut wb, wa), load(&mut wb, wbp));
+    wb.emit(Inst::Suspend { resume: 0 });
+    wb.emit(Inst::Ret { v: None });
+    wb.finish();
+    let g = pb.declare("g", FuncKind::Procedure, None);
+    let mut gb = pb.define(g);
+    let ga = gb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+    let gbp = gb.param("b", Width::B8, ParamClass::Value, Mode::In, None);
+    gb.stmt(StmtKind::Call, sp());
+    let x = load(&mut gb, ga);
+    let y = gb.reg(RegTy::I64);
+    gb.emit(Inst::Move { dst: y, src: x });
+    let bslot = gb.addr(AddrSpace::Frame, gbp);
+    gb.emit(Inst::Load {
+        dst: x,
+        addr: bslot,
+        w: Width::B8,
+    });
+    let args = gb.regs(&[y, x]);
+    gb.emit(Inst::Call {
+        func: w,
+        args,
+        dst: None,
+    });
+    gb.emit(Inst::Ret { v: None });
+    gb.finish();
+    let h = pb.declare("h", FuncKind::Procedure, None);
+    let mut hb = pb.define(h);
+    hb.stmt(StmtKind::Call, sp());
+    let (one, two) = (hb.int(1), hb.int(2));
+    let args = hb.regs(&[one, two]);
+    hb.emit(Inst::Call {
+        func: g,
+        args,
+        dst: None,
+    });
+    hb.emit(Inst::Ret { v: None });
+    hb.finish();
+    let p = pb.finish().expect("optimised code verifies");
+    let hf = p.func(h).expect("h");
+    let Some((pc, Inst::Call { func, args, .. })) = hf
+        .code
+        .iter()
+        .enumerate()
+        .find(|(_, i)| matches!(i, Inst::Call { .. }))
+    else {
+        panic!("no call in {:?}", hf.code);
+    };
+    if std::env::var("YAVS_NO_WAIT_INLINE").is_ok_and(|v| !v.is_empty() && v != "0") {
+        return;
+    }
+    assert_eq!(*func, w, "{:?}", hf.code);
+    let a = hf.regs(*args).expect("arguments");
+    let vals: Vec<Option<i64>> = a.iter().map(|&r| const_at(&hf.code, pc, r)).collect();
+    assert_eq!(vals, [Some(1), Some(2)], "{:?}", hf.code);
+}

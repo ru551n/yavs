@@ -971,6 +971,15 @@ case!(
         ("ops", Max(11040))
     ]
 );
+// Forwarders in front of procedures that wait (`opt/inline.rs` `waits_last`): per message the two
+// procedures that wait are the calls (100), not the forwarders in front of them (200 calls and
+// 2974 ops with `YAVS_NO_WAIT_INLINE=1`).
+case!(
+    wait_calls,
+    "acc=1275",
+    &[],
+    [("calls", Max(103)), ("ops", Max(2450))]
+);
 // A pointer table's methods taken through interpreter arms once the tier's count of their caller and
 // its wait ran out (`opt/inline/arms.rs`; nothing compiles, every function being above the size
 // limit): 12609 interpreted calls, 27201 without arms (`YAVS_NO_ARMS=1`); 6 ops more per call taken

@@ -5880,6 +5880,38 @@ Decisions:
   realbench short tests up to 0.2 percent more (geomean 1.0004 against an A/A of 0.9996), long tests within their A/A,
   including the two the first rounds of this work lost on (one testbench's queue methods kept interpreted, +1.7 percent,
   and a host-path lookup, +0.25 percent).
+- **A procedure in front of a procedure that waits is inlined** (`opt/inline.rs` `waits_last`, 2026-11-18). A procedure
+  that may suspend only in the call it ends with (nothing but the return follows that call, in its block or through
+  blocks that only jump to the return) is a forwarder like the others, within the same limits (24 instructions in one
+  path, 60 in at most 8 blocks): it reads, computes, checks, calls, reads attributes of its signal parameters (`SigAttr`)
+  and builds the aggregate it passes on in temporary memory (`Alloc`, `Copy`). Nothing of it runs after the suspension,
+  so no register lives across it in the caller and the caller resumes after the call as it resumed after the
+  forwarder's (the resume points are numbered again). Its signal parameters are the caller's signal references
+  themselves (a register pair is never copied or made). Such a procedure is barely optimised: it reads its parameters
+  where its statements do, into registers it may define again or load from two parameters in turn; such a load becomes
+  a move from the argument where it was (a register loaded from one parameter only and defined nowhere else is the
+  argument), and a register holding a slot address must be defined only by its `AddrOf`. It is taken at level 0 only
+  (what it calls before its last call stays a call). Only a procedure whose lowered code already has the shape is
+  optimised to find out (`ends_with_wait`: it ends with the call that may suspend, makes at most two other calls,
+  `MAX_WAIT_CALLS`, and has no wait, `now`, report, drive or other effect of its own, `never_inlined`): a library's
+  message procedures that build a message and send it end the same way, and optimising each of them only to refuse it
+  cost a short test that names many of them about 3 M instructions, most of them never called in that run. The allocations need no statement marker of their own: the
+  call they replace was already one that leaves temporaries (`opt::leaves_temps`; a procedure that may suspend never
+  has `NO_TEMPS`), so the caller's markers free them as they freed the call's, and in a process `opt/slots.rs` places
+  them in the frame. A function that inlined only such procedures is not walked again (`Inlined::Waits`: their code
+  ends with the call and folds nothing after it; the walk cost a cold run its optimisation again). The callee's
+  statements and the inlining chain are kept as for every inlined body, so traces, `std.env` call paths, reports and
+  timeouts read as the calls (CLI test `wait_forwarders_read_as_calls`: every tier, cold and three cached runs, equal to
+  `YAVS_NO_INLINE=1`; IR test `a_forwarder_in_front_of_a_waiting_procedure_takes_each_parameter`; perf design
+  `wait_calls`). `YAVS_NO_WAIT_INLINE=1` turns it off (fingerprint `waits`). Why: a message of a verification library's
+  message passing makes ten calls of procedures that may wait, four of them through such forwarders (`send` in front of
+  `send`, `receive` in front of `receive` with a one-element array of actors, `get_message` with a check in front of
+  `get_message`, `notify_net` with a test of `'active` in front of `notify`), each about 1.1 k host instructions on any
+  tier. Measured against main (instructions; byte-copy A/A): a message 1.3 percent fewer interpreted (`c_sr` 398.6 to
+  393.4 k), 5.6 percent fewer under `--tier=clift` (119.0 to 112.3 k), requests 0.7 and 3.2 percent, AXI-stream
+  transfers 0.15 and 0.8 percent; short whole runs of those cells under `--tier=auto` (fresh worlds) 0.2 to 1.1 percent
+  fewer; the 26 bench designs level. Cost: a run that optimises the callers of these forwarders makes them, about
+  0.75 M instructions in a short test of an I2C component (0.03 percent), whether or not it sends many messages.
 
 ## Shared offsets must stay memoisable and fusable (yavs-ir `opt/memo.rs`, `opt/share.rs`, yavs-interp `pre.rs`, #534, 2026-10-22)
 

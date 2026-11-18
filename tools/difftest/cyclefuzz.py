@@ -2267,7 +2267,8 @@ def check(d, a, binary, seed=None):
         for n in [r for r in runs if r.endswith("-" + t) and not r.startswith("normal")] + (["checks"] if t == tiers[0] and "checks" in runs else []):
             got = (rd(n, "rc"), rd(n, "out"), rd(n, "err"))
             if got[0] != ref[0] or got[1] != ref[1] or strip(got[2]) != strip(ref[2]):
-                ok, cls = explained(ref, got, d, rd("report", "err"))
+                ok, cls = explained(ref, got, d, rd("report", "err"),
+                                    lambda: copy_reference(d, binary, t, hd.group(1) if hd else "2008"))
                 if not ok:
                     res.update(verdict="differs", run=n, why=first_diff(ref, got))
                     return res
@@ -2279,20 +2280,82 @@ def check(d, a, binary, seed=None):
     return res
 
 
-def explained(ref, got, d, rep):
+def explained(ref, got, d, rep, src=None):
     """(whether the contract classes explain every difference of a cycle run `got` from the normal run
     `ref`, the classes used): library metavalue warnings of processes outside that read the region, and
-    under the default contract metavalues read two-state (tools/difftest/cyclegate.py, README)."""
+    under the default contract metavalues read two-state (tools/difftest/cyclegate.py, README), and a
+    copied clock that is its source (A32): `src()` gives the normal run of the design with each copy
+    replaced by its source (`copy_variant`), which the cycle run must then equal."""
     if got[0] != ref[0] or strip(got[2]) != strip(ref[2]):
         return False, []
     down = G.read_down(d / "down.txt")
     (n, a), (c, b) = G.drop_down(ref[1], down), G.drop_down(got[1], down)
     cls = G.lib_class(a, b)
     nl, cl = n.splitlines(), c.splitlines()
-    if nl != cl and not CONTRACT["exact"] and G.meta_evidence(got[2], rep.splitlines()):
-        cl, k = G.meta_align(nl, cl)
-        cls += ["metavalues read as 0 or 1"] if k else []
+    meta = not CONTRACT["exact"] and G.meta_evidence(got[2], rep.splitlines())
+    if nl != cl and meta:
+        cl2, k = G.meta_align(nl, cl)
+        if cl2 == nl:
+            return True, cls + (["metavalues read as 0 or 1"] if k else [])
+    if nl != cl and not CONTRACT["exact"] and src and (v := src()) is not None:
+        vl = G.drop_down(v[1], down)[0].splitlines()
+        cl2, k = G.meta_align(vl, cl) if meta else (cl, 0)
+        if v[0] == ref[0] and cl2 == vl:
+            return True, cls + ["a copied clock is its source"] + (["metavalues read as 0 or 1"] if k else [])
     return nl == cl, cls
+
+
+COPY = re.compile(r"\b(dk\d+) <= (clk[01]|clk0 when G_B else (?:clk1|'0'));")
+
+
+def copy_variant(text):
+    """The design with every use of a clock the generator copies (`dk <= clk0;`, or the clock a generic
+    chooses when every instance of its entity gives G_B one value) replaced by its source inside the
+    architecture that makes it (port map actuals too), but for its own assignment and the testbench's
+    writes; None without copies or when the instances' G_B differ."""
+    def sub(m):
+        ent, body = m.group(1), m.group(2)
+        gb = set(re.findall(rf"entity work\.{ent}\s+generic map \([^)]*G_B => (\w+)", text))
+        src = {}
+        for n, a in COPY.findall(body):
+            if a.startswith("clk0 when"):
+                if len(gb) != 1:
+                    raise ValueError(ent)
+                if gb == {"false"} and a.endswith("'0'"):
+                    continue  # no clock at all
+                a = "clk0" if gb == {"true"} else "clk1"
+            src[n] = a
+        out = []
+        for l in body.split("\n"):
+            if not COPY.search(l) and not l.lstrip().startswith(("write(", "signal ")):
+                for n, a in src.items():
+                    l = re.sub(rf"\b{n}\b(?!\s*=>)", a, l)  # not a formal of a port map
+            out.append(l)
+        found.update(src)
+        return f"architecture a of {ent} is" + "\n".join(out) + "end architecture;"
+    found = {}
+    try:
+        v = re.sub(r"architecture a of (\w+) is(.*?)end architecture;", sub, text, flags=re.S)
+    except ValueError:
+        return None
+    return v if found else None
+
+
+def copy_reference(d, binary, tier, std):
+    """(status, stdout) of the normal run of `copy_variant` of the design in d at `tier`, or None."""
+    v = copy_variant((d / "d.vhd").read_text())
+    if v is None:
+        return None
+    w = d / "src"
+    w.mkdir(exist_ok=True)
+    (w / "d.vhd").write_text(v)
+    sh = (f"Y={binary}; A='--std={std} --work=work:lib'; $Y analyze $A d.vhd > a.out 2>&1 || exit 97; "
+          f"$Y run $A --tier={tier} fz_tb > n.out 2> n.err; echo $? > n.rc")
+    p = subprocess.run(["timeout", "300", "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G", "bash", "-c", sh],
+                       cwd=w, env=dict(os.environ, YAVS_STD_CACHE=str(d.parent / "std-cache")), capture_output=True, text=True)
+    if p.returncode != 0:
+        return None
+    return (w / "n.rc").read_text(), norm((w / "n.out").read_text(errors="replace"))
 
 
 def first_diff(ref, got):

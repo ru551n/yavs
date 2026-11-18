@@ -1546,6 +1546,7 @@ budget, cost 12 percent more (the worst case), loops under it 1 to 2 percent mor
 tests: geometric mean cold 1.0001, warm 1.0005, no restart, output identical (`docs/decisions.md` "Elaboration-time calls run
 as lowered").
 
+
 `Inst::visit` and `visit_mut` are generic over the closure instead of `dyn FnMut` (the optimiser, the predecoder and the verifier
 call them for every operand): `yavs run --no-cache` to 0 fs, instructions over the 42 realbench tests, geometric mean 0.973
 (`neorv32_*` 0.92 to 0.93, most others 0.97 to 0.98, `grlib_leon3mp` 1.003); the binary grows by 0.5 percent.
@@ -3104,6 +3105,8 @@ What changed (`docs/decisions.md` "Prefix images and the image on the second ana
   `ieee` and of the instances whose generic body is analyzed are loaded in the prefix.
 - The analysis image and the lowered packages of a closure are made on its second run, not its first (a test case of a
   suite runs once: the serialisation was a fifth of its run). A closure run twice or more is unchanged from the third run.
+  One run makes the image at a time (2026-11-18): tests that start together no longer each write it; storing it in the
+  first run was measured and not done (`docs/decisions.md` "Storing the closure on its first run: measured, not changed").
 - The analysis arenas are freed on a thread of its own (`release_analysis` took a fifth of a short run).
 - The suite drivers analyze consecutive files of a library in one call (521 files: 37 s to 3 s).
 

@@ -635,15 +635,36 @@ pub fn analyze_closure(
             r,
         );
     }
-    match db.to_image() {
-        Ok(image) => {
-            debug(format!("store {} ({} bytes)", k.hex(), image.len()));
-            store.put(KIND, &k, &image);
-            (
-                with_stages(db, store, &k, true, levels, &opts, &verified),
-                r,
-            )
+    // One run makes the image at a time: the tests of a suite that start together find the note
+    // together, and each made the same image (a quarter of a short test). The others, and a run
+    // that finds it stored once its claim is won, use the closure's entries as the maker does.
+    let mine = store.claim(KIND, &k, CLAIM_TTL);
+    if !mine || store.payload_len(KIND, &k).is_some() {
+        if mine {
+            store.release(KIND, &k);
         }
+        // As the maker: a `Db` that makes no image keeps no entries.
+        if let Some(why) = db.image_blocker() {
+            debug(format!("no image: {why}"));
+            return (db, r);
+        }
+        debug(format!("{} is made by another run", k.hex()));
+        return (
+            with_stages(db, store, &k, true, levels, &opts, &verified),
+            r,
+        );
+    }
+    let made = db.to_image();
+    if let Ok(image) = &made {
+        debug(format!("store {} ({} bytes)", k.hex(), image.len()));
+        store.put(KIND, &k, image);
+    }
+    store.release(KIND, &k);
+    match made {
+        Ok(_) => (
+            with_stages(db, store, &k, true, levels, &opts, &verified),
+            r,
+        ),
         Err(why) => {
             debug(format!("no image: {why}"));
             (db, r)

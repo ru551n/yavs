@@ -415,6 +415,37 @@ fn parallel_cold_runs_agree() {
     assert_eq!(leftovers, 0);
 }
 
+/// A run that finds the closure's image being made by another run (its claim file is fresh) does
+/// not make it again: it prints what a run without the cache prints and keeps the closure's other
+/// entries. Once the claim is gone the next run makes the image, and the one after reads it.
+#[test]
+fn a_run_does_not_make_an_image_another_run_is_making() {
+    let e = Env::new("claimed");
+    let plain = visible(&e.run_top("tb2", &["--no-cache"]));
+    assert!(note(&e.run_top("tb2", &[]), "note"));
+    let seen = std::fs::read_dir(e.cache_dir())
+        .expect("dir")
+        .flatten()
+        .map(|f| f.file_name().to_string_lossy().into_owned())
+        .find(|n| n.starts_with("sem-") && n.ends_with(".seen"))
+        .expect("the note of the closure");
+    let claim = e.cache_dir().join(seen.replace(".seen", ".making"));
+    std::fs::write(&claim, "").expect("claim");
+    let r = e.run_top("tb2", &[]);
+    assert_eq!(plain, visible(&r));
+    assert!(note(&r, "is made by another run"), "{r:?}");
+    assert!(e.entry_files("sem").is_empty());
+    assert_eq!(e.entry_files("low").len(), 1);
+    std::fs::remove_file(&claim).expect("unclaim");
+    let r = e.run_top("tb2", &[]);
+    assert_eq!(plain, visible(&r));
+    assert_eq!(e.entry_files("sem").len(), 1, "{r:?}");
+    assert!(!claim.exists());
+    let r = e.run_top("tb2", &[]);
+    assert_eq!(plain, visible(&r));
+    assert!(note(&r, "hit "), "{r:?}");
+}
+
 /// Sets the modification time of `p` back by an hour (a file that was edited long ago).
 fn age(p: &Path) {
     let f = std::fs::File::options().write(true).open(p).expect("open");

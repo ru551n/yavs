@@ -167,6 +167,25 @@ impl Db {
     /// The image of this `Db`, or why it cannot be restored later: an error was reported, an
     /// analysis is in progress, or work is pending.
     pub fn to_image(&mut self) -> Result<Vec<u8>, String> {
+        if let Some(why) = self.image_blocker() {
+            return Err(why);
+        }
+        // Found now, while every page is decoded, instead of by every run that reads the image.
+        self.run_time_pkgs = Some((self.run_time_key(), self.run_time_package_set()));
+        let (payload, table) =
+            yavs_syntax::encode_table(|| crate::ids::image_order(|| postcard::to_stdvec(self)));
+        let payload = payload.map_err(|e| e.to_string())?;
+        let table = postcard::to_stdvec(&table).map_err(|e| e.to_string())?;
+        let mut out = Vec::with_capacity(8 + table.len() + payload.len());
+        out.extend_from_slice(&(table.len() as u64).to_le_bytes());
+        out.extend_from_slice(&table);
+        out.extend_from_slice(&payload);
+        Ok(out)
+    }
+
+    /// Why [`Db::to_image`] would make no image of this `Db` (an error was reported, an analysis
+    /// is in progress, or work is pending), without making it.
+    pub fn image_blocker(&self) -> Option<String> {
         let pending = [
             ("errors", self.error_count()),
             ("stack", self.stack.len()),
@@ -181,20 +200,10 @@ impl Db {
             ("parameter types", self.param_anon.len()),
             ("instance types", self.inst_types.len()),
         ];
-        if let Some((what, n)) = pending.iter().find(|p| p.1 != 0) {
-            return Err(format!("{n} {what}"));
-        }
-        // Found now, while every page is decoded, instead of by every run that reads the image.
-        self.run_time_pkgs = Some((self.run_time_key(), self.run_time_package_set()));
-        let (payload, table) =
-            yavs_syntax::encode_table(|| crate::ids::image_order(|| postcard::to_stdvec(self)));
-        let payload = payload.map_err(|e| e.to_string())?;
-        let table = postcard::to_stdvec(&table).map_err(|e| e.to_string())?;
-        let mut out = Vec::with_capacity(8 + table.len() + payload.len());
-        out.extend_from_slice(&(table.len() as u64).to_le_bytes());
-        out.extend_from_slice(&table);
-        out.extend_from_slice(&payload);
-        Ok(out)
+        pending
+            .iter()
+            .find(|p| p.1 != 0)
+            .map(|(what, n)| format!("{n} {what}"))
     }
 
     /// Restore the `Db` of an image under the options of this run. `Stale` when a source file

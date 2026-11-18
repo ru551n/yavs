@@ -4031,6 +4031,24 @@ Decisions that cut that, with the measured effect in `docs/STATUS.md` "floor of 
   units every run (what a cold run does anyway). The claim also stops testbenches that start together from each writing
   the same three images. The library stages are unaffected: they need four closures (`libstage::SIGHTINGS`), so the
   image exists by then.
+- **One run makes a closure's image at a time** (2026-11-18). The tests of a suite that start together (`-p0`) find
+  the first one's note together, and each of them made the same image (`Db::to_image`, a quarter of a short test, and
+  6 MB written each). The run that finds the note now claims the image (`Store::claim`, as the prefix image does); a
+  run that loses the claim, or wins it after another run stored the image, makes none and goes on with the closure's
+  entries as a maker does (it reads and stores the same stage entries; its `Db` is the same one, replayed). A `Db` that
+  cannot be imaged (`Db::image_blocker`) keeps no entries, as before. Sequential runs do the same work as before (one
+  claim file more on the run that stores). Measured on the 114-test AXI-stream suite of the verification library at
+  `-p0` (32 jobs, fresh output directory, 3 trials each): the first round 133.3 G mean against 133.0 G for a byte copy of
+  the old build and 130.9 G with the claim, inside the spread of the trials (127 to 137 G): the runs that lose the claim
+  reach their lowering earlier and find fewer stage entries stored yet, which takes most of what the image cost.
+- **Storing the closure on its first run: measured, not changed** (2026-11-18). Making the image and the stage entries
+  in the first run moves the second run's store into the first: the AXI-stream and message-passing cells of the
+  verification library (fresh worlds, 8 each) run 1 +37 and +30 percent, run 2 -77 and -64 percent; the stage entries
+  alone (image still on the second run) +8 and +5 percent, -42 and -33 percent; the steady runs unchanged. On the 14
+  short `tools/realbench` tests (8 worlds, 4 runs) the first run is 1.143 times the old one (geometric mean, up to 1.44
+  times for the smallest), 1.037 with the stage entries alone, the second 0.529 and 0.745 times; the 114-test suite at
+  `-p1` saves 0.8 G of 106 G. The first run writes 11 MB (5 MB) where it wrote a 44 KB note. A test that runs once pays
+  all of it, so the image stays on the second analysis.
 
 ## Library stages: what a closure shares with others that start with the same files (#407, yavs decisions under the user's single-thread performance priority)
 

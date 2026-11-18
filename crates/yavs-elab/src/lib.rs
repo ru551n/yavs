@@ -48,6 +48,7 @@ pub use walk::{load_bodies, load_bodies_in};
 pub use yavs_interp::elaboration_reports;
 pub use yavs_lower::LowerOptions;
 pub use yavs_lower::covdir;
+pub use yavs_lower::lowered_subprograms;
 
 use yavs_diag::Diagnostic;
 use yavs_sem::{Db, StmtId, UnitId};

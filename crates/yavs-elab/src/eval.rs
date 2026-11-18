@@ -2089,6 +2089,8 @@ fn lower_one(
     let mut l = yavs_lower::Lowerer::new(db, yavs_lower::LowerOptions::default());
     if capture {
         l.capture_free_objects(false);
+        // A call whose function does not lower alone runs in the session (`Model::call`).
+        l.stop_at_first_error();
     }
     if sigs {
         l.capture_signals();

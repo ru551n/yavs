@@ -1,0 +1,1 @@
+Elaboration of testbenches that create verification components and loggers in constant declarations does less work: a function that has to run against the package state no longer has its callees lowered a second time for nothing.

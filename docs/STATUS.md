@@ -1428,6 +1428,10 @@ A hit on a call that ran in the elaboration session lowers and logs it there as 
 first run with hits reads the stored program instead of lowering and compiling the design again: `uvvm_axistream_vvc`, one
 world, runs 1 to 5 at auto, all-thread instructions 52.9, 28.3, 19.8, 19.8, 19.7 G (before: run 3 at 50.1 G). Corpus test
 `generics/elab_call_table` reaches the path (`ecall_session_hits`).
+A function that does not lower on its own (it reads package state) gives up that lowering at its first error instead
+of lowering the rest of its callees for nothing (2026-11-18, Lane B): a warm short test of the verification library's
+AXI-stream testbench 780 M to 680 M instructions, its 114 tests 116 G to 104 G (second run of a fresh output directory); fresh-world realbench series (40 tests, 6 to 16 worlds, 4 to 5 runs) 0.985 of the instructions with a byte-copy A/A of 1.000; work counter `lowered_funcs`
+(`perf/lower_alone_stop.vhd`).
 
 ### Cranelift compile: one hash per compiled body (perf/b4-clcold, 2026-11-11)
 

@@ -410,6 +410,13 @@ impl VarShape {
     }
 }
 
+static LOWERED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many subprograms this process lowered (a work counter: `YAVS_COUNTERS`).
+pub fn lowered_subprograms() -> u64 {
+    LOWERED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// State shared by the functions being lowered.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Cx {
@@ -511,6 +518,9 @@ pub(crate) struct Cx {
     /// filled per call ([`Lowerer::capture_signals`]).
     #[serde(skip)]
     pub capture_sigs: bool,
+    /// Stop lowering at the first error ([`Lowerer::stop_at_first_error`]).
+    #[serde(skip)]
+    pub stop_at_error: bool,
     #[serde(skip)]
     pub free_objs: Vec<FreeObj>,
     /// Which function reads which of `free_objs` (index), directly.
@@ -813,6 +823,7 @@ impl<'a> Lowerer<'a> {
                 capture_free: false,
                 capture_vars: false,
                 capture_sigs: false,
+                stop_at_error: false,
                 free_objs: Vec::new(),
                 free_readers: Vec::new(),
                 region_inits: HashMap::default(),
@@ -840,6 +851,14 @@ impl<'a> Lowerer<'a> {
     /// caller fills with the signal's current value before every call (a port conversion).
     pub fn capture_signals(&mut self) {
         self.cx.capture_sigs = true;
+    }
+
+    /// Give up at the first error instead of lowering the rest of what was asked for: for a
+    /// caller that takes any error as "cannot be lowered" and throws the lowering away (an
+    /// elaboration-time call that then runs in the session). The first diagnostic is the one a
+    /// full lowering gives first.
+    pub fn stop_at_first_error(&mut self) {
+        self.cx.stop_at_error = true;
     }
 
     /// The captured objects and the bytes of instance data they need.
@@ -1193,6 +1212,11 @@ impl<'a> Lowerer<'a> {
 
     fn drain(&mut self) {
         while let Some((d, depth)) = self.cx.queue.pop() {
+            if self.cx.stop_at_error && !self.cx.diags.is_empty() {
+                self.cx.queue.clear();
+                break;
+            }
+            LOWERED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             // Errors are collected in `cx.diags`.
             if func::subprogram(self.db, &mut self.pb, &mut self.cx, d, depth).is_err()
                 && let Some(&f) = self.cx.funcs.get(&d)

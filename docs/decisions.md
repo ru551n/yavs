@@ -6360,6 +6360,12 @@ every elaboration, and again for every instance. Decisions:
   (`ops_elab` 3752 to 464).
 - **Ideas from the reference simulator (read, nothing copied):** it evaluates a package constant once, at the
   elaboration of its package, and every use reads that object.
+- **The lowering on its own stops at its first error** (Lane B, 2026-11-18): `lower_one` threw a failed lowering away
+  only after lowering every other callee it had queued (`Lowerer::stop_at_first_error`, `drain`). The verification
+  library's constructors (`new_actor`, `get_logger`, `new_axi_stream_master`, 13 of them in an AXI-stream testbench)
+  all fail there, every elaboration: about 100 M of the 780 M instructions of a short warm test of that testbench.
+  The first diagnostic is the same, and nothing else of a failed lowering is used. Work counter `lowered_funcs`
+  (`perf/lower_alone_stop.vhd`).
 
 ## Elaboration-time calls run as lowered; a function asked for often is optimised between two calls (yavs-ir `ElabRaw`, yavs-interp, yavs-elab, #539, 2026-10-24)
 

@@ -224,6 +224,10 @@ case!(
     &[],
     [("flat_elem_results", Min(1)), ("ops", Max(75200))]
 );
+// An elaboration-time call whose function does not lower on its own (it reads a package table
+// through its last callee): that lowering stops at the failure instead of lowering the other six
+// callees it throws away; the session lowers what the call needs.
+case!(lower_alone_stop, "len=", &[], [("lowered_funcs", Max(12))]);
 case!(
     pkg_table,
     "sum=212",

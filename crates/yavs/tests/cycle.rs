@@ -5367,6 +5367,32 @@ fn clocks_of_a_known_delta_share_their_logic() {
     );
 }
 
+/// A register on a copy of a clock, sent back to the copy because a register outside waits on it,
+/// reads one on a sibling copy that moved onto the source (A32): the moved one goes back too, or
+/// the reader takes its new value a delta early (fuzzer, seed 327 of the default contract).
+/// Widths 1 to 128, against the normal mode, with the membership.
+#[test]
+fn a_register_on_a_copy_reading_a_moved_register_keeps_the_normal_value() {
+    let dir = tempdir("cycle-copyback");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("copyback{w}.vhd"),
+            &with_width(include_str!("cycle/copyback.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_copyback");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_copyback");
+            assert_eq!(normal.len(), 6, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 3 of 7 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// The most negative value divided by -1 (fuzzer, seed 673): `rem` and `mod` give 0 and
 /// `numeric_std`'s `/` the most negative value, as in the normal mode, also for a one-element -1
 /// and an integer type of 64 bits; the region stopped with an overflow error. Widths 1 to 128:

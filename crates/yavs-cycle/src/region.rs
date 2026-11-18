@@ -441,11 +441,14 @@ fn same_clocks(
 }
 
 /// Members moved onto a copied clock's source (`same_clocks`) whose copy a process outside
-/// waits on (a register of the kernel on the copy): that process samples in the copy's delta,
-/// after the moved member changed, so the member goes back to its own clock.
+/// waits on (a register of the kernel on the copy), or whose signals a member on a copy of that
+/// source that did not move reads (one sent back, or one whose copy keeps its own clock): that
+/// register samples in the copy's delta, after the moved member changed, so the member goes back
+/// to its own clock.
 fn copy_rule(
     db: &Db,
     e: &Elaborated,
+    copies: &Copies,
     taken: &mut BTreeMap<usize, (Fit, Body)>,
     moved: &mut BTreeMap<usize, (Clock, Vec<LeafId>)>,
 ) -> bool {
@@ -461,13 +464,48 @@ fn copy_rule(
             _ => waited = None,
         }
     }
-    let back: Vec<usize> = (moved.iter())
+    let mut back: BTreeSet<usize> = (moved.iter())
         .filter(|(_, (_, ls))| {
             ls.iter()
                 .any(|l| waited.as_ref().is_none_or(|w| w.contains(l)))
         })
         .map(|(&pi, _)| pi)
         .collect();
+    // A member on a later copy of a moved member's source that reads what the moved member
+    // drives (found by the fuzzer under the default contract, `clkcopy.vhd` `smp`).
+    let made: BTreeSet<LeafId> = (taken.keys())
+        .flat_map(|&pi| e.procs[pi].drivers.iter().map(|&d| e.nets.drivers[d].leaf))
+        .collect();
+    let drives = |pi: usize| -> BTreeSet<LeafId> {
+        (e.procs[pi].drivers.iter())
+            .map(|&d| e.nets.drivers[d].leaf)
+            .collect()
+    };
+    for (&r, (f, b)) in taken.iter() {
+        // One sent back samples on its own clock.
+        let c = match moved.get(&r) {
+            Some((own, _)) if back.contains(&r) => *own,
+            Some(_) => continue,
+            None => match b.clock {
+                Some(c) => c,
+                None => continue,
+            },
+        };
+        let chain = copy_chain(e, copies, &made, c);
+        let reads: BTreeSet<LeafId> = (b.reads.iter().copied())
+            .chain(f.reads.iter().map(|(k, _, _)| LeafId(k as u32)))
+            .collect();
+        for (&m, _) in moved.iter() {
+            let to = taken[&m].1.clock.map(|x| (x.leaf, x.elem));
+            if m != r
+                && !back.contains(&m)
+                && chain[1..].iter().any(|x| Some(*x) == to)
+                && drives(m).iter().any(|l| reads.contains(l))
+            {
+                back.insert(m);
+            }
+        }
+    }
     for pi in &back {
         let (c, _) = moved.remove(pi).expect("listed");
         taken.get_mut(pi).expect("member").1.clock = Some(c);
@@ -1097,7 +1135,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         if gone.is_empty() && exact_meta {
             gone = meta_rule(db, e, &taken, &zsrc, &out);
         }
-        if gone.is_empty() && copy_rule(db, e, &mut taken, &mut moved) {
+        if gone.is_empty() && copy_rule(db, e, &copies, &mut taken, &mut moved) {
             continue;
         }
         if gone.is_empty() {

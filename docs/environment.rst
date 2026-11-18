@@ -663,6 +663,11 @@ Compiled tiers: Cranelift
      - names, comma separated
      - unset
      - ``run``
+   * - ``YAVS_SOPT_CHECK``
+     - Does not use the stored optimised copies of the functions elaboration runs, and fails when a copy it makes is not the stored one. A check for bugs in yavs.
+     - not ``0``
+     - unset
+     - ``elab``, ``run``
    * - ``YAVS_CLIFT_PERFMAP``
      - Writes ``/tmp/perf-<pid>.map`` for ``perf report``: one line per function of generated code, compiled or linked from the compilation cache, named ``f<id>_<process instance path>`` (``n`` native-frame code, ``c`` its adapter; ``+N`` when N more processes run the same code) or by subprogram. A file left by an earlier process with the same pid is emptied when the process starts, so the map names only this run's code.
      - ``1``

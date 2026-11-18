@@ -6475,6 +6475,27 @@ every elaboration, and again for every instance. Decisions:
   that has reported finishes lowered, one that has not restarts and reports once).
 - Ideas from the reference simulator (read, nothing copied): it too does not generate code for what elaboration runs
   once; it evaluates it in its interpreter.
+- **The copies the calls optimised are kept with the closure** (stage entry `sopt`, `pkgcall::Copies`, 2026-11-18).
+  A testbench that creates verification components in its constant declarations runs the same elaboration-time calls in
+  every test, and the session optimised the same functions every run (opt_funcs about 400 and 96 M instructions of a
+  warm 690 M test of the AXI-stream testbench). The session's program is now recorded as steps: the rebuild (its
+  packages and the functions in order) and then every function or package constant asked for, each step named by a
+  digest of the request, of the previous step's digest, of the size of the `Db` and of the sizes of the program's tables
+  after it. The same requests on the same analysis give the same program, ids and all (the `low` and `ir` entries rely
+  on that), and an optimised copy reads only its function, the flags and kinds of its callees and the tables up to its
+  step, so a stored copy of a function of a step with the same digest is the copy this run would make. A step loads the
+  stored copies of its functions (`Program::load_optimized`: such a function then runs optimised from its first call),
+  and the end of elaboration (`Session::finish`) writes the entry again when the calls made copies it lacks (read, merge,
+  write, as `libopt`; over 8 MiB only the steps of this run are kept). Not kept: a closure's first run (no entries of its
+  own), a session on a library prefix (`libopt` serves it), a program with thunks of the objects of a region (shared
+  variable creations, method calls: they read the region they were lowered for). `YAVS_SOPT_CHECK=1` uses no stored copy
+  and fails with an internal error when a copy the run makes differs from the stored one: clean over three rounds of the
+  suite at `-p1` and `-p0`, the difftest corpus (`yavs-auto-warm`) and `tools/realbench`.
+  Measured (fresh worlds prepared by each build, byte copy of the old build as A/A): the suite at `-p1` 106.6 G to 92.0 G
+  in the first round (short tests 795 M to 665 M each), the later rounds the same; at `-p0` (8 trials, interleaved)
+  130.3 G to 114.1 G and 105.1 G to 90.5 G; the AXI-stream cell's steady run 394 M to 378 M, the message-passing cell's
+  548 M to 543 M, runs 1 and 2 unchanged. The entry is 50 to 80 KB for that testbench and is not written again once the
+  suite has run once.
 
 ## The watching loop's tick is out of line (yavs-interp, #521, #544, 2026-10-22)
 

@@ -1546,6 +1546,11 @@ budget, cost 12 percent more (the worst case), loops under it 1 to 2 percent mor
 tests: geometric mean cold 1.0001, warm 1.0005, no restart, output identical (`docs/decisions.md` "Elaboration-time calls run
 as lowered").
 
+The optimised copies those calls make are kept with the closure (stage entry `sopt`, 2026-11-18): from the third run of a
+closure a function its elaboration-time calls optimised in an earlier run takes the stored copy and runs optimised from its first
+call. The 114-test AXI-stream suite of the verification library: 106.6 G to 92.0 G per round at `-p1`, 130.3 G to 114.1 G (first
+round) and 105.1 G to 90.5 G (later rounds) at `-p0`; `YAVS_SOPT_CHECK=1` compares instead of using them (`docs/decisions.md`
+"The copies the calls optimised are kept with the closure").
 
 `Inst::visit` and `visit_mut` are generic over the closure instead of `dyn FnMut` (the optimiser, the predecoder and the verifier
 call them for every operand): `yavs run --no-cache` to 0 fs, instructions over the 42 realbench tests, geometric mean 0.973

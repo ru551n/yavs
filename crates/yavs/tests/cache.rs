@@ -446,6 +446,69 @@ fn a_run_does_not_make_an_image_another_run_is_making() {
     assert!(note(&r, "hit "), "{r:?}");
 }
 
+/// A package whose impure function calls `sq` often enough during elaboration for the calls to
+/// optimise it.
+const HOT: &str = "package hot is\n  type counter_t is protected\n    impure function bump return integer;\n  end protected;\n\
+  function sq(x : integer) return integer;\n  impure function tally(n : integer) return integer;\nend;\n\
+package body hot is\n  type counter_t is protected body\n    variable c : integer := 0;\n\
+    impure function bump return integer is begin c := c + 1; return c; end;\n  end protected body;\n\
+  shared variable ctr : counter_t;\n\
+  function sq(x : integer) return integer is begin return x * x; end;\n\
+  impure function tally(n : integer) return integer is\n    variable s : integer := 0;\n  begin\n\
+    for i in 1 to n loop s := s + sq(i); end loop;\n    return s + ctr.bump;\n  end;\nend;\n\
+use work.hot.all;\nentity hottb is end;\narchitecture a of hottb is\n\
+  constant a1 : integer := tally(100);\n  constant a2 : integer := tally(100);\n  constant a3 : integer := tally(10);\nbegin\n\
+  process begin\n    report \"a \" & integer'image(a1) & \" \" & integer'image(a2) & \" \" & integer'image(a3);\n    wait;\n  end process;\nend;\n";
+
+/// The optimised copies elaboration-time calls made are kept with the closure (`sopt`): a later
+/// run reads them instead of optimising again, prints the same, and a run that finds the entry
+/// gone makes it again.
+#[test]
+fn optimised_copies_of_elaboration_time_calls_are_cached() {
+    let e = Env::with_env("sopt", &[("YAVS_COUNTERS", "1")]);
+    std::fs::write(e.tmp.join("hot.vhd"), HOT).expect("write");
+    assert_eq!(e.yavs(&["analyze", "--work", &e.work(), "hot.vhd"]).code, 0);
+    let shown = |o: &Out| {
+        let mut v = visible(o);
+        v.stderr = v
+            .stderr
+            .lines()
+            .filter(|l| !l.starts_with("counters: "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        v
+    };
+    let optimised = |o: &Out| -> u64 {
+        o.stderr
+            .lines()
+            .find_map(|l| l.strip_prefix("counters: opt_funcs="))
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no opt_funcs counter: {o:?}"))
+    };
+    let plain = shown(&e.run_top("hottb", &["--no-cache"]));
+    assert!(plain.stdout.contains("a 338351 338352 388"), "{plain:?}");
+    let stored = e.cold("hottb", &[]);
+    assert!(note(&stored, "store sopt"), "{stored:?}");
+    let warm = e.run_top("hottb", &[]);
+    assert!(note(&warm, "hit sopt"), "{warm:?}");
+    assert_eq!(plain, shown(&warm));
+    for f in e.entry_files("sopt") {
+        std::fs::remove_file(f).expect("remove");
+    }
+    let again = e.run_top("hottb", &[]);
+    assert!(note(&again, "store sopt"), "{again:?}");
+    assert_eq!(plain, shown(&again));
+    assert!(
+        optimised(&warm) < optimised(&again),
+        "{} {}",
+        optimised(&warm),
+        optimised(&again)
+    );
+    let warm = e.run_top("hottb", &[]);
+    assert!(note(&warm, "hit sopt"), "{warm:?}");
+    assert_eq!(plain, shown(&warm));
+}
+
 /// Sets the modification time of `p` back by an hour (a file that was edited long ago).
 fn age(p: &Path) {
     let f = std::fs::File::options().write(true).open(p).expect("open");

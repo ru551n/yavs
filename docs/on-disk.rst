@@ -41,7 +41,9 @@ The compile cache
 ``yavs-cache/`` keeps what can be reused: analyzed design units, the lowered form of a design and the
 compiled code. The first run of a design notes it, the second stores it, later runs reuse it
 (:doc:`running-faster`); compiled code is stored from the first run, so the second takes what the first
-compiled without making it again. When tests of one testbench start together, one of them stores the design and the others
+compiled without making it again. The lowered form holds the functions that the design's elaboration ran and
+optimised, so a testbench that creates verification components in its declarations does not optimise them
+again in later runs. When tests of one testbench start together, one of them stores the design and the others
 go on without writing it again. Analyzed design units are stored by ``analyze``, and by a run that had to
 analyze a unit again (for example an architecture analyzed before the entity it instantiates), so the
 next testbench reads it instead.

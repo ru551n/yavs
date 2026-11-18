@@ -703,6 +703,168 @@ struct Live {
     shared_size: u32,
     /// The library prefix the program starts with (`libstage`).
     lib: Option<crate::libstage::LibUse>,
+    /// How `rt.prog` was lowered, in order ([`Copies`]): the digest after each step and the
+    /// functions the step added. Empty when the copies are not kept.
+    steps: Vec<(u64, u32, u32)>,
+}
+
+/// The optimised copies the elaboration-time calls of earlier runs of the closure made (stage
+/// entry `sopt`), by a digest of the session's program after the step that lowered their
+/// functions: the requests of every step from the packages on (a rebuild's packages and functions,
+/// then each function or package constant asked for), the size of the `Db` at each, and the
+/// sizes of the program's tables after it. The same requests on the same analysis give the same
+/// program, ids and all (what the `low` and `ir` entries rely on), so a copy is the one this run's
+/// optimiser would make: it reads only the function, the flags and kinds of its callees and the
+/// tables (`YAVS_SOPT_CHECK` holds a run to that). Nothing in a closure's first run.
+#[derive(Default)]
+struct Copies {
+    /// Read at the first step: `None` before, then the entry (empty when there is none).
+    entry: Option<Option<CopiesEntry>>,
+}
+
+struct CopiesEntry {
+    cache: Arc<dyn yavs_sem::StageCache>,
+    extent: Vec<usize>,
+    steps: HashMap<u64, Vec<yavs_ir::OptCopy>>,
+}
+
+/// The stage entry kind of [`Copies`].
+const COPIES: &str = "sopt";
+
+/// `YAVS_SOPT_CHECK` (not empty and not `0`): the stored copies of [`Copies`] are not used; the
+/// run optimises as without them, and a copy it makes that differs from the stored one is an
+/// internal error.
+fn copies_check() -> bool {
+    static CHECK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CHECK.get_or_init(|| std::env::var("YAVS_SOPT_CHECK").is_ok_and(|v| !v.is_empty() && v != "0"))
+}
+
+/// An entry of [`Copies`] over this size keeps only the steps of the run that writes it.
+const COPIES_MAX: usize = 8 << 20;
+
+impl Copies {
+    fn entry(&mut self, db: &Db) -> Option<&CopiesEntry> {
+        self.entry
+            .get_or_insert_with(|| {
+                // A closure's first run keeps nothing of its own.
+                let cache = db.stages().filter(|c| c.closure())?.clone();
+                let extent = db.stage_extent();
+                let steps: Vec<(u64, Vec<yavs_ir::OptCopy>)> = cache
+                    .get(&extent, COPIES, &[])
+                    .and_then(|b| yavs_diag::sharing(&b, || postcard::from_bytes(&b).ok()))
+                    .unwrap_or_default();
+                Some(CopiesEntry {
+                    cache,
+                    extent,
+                    steps: steps.into_iter().collect(),
+                })
+            })
+            .as_ref()
+    }
+
+    /// Record a step of `prog` (the functions from `lo` on) in `steps`, the digest going on from
+    /// `seed`, and hand the program the stored copies of its functions. A step after one that was
+    /// not recorded is not either.
+    fn step(
+        &mut self,
+        db: &Db,
+        steps: &mut Vec<(u64, u32, u32)>,
+        seed: u64,
+        lo: usize,
+        prog: &Program,
+    ) {
+        if (steps.is_empty() && lo > 0) || self.entry(db).is_none() {
+            return;
+        }
+        let d = {
+            use std::hash::{Hash, Hasher};
+            let p = prog;
+            let mut h = std::hash::DefaultHasher::new();
+            (
+                seed,
+                lo,
+                p.funcs.len(),
+                p.types.len(),
+                p.consts.len(),
+                p.natives.len(),
+                p.foreign.len(),
+                p.checks.len(),
+                p.cases.len(),
+                p.stmts.len(),
+                p.reflect.len(),
+            )
+                .hash(&mut h);
+            h.finish()
+        };
+        steps.push((d, lo as u32, prog.funcs.len() as u32));
+        if let Some(c) = self.entry(db).and_then(|e| e.steps.get(&d))
+            && !copies_check()
+        {
+            prog.load_optimized(c.clone());
+        }
+    }
+
+    /// Store the copies the calls made that the entry lacks, with those it holds.
+    fn learn(&mut self, live: &Live) {
+        let Some(Some(e)) = &self.entry else { return };
+        // The steps of one program follow each other: ordered by their first function.
+        let at = |f: u32| {
+            let i = live.steps.partition_point(|&(_, lo, _)| lo <= f);
+            let &(d, _, hi) = live.steps.get(i.checked_sub(1)?)?;
+            (f < hi).then_some(d)
+        };
+        let stored = |d: u64, f: u32| e.steps.get(&d)?.iter().find(|c| c.func.0 == f);
+        let had = |d: u64, f: u32| stored(d, f).is_some();
+        if copies_check() {
+            for c in live
+                .rt
+                .prog
+                .export_made(|f| at(f.0).is_some_and(|d| had(d, f.0)))
+            {
+                let s = at(c.func.0).and_then(|d| stored(d, c.func.0));
+                assert!(
+                    s.is_some_and(|s| s.bytes.get() == c.bytes.get()),
+                    "internal error: the stored optimised copy of function {} of an \
+                     elaboration-time call is not the one the optimiser makes; this is a bug in yavs",
+                    c.func.0
+                );
+            }
+        }
+        let mut new = std::collections::HashSet::new();
+        live.rt.prog.export_made(|f| {
+            if let Some(d) = at(f.0)
+                && !had(d, f.0)
+            {
+                new.insert(f.0);
+            }
+            false
+        });
+        if new.is_empty() {
+            return;
+        }
+        let mut steps = e.steps.clone();
+        for c in live.rt.prog.export_made(|f| new.contains(&f.0)) {
+            if let Some(d) = at(c.func.0) {
+                steps.entry(d).or_default().push(c);
+            }
+        }
+        let mut all: Vec<(u64, Vec<yavs_ir::OptCopy>)> = steps.into_iter().collect();
+        let size = |all: &[(u64, Vec<yavs_ir::OptCopy>)]| -> usize {
+            all.iter()
+                .flat_map(|(_, v)| v.iter().map(|c| c.bytes.len()))
+                .sum()
+        };
+        if size(&all) > COPIES_MAX {
+            all.retain(|(d, _)| live.steps.iter().any(|s| s.0 == *d));
+        }
+        all.sort_unstable_by_key(|(d, _)| *d);
+        for (_, v) in &mut all {
+            v.sort_unstable_by_key(|c| c.func.0);
+        }
+        if let Ok(b) = postcard::to_stdvec(&all) {
+            e.cache.put(&e.extent, COPIES, &[], &b);
+        }
+    }
 }
 
 /// The package state elaboration left, for the simulation to start from instead of
@@ -759,6 +921,8 @@ pub(crate) struct Session {
     /// Shared variables of regions created for the call being prepared; the next logged call
     /// takes them.
     pending: Vec<Create>,
+    /// Optimised copies from earlier runs of the closure.
+    copies: Copies,
 }
 
 impl Session {
@@ -830,7 +994,7 @@ impl Session {
             .is_some_and(|l| l.items.exprs.contains_key(&e))
         {
             self.exprs.push(e);
-            let r = self.lower_more(db, |l, items| {
+            let r = self.lower_more(db, None, |l, items| {
                 let t = expr_item(l, db, e)?;
                 items.exprs.insert(e, t);
                 Ok(())
@@ -956,6 +1120,7 @@ impl Session {
             return None;
         }
         let mut live = self.live.take()?;
+        self.copies.learn(&live);
         let (mut lowerer, pkgs) = live.lowerer.take()?;
         if live.rt.files_touched() {
             return None;
@@ -1065,7 +1230,7 @@ impl Session {
             return Ok(());
         }
         self.lowered.push((d, constant));
-        let r = self.lower_more(db, |l, items| {
+        let r = self.lower_more(db, Some((d, constant)), |l, items| {
             let (sig, needs) = item(l, db, d, constant)?;
             items.sigs.insert(d, sig);
             items.needs.insert(d, needs);
@@ -1087,7 +1252,7 @@ impl Session {
             return Ok(());
         }
         self.inits.push(var);
-        let r = self.lower_more(db, |l, items| {
+        let r = self.lower_more(db, None, |l, items| {
             let (func, needs) = init_item(l, var)?;
             items.inits.insert(var, func);
             items.needs.insert(var, needs);
@@ -1102,15 +1267,40 @@ impl Session {
     /// Add what `lower` lowers to the live program, keeping the package state when the
     /// lowering can go on; else the program is rebuilt with `self.lowered` and `self.inits`
     /// (which the request is already part of).
+    ///
+    /// `request` names what is asked for (a function or package constant, [`Copies`]); `None` for
+    /// a thunk, after which the program keeps no copies.
     fn lower_more(
         &mut self,
         db: &Db,
+        request: Option<(DeclId, bool)>,
         lower: impl FnOnce(&mut Lowerer, &mut Items) -> Result<(), Fail>,
     ) -> Result<(), Fail> {
         // A failed call may have left the package state half changed: rebuild it then.
         let pkgs = self.run_time_packages(db)?;
         let added = match self.live.as_mut() {
-            Some(live) if !self.dirty => add(live, db, &pkgs, lower),
+            Some(live) if !self.dirty => {
+                let before = live.rt.prog.funcs.len();
+                let r = add(live, db, &pkgs, lower);
+                if let Some(Ok(())) = r {
+                    match (request, live.steps.last()) {
+                        (Some((d, c)), Some(&(last, _, _))) => {
+                            use std::hash::{Hash, Hasher};
+                            let mut h = std::hash::DefaultHasher::new();
+                            (last, yavs_sem::Id::index(d), c, db.extent()).hash(&mut h);
+                            self.copies.step(
+                                db,
+                                &mut live.steps,
+                                h.finish(),
+                                before,
+                                &live.rt.prog,
+                            );
+                        }
+                        _ => live.steps.clear(),
+                    }
+                }
+                r
+            }
             _ => None,
         };
         match added {
@@ -1208,8 +1398,26 @@ impl Session {
             items.exprs.insert(e, expr_item(&mut l, db, e)?);
         }
         let lw = l.snapshot_take().map_err(lower)?;
-        let lowerer = Some((l.suspend(), pkgs));
         let prog = Arc::new(lw.program);
+        // Optimised copies are kept for programs of functions only: a thunk reads the objects of
+        // the region it was lowered for.
+        let mut steps = Vec::new();
+        if lib.is_none() && self.inits.is_empty() && self.exprs.is_empty() {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::hash::DefaultHasher::new();
+            let ids = |v: &mut dyn Iterator<Item = usize>| v.collect::<Vec<_>>();
+            (
+                ids(&mut pkgs.iter().map(|u| yavs_sem::Id::index(*u))),
+                ids(&mut self
+                    .lowered
+                    .iter()
+                    .map(|&(d, c)| 2 * yavs_sem::Id::index(d) + usize::from(c))),
+                db.extent(),
+            )
+                .hash(&mut h);
+            self.copies.step(db, &mut steps, h.finish(), 0, &prog);
+        }
+        let lowerer = Some((l.suspend(), pkgs));
         let shared = Arc::new(Mutex::new(SharedState::new(vec![
             0;
             lw.shared_size as usize
@@ -1250,6 +1458,7 @@ impl Session {
             lowerer,
             shared_size: lw.shared_size,
             lib,
+            steps,
         })
     }
 }

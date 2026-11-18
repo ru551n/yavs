@@ -1,0 +1,1 @@
+A testbench whose constant declarations create verification components or loggers elaborates faster from its third run: the functions that elaboration optimised are kept in the compilation cache and not optimised again.

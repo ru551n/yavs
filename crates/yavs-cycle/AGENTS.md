@@ -222,14 +222,14 @@ YAVS_CYCLE_CACHE_CHECK=1 YAVS_BIN=... python3 -I tools/difftest/cyclegate.py --w
   (user-visible reasons in `docs/cycle-mode.rst`): `--profile` (samples the interpreter; the region is one kernel
   entry), `--assert-summary` (counts the asserts that run), `--shuffle`, `--hang-report`, `--time-report`. A new
   option that observes signals goes into that one function, and into the vunit-yavs check if the package can set it.
-- Codes owned: `E4100`-`E4199`, `W4100`-`W4199` (in use: `E4101` to `E4104`, `E4110` to `E4139`, `lib.rs` `codes`; reasons may also carry the global `E9999`, `codes::INTERNAL`).
+- Codes owned: `E4100`-`E4199`, `W4100`-`W4199` (in use: `E4101` to `E4104`, `E4110` to `E4139`, `W4101`, `lib.rs` `codes`; reasons may also carry the global `E9999`, `codes::INTERNAL`).
 - `yavs run --cycle-report[=FILE] ...` (user decision 2026-11-15, amendment A11) analyses the design,
   prints the full region report and exits 0 before compiling or simulating: the checker's verdicts on
   any design, whatever the lowering supports. It is a third mode, exclusive with `--cycle` and
-  `--cycle-strict`. Plain `--cycle` (and `--cycle-strict` when it passes) prints one summary line;
+  `--cycle-strict`. Plain `--cycle` (and `--cycle-strict` when it passes) prints one summary line, then W4101 (A41, `dropped_warning`, kept in `Built` for a warm run) when members drop asserts or reports of severity error, failure or one known only at run time: counts and the first five;
   the report is the only place the rows are. Report layout (`plan` in `lib.rs`): summary, the
   processes left out grouped by code (behavioural is a group of its own), most common first, the
-  asserts and reports not evaluated with their holders and the fixed note that members give no ieee library warnings, the subset and loop-group lines, the boundary, the
+  asserts and reports not evaluated with their holders, then each of them once per process by severity (failure first; `drops`), and the fixed note that members give no ieee library warnings, the subset and loop-group lines, the boundary, the
   cycle-based processes. An unwritable FILE is E4103 before any work. The developer switch
   `YAVS_CYCLE_VERDICTS` is gone: the tests and `tools/difftest/cyclegate.py` read `--cycle-report`
   (the test helpers `run` and `run_text` append it to the standard error of a cycle run).

@@ -737,18 +737,96 @@ fn plain_cycle_prints_one_summary_line() {
             "cycle_partial",
         ],
     );
-    // One line, then the count of metavalues the region read as 0, which is its own line.
+    // One line, the warning of the dropped failure assert of `reg` (W4101), then the count of
+    // metavalues the region read as 0, which is its own line.
     let err = String::from_utf8_lossy(&o.stderr);
-    let mut lines = err.lines();
+    let (head, rest) = err
+        .split_once("\n\n")
+        .expect("the warning ends in a blank line");
     assert_eq!(
-        lines.next(),
-        Some(
-            "cycle mode: 5 of 7 processes run cycle-based, 2 in the event kernel (see --cycle-report)"
-        )
+        head,
+        "cycle mode: 5 of 7 processes run cycle-based, 2 in the event kernel (see --cycle-report)
+warning[W4101]: 1 assert or report of severity failure is not evaluated in cycle mode
+ |
+ = note: partial.vhd:82: severity failure, in cycle_partial.dut.reg
+ = help: these do not stop the simulation in cycle mode; run without `--cycle` to evaluate them, \
+or with `--cycle-report` instead to list every assert and report cycle mode drops"
     );
     assert!(
-        lines.all(|l| l.contains("metavalue elements read as 0")),
+        rest.lines()
+            .all(|l| l.contains("metavalue elements read as 0")),
         "{err}"
+    );
+}
+
+/// A41: the asserts and reports of severity error and failure below the top that cycle mode drops
+/// get one warning at the start (W4101), the first five listed, failure first; `--cycle-report`
+/// lists every one with its severity. The failure ends the normal run, not the cycle run.
+#[test]
+fn dropped_error_and_failure_asserts_get_one_warning_and_the_report_lists_all() {
+    let dir = tempdir("cycle-awarn");
+    analyze(&dir, "awarn.vhd", include_str!("cycle/awarn.vhd"));
+    let go = |flags: &[&str]| {
+        let mut args = vec!["run", "--work=work:lib", "--tier=interp"];
+        args.extend(flags);
+        args.push("cycle_awarn");
+        let o = yavs(&dir, &args);
+        (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+        )
+    };
+    let (rc, _, out) = go(&["--no-cache"]);
+    assert!(
+        rc == Some(1) && out.contains("the design ends its own test"),
+        "{out}"
+    );
+    let warning = "warning[W4101]: 8 asserts and reports of severity error or failure are not \
+evaluated in cycle mode (1 failure, 6 error, 1 known at run time)
+ |
+ = note: awarn.vhd:26: severity failure, in cycle_awarn.dut.reg
+ = note: awarn.vhd:32: a severity known only at run time, in cycle_awarn.dut.reg
+ = note: awarn.vhd:18: severity error, in cycle_awarn.dut.reg
+ = note: awarn.vhd:27: severity error, in cycle_awarn.dut.reg
+ = note: awarn.vhd:28: severity error, in cycle_awarn.dut.reg
+ = note: and 3 more
+ = help: these do not stop the simulation in cycle mode; run without `--cycle` to evaluate them, \
+or with `--cycle-report` instead to list every assert and report cycle mode drops
+
+";
+    // Cold, then warm from the cache (the warning is kept with the built region), and strict.
+    for flags in [&["--cycle"][..], &["--cycle"], &["--cycle-strict"]] {
+        let (rc, err, out) = go(flags);
+        assert_eq!(rc, Some(0), "{flags:?}: {err}");
+        assert!(
+            out.contains("end q=") && !out.contains("ends its own test"),
+            "{out}"
+        );
+        let rest = err.split_once('\n').map(|x| x.1).unwrap_or_default();
+        assert!(rest.starts_with(warning), "{flags:?}: {err}");
+        assert_eq!(err.matches("W4101").count(), 1, "{err}");
+    }
+    let (rc, report, _) = go(&["--no-cache", "--cycle-report"]);
+    assert_eq!(rc, Some(0), "{report}");
+    assert!(!report.contains("W4101"), "{report}");
+    assert!(
+        report.contains(
+            "  each assert and report not evaluated, by severity (1 failure, 1 known at run time, \
+6 error, 1 warning, 1 note):
+    failure   awarn.vhd:26  cycle_awarn.dut.reg
+    run-time  awarn.vhd:32  cycle_awarn.dut.reg
+    error     awarn.vhd:18  cycle_awarn.dut.reg
+    error     awarn.vhd:27  cycle_awarn.dut.reg
+    error     awarn.vhd:28  cycle_awarn.dut.reg
+    error     awarn.vhd:31  cycle_awarn.dut.reg
+    error     awarn.vhd:34  cycle_awarn.dut.reg
+    error     awarn.vhd:39  cycle_awarn.dut.assert (awarn.vhd:39)
+    warning   awarn.vhd:29  cycle_awarn.dut.reg
+    note      awarn.vhd:30  cycle_awarn.dut.reg
+"
+        ),
+        "{report}"
     );
 }
 

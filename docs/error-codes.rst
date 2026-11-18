@@ -608,6 +608,8 @@ Cycle mode (E4 and W4)
      - Meaning
    * - _`E4101`
      - Cycle mode can run this kind of logic, but yavs does not implement the construct the error names in cycle-based code yet: a limitation of yavs, not a problem in the design.
+   * - _`W4101`
+     - Cycle-based processes below the top-level design unit hold ``assert`` or ``report`` statements of severity error or failure (or a severity known only at run time), which cycle mode (``yavs run --cycle`` or ``--cycle-strict``) does not evaluate: they never print and never stop the simulation, so a design that ends its own test with such an assert below the top runs on until ``--stop-time`` or the testbench ends it.
    * - _`E4102`
      - ``yavs run --cycle`` (or ``--cycle-strict``) cannot be used with an option that records, shows, counts or changes signals inside the cycle region: a debug session (``--dap``, ``--interactive``, ``--do``), ``--wave``, ``--surfer`` (which records a waveform), ``--cov``, ``--vhpi`` or ``--activity``.
    * - _`E4103`

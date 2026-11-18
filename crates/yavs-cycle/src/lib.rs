@@ -36,6 +36,8 @@ pub mod codes {
     pub const REPORT_FILE: &str = "E4103";
     /// A developer environment variable of cycle mode with a value it does not take.
     pub const ENV_VALUE: &str = "E4104";
+    /// Asserts and reports of severity error or failure that cycle-based processes drop (A41).
+    pub const DROPPED_STOPS: &str = "W4101";
     /// A wait other than the one `wait until <edge>;` of a clocked process.
     pub const WAIT: &str = "E4110";
     /// `after`, `transport`, `reject`, a waveform of several elements.
@@ -361,6 +363,9 @@ pub struct Plan {
     pub report: String,
     /// One line for `--cycle`: how many processes joined (ends with a newline).
     pub summary: String,
+    /// `--cycle` and `--cycle-strict`: the warning that asserts and reports of severity error or
+    /// failure are dropped (W4101), printed once after the summary.
+    pub warning: Option<Diagnostic>,
     /// None under [`Mode::Report`] and when no process joined.
     pub region: Option<Region>,
     /// What the region read as 0 for a metavalue, for [`Metas::summary`] after the run.
@@ -556,6 +561,7 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
             return Ok(Plan {
                 report: String::new(),
                 summary: std::mem::take(&mut b.summary),
+                warning: b.warning.take().map(warning),
                 region: Some(finish(
                     e,
                     b,
@@ -618,11 +624,13 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
                 _ => String::new(),
             },
             summary,
+            warning: None,
             region: None,
             metas,
             reporter: Reporter::default(),
         });
     }
+    let warning = dropped_warning(db, e, &sel).map(warning);
     let reporter = Reporter::default();
     let region = build(db, e, sel, &summary, metas.clone(), reporter.clone()).map_err(|m| {
         vec![
@@ -637,10 +645,102 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
     Ok(Plan {
         report: String::new(),
         summary,
+        warning,
         region: Some(region),
         metas,
         reporter,
     })
+}
+
+/// The asserts and reports cycle-based processes drop, once per statement and process: the
+/// severity's name, where, and the process.
+fn drops(db: &Db, e: &Elaborated, sel: &region::Selection) -> Vec<(&'static str, String, String)> {
+    let mut all: Vec<(u8, String, String)> = (sel.members.iter())
+        .flat_map(|(pi, b)| {
+            let label = e.hier.proc_label(&e.procs[*pi], yavs_elab::Case::Lrm);
+            (b.drops.iter()).map(move |&(span, sev)| (sev, at(db, span), label.clone()))
+        })
+        .collect();
+    // Failure first, then a severity known only at run time (it may be failure), error, warning, note.
+    all.sort_by_key(|d| match d.0 {
+        3 => 0,
+        lower::SEV_RUNTIME => 1,
+        s => 4 - s,
+    });
+    (all.into_iter())
+        .map(|(sev, at, who)| {
+            let name = ["note", "warning", "error", "failure"]
+                .get(sev as usize)
+                .copied()
+                .unwrap_or("run-time");
+            (name, at, who)
+        })
+        .collect()
+}
+
+/// W4101 (A41) from its headline and notes ([`dropped_warning`], kept so in `Built`).
+fn warning((head, notes): (String, Vec<String>)) -> Diagnostic {
+    let d = Diagnostic::warning(codes::DROPPED_STOPS, head);
+    (notes.into_iter().fold(d, Diagnostic::with_note)).with_help(
+        "these do not stop the simulation in cycle mode; run without `--cycle` to evaluate them, \
+         or with `--cycle-report` instead to list every assert and report cycle mode drops",
+    )
+}
+
+/// The headline and notes of W4101 (A41): the asserts and reports of severity error or failure
+/// (or one known only at run time) that cycle-based processes drop, the first few with where
+/// they are.
+fn dropped_warning(
+    db: &Db,
+    e: &Elaborated,
+    sel: &region::Selection,
+) -> Option<(String, Vec<String>)> {
+    const SHOWN: usize = 5;
+    let stops: Vec<_> = (drops(db, e, sel).into_iter())
+        .filter(|d| matches!(d.0, "failure" | "error" | "run-time"))
+        .collect();
+    if stops.is_empty() {
+        return None;
+    }
+    let sev = |s: &str| match s {
+        "run-time" => "a severity known only at run time".to_string(),
+        s => format!("severity {s}"),
+    };
+    let n = stops.len();
+    let head = if n == 1 {
+        format!(
+            "1 assert or report of {} is not evaluated in cycle mode",
+            sev(stops[0].0)
+        )
+    } else {
+        let by: Vec<String> = ["failure", "error", "run-time"]
+            .iter()
+            .map(|s| (stops.iter().filter(|d| d.0 == *s).count(), *s))
+            .filter(|c| c.0 > 0)
+            .map(|(c, s)| {
+                format!(
+                    "{c} {}",
+                    if s == "run-time" {
+                        "known at run time"
+                    } else {
+                        s
+                    }
+                )
+            })
+            .collect();
+        format!(
+            "{n} asserts and reports of severity error or failure are not evaluated in cycle mode ({})",
+            by.join(", ")
+        )
+    };
+    let mut notes = Vec::new();
+    for (s, at, who) in stops.iter().take(SHOWN) {
+        notes.push(format!("{at}: {}, in {who}", sev(s)));
+    }
+    if n > SHOWN {
+        notes.push(format!("and {} more", n - SHOWN));
+    }
+    Some((head, notes))
 }
 
 /// The region report of `sel` (`--cycle-report`): what joined and what stays in the event kernel,
@@ -757,6 +857,30 @@ fn report(
         );
         for (name, n) in &held {
             let _ = writeln!(report, "    {n:>4}  {name}");
+        }
+        let all = drops(db, e, sel);
+        let mut by: Vec<String> = Vec::new();
+        for s in ["failure", "run-time", "error", "warning", "note"] {
+            match all.iter().filter(|d| d.0 == s).count() {
+                0 => {}
+                n => by.push(format!(
+                    "{n} {}",
+                    if s == "run-time" {
+                        "known at run time"
+                    } else {
+                        s
+                    }
+                )),
+            }
+        }
+        let _ = writeln!(
+            report,
+            "  each assert and report not evaluated, by severity ({}):",
+            by.join(", ")
+        );
+        let w = all.iter().map(|d| d.1.chars().count()).max().unwrap_or(0);
+        for (sev, at, who) in &all {
+            let _ = writeln!(report, "    {sev:<8}  {at:<w$}  {who}");
         }
     }
     if !sel.members.is_empty() {
@@ -1915,6 +2039,7 @@ fn built(
         trigger,
         quiet,
         summary: summary.to_string(),
+        warning: dropped_warning(db, e, sel),
         code: plan,
         outputs: sel.outputs.clone(),
         decls,
@@ -1969,6 +2094,8 @@ pub(crate) struct Built {
     quiet: Vec<u32>,
     /// The summary line of `--cycle` ([`Plan::summary`]).
     summary: String,
+    /// W4101's headline and notes ([`Plan::warning`]).
+    warning: Option<(String, Vec<String>)>,
     pub(crate) code: codegen::CodePlan,
     outputs: BTreeSet<LeafId>,
     decls: Vec<LeafId>,

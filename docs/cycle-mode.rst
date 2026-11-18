@@ -305,7 +305,8 @@ a small design with a testbench and four things cycle mode does not take:
   concurrent assignment is shown as ``name <= ...``. A delayed clock like ``clk <= not clk after ...`` is on
   almost every list and is expected. *Behavioural* processes are the ones that are testbench by nature.
 * If cycle-based processes hold ``assert`` or ``report`` statements, a line counts them per process: they are not
-  evaluated (:ref:`cycle-changes`). The following two lines are fixed text: library warnings, and the asserts of
+  evaluated (:ref:`cycle-changes`). The next block lists each statement once (one in a loop or a called function
+  counts once per process here), by severity, failure first: the severity, where it is, and the process. The following two lines are fixed text: library warnings, and the asserts of
   the top-level unit, which are evaluated.
 * ``subset`` counts the processes that fit the rules. Fewer processes join than fit when one with a rarer
   problem needs something yavs does not implement yet, or a rule of the region as a whole keeps it out (the
@@ -483,8 +484,18 @@ Reports, assertions and library warnings
 
 A cycle-based process below the top-level unit does not produce ``report`` or ``assert`` messages, at any
 severity, and no cycle-based process gives the library warnings of ``numeric_std`` and the other ``ieee`` packages
-(metavalue and truncation warnings), also not while a call is evaluated during elaboration (below). The report counts the statements it drops per process (:ref:`cycle-report`).
+(metavalue and truncation warnings), also not while a call is evaluated during elaboration (below). The report counts the statements it drops per process and lists each one with its severity (:ref:`cycle-report`).
 The processes of the top-level unit, the testbench's, keep their checks (below).
+
+``--cycle`` and ``--cycle-strict`` print one warning (W4101) at the start when the dropped statements include any of
+severity ``error`` or ``failure``, or of a severity known only at run time: how many, and where the first five are
+(the line and the process), failures first. Dropped notes and warnings are not in it; ``--cycle-report`` lists those
+too.
+
+.. note::
+
+   A design that stops its own simulation with an ``assert`` or ``report`` below the top-level unit runs on under
+   ``--cycle``: until ``--stop-time``, or until the testbench ends the run. Look for W4101 at the start of the run.
 
 * This includes ``severity failure``. A design that ends its own test from RTL code, with an assertion or a
   ``report ... severity failure`` that the testbench does not check, does not end it in cycle mode: the run goes on,
@@ -504,6 +515,11 @@ The processes of the top-level unit, the testbench's, keep their checks (below).
 .. code-block:: text
 
     cycle mode: 2 of 4 processes run cycle-based, 2 in the event kernel (see --cycle-report)
+    warning[W4101]: 1 assert or report of severity failure is not evaluated in cycle mode
+     |
+     = note: rtl_failure.vhd:26: severity failure, in tb_rtl_failure.dut.process (rtl_failure.vhd:16)
+     = help: these do not stop the simulation in cycle mode; run without `--cycle` to evaluate them, or with `--cycle-report` instead to list every assert and report cycle mode drops
+
     ** Note: 1022000000fs+0: testbench finished, q=E8
         Process tb_rtl_failure.main
     cycle mode: 8 metavalue elements read as 0 (8 at initialisation, 0 at changes of the region's inputs)
@@ -937,7 +953,7 @@ Troubleshooting
 1. Does the end of the run say that metavalues were read as ``0``? Then ``'U'``, ``'X'`` or an uninitialised
    register mattered. Fix the design or the test, check it in the normal mode, or run with ``--cycle-exact-meta``
    when the testbench checks for an ``'X'`` or a ``'Z'`` from the design.
-2. Does ``--cycle-report`` list asserts and reports as not evaluated? Then RTL code that used to report, fail, or end
+2. Does the run start with warning W4101, or does ``--cycle-report`` list asserts and reports as not evaluated? Then RTL code that used to report, fail, or end
    the test does not do it now (:ref:`cycle-changes`).
 3. Does the testbench read a value a delta after the edge, or depend on delta numbers? Sample later. Does the
    design copy a clock by an assignment and read registers of the source on the copy? See

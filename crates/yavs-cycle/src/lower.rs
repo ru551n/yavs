@@ -691,6 +691,9 @@ pub(crate) struct Clock {
     pub legacy: bool,
 }
 
+/// The severity of a dropped assert or report computed only at run time.
+pub(crate) const SEV_RUNTIME: u8 = u8::MAX;
+
 /// A lowered member body.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Body {
@@ -716,6 +719,9 @@ pub(crate) struct Body {
     pub vars: Vec<(u32, u32)>,
     /// Asserts and reports left out (not evaluated in cycle mode).
     pub dropped: u32,
+    /// The statements of those, once each (an unrolled loop or inlined call drops one many
+    /// times): where, and the severity (`SEV_RUNTIME` when not known during elaboration).
+    pub drops: Vec<(Span, u8)>,
     /// A process of the top-level unit: why an assert or report of it cannot be evaluated in
     /// region code (with `dropped` above 0), and how many are (`Op::Note`).
     pub note_why: Option<String>,
@@ -1066,6 +1072,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         init: Vec::new(),
         var_words: Vec::new(),
         dropped: 0,
+        drops: Vec::new(),
         top: crate::region::in_top_unit(e, pi),
         at_edge: false,
         note_why: None,
@@ -1105,7 +1112,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         StmtKind::ConcAssert {
             postponed: false, ..
         } => {
-            lx.dropped += 1;
+            lx.drop_stmt(p.stmt);
             if lx.top {
                 lx.note_why = Some(NOTE_COMB.into());
             }
@@ -1155,6 +1162,7 @@ struct Lx<'a> {
     init: Vec<(u32, u64)>,
     var_words: Vec<(u32, u32)>,
     dropped: u32,
+    drops: Vec<(Span, u8)>,
     /// A process of the top-level unit: its asserts and reports are evaluated (A19) where they
     /// can be: at the clock edge of a clocked process (`at_edge`).
     top: bool,
@@ -1203,6 +1211,7 @@ impl Lx<'_> {
             init: self.init,
             vars: self.var_words,
             dropped: self.dropped,
+            drops: self.drops,
             note_why: self.note_why,
             notes: self.notes,
             metas: self.metas,
@@ -1659,7 +1668,7 @@ impl Lx<'_> {
                     }
                     return Ok(());
                 }
-                self.dropped += 1;
+                self.drop_stmt(s);
                 Ok(())
             }
             // A process of the top-level unit (A19): evaluated at the clock edge, else it
@@ -1676,7 +1685,7 @@ impl Lx<'_> {
                         self.notes += 1;
                     }
                     Err(w) => {
-                        self.dropped += 1;
+                        self.drop_stmt(s);
                         let w = w
                             .split([AT, INNER, CALL])
                             .next()
@@ -2220,6 +2229,26 @@ impl Lx<'_> {
             return Err(bug("a condition that is not a boolean"));
         }
         Ok(self.whole(c))
+    }
+
+    /// Assert or report `s` left out: counted, and its place and severity kept once.
+    fn drop_stmt(&mut self, s: StmtId) {
+        self.dropped += 1;
+        let st = &self.db.stmts[s];
+        let (sev, default) = match &st.kind {
+            StmtKind::Assert { severity, .. } | StmtKind::ConcAssert { severity, .. } => {
+                (*severity, 2)
+            }
+            StmtKind::Report { severity, .. } => (*severity, 0),
+            _ => (None, 0),
+        };
+        let sev = sev.map_or(default, |x| match self.fold(x) {
+            Some(ConstValue::Enum(p)) if p < 4 => p as u8,
+            _ => SEV_RUNTIME,
+        });
+        if !self.drops.iter().any(|d| d.0 == st.span) {
+            self.drops.push((st.span, sev));
+        }
     }
 
     /// Assert or report `s` of a process of the top-level unit, evaluated here (A19): the

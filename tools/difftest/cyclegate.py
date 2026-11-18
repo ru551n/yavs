@@ -147,6 +147,10 @@ def split_report(err):
                 i += 1
             break
     lines = lines[: i - len(rep)] + lines[i:]
+    # W4101 (asserts and reports cycle mode drops) is cycle mode's own: its block up to the blank line.
+    if (w := next((k for k, l in enumerate(lines) if l.startswith("warning[W4101]")), None)) is not None:
+        end = next((k for k in range(w, len(lines)) if not lines[k].strip()), len(lines))
+        lines = lines[:w] + lines[end + 1 :]
     return "\n".join(l for l in lines if not l.startswith("cycle mode: ")), rep  # not the metavalue summary
 
 
@@ -350,11 +354,14 @@ def selftest():
     e = ["exit\t1", "diag\terror\t5\t1\t:tb:m\tbad", "out\tdone"]
     assert classify(e, ["exit\t0", "out\tdone"], lost)[0] == "documented"  # a lost error changes the exit status
     assert classify(e, ["exit\t0", "out\tdone"], lambda p: False)[0] == "differs"
-    rep = "cycle mode: 2 of 5 processes run cycle-based, on the rising edge of clk\n  3 processes stay in the event kernel:\n    E4119 a latch (3 processes):\n      tb.l (a.vhd:9)  E4119 it is a latch (a.vhd:9)\n  3 asserts and reports not evaluated in cycle mode, held by 2 cycle-based processes:\n       2  tb.dut.p\n       1  tb.q (a.vhd:3)\n  subset: 2\n  cycle-based, 2 processes:\n    tb.dut.p  clocked\nreal\n"
+    rep = "cycle mode: 2 of 5 processes run cycle-based, on the rising edge of clk\n  3 processes stay in the event kernel:\n    E4119 a latch (3 processes):\n      tb.l (a.vhd:9)  E4119 it is a latch (a.vhd:9)\n  3 asserts and reports not evaluated in cycle mode, held by 2 cycle-based processes:\n       2  tb.dut.p\n       1  tb.q (a.vhd:3)\n  each assert and report not evaluated, by severity (2 error, 1 note):\n    error    a.vhd:4  tb.dut.p\n  subset: 2\n  cycle-based, 2 processes:\n    tb.dut.p  clocked\nreal\n"
     e, r = split_report(rep)
     assert (e, held_asserts(r), count_members(r)) == ("real", ({":tb:dut:p", ":tb:q", "-"}, 3), (2, 5)), (e, held_asserts(r))
     e, r = split_report("cycle mode: 2 of 5 processes run cycle-based, 3 in the event kernel (see --cycle-report)\nreal\n")
     assert (e, held_asserts(r), count_members(r)) == ("real", (set(), 0), (2, 5)), e
+    w = "warning[W4101]: 1 assert or report of severity failure is not evaluated in cycle mode\n |\n = note: a.vhd:4: severity failure, in tb.dut.p\n = help: these do not stop\n\n"
+    e, r = split_report("cycle mode: 2 of 5 processes run cycle-based\n" + w + "real\n")
+    assert (e, count_members(r)) == ("real", (2, 5)), e
     exact(True)
     assert EXACT in CYCLE and os.environ.get("YAVS_CYCLE_EXACT_CLOCKS") == "1"
     exact(False)

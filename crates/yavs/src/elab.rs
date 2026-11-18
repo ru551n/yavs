@@ -2061,6 +2061,9 @@ fn run_design(
                     return out.finish(0);
                 }
                 eprint!("{}", plan.summary);
+                if let Some(d) = &plan.warning {
+                    out.emit(&db.sources, d);
+                }
                 e.region = plan.region;
                 cycle_metas = Some(plan.metas);
                 cycle_reporter = Some(plan.reporter);

@@ -551,6 +551,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "A developer environment variable of cycle mode has a value it does not take, such as `YAVS_CYCLE_SKIP_CHECK=yes` (it takes `1` or `full`). The message names the values it takes; unset the variable, or leave it empty, to turn the check off.",
     ),
     (
+        "W4101",
+        "Cycle-based processes below the top-level design unit hold `assert` or `report` statements of severity error or failure (or a severity known only at run time), which cycle mode (`yavs run --cycle` or `--cycle-strict`) does not evaluate: they never print and never stop the simulation, so a design that ends its own test with such an assert below the top runs on until `--stop-time` or the testbench ends it. The warning counts them by severity and names the first five (where the statement is and the process), then how many more. Run without `--cycle` to evaluate them, or run with `--cycle-report` instead to list every assert and report cycle mode drops, warnings and notes included. Asserts and reports of processes of the top-level unit, the testbench, are evaluated and are not counted here.",
+    ),
+    (
         "E4110",
         "Cycle mode takes a process with a wait only in one shape: `wait until <edge>;` as the first statement, the only wait, a clocked process (`rising_edge(clk)`, `falling_edge(clk)` or `clk'event and clk = '1'`, optionally followed by `and` more conditions). Any other wait (`wait on a;`, a wait on a level) keeps the process in the event kernel. A process that waits for a time, waits forever, waits more than once or calls a procedure that waits is behavioural and stays in the event kernel without this code.",
     ),

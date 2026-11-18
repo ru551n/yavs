@@ -296,7 +296,8 @@ fn watch_tick(rt: &Runtime, func: FuncId, pc: u32) -> bool {
         rt.counted_out(who, true);
     }
     rt.sync_native();
-    // (The pc slot keeps the frame's function: a line sample of `--profile` skips a look in an arm.)
+    // (The pc slot keeps the frame's function and pc: a line sample of `--profile` in an arm is the
+    // callee's statement there, `Runtime::line_sampler`.)
     crate::slot().store(u64::from(rt.id) << 32 | u64::from(who.0), Ordering::Relaxed);
     crate::pc_slot().store(u64::from(func.0) << 32 | u64::from(pc), Ordering::Relaxed);
     rt.native

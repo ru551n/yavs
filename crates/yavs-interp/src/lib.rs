@@ -2687,9 +2687,11 @@ impl Runtime {
 
     /// For the profiler (`yavs run --profile`): appends the function and IR pc each simulation
     /// thread's watching interpreter loop last looked at, while it still runs that function. Only
-    /// interpreted code reports one, every `WATCH` loop iterations or calls.
+    /// interpreted code reports one, every `WATCH` loop iterations or calls. A look in an
+    /// interpreter arm names the callee in the sampling slot and the frame's function and pc in
+    /// the pc slot (`watch_tick`): the pc is the frame's, its statement the callee's.
     pub fn line_sampler(&self) -> impl Fn(&mut Vec<(FuncId, u32)>) + Send + 'static {
-        let id = u64::from(self.id);
+        let (id, prog) = (u64::from(self.id), self.prog.clone());
         move |out| {
             for (s, pc) in SLOTS
                 .lock()
@@ -2697,8 +2699,12 @@ impl Runtime {
                 .iter()
             {
                 let (v, at) = (s.load(Ordering::Relaxed), pc.load(Ordering::Relaxed));
-                if v >> 32 == id && at >> 32 == v & 0xffff_ffff && at as u32 != NATIVE_PC {
-                    out.push((FuncId(v as u32), at as u32));
+                let (func, pc) = (FuncId((at >> 32) as u32), at as u32);
+                if v >> 32 == id
+                    && pc != NATIVE_PC
+                    && (func.0 == v as u32 || prog.arm_owner(func, pc) == Some(FuncId(v as u32)))
+                {
+                    out.push((func, pc));
                 }
             }
         }

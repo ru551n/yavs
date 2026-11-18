@@ -161,3 +161,50 @@ fn sigint_prints_the_profile_so_far() {
             .expect("json");
     assert!(j["samples"].as_u64() > Some(0));
 }
+
+/// Under `--tier=auto` with nothing compiled the interpreter takes `window` through an arm of
+/// `total` once `total` ran often (`opt/inline/arms.rs`): the line samples of its loops are its
+/// own lines, booked to it, and outweigh `total`'s (they were skipped before, 2026-11-18).
+#[cfg(feature = "clift")]
+#[test]
+fn line_samples_in_an_arm_are_the_callees() {
+    let t = tempdir("profile-arms");
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli/profile_arms.vhd");
+    std::fs::copy(src, t.join("profile_arms.vhd")).expect("copy");
+    let a = yavs(
+        &t,
+        &[
+            "analyze",
+            "--std=2008",
+            "--work=work:lib",
+            "profile_arms.vhd",
+        ],
+    );
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    let o = yavs(
+        &t,
+        &[
+            "run",
+            "--std=2008",
+            "--work=work:lib",
+            "--tier=auto",
+            "--tier-max-size=1",
+            "--threads=1",
+            "--no-cache",
+            "--profile=p.json",
+            "profile_arms",
+        ],
+    );
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    let j: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(t.join("p.json")).expect("file"))
+            .expect("json");
+    let samples = |name: &str| -> u64 {
+        (j["lines"].as_array().expect("lines").iter())
+            .filter(|l| l["subprogram"].as_str().is_some_and(|s| s.contains(name)))
+            .filter_map(|l| l["samples"].as_u64())
+            .sum()
+    };
+    assert!(samples("window") > samples("total"), "{j}");
+}

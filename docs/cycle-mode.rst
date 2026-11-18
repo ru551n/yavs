@@ -362,6 +362,25 @@ A cycle-based process computes with ``0`` and ``1`` only.
 
 * A signal or variable without an initial value starts as ``0``, not ``'U'``. The testbench still reads ``'U'`` at
   time 0, delta 0, and ``0`` from the next delta on.
+* With ``--cycle-exact-meta`` the region follows those start values for a while: it runs the same code a second
+  time on a second set of values, where every ``'U'`` at the start (and every metavalue that reaches an input in that
+  time) is ``1`` instead of ``0``. An output bit that differs between the two depends on a start value, and the
+  testbench reads ``'U'`` there, as in the normal mode (a register without reset shows ``'U'`` until it is first
+  written, and the event from ``'U'`` to ``0`` at time 0 is gone). It ends, and the outputs are ``0`` and ``1`` again,
+  when the two agree on everything the region keeps, after 1024 clock edges (of any clock) at the most, or when a check (a range,
+  an index) fails on the second set of values only, which never stops the run. The summary line says how it ended:
+
+  ``metavalue.vhd`` below shows it.
+
+  It is not the normal mode's ``'U'``: a bit is ``'U'`` when its value depends on a start value, so ``q and not q``
+  gives ``0`` where the normal mode gives ``'U'``. A register that both sets of values agreed on and that only the
+  second set changes keeps its value, as the normal mode keeps a register whose enable is ``'U'``; so a register
+  that takes a ``'U'`` from its data while keeping its value in the region's own set reads ``0`` or ``1``, as
+  without ``--cycle-exact-meta``. A combinational process that chooses on a ``'U'`` (``y <= a when s = '1' else
+  b``) gives ``'U'`` where ``a`` and ``b`` differ, where the normal mode gives ``b``. Memories the testbench reads, integers and a ``'U'`` that a called subprogram's
+  variable starts with (fresh at every call) are not followed; an ``'X'`` start value, or one that reaches an
+  input, shows as ``'U'``.
+  The default ``--cycle`` has none of this and pays nothing for it.
 * A metavalue that reaches the region from outside (``'X'``, ``'U'``, ``'W'``, ``'-'``, ``'Z'`` and the like) is read as
   ``0``. ``'1'`` and ``'H'`` read as ``1``, ``'0'`` and ``'L'`` as ``0``. yavs counts the elements read this way and
   prints the count at the end of the run, as in the example above.
@@ -380,7 +399,8 @@ A cycle-based process computes with ``0`` and ``1`` only.
   holds a ``'Z'``; a ``'Z'`` made in a called subprogram, given by a generic or passed on by a behavioural process is
   not seen). The price is speed: those processes, and often their neighbours, run in the event simulation.
 * An ``'X'`` or ``'U'`` that a process outside the region sets is read as ``0`` as well, also when a cycle-based
-  process copies it on to a signal the testbench reads, with ``--cycle-exact-meta`` too. Such a copy joins the region, so the
+  process copies it on to a signal the testbench reads, with ``--cycle-exact-meta`` too (there it shows as ``'U'``
+  while the second image runs, then as ``'0'``). Such a copy joins the region, so the
   testbench sees ``'0'`` where the normal mode gives ``'X'``. A bus model that checks the read data it is handed
   against an expected ``'X'`` (a read of a location nothing wrote, say) reports "got ``0``, expected ``X``" under
   ``--cycle``; run such tests in the normal mode.
@@ -438,6 +458,23 @@ A cycle-based process computes with ``0`` and ``1`` only.
 
 The first block is the normal mode, the second ``--cycle``. The comparison of ``a`` with ``b`` is true in cycle mode
 because the ``'X'`` on ``a`` read as ``0``, and the library's warning about it is not produced either.
+
+With ``--cycle --cycle-exact-meta`` the second image keeps ``ticks`` at ``'U'`` as the normal mode does. ``eq`` is
+``'U'``: it depends on the ``'X'`` that reached ``a`` while the second image ran, where the normal mode's ``=``
+gives ``FALSE`` and so ``0``:
+
+.. code-block:: text
+
+    cycle mode: 2 of 4 processes run cycle-based, 2 in the event kernel (see --cycle-report)
+    ** Note: 0fs+0: at 0 ns:  ticks=UUUU
+        Process tb_metavalue.main
+    ** Note: 1000000fs+0: at 1 ns:  ticks=UUUU
+        Process tb_metavalue.main
+    ** Note: 17000000fs+0: at 17 ns: eq=U with 'X' on a
+        Process tb_metavalue.main
+    cycle mode: 13 metavalue elements read as 0 (9 at initialisation, 4 at changes of the region's inputs)
+    cycle mode: 'U' start values followed on a second image: still followed when the run ended, after 2 clock edges
+    ** Note: 17000000fs+0: FINISH called with status 0
 
 .. _cycle-reports:
 

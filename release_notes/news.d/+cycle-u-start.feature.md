@@ -1,0 +1,1 @@
+With `--cycle --cycle-exact-meta`, a register or variable without a start value now shows the testbench `'U'` until its value no longer depends on it, as in the normal mode, for up to 1024 clock edges; the default `--cycle` is unchanged.

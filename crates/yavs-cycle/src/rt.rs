@@ -3,6 +3,7 @@
 //! metavalues counted), runs the compiled trigger function, and drives the outputs that changed
 //! with zero delay through the drivers of the member processes (`'0'` and `'1'`).
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -283,7 +284,9 @@ pub(crate) fn spans(outs: &mut [Out]) -> (Vec<Span>, usize) {
     (v, n)
 }
 
-pub(crate) struct RegionProc {
+/// The region's kernel process; with `RAIL` (`--cycle-exact-meta`) it may run a [`Rail`], the
+/// default's code has none of it.
+pub(crate) struct RegionProc<const RAIL: bool> {
     pub code: Arc<Code>,
     pub img: Vec<u64>,
     /// Every kernel signal of the region, whole: read once at initialisation.
@@ -349,6 +352,90 @@ pub(crate) struct RegionProc {
     pub touched: Vec<u64>,
     pub chunk_spans: Vec<Sparse>,
     pub class_spans: Vec<Sparse>,
+    /// With `RAIL`: the second image while it runs, how it runs (`None`: `YAVS_CYCLE_RAIL=off`),
+    /// the clocked variables without an initial value it starts at 1 (first word, elements) and
+    /// the words that hold state, compared to see the images agree.
+    pub rail: Option<Box<Rail>>,
+    pub rail_cfg: Option<RailCfg>,
+    pub useed: Arc<Vec<(u32, u32)>>,
+    pub state: Arc<Vec<(u32, u32)>>,
+    /// Per driver, its elements of `BIT` and `BOOLEAN` leaves (first, count): never `'U'`.
+    pub two: BTreeMap<u32, Vec<(u32, u32)>>,
+    /// The bits clocked members keep between edges: runs of words (first, count, bits).
+    pub regs: Arc<Vec<(u32, u32, u64)>>,
+}
+
+/// The clock edges a [`Rail`] runs at the most (owner decision A38): it ends at that edge,
+/// whose export drives the outputs again.
+pub(crate) const RAIL_CAP: u64 = 1024;
+
+/// How the rail runs: its cap and whether a metavalue arriving at an input sets its bits.
+#[derive(Clone, Copy)]
+pub(crate) struct RailCfg {
+    pub cap: u64,
+    pub reseed: bool,
+}
+
+/// `YAVS_CYCLE_RAIL` (developers): unset the rail of [`RAIL_CAP`] edges, `off`, `cap=N`, or
+/// `no-reseed` (inputs not set at import); another value is an error naming those.
+pub(crate) fn rail_knob() -> Result<Option<RailCfg>, String> {
+    let v = std::env::var_os("YAVS_CYCLE_RAIL").unwrap_or_default();
+    let v = v.to_string_lossy();
+    let on = RailCfg {
+        cap: RAIL_CAP,
+        reseed: true,
+    };
+    match &*v {
+        "" => Ok(Some(on)),
+        "off" => Ok(None),
+        "no-reseed" => Ok(Some(RailCfg {
+            reseed: false,
+            ..on
+        })),
+        _ => match v.strip_prefix("cap=").and_then(|n| n.parse().ok()) {
+            Some(cap) => Ok(Some(RailCfg { cap, ..on })),
+            None => Err(format!(
+                "YAVS_CYCLE_RAIL takes `off`, `no-reseed` or `cap=N` (N a number of clock edges), not `{v}`{}",
+                yavs_diag::suggest::tail(&v, "value", ["off", "no-reseed"].into_iter())
+            )),
+        },
+    }
+}
+
+/// `n` clock edges in words.
+pub(crate) fn edges(n: u64) -> String {
+    format!("{n} clock edge{}", if n == 1 { "" } else { "s" })
+}
+
+/// The second image of `--cycle-exact-meta` ('U' at start, owner decision A38): the same code
+/// run on an image whose start metavalues (and, with `reseed`, the metavalues arriving at the
+/// inputs) are 1 where the region's are 0. An output bit the two differ in depends on them and
+/// is driven `'U'`. It ends when the state words agree, at `cap` edges, or at a failed check on
+/// it; the outputs are then driven from the region's image alone. A check failing on it never
+/// stops the run, but a `'U'` it drives that comes back to an input through a process outside
+/// reads as 0 there, as any metavalue does, so the region's image may differ from one without it.
+pub(crate) struct Rail {
+    pub img: Vec<u64>,
+    /// The words of every span as the last export left them, as `RegionProc::shadow`.
+    pub shadow: Vec<u64>,
+    /// Per output (logic ones), where the `'U'` bits it drove last start in `u`, and the bits
+    /// that may be `'U'` (not of `BIT` or `BOOLEAN` leaves) in `may`.
+    pub at: Vec<u32>,
+    pub u: Vec<u64>,
+    pub may: Vec<u64>,
+    pub edges: u64,
+    pub cap: u64,
+    pub reseed: bool,
+    /// The words of `RegionProc::regs` in the region's image and the rail's before a run.
+    pub snap: Vec<(u64, u64)>,
+}
+
+/// How a rail ended.
+enum RailEnd {
+    Equal,
+    Cap,
+    /// A check failed on the rail's image (its site).
+    Check(u32),
 }
 
 /// Developers (`YAVS_CYCLE_STATS=1`): the region's wakes, the input chunks read in wakes without an
@@ -479,20 +566,32 @@ impl Drop for Stats {
     }
 }
 
-impl RegionProc {
+impl<const RAIL: bool> RegionProc<RAIL> {
     /// `rd` from the kernel into the image: inserted at its place, metavalues as 0; returns how
-    /// many elements were metavalues.
-    fn read(ctx: &Ctx<'_>, img: &mut [u64], buf: &mut Vec<u8>, rd: &Read) -> Result<u64, SimError> {
+    /// many elements were metavalues. With `R` into the rail's image `rimg` too, its
+    /// metavalues as 1 with `seed`.
+    fn read<const R: bool>(
+        ctx: &Ctx<'_>,
+        img: &mut [u64],
+        rimg: &mut [u64],
+        seed: bool,
+        buf: &mut Vec<u8>,
+        rd: &Read,
+    ) -> Result<u64, SimError> {
         if rd.bytes != 0 {
             let (n, b) = (rd.len.max(1) as usize, rd.bytes as usize);
             buf.resize(n * b, 0);
             ctx.read_into(rd.r, buf)?;
             for (j, x) in buf.chunks_exact(b).enumerate() {
-                img[rd.slot as usize + n - 1 - j] = match *x {
+                let v = match *x {
                     [a] => u64::from(a),
                     [a, b, c, d] => i64::from(i32::from_le_bytes([a, b, c, d])) as u64,
                     _ => u64::from_le_bytes(x.try_into().expect("8 bytes")),
                 };
+                img[rd.slot as usize + n - 1 - j] = v;
+                if R {
+                    rimg[rd.slot as usize + n - 1 - j] = v;
+                }
             }
             return Ok(0);
         }
@@ -511,13 +610,20 @@ impl RegionProc {
             let (p0, p1) = (w(0), w(1));
             metas += u64::from((!p1 & m).count_ones());
             let v = p0 & p1 & m;
+            let rv = if seed { v | !p1 & m } else { v };
             if nw > 1 {
                 img[slot + j] = v;
+                if R {
+                    rimg[slot + j] = rv;
+                }
             } else {
                 // One word (a chunk, or a leaf inside a pack of at most 64 elements): only its
                 // elements, the other leaves of the word may not be read again now.
                 let mm = m << rd.lo;
                 img[slot] = img[slot] & !mm | v << rd.lo & mm;
+                if R {
+                    rimg[slot] = rimg[slot] & !mm | rv << rd.lo & mm;
+                }
             }
         }
         Ok(metas)
@@ -526,7 +632,11 @@ impl RegionProc {
     /// Read the input chunks that changed since the last wake (all of a signal without an
     /// image); whether any was read. A count moves when an update changed an element of the
     /// chunk (or of its word's cover): back to an old value included, so nothing is missed.
-    fn import(&mut self, ctx: &Ctx<'_>) -> Result<(bool, bool), SimError> {
+    fn import<const R: bool>(
+        &mut self,
+        ctx: &Ctx<'_>,
+        mut rail: Option<&mut Rail>,
+    ) -> Result<(bool, bool), SimError> {
         if !self.looked {
             self.looked = true;
             for g in &mut self.ins {
@@ -558,7 +668,24 @@ impl RegionProc {
                     }
                     self.seen[i] = n;
                 }
-                metas += Self::read(ctx, &mut self.img, &mut self.buf, &self.chunks[i])?;
+                metas += match rail.as_deref_mut() {
+                    Some(r) if R => Self::read::<true>(
+                        ctx,
+                        &mut self.img,
+                        &mut r.img,
+                        r.reseed,
+                        &mut self.buf,
+                        &self.chunks[i],
+                    )?,
+                    _ => Self::read::<false>(
+                        ctx,
+                        &mut self.img,
+                        &mut [],
+                        false,
+                        &mut self.buf,
+                        &self.chunks[i],
+                    )?,
+                };
                 any = true;
                 now |= self.chunks[i].now;
                 let c = self.chunk_cone[i] as usize;
@@ -589,7 +716,7 @@ impl RegionProc {
     fn check_import(&mut self, ctx: &Ctx<'_>) -> Result<(), SimError> {
         let mut img = self.img.clone();
         for rd in &self.chunks {
-            Self::read(ctx, &mut img, &mut self.buf, rd)?;
+            Self::read::<false>(ctx, &mut img, &mut [], false, &mut self.buf, rd)?;
             if img != self.img {
                 return Err(ctx.error(ErrorKind::Internal(format!(
                     "cycle mode: the input {:?} changed in the kernel and was not read again",
@@ -669,7 +796,11 @@ impl RegionProc {
     /// Drive every output whose value differs from what was driven last (all of them the first
     /// time). Not inlined: profiles show the export apart from the body.
     #[inline(never)]
-    fn export(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+    fn export<const R: bool>(
+        &mut self,
+        ctx: &mut Ctx<'_>,
+        mut rail: Option<&mut Rail>,
+    ) -> Result<(), SimError> {
         let all = !std::mem::replace(&mut self.exported, true);
         if all {
             self.touched.fill(!0);
@@ -696,10 +827,23 @@ impl RegionProc {
             let sp = &self.spans[j];
             j += 1;
             let n = sp.words.len();
-            if !all && same(&self.img[sp.words.clone()], &self.shadow[sp.sh..sp.sh + n]) {
+            if !all
+                && same(&self.img[sp.words.clone()], &self.shadow[sp.sh..sp.sh + n])
+                && (!R
+                    || rail.as_deref().is_none_or(|r| {
+                        same(&r.img[sp.words.clone()], &r.shadow[sp.sh..sp.sh + n])
+                    }))
+            {
                 continue;
             }
-            for o in &mut self.outs[sp.outs.clone()] {
+            for (k, o) in self.outs[sp.outs.clone()].iter_mut().enumerate() {
+                if R && o.bytes == 0
+                    && let Some(r) = rail.as_deref_mut()
+                {
+                    // Compares with what it drove last itself, the 'U' bits too.
+                    Self::export_rail(ctx, &self.img, r, sp.outs.start + k, &mut self.buf, o, all)?;
+                    continue;
+                }
                 // An output of one word compares with what it drove last itself.
                 let w = o.words();
                 let at = sp.sh + w.start - sp.words.start;
@@ -714,6 +858,9 @@ impl RegionProc {
                 &mut self.shadow[sp.sh..sp.sh + n],
                 &self.img[sp.words.clone()],
             );
+            if R && let Some(r) = rail.as_deref_mut() {
+                copy(&mut r.shadow[sp.sh..sp.sh + n], &r.img[sp.words.clone()]);
+            }
         }
         let mut written: Vec<usize> = Vec::new();
         // The memories, bits `spans.len()` on: those of the classes that had an edge.
@@ -724,6 +871,11 @@ impl RegionProc {
                 continue;
             }
             let slot = o.slot as usize;
+            // The rail's memories are not exported ('0' and '1' of the region's image): their
+            // flags are cleared with the region's.
+            if R && let Some(r) = rail.as_deref_mut() {
+                o.ram.iter().for_each(|wr| r.img[wr.flag] = 0);
+            }
             if !o.ram.is_empty() && !all {
                 // A memory: the 64-element words its writes of this wake touched, each driven once.
                 let mut chunks: Vec<u32> = Vec::new();
@@ -861,6 +1013,217 @@ impl RegionProc {
             )?;
         }
         Ok(())
+    }
+
+    /// Drive logic output `o` (number `k`) when its value or its `'U'` bits, those where the
+    /// rail's image differs, changed since it was driven last (or `all`).
+    fn export_rail(
+        ctx: &mut Ctx<'_>,
+        img: &[u64],
+        r: &mut Rail,
+        k: usize,
+        buf: &mut Vec<u8>,
+        o: &mut Out,
+        all: bool,
+    ) -> Result<(), SimError> {
+        let (slot, lo, len) = (o.slot as usize, o.range.offset, o.range.len);
+        let at = r.at[k] as usize;
+        if len <= 64 && lo % 64 + len <= 64 {
+            let (k, s) = (slot + lo as usize / 64, lo % 64);
+            let v = img[k] >> s & mask(len);
+            let u = ((r.img[k] >> s & mask(len)) ^ v) & r.may[at];
+            if v == o.last && u == r.u[at] && !all {
+                return Ok(());
+            }
+            (o.last, r.u[at]) = (v, u);
+            let p = [v & !u, mask(len) & !u, 0, 0];
+            if !ctx.publish_planes(o.driver, p)
+                && !ctx.assign_planes_now(o.driver, Some(o.range), p)
+            {
+                let b = planes(&[(v, u)], len);
+                ctx.assign_blocks(
+                    o.driver,
+                    Some(o.range),
+                    Time::ZERO,
+                    &b,
+                    DelayMode::Transport,
+                )?;
+            }
+            return Ok(());
+        }
+        let nw = words(len) as usize;
+        let (w, rw, may) = (&img[slot..], &r.img[slot..], &r.may[at..]);
+        let word = |j: usize| {
+            let (a, left) = (lo + 64 * j as u32, len - 64 * j as u32);
+            let v = word_at(w, a, left);
+            (v, (word_at(rw, a, left) ^ v) & may[j])
+        };
+        if !all && (0..nw).all(|j| (o.wide[j], r.u[at + j]) == word(j)) {
+            return Ok(());
+        }
+        o.wide.resize(nw, 0);
+        let vu: Vec<(u64, u64)> = (0..nw).map(word).collect();
+        for (j, &(v, u)) in vu.iter().enumerate() {
+            (o.wide[j], r.u[at + j]) = (v, u);
+        }
+        *buf = planes(&vu, len);
+        if !ctx.assign_wide_now(o.driver, Some(o.range), buf) {
+            ctx.assign_blocks(
+                o.driver,
+                Some(o.range),
+                Time::ZERO,
+                buf,
+                DelayMode::Transport,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Initialisation under `RAIL`: the rail's image, the region's with every metavalue of the
+    /// kernel's initial values and every clocked variable without an initial value at 1; none
+    /// when there is none of them or the cap is 0.
+    fn rail_start(&mut self, ctx: &Ctx<'_>) -> Result<Option<Box<Rail>>, SimError> {
+        let Some(cfg) = self.rail_cfg.filter(|c| c.cap > 0) else {
+            return Ok(None);
+        };
+        let (mut img, mut own) = (self.img.clone(), self.img.clone());
+        let mut seeded = 0;
+        for rd in &self.leaves {
+            seeded += Self::read::<true>(ctx, &mut own, &mut img, true, &mut self.buf, rd)?;
+        }
+        for &(w, c) in self.useed.iter() {
+            for j in 0..words(c) {
+                img[(w + j) as usize] |= mask((c - 64 * j).min(64));
+            }
+            seeded += u64::from(c);
+        }
+        if seeded == 0 {
+            return Ok(None);
+        }
+        let (mut at, mut may) = (Vec::with_capacity(self.outs.len()), Vec::new());
+        for o in &self.outs {
+            at.push(may.len() as u32);
+            if o.bytes != 0 {
+                continue;
+            }
+            let k = may.len();
+            may.extend((0..words(o.range.len)).map(|j| mask((o.range.len - 64 * j).min(64))));
+            for &(a, c) in self.two.get(&o.driver.0).into_iter().flatten() {
+                (a..a + c).for_each(|i| may[k + i as usize / 64] &= !(1 << (i % 64)));
+            }
+        }
+        self.metas.rail.store(true, Ordering::Relaxed);
+        Ok(Some(Box::new(Rail {
+            img,
+            shadow: vec![0; self.shadow.len()],
+            at,
+            u: vec![0; may.len()],
+            may,
+            edges: 0,
+            cap: cfg.cap,
+            reseed: cfg.reseed,
+            snap: Vec::new(),
+        })))
+    }
+
+    /// Run `f` on the rail's image after the region's own run: a failed check ends it (`Err`
+    /// with its site), the notes it logs are dropped. A run of the skip checks that saw a
+    /// difference is an internal error, as on the region's image.
+    fn rail_run(
+        &self,
+        ctx: &Ctx<'_>,
+        rail: &mut Option<Box<Rail>>,
+        ended: &mut Option<(RailEnd, Box<Rail>)>,
+        f: Fun,
+        marked: bool,
+    ) -> Result<(), SimError> {
+        let Some(mut r) = rail.take() else {
+            return Ok(());
+        };
+        let res = self
+            .code
+            .run(&mut r.img, f, marked.then_some(&self.mark[..]));
+        if self.log.1 > 0 {
+            r.img[self.log.0] = 0;
+        }
+        match res {
+            Ok(()) => {
+                self.rail_keep(&mut r);
+                *rail = Some(r);
+            }
+            Err(s) if s == crate::codegen::STALE || s == crate::codegen::UNSETTLED => {
+                return Err(self.failed(ctx, s));
+            }
+            Err(s) => *ended = Some((RailEnd::Check(s), r)),
+        }
+        Ok(())
+    }
+
+    /// The rail ended: the outputs it drove `'U'` bits of are driven from the region's image,
+    /// before the export of this wake (which then drives only what changed besides).
+    fn rail_end(&mut self, ctx: &mut Ctx<'_>, why: RailEnd, r: &Rail) -> Result<(), SimError> {
+        for (k, o) in self.outs.iter_mut().enumerate() {
+            let n = if o.bytes == 0 { words(o.range.len) } else { 0 } as usize;
+            let at = r.at[k] as usize;
+            if r.u[at..at + n].iter().any(|&u| u != 0) {
+                Self::export_one(ctx, &self.img, &mut self.buf, o, true)?;
+            }
+        }
+        let e = edges(r.edges);
+        let text = match why {
+            RailEnd::Equal => format!("the images agreed after {e}"),
+            RailEnd::Cap => format!("stopped at the cap of {e}"),
+            RailEnd::Check(site) => match self.checks.get(site as usize) {
+                // Its operands are stored: the rail runs under `--cycle-exact-meta` only.
+                Some((c, _, _, name)) => format!(
+                    "stopped after {e}: a check failed on it in {name} ({}), which the region's own values pass",
+                    c.message(Some((r.img[self.err] as i64, r.img[self.err + 1] as i64)))
+                ),
+                None => format!("stopped after {e}: a check failed on it"),
+            },
+        };
+        *self.metas.rail_end.lock().expect("not poisoned") = Some(text);
+        Ok(())
+    }
+
+    /// The state words of both images before the region's run (`Rail::snap`).
+    fn rail_snap(&self, rail: &mut Option<Box<Rail>>) {
+        let Some(r) = rail.as_deref_mut() else {
+            return;
+        };
+        r.snap.clear();
+        let (a, b) = (&self.img, &r.img);
+        for &(w, c, _) in self.regs.iter() {
+            let ws = w as usize..(w + c) as usize;
+            (r.snap).extend(a[ws.clone()].iter().zip(&b[ws]).map(|(&x, &y)| (x, y)));
+        }
+    }
+
+    /// A bit a clocked member keeps that both images agreed on before the run, that the
+    /// region's run left as it was and the rail's changed, takes the region's value again: the
+    /// rail took another branch on a bit the start values decide, where the normal mode takes
+    /// neither branch of such a test of `'U'` (`if en = '1'` with `en` `'U'` keeps the register),
+    /// so a `'U'` there would stay where the normal mode has a value. A bit that took a value
+    /// depending on the start values the region's run happened to leave as it was is lost too
+    /// (it reads as without the rail).
+    fn rail_keep(&self, r: &mut Rail) {
+        let mut k = 0;
+        for &(w, c, m) in self.regs.iter() {
+            for i in w as usize..(w + c) as usize {
+                let ((mb, rb), ma, ra) = (r.snap[k], self.img[i], r.img[i]);
+                let d = m & !(mb ^ rb) & !(ma ^ mb) & (ra ^ rb);
+                r.img[i] = ra & !d | ma & d;
+                k += 1;
+            }
+        }
+    }
+
+    /// The words that hold state are the same in the rail's image: so is every later run.
+    fn rail_agrees(&self, r: &Rail) -> bool {
+        (self.state.iter()).all(|&(w, c)| {
+            let a = w as usize..(w + c) as usize;
+            self.img[a.clone()] == r.img[a]
+        })
     }
 
     /// The code at `site` failed: the error of the normal mode, in the member process.
@@ -1008,6 +1371,18 @@ fn word_at(w: &[u64], off: u32, left: u32) -> u64 {
     x & mask(left.min(64))
 }
 
+/// Words of values and `'U'` bits as the kernel's plane blocks: `'0'`, `'1'` and `'U'`.
+fn planes(vu: &[(u64, u64)], len: u32) -> Vec<u8> {
+    let mut b = Vec::with_capacity(32 * vu.len());
+    for (j, &(v, u)) in vu.iter().enumerate() {
+        let m = mask((len - 64 * j as u32).min(64)) & !u;
+        for p in [v & m, m, 0, 0] {
+            b.extend_from_slice(&p.to_le_bytes());
+        }
+    }
+    b
+}
+
 /// Two-state words as the kernel's plane blocks (`Ctx::assign_blocks`): `'0'` and `'1'`.
 fn blocks(v: &[u64], len: u32) -> Vec<u8> {
     let mut b = Vec::with_capacity(32 * v.len());
@@ -1020,13 +1395,32 @@ fn blocks(v: &[u64], len: u32) -> Vec<u8> {
     b
 }
 
-impl Process for RegionProc {
+impl<const RAIL: bool> Process for RegionProc<RAIL> {
     fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        // One test per wake under `RAIL` (`--cycle-exact-meta`), none in the default.
+        if RAIL && (!self.started || self.rail.is_some()) {
+            self.wake::<true>(ctx)
+        } else {
+            self.wake::<false>(ctx)
+        }
+    }
+}
+
+impl<const RAIL: bool> RegionProc<RAIL> {
+    /// A run of the region process; with `R` the rail runs beside it, if there is one.
+    #[inline(always)]
+    fn wake<const R: bool>(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        let mut rail = if R { self.rail.take() } else { None };
+        let mut ended: Option<(RailEnd, Box<Rail>)> = None;
         if !self.started {
             // Initialisation: every leaf from the kernel's initial values, then settle.
             let mut metas = self.uninit;
             for rd in &self.leaves {
-                metas += Self::read(ctx, &mut self.img, &mut self.buf, rd)?;
+                metas +=
+                    Self::read::<false>(ctx, &mut self.img, &mut [], false, &mut self.buf, rd)?;
+            }
+            if R {
+                rail = self.rail_start(ctx)?;
             }
             self.metas.init.fetch_add(metas, Ordering::Relaxed);
             if !self.reports.is_empty() {
@@ -1037,11 +1431,26 @@ impl Process for RegionProc {
             for g in &self.ins {
                 ctx.image_ask(g.spec.clone());
             }
+            if R {
+                self.rail_snap(&mut rail);
+            }
             self.run_code(ctx, Fun::Init)?;
+            if R {
+                self.rail_run(ctx, &mut rail, &mut ended, Fun::Init, false)?;
+            }
             // A reset that holds at time 0 applies (its branch is in the settle), as when the
             // normal mode runs every process once.
+            if R {
+                self.rail_snap(&mut rail);
+            }
             self.run_code(ctx, Fun::Settle)?;
-            self.export(ctx)?;
+            if R {
+                self.rail_run(ctx, &mut rail, &mut ended, Fun::Settle, false)?;
+            }
+            self.export_rail_or::<R>(ctx, &mut rail, ended)?;
+            if R {
+                self.rail = rail;
+            }
             for &w in &self.waits {
                 ctx.wait_on(w)?;
             }
@@ -1053,9 +1462,15 @@ impl Process for RegionProc {
         for &(r, kind, w) in &self.clocks {
             let x = ctx.edge_by(r, kind)? == Some(true);
             self.img[w] = u64::from(x);
+            if R && let Some(rl) = rail.as_deref_mut() {
+                rl.img[w] = u64::from(x);
+            }
             edge |= x;
         }
         if !edge && self.clocks_only {
+            if R {
+                self.rail = rail;
+            }
             if !ctx.wait_same() {
                 for &w in &self.waits {
                     ctx.wait_on(w)?;
@@ -1066,7 +1481,13 @@ impl Process for RegionProc {
         // The settle a change seen earlier left for the edge, on the inputs before this wake's:
         // the steps the inputs read since the last settle reach (`mark`).
         if edge && std::mem::take(&mut self.pending) {
+            if R {
+                self.rail_snap(&mut rail);
+            }
             self.run_marked(ctx, Fun::Settle, true)?;
+            if R {
+                self.rail_run(ctx, &mut rail, &mut ended, Fun::Settle, true)?;
+            }
             self.mark.fill(0);
         }
         // Without an edge, only a change something outside can see before the next edge is
@@ -1074,7 +1495,7 @@ impl Process for RegionProc {
         if self.stats {
             self.read_now.clear();
         }
-        let (any, now) = self.import(ctx)?;
+        let (any, now) = self.import::<R>(ctx, rail.as_deref_mut())?;
         if edge || now {
             self.pending = false;
             // Without an edge only the inputs changed: the settle runs what they reach; at an edge
@@ -1104,15 +1525,32 @@ impl Process for RegionProc {
                 }
                 st.count(&self.img, &self.clocks, &self.mark, edge);
             }
-            if edge {
-                self.run_marked(ctx, Fun::Edge, true)?;
-            } else {
-                self.run_marked(ctx, Fun::Settle, true)?;
+            let f = if edge { Fun::Edge } else { Fun::Settle };
+            if R {
+                self.rail_snap(&mut rail);
+            }
+            self.run_marked(ctx, f, true)?;
+            if R {
+                self.rail_run(ctx, &mut rail, &mut ended, f, true)?;
+                if edge && let Some(mut r) = rail.take() {
+                    r.edges += 1;
+                    self.metas.rail_edges.store(r.edges, Ordering::Relaxed);
+                    if r.edges >= r.cap {
+                        ended = Some((RailEnd::Cap, r));
+                    } else if r.edges % 16 == 0 && self.rail_agrees(&r) {
+                        ended = Some((RailEnd::Equal, r));
+                    } else {
+                        rail = Some(r);
+                    }
+                }
             }
             self.mark.fill(0);
-            self.export(ctx)?;
+            self.export_rail_or::<R>(ctx, &mut rail, ended)?;
         } else if any {
             self.pending = true;
+        }
+        if R {
+            self.rail = rail;
         }
         if !ctx.wait_same() {
             for &w in &self.waits {
@@ -1120,5 +1558,24 @@ impl Process for RegionProc {
             }
         }
         Ok(())
+    }
+
+    /// The export of a run: with the rail's `'U'` bits while it runs; when it `ended` in this
+    /// run, of the region's image alone after the outputs it drove `'U'` are driven again.
+    #[inline(always)]
+    fn export_rail_or<const R: bool>(
+        &mut self,
+        ctx: &mut Ctx<'_>,
+        rail: &mut Option<Box<Rail>>,
+        ended: Option<(RailEnd, Box<Rail>)>,
+    ) -> Result<(), SimError> {
+        if R {
+            if let Some((why, r)) = ended {
+                self.rail_end(ctx, why, &r)?;
+            } else if let Some(r) = rail.as_deref_mut() {
+                return self.export::<true>(ctx, Some(r));
+            }
+        }
+        self.export::<false>(ctx, None)
     }
 }

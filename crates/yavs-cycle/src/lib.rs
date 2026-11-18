@@ -391,6 +391,11 @@ pub struct Metas {
     pub inputs: AtomicU64,
     /// `YAVS_CYCLE_STATS=1`: the region's counts, printed with the summary.
     pub(crate) stats: std::sync::Mutex<Option<rt::Stats>>,
+    /// The second image of `--cycle-exact-meta` (`rt::Rail`): made, its clock edges, and how it
+    /// ended (none while it runs).
+    pub(crate) rail: std::sync::atomic::AtomicBool,
+    pub(crate) rail_edges: AtomicU64,
+    pub(crate) rail_end: std::sync::Mutex<Option<String>>,
 }
 
 impl Metas {
@@ -403,13 +408,23 @@ impl Metas {
             self.init.load(Ordering::Relaxed),
             self.inputs.load(Ordering::Relaxed),
         );
-        (i + n != 0).then(|| {
-            format!(
+        let mut s = String::new();
+        if i + n != 0 {
+            s = format!(
                 "cycle mode: {} metavalue elements read as 0 ({i} at initialisation, {n} at \
                  changes of the region's inputs)\n",
                 i + n
-            )
-        })
+            );
+        }
+        if self.rail.load(Ordering::Relaxed) {
+            let end = self.rail_end.lock().expect("not poisoned").clone();
+            let end = end.unwrap_or_else(|| {
+                let e = self.rail_edges.load(Ordering::Relaxed);
+                format!("still followed when the run ended, after {}", rt::edges(e))
+            });
+            s += &format!("cycle mode: 'U' start values followed on a second image: {end}\n");
+        }
+        (!s.is_empty()).then_some(s)
     }
 }
 
@@ -525,6 +540,7 @@ fn reason_error(db: &Db, e: &Elaborated, r: &check::Reason, procs: &[usize]) -> 
 pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>> {
     codegen::skip_check().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
     region::exact_clocks().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
+    rt::rail_knob().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
     let sel = match store::select(db, e)? {
         store::Got::Sel(sel) => *sel,
         // `--cycle` on a hit: the region as it was built, its code as it was compiled.
@@ -1006,6 +1022,13 @@ fn built(
     let mut init: Vec<(u32, u64)> = Vec::new();
     let mut checks: Vec<(lower::Check, Vec<yavs_diag::Span>, usize)> = Vec::new();
     let mut uninit = 0u64;
+    let mut useed: Vec<(u32, u32)> = Vec::new();
+    // The bits clocked members keep between edges (word, bits): their signals' elements, their
+    // variables and their memory writes' words.
+    let mut regs: BTreeMap<u32, u64> = BTreeMap::new();
+    let reg_words = |regs: &mut BTreeMap<u32, u64>, w: u32, c: u32| {
+        (w..w + c).for_each(|i| *regs.entry(i).or_default() = !0);
+    };
     // Each member's slots and resolution.
     let none = BTreeMap::new();
     let mut rs: Vec<Resolve> = Vec::new();
@@ -1025,6 +1048,7 @@ fn built(
             }
             // The writes' words hold state from the body to the commit.
             state.push((base + b.locs, at - b.locs));
+            reg_words(&mut regs, base + b.locs, at - b.locs);
             n += at - b.locs;
             ops
         } else {
@@ -1053,6 +1077,23 @@ fn built(
         let clocked = b.kind == Kind::Clocked;
         if clocked {
             state.extend(b.vars.iter().map(|&(w, c)| (base + w, c)));
+        }
+        // The second image's tables, only where it can run (the default keeps none).
+        if clocked && region::exact_meta() {
+            useed.extend(b.useed.iter().map(|&(w, c)| (base + w, c)));
+            for &(w, c) in &b.vars {
+                reg_words(&mut regs, base + w, c);
+            }
+            for &l in &b.writes {
+                let (k, at, len) = (ksig(l), nets.loc[l.index()].base, nets.leaf(l).ty.len);
+                if !logic(k) {
+                    reg_words(&mut regs, cur[&k], codegen::words(klen(k)));
+                    continue;
+                }
+                for i in at..at + len {
+                    *regs.entry(cur[&k] + i / 64).or_default() |= 1 << (i % 64);
+                }
+            }
         }
         let class = b
             .clock
@@ -1537,9 +1578,10 @@ fn built(
         .collect();
     let mut keep = vec![false; n as usize];
     keep[..signal_words as usize].fill(true);
-    for (w, c) in state {
+    for &(w, c) in &state {
         keep[w as usize..(w + c) as usize].fill(true);
     }
+    state.push((0, signal_words));
     let top = (e.hier.scopes.iter())
         .position(|s| s.parent.is_none())
         .ok_or("the design has no top-level instance")?;
@@ -1821,6 +1863,17 @@ fn built(
         .flat_map(|(pi, b)| b.reports.iter().map(|(s, t)| (*pi, *s, t.clone())))
         .collect();
     let sig_bytes: BTreeMap<u32, u32> = cur.keys().map(|&k| (k, bytes(k))).collect();
+    // The elements of `BIT` and `BOOLEAN` leaves of logic signals, which the kernel keeps as
+    // logic too: the second image drives no `'U'` there.
+    let two_valued: Vec<(u32, u32, u32)> = (cur.keys())
+        .filter(|&&k| logic(k) && region::exact_meta())
+        .flat_map(|&k| {
+            let (a, z) = nets.packs[k as usize];
+            (a.index()..z.index()).map(move |i| (k, LeafId(i as u32)))
+        })
+        .filter(|&(_, l)| two_valued_leaf(db, e, l))
+        .map(|(k, l)| (k, nets.loc[l.index()].base, nets.leaf(l).ty.len))
+        .collect();
     let sig_len: BTreeMap<u32, u32> = (cur.keys())
         .map(|&k| (k, nets.signal_len(yavs_kernel::SignalId(k))))
         .collect();
@@ -1867,6 +1920,7 @@ fn built(
         decls,
         cur,
         sig_bytes,
+        two_valued,
         sig_len,
         ram_writes,
         member_words,
@@ -1887,6 +1941,9 @@ fn built(
         log: (log as usize, notes as usize),
         reports,
         uninit,
+        useed,
+        state,
+        regs: reg_runs(regs),
         chunk_cone,
         chunk_at,
         class_names: (sel.clocks.iter())
@@ -1917,6 +1974,8 @@ pub(crate) struct Built {
     decls: Vec<LeafId>,
     cur: BTreeMap<u32, u32>,
     sig_bytes: BTreeMap<u32, u32>,
+    /// The `BIT` and `BOOLEAN` leaves of logic signals: signal, first element, elements.
+    two_valued: Vec<(u32, u32, u32)>,
     sig_len: BTreeMap<u32, u32>,
     ram_writes: BTreeMap<u32, Vec<rt::RamWrite>>,
     /// Per member: the image words it writes.
@@ -1941,6 +2000,12 @@ pub(crate) struct Built {
     log: (usize, usize),
     reports: Vec<(usize, u8, String)>,
     uninit: u64,
+    /// The words of clocked variables without an initial value (first, elements), and the
+    /// words that hold state (first, count): the second image of `--cycle-exact-meta`.
+    useed: Vec<(u32, u32)>,
+    state: Vec<(u32, u32)>,
+    /// The bits clocked members keep between edges: runs of words (first, count, bits).
+    regs: Vec<(u32, u32, u64)>,
     chunk_cone: Vec<u32>,
     /// Per input chunk: its leaf and elements (the names of `YAVS_CYCLE_STATS`).
     chunk_at: Vec<(LeafId, u32, u32)>,
@@ -2003,6 +2068,12 @@ fn finish(
     let (all, chunks, ins, clocks, waits) = (b.all, b.chunks, b.ins, b.clocks, b.waits);
     let (words, init, clocks_only, err, log, uninit) =
         (b.words, b.init, b.clocks_only, b.err, b.log, b.uninit);
+    let (useed, state) = (Arc::new(b.useed), Arc::new(b.state));
+    let two_valued = b.two_valued;
+    let regs = Arc::new(b.regs);
+    // The second image of `--cycle-exact-meta` ('U' at start, A38): its region process is the
+    // one with the rail's code; the default's has none of it.
+    let rail = region::exact_meta().then(rt::rail_knob);
     let checks = Arc::new(sites);
     let reports = Arc::new(b.reports);
     let cones = Arc::new(b.cones);
@@ -2031,6 +2102,18 @@ fn finish(
                 ram: ram_writes.get(&d.signal.0).cloned().unwrap_or_default(),
             });
         }
+        // Per driver, the elements of its range of `BIT` and `BOOLEAN` leaves (from its first).
+        let mut two: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
+        for d in ds.iter().filter(|d| outs.contains_key(&d.driver.0)) {
+            for &(_, base, len) in two_valued.iter().filter(|t| t.0 == d.signal.0) {
+                let (a, z) = (base.max(d.range.offset), (base + len).min(d.range.end()));
+                if a < z {
+                    two.entry(d.driver.0)
+                        .or_default()
+                        .push((a - d.range.offset, z - a));
+                }
+            }
+        }
         let mut outs: Vec<rt::Out> = outs.into_values().collect();
         let (spans, shadow) = rt::spans(&mut outs);
         if stats {
@@ -2052,43 +2135,65 @@ fn finish(
         for &(w, v) in &init {
             img[w as usize] = v;
         }
-        Ok(Box::new(rt::RegionProc {
-            code: code.clone(),
-            img,
-            leaves: all.clone(),
-            seen: vec![0; chunks.len()],
-            chunks: chunks.clone(),
-            ins: ins.clone(),
-            looked: false,
-            check: import_check,
-            exported: false,
-            pending: false,
-            outs,
-            spans,
-            shadow: vec![0; shadow],
-            clocks: clocks.clone(),
-            clocks_only,
-            waits: waits.clone(),
-            started: false,
-            checks: checks.clone(),
-            err,
-            log,
-            reporter: reporter.clone(),
-            reports: reports.clone(),
-            metas: metas.clone(),
-            uninit,
-            buf: Vec::new(),
-            read_now: Vec::new(),
-            cones: cones.clone(),
-            chunk_cone: chunk_cone.clone(),
-            mark: vec![0; mark_words],
-            class_cones: class_cones.clone(),
-            touched: vec![0; touched],
-            chunk_spans,
-            class_spans,
-            stats,
-            ex: [0; rt::EX_N],
-        }) as Box<dyn yavs_kernel::Process>)
+        let rail_cfg = match &rail {
+            Some(Ok(c)) => *c,
+            Some(Err(m)) => {
+                return Err(SimError::new(yavs_kernel::ErrorKind::Internal(m.clone())));
+            }
+            None => None,
+        };
+        macro_rules! region_proc {
+            ($rail:literal) => {
+                Box::new(rt::RegionProc::<$rail> {
+                    code: code.clone(),
+                    img,
+                    leaves: all.clone(),
+                    seen: vec![0; chunks.len()],
+                    chunks: chunks.clone(),
+                    ins: ins.clone(),
+                    looked: false,
+                    check: import_check,
+                    exported: false,
+                    pending: false,
+                    outs,
+                    spans,
+                    shadow: vec![0; shadow],
+                    clocks: clocks.clone(),
+                    clocks_only,
+                    waits: waits.clone(),
+                    started: false,
+                    checks: checks.clone(),
+                    err,
+                    log,
+                    reporter: reporter.clone(),
+                    reports: reports.clone(),
+                    metas: metas.clone(),
+                    uninit,
+                    buf: Vec::new(),
+                    read_now: Vec::new(),
+                    cones: cones.clone(),
+                    chunk_cone: chunk_cone.clone(),
+                    mark: vec![0; mark_words],
+                    class_cones: class_cones.clone(),
+                    touched: vec![0; touched],
+                    chunk_spans,
+                    class_spans,
+                    stats,
+                    ex: [0; rt::EX_N],
+                    rail: None,
+                    rail_cfg,
+                    useed: useed.clone(),
+                    state: state.clone(),
+                    two: two.clone(),
+                    regs: regs.clone(),
+                })
+            };
+        }
+        Ok(if rail_cfg.is_some() {
+            region_proc!(true) as Box<dyn yavs_kernel::Process>
+        } else {
+            region_proc!(false)
+        })
     });
     Region {
         name: b.name,
@@ -2097,6 +2202,40 @@ fn finish(
         quiet: b.quiet,
         make,
     }
+}
+
+/// Words with their bits as runs of adjacent words with the same bits (memories are one run).
+fn reg_runs(regs: BTreeMap<u32, u64>) -> Vec<(u32, u32, u64)> {
+    let mut v: Vec<(u32, u32, u64)> = Vec::new();
+    for (w, m) in regs {
+        match v.last_mut() {
+            Some(r) if r.0 + r.1 == w && r.2 == m => r.1 += 1,
+            _ => v.push((w, 1, m)),
+        }
+    }
+    v
+}
+
+/// Leaf `l` is of `BIT` or `BOOLEAN` (or an array of them): logic in the kernel, never `'U'`.
+/// (Logic subtypes with a range, `X01`, keep their processes out of the region.)
+fn two_valued_leaf(db: &Db, e: &Elaborated, l: LeafId) -> bool {
+    use yavs_elab::Shape;
+    let mut sh = &e.nets.obj(e.nets.leaf(l).obj).shape;
+    let mut path = e.nets.leaf(l).path.iter();
+    let ty = loop {
+        match sh {
+            Shape::Array { elem, .. } => sh = elem,
+            Shape::Record { fields, .. } => {
+                match path.next().and_then(|&f| fields.get(f as usize)) {
+                    Some((_, f)) => sh = f,
+                    None => return false,
+                }
+            }
+            Shape::Scalar { ty, .. } => break *ty,
+        }
+    };
+    let wk = &db.well_known;
+    Some(ty) == wk.bit || Some(ty) == wk.boolean
 }
 
 /// The steps of the settle and the members a change reaches, as bit sets.

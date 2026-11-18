@@ -258,8 +258,9 @@ pub struct RunArgs {
     /// read as `0` and no process stays out for one; with this option a process that would hide a
     /// metavalue from the testbench (it assigns a metavalue literal to a signal the testbench
     /// reads, or passes on a `'Z'` from outside) stays in the event kernel, so the testbench sees
-    /// what the normal mode gives it. A failed check's message then also gives its values, as in
-    /// the normal mode.
+    /// what the normal mode gives it. A register or variable without a start value shows the
+    /// testbench `'U'` while its value depends on it, for up to 1024 clock edges. A failed
+    /// check's message then also gives its values, as in the normal mode.
     #[arg(long, requires = "cycle_mode")]
     cycle_exact_meta: bool,
     // The text names the tiers this build has, so it is built by `tier_help`.

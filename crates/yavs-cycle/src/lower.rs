@@ -729,6 +729,9 @@ pub(crate) struct Body {
     pub meta_out: u32,
     /// Elements of logic variables without an initial value (`'U'`), which start at 0.
     pub uninit: u64,
+    /// The process variables among those (first word, elements): the second image of
+    /// `--cycle-exact-meta` starts them at 1 (`rt::Rail`).
+    pub useed: Vec<(u32, u32)>,
     /// The checks of the body, numbered by `site`, each with the source place of the statement
     /// (an operation for arithmetic) it belongs to, then the statements of the calls it is inlined
     /// in, innermost first.
@@ -1069,6 +1072,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         notes: 0,
         metas: 0,
         uninit: 0,
+        useed: Vec::new(),
         checks: Vec::new(),
         at: db.stmts[p.stmt].span,
         unrolled: 0,
@@ -1159,6 +1163,7 @@ struct Lx<'a> {
     notes: u32,
     metas: u32,
     uninit: u64,
+    useed: Vec<(u32, u32)>,
     checks: Vec<(Check, Vec<Span>)>,
     /// The place new check sites report: the statement being lowered.
     at: Span,
@@ -1203,6 +1208,7 @@ impl Lx<'_> {
             metas: self.metas,
             meta_out: self.metas - self.lit_cmp.len() as u32,
             uninit: self.uninit,
+            useed: self.useed,
             checks: self.checks,
         }
     }
@@ -1278,6 +1284,7 @@ impl Lx<'_> {
         self.stmts(body)?;
         // A combinational variable is assigned before any read: its start value is never seen.
         self.uninit = 0;
+        self.useed.clear();
         self.init_ops.clear();
         Ok(self.body(Kind::Comb, None, None))
     }
@@ -3317,7 +3324,10 @@ impl Lx<'_> {
                             }
                         }
                         Some(_) => {}
-                        None if !has_init => self.uninit += u64::from(p.full),
+                        None if !has_init => {
+                            self.uninit += u64::from(p.full);
+                            self.useed.push((w, p.full));
+                        }
                         None => {}
                     }
                 }

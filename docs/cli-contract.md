@@ -263,7 +263,9 @@ identical to a run without it, at any `--threads`.
 - `--cycle-exact-meta` (with `--cycle`, `--cycle-strict` or `--cycle-report`, else a usage error, exit 2) keeps the
   metavalue rules that hold processes out of the cycle region so the testbench sees the normal mode's metavalues;
   without it metavalues read as `0` at the region's boundary (user, 2026-11-17). It is part of the key
-  of the cached analysis.
+  of the cached analysis. With it the region also follows the `'U'` start values on a second image for up to
+  1024 clock edges and drives `'U'` where the output depends on them (owner decision A38, 2026-11-17); its end is
+  a line of the summary on standard error starting `cycle mode: 'U' start values`.
 - With `--cycle` or `--cycle-strict` the machine code of every function of the cycle region is kept in
   `<dir>/yavs-cache/cycle/cycle-<key>.img` of the work library (the function's body, the target with its Cranelift
   settings, the yavs build); a later run that makes a function with the same key links it instead of compiling it,

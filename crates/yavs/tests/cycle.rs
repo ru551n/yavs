@@ -6682,3 +6682,182 @@ fn cycle_strict_reason_variants_are_triggered() {
         "{err}"
     );
 }
+
+/// 'U' at start under `--cycle-exact-meta` (owner decision A38): the second image shows the
+/// testbench 'U' where the normal mode has it, from registers and a clocked variable without a
+/// start value, a vector whose high word alone stays 'U', an input that becomes 'U' after time 0,
+/// outputs read with and without a wait on them, and `BIT` and `BOOLEAN` outputs (also fields
+/// of a record with a `std_ulogic` one), never 'U'; a register whose enable is 'U' keeps its
+/// value as in the normal mode, not 'U'; a register that keeps 'U' gives '0' from
+/// the cap of 1024 clock edges on. The default contract (`--cycle`) and `YAVS_CYCLE_RAIL=off`
+/// give '0' throughout, and an event at 0 fs from 'U' to '0' the normal mode does not have.
+/// Widths 1 to 128.
+#[test]
+fn u_at_start_is_followed_on_a_second_image() {
+    let dir = tempdir("cycle-rail");
+    analyze(&dir, "rail.vhd", include_str!("cycle/rail.vhd"));
+    let zero = |l: &[String]| -> Vec<String> { l.iter().map(|x| x.replace('U', "0")).collect() };
+    for w in [1, 63, 64, 65, 128] {
+        let g = format!("-gW={w}");
+        for t in tiers() {
+            let t = [&t[..], &[&g[..]]].concat();
+            let (normal, _) = run(&dir, &t, "cycle_rail");
+            assert_eq!(normal.len(), 13, "{normal:?}");
+            let exact = [&t[..], &["--cycle", "--cycle-exact-meta"]].concat();
+            let (cycle, err) = run(&dir, &exact, "cycle_rail");
+            // Up to the cap the normal mode's lines; `held` gives '0' after it.
+            let k = normal.len() - 1;
+            assert!(
+                normal[k].contains(" k ") && normal[k].contains(&"U".repeat(w)),
+                "{normal:?}"
+            );
+            assert_eq!(cycle[..k], normal[..k], "width {w} {t:?}\n{err}");
+            let (head, held) = normal[k].split_once("held=").expect("held");
+            assert_eq!(
+                cycle[k],
+                format!("{head}held={}", held.replace('U', "0")),
+                "{w}"
+            );
+            assert!(
+                err.contains("cycle mode: 6 of 9 processes run cycle-based")
+                    && err.contains("second image: stopped at the cap of 1024 clock edges"),
+                "{w}: {err}"
+            );
+            for p in ["pipe", "hp", "vp", "cpp", "hold", "bp"] {
+                let p = format!("    cycle_rail.{p} ");
+                assert!(err.lines().any(|l| l.starts_with(&p)), "{p}: {err}");
+            }
+            // Without the second image `s3` starts 'U' and is driven '0' a delta later.
+            let mut want = zero(&normal);
+            want.insert(0, normal[0].clone());
+            want[1] = want[1].replace("0fs+0", "0fs+1");
+            let (two, _) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_rail");
+            assert_eq!(two, want, "{w} {t:?}");
+            let (off, err) = run_vars(&dir, &exact, "cycle_rail", &[("YAVS_CYCLE_RAIL", "off")]);
+            assert_eq!(off, want, "{w} {t:?}");
+            assert!(!err.contains("second image"), "{err}");
+            // The knob: no edge is the same as off; a cap of 5 gives `held` '0' from the
+            // first lines on; without the inputs set at import `cp` reads '0' after 100 ns.
+            let knob = |v: &str| run_vars(&dir, &exact, "cycle_rail", &[("YAVS_CYCLE_RAIL", v)]).0;
+            assert_eq!(knob("cap=0"), want, "{w}");
+            let five = knob("cap=5");
+            assert_eq!(five[..3], cycle[..3], "{w}");
+            assert!(
+                five[9].contains(&format!("held={}", "0".repeat(w))),
+                "{five:?}"
+            );
+            let no = knob("no-reseed");
+            assert!(
+                cycle[9].contains(&format!("cp={}", "U".repeat(w))),
+                "{cycle:?}"
+            );
+            assert_eq!(
+                no[9],
+                cycle[9].replace(
+                    &format!("cp={}", "U".repeat(w)),
+                    &format!("cp={}", "0".repeat(w))
+                ),
+                "{w}"
+            );
+            // Where every 'U' is overwritten the images agree and the run is the normal mode's.
+            let hold = [&exact[..], &["-gKEEP=false"]].concat();
+            let (n2, _) = run(&dir, &[&t[..], &["-gKEEP=false"]].concat(), "cycle_rail");
+            let (c2, err) = run(&dir, &hold, "cycle_rail");
+            assert_eq!(c2, n2, "{w} {t:?}");
+            assert!(
+                err.contains("second image: the images agreed after 32 clock edges"),
+                "{err}"
+            );
+        }
+    }
+}
+
+/// The second image's region is the one the caches keep: a warm run (each hit compiled again
+/// and compared) gives what a cold one gives.
+#[test]
+fn u_at_start_from_the_caches_gives_the_same_result() {
+    let dir = tempdir("cycle-rail-cache");
+    analyze(&dir, "rail.vhd", include_str!("cycle/rail.vhd"));
+    let args = [
+        "run",
+        "--work=work:lib",
+        "-gW=65",
+        "--cycle",
+        "--cycle-exact-meta",
+        "cycle_rail",
+    ];
+    let cold = yavs(&dir, &args);
+    let warm = yavs_env(&dir, &args, &[("YAVS_CYCLE_CACHE_CHECK", "1")]);
+    let again = yavs_env(&dir, &args, &[("YAVS_CYCLE_STATS", "1")]);
+    for o in [&cold, &warm, &again] {
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        assert_eq!(o.stdout, cold.stdout);
+    }
+    let err = String::from_utf8_lossy(&again.stderr);
+    assert!(err.contains("cycle stats: region from the cache"), "{err}");
+    assert!(String::from_utf8_lossy(&cold.stdout).contains("hi=U"));
+}
+
+/// A check that fails on the second image alone ends it and never the run: at initialisation
+/// the run is that of `YAVS_CYCLE_RAIL=off`; at a later wake the 'U' shown before stays, the
+/// outputs are driven from the region's values from there on, and the summary names the check.
+#[test]
+fn a_check_failing_on_the_second_image_ends_it() {
+    let dir = tempdir("cycle-railchk");
+    analyze(&dir, "railchk.vhd", include_str!("cycle/railchk.vhd"));
+    for w in [1, 63, 64, 65, 128] {
+        for mid in [false, true] {
+            let t = [format!("-gW={w}"), format!("-gMID={mid}")];
+            let t = [
+                t[0].as_str(),
+                t[1].as_str(),
+                "--cycle",
+                "--cycle-exact-meta",
+            ];
+            let (normal, _) = run(&dir, &t[..2], "cycle_railchk");
+            let (cycle, err) = run(&dir, &t, "cycle_railchk");
+            let (off, _) = run_vars(&dir, &t, "cycle_railchk", &[("YAVS_CYCLE_RAIL", "off")]);
+            assert_eq!(normal.len(), 3, "{normal:?}");
+            assert!(
+                normal[0].contains("r=U") && normal[1].contains("r=U"),
+                "{normal:?}"
+            );
+            if mid {
+                assert_eq!(cycle[0], normal[0], "{w}");
+                assert_eq!(cycle[1..], off[1..], "{w}");
+            } else {
+                assert_eq!(cycle, off, "{w}");
+            }
+            assert!(
+                err.contains("cycle mode: 2 of 4 processes run cycle-based")
+                    && err.contains(&format!(
+                        "stopped after {}: a check failed on it in cycle_railchk.ix (value 1 \
+                         outside of INTEGER range 0 to 0 for signal IDX)",
+                        if mid { "1 clock edge" } else { "0 clock edges" }
+                    )),
+                "{w} {mid}: {err}"
+            );
+        }
+    }
+}
+
+/// `YAVS_CYCLE_RAIL` takes `off`, `no-reseed` and `cap=N`; another value is an error naming
+/// them, before the run.
+#[test]
+fn the_rail_knob_names_its_values() {
+    let dir = tempdir("cycle-railknob");
+    analyze(&dir, "rail.vhd", include_str!("cycle/rail.vhd"));
+    let args = [
+        "run",
+        "--work=work:lib",
+        "--no-cache",
+        "--cycle",
+        "cycle_rail",
+    ];
+    let o = yavs_env(&dir, &args, &[("YAVS_CYCLE_RAIL", "of")]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success() && o.stdout.is_empty(), "{err}");
+    assert!(err.contains("E4104") && err.contains("`off`"), "{err}");
+    let o = yavs_env(&dir, &args, &[("YAVS_CYCLE_RAIL", "no-reseed")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+}

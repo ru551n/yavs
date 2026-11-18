@@ -742,6 +742,11 @@ Compiled tiers: Cranelift
      - ``1``
      - unset
      - ``run``
+   * - ``YAVS_CYCLE_RAIL``
+     - For developers: how a cycle region under ``--cycle-exact-meta`` follows the ``'U'`` start values on its second image: ``off`` not at all, ``cap=N`` for at most N clock edges instead of 1024, ``no-reseed`` without setting the metavalues that reach an input after time 0. Another value is an error (E4104).
+     - ``off``, ``cap=N``, ``no-reseed``
+     - unset (1024 edges)
+     - ``run``
    * - ``YAVS_CYCLE_FLAGS``
      - Developers: more Cranelift settings for the code of a cycle region (``--cycle``), as ``name=value`` pairs separated by commas (for example ``opt_level=none``), to measure what they cost; a name or value Cranelift does not know is an internal error of the region.
      - ``name=value,...``

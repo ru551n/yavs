@@ -148,8 +148,9 @@ def split_report(err):
             break
     lines = lines[: i - len(rep)] + lines[i:]
     # W4101 (asserts and reports cycle mode drops) is cycle mode's own: its block up to the blank line.
-    if (w := next((k for k, l in enumerate(lines) if l.startswith("warning[W4101]")), None)) is not None:
-        end = next((k for k in range(w, len(lines)) if not lines[k].strip()), len(lines))
+    plain = [re.sub(r"\x1b\[[0-9;]*m", "", l) for l in lines]  # a recorded run may have colour
+    if (w := next((k for k, l in enumerate(plain) if l.startswith("warning[W4101]")), None)) is not None:
+        end = next((k for k in range(w, len(lines)) if not plain[k].strip()), len(lines))
         lines = lines[:w] + lines[end + 1 :]
     return "\n".join(l for l in lines if not l.startswith("cycle mode: ")), rep  # not the metavalue summary
 
@@ -362,6 +363,8 @@ def selftest():
     w = "warning[W4101]: 1 assert or report of severity failure is not evaluated in cycle mode\n |\n = note: a.vhd:4: severity failure, in tb.dut.p\n = help: these do not stop\n\n"
     e, r = split_report("cycle mode: 2 of 5 processes run cycle-based\n" + w + "real\n")
     assert (e, count_members(r)) == ("real", (2, 5)), e
+    c = "\x1b[1m\x1b[33mwarning[W4101]\x1b[0m\x1b[1m: 2 asserts\x1b[0m\n \x1b[1m\x1b[34m|\x1b[0m\n = note: x\n\x1b[0m\n"
+    assert split_report("cycle mode: 2 of 5 processes run cycle-based\n" + c + "real\n")[0] == "real"
     exact(True)
     assert EXACT in CYCLE and os.environ.get("YAVS_CYCLE_EXACT_CLOCKS") == "1"
     exact(False)

@@ -48,6 +48,11 @@ pub struct Program {
     #[serde(skip)]
     #[doc(hidden)]
     pub stored_opt: StoredOpt,
+    /// The serialised form of the optimised copies serialised so far, so that storing them again
+    /// copies bytes instead of serialising every copy each time.
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub opt_bytes: StoredOpt,
     /// Specialised copies of processes made while the program runs (`copies.rs`); a copy of the
     /// program starts without them.
     #[serde(skip)]
@@ -374,6 +379,19 @@ impl Program {
         postcard::from_bytes::<Func>(bytes.get()).ok().map(Box::new)
     }
 
+    /// The serialised optimised copy `o` of `f`, made once.
+    fn opt_copy(&self, f: FuncId, o: &Func) -> Option<OptCopy> {
+        if let Some(b) = self.opt_bytes.map().get(&f.0) {
+            return Some(OptCopy {
+                func: f,
+                bytes: b.clone(),
+            });
+        }
+        let bytes: yavs_diag::Slice = postcard::to_stdvec(o).ok()?.into();
+        self.opt_bytes.map().insert(f.0, bytes.clone());
+        Some(OptCopy { func: f, bytes })
+    }
+
     /// Make the optimised copies `copies` (from [`Program::export_optimized`] of a run of the same
     /// program) the ones [`Program::func`] hands out, instead of optimising again (#479).
     pub fn load_optimized(&self, copies: Vec<OptCopy>) {
@@ -408,10 +426,7 @@ impl Program {
             .iter()
             .filter_map(|(id, f)| match f.opt.get() {
                 Some(Some(o)) if !f.spare && want(id) && !self.private_copy(id) => {
-                    postcard::to_stdvec(&**o).ok().map(|bytes| OptCopy {
-                        func: id,
-                        bytes: bytes.into(),
-                    })
+                    self.opt_copy(id, o)
                 }
                 _ => None,
             })
@@ -428,12 +443,7 @@ impl Program {
             .funcs
             .iter()
             .filter_map(|(id, f)| match f.opt.get() {
-                Some(Some(o)) if !f.spare && !self.private_copy(id) => {
-                    postcard::to_stdvec(&**o).ok().map(|bytes| OptCopy {
-                        func: id,
-                        bytes: bytes.into(),
-                    })
-                }
+                Some(Some(o)) if !f.spare && !self.private_copy(id) => self.opt_copy(id, o),
                 _ => None,
             })
             .collect();

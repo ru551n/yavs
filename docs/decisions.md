@@ -3319,6 +3319,11 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
     again at its end (`Elaborated::learn`); a run converges after one or two hits. Copies are not
     stored or used with `YAVS_NO_IROPT` or while a debugger keeps variables in their slots
     (`opt::copies_are_portable`).
+    A copy is serialised once (`Program::opt_bytes`, 2026-11-18): the bytes a copy was written as the first time are
+    what a later store of the same program writes, so `learn` copies bytes instead of serialising every copy again (the
+    session's copies are in the design's program too: they were serialised up to three times by the run that stores).
+    Exact: a function's optimised copy is set once and never changes. A copy read from the cache is not kept as bytes:
+    keeping them cost a warm run that stores nothing 0.07 percent (`vunit_logging`).
   - *Entries per design:* `ir` is one more beside `sem` and `low`, so the store keeps the 96 most
     recently used entries instead of 48.
 
@@ -6494,8 +6499,14 @@ every elaboration, and again for every instance. Decisions:
   Measured (fresh worlds prepared by each build, byte copy of the old build as A/A): the suite at `-p1` 106.6 G to 92.0 G
   in the first round (short tests 795 M to 665 M each), the later rounds the same; at `-p0` (8 trials, interleaved)
   130.3 G to 114.1 G and 105.1 G to 90.5 G; the AXI-stream cell's steady run 394 M to 378 M, the message-passing cell's
-  548 M to 543 M, runs 1 and 2 unchanged. The entry is 50 to 80 KB for that testbench and is not written again once the
-  suite has run once.
+  548 M to 543 M, run 1 unchanged, run 2 0.2 percent dearer (writing the entry; serialising a copy once, below, takes
+  it back). The entry is 50 to 80 KB for that testbench and is not written again once the
+  suite has run once. `tools/realbench` (16 worlds x 5 runs for the 14 short tests, 6 x 4 for 26 others, with the next
+  decision): steady runs geometric mean 0.995 and 0.988 (A/A 1.003 and 1.000), first runs 0.996 and 1.001 (A/A 0.999
+  and 1.003); the testbenches with verification components made in declarations gain most (`hdlm_axi_crossbar` 0.916,
+  `vunit_axi_dma` 0.926, `olo_axi_master_full` 0.929, `olo_base_cam` 0.941 steady); the tests that move beyond their
+  A/A under `--tier=auto` (`sc5_timestamp`, `vai_window_gen_interlock`, `osvvm_axis_random`) do the same work to the
+  instruction under `--tier=interp`.
 
 ## The watching loop's tick is out of line (yavs-interp, #521, #544, 2026-10-22)
 

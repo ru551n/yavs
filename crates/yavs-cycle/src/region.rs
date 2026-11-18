@@ -495,7 +495,7 @@ fn copy_rule(
         let reads: BTreeSet<LeafId> = (b.reads.iter().copied())
             .chain(f.reads.iter().map(|(k, _, _)| LeafId(k as u32)))
             .collect();
-        for (&m, _) in moved.iter() {
+        for &m in moved.keys() {
             let to = taken[&m].1.clock.map(|x| (x.leaf, x.elem));
             if m != r
                 && !back.contains(&m)

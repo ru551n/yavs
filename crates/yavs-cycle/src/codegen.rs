@@ -3288,16 +3288,21 @@ impl Gen<'_> {
                     (x, y)
                 };
                 let z = self.b.ins().icmp_imm_s(IntCC::Equal, y, 0);
-                // `MIN / -1` traps in the machine: only a 64-element signed operand can be it.
-                let f = if *signed && *len == 64 {
+                // `MIN / -1` traps in the machine (only a 64-element signed operand can be it), but
+                // `numeric_std` gives MIN, `rem` and `mod` 0: divide by 1 there, which gives both.
+                let ov = (*signed && *len == 64).then(|| {
                     let m1 = self.b.ins().icmp_imm_s(IntCC::Equal, y, -1);
                     let mn = self.b.ins().icmp_imm_s(IntCC::Equal, x, i64::MIN);
-                    let ov = self.b.ins().band(m1, mn);
-                    self.b.ins().bor(z, ov)
-                } else {
-                    z
+                    self.b.ins().band(m1, mn)
+                });
+                let y = self.div_guard(z, *site, x, y);
+                let y = match ov {
+                    Some(ov) => {
+                        let one = self.konst(1);
+                        self.b.ins().select(ov, one, y)
+                    }
+                    None => y,
                 };
-                let y = self.div_guard(f, *site, x, y);
                 let r = match (op, signed) {
                     (Arith::Div, false) => self.b.ins().udiv(x, y),
                     (Arith::Div, true) => self.b.ins().sdiv(x, y),
@@ -3562,13 +3567,20 @@ impl Gen<'_> {
                 r
             }
             Arith::Div | Arith::Mod | Arith::Rem => {
-                // Always guarded: the machine division traps on zero and on MIN / -1.
+                // Always guarded: the machine division traps on zero and on MIN / -1. The quotient
+                // overflows there; `rem` and `mod` are 0, which dividing by 1 gives.
                 let z = self.b.ins().icmp_imm_s(IntCC::Equal, y, 0);
                 let m1 = self.b.ins().icmp_imm_s(IntCC::Equal, y, -1);
                 let mn = self.b.ins().icmp_imm_s(IntCC::Equal, x, i64::MIN);
                 let ov = self.b.ins().band(m1, mn);
-                let f = self.b.ins().bor(z, ov);
-                let y = self.div_guard(f, site, x, y);
+                let y = if op == Arith::Div {
+                    let f = self.b.ins().bor(z, ov);
+                    self.div_guard(f, site, x, y)
+                } else {
+                    let y = self.div_guard(z, site, x, y);
+                    let one = self.konst(1);
+                    self.b.ins().select(ov, one, y)
+                };
                 let r = match op {
                     Arith::Div => self.b.ins().sdiv(x, y),
                     _ => self.b.ins().srem(x, y),

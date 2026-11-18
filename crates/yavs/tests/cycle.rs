@@ -5367,6 +5367,33 @@ fn clocks_of_a_known_delta_share_their_logic() {
     );
 }
 
+/// The most negative value divided by -1 (fuzzer, seed 673): `rem` and `mod` give 0 and
+/// `numeric_std`'s `/` the most negative value, as in the normal mode, also for a one-element -1
+/// and an integer type of 64 bits; the region stopped with an overflow error. Widths 1 to 128:
+/// over 64 elements the divider stays out (one-word division only).
+#[test]
+fn the_most_negative_value_divided_by_minus_one_equals_the_normal_mode() {
+    let dir = tempdir("cycle-divmin");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("divmin{w}.vhd"),
+            &with_width(include_str!("cycle/divmin.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_divmin");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_divmin");
+            assert_eq!(normal.len(), 8, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            let n = if w <= 64 { 1 } else { 0 };
+            assert!(
+                err.contains(&format!("cycle mode: {n} of 2 processes run cycle-based")),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// `numeric_std` shifts and rotations by a count chosen at run time, of any width (a byte
 /// rotation of a vector of more than 64 elements was not implemented), against the normal mode at
 /// widths 1 to 128, counts from 0 past twice the width and 1000.

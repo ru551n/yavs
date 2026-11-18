@@ -499,6 +499,17 @@ def selftest():
     assert contract_bucket("identical", "", ["x"], True)[0] == "contract"
     assert contract_bucket("identical", "", ["x"], False)[0] == "documented"
     assert contract_bucket("differs", "y", ["x"], True)[0] == "differs"
+    import cyclefuzz as F  # the fuzzer's copied-clock variant
+    t = ("architecture a of fz_top is\nbegin\n  dk1 <= clk0 when G_B else clk1;\n  signal x : std_ulogic;\n"
+         "  process (dk1) begin if rising_edge(dk1) then q <= d; end if; end process;\n"
+         "  u : entity work.fz_s port map (clk0 => dk1, dk1 => dk1);\nend architecture;\n"
+         "architecture a of fz_tb is\nbegin\n  dut : entity work.fz_top\n    generic map (G_K => 1, G_B => true)\n"
+         "    port map (dk1 => dk1);\n      write(l, string'(\" dk1=\"));\nend architecture;\n")
+    v = F.copy_variant(t)
+    assert "rising_edge(clk0)" in v and "(clk0 => clk0, dk1 => clk0)" in v and "dk1 <= clk0 when" in v, v
+    assert "port map (dk1 => dk1)" in v and '" dk1="' in v
+    assert F.copy_variant(t.replace("begin\n  dut", "  d2 : entity work.fz_top generic map (G_B => false);\nbegin\n  dut")) is None
+    assert F.copy_variant(t.replace("dk1 <= clk0 when G_B else clk1", "dk1 <= clk0 and e")) is None
     print("selftest ok")
 
 

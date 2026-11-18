@@ -146,6 +146,22 @@ does not call it on a port with an unresolved actual (`tests/discrepancies/out-p
 
 When the `--tier=auto` count of a function's or procedure's interpreted calls runs out, three rounds of nearly the count more follow (`Runtime::arm_counted`), and if it cannot suspend and the tier has not flagged it by then it gets interpreter arms (`opt/inline/arms.rs`, `Program::arm`, `Runtime::make_arms`): the callees of up to 96 instructions it calls (the protected methods behind a verification library's `integer_vector_ptr`, `string_ptr`, queue and message storage) are inlined into a copy of its optimised code that only the interpreter's watching loop runs, each followed by a copy of the rest of the call's block; compiled code keeps the calls and compiles exactly what it compiled before. The tier sees each call taken in an arm as a call: `Op::Arm` counts it, the looks in the callee's part of an arm are the callee's, and once the tier flagged the callee the call is made (compiled, as without arms; regression test `a_call_taken_in_an_arm_is_counted_and_made_once_the_callee_is_flagged`). Measured 2026-11-17 against main (instructions, `--tier=auto`, fresh worlds each prepared by the binary measured, byte-copy A/A): short whole runs of the verification library's queue, message, integer-array and AXI-stream cells, 16 worlds per cell, cold 0.968, first warm 0.969, second warm 0.937 (geomeans; A/A 0.998 to 1.001); realbench 27 short tests (16 worlds) geomean 1.0004 (A/A 0.9996), none more than 0.3 percent above its A/A once the noisy ones were run on 36 to 112 worlds; 13 long tests (12 worlds) within their A/A, `vai_window_gen_interlock` 0.998 (A/A 1.000), `poc_arith_addw` 1.0008 (A/A 1.0006). Short tests that never repay arms still run up to 0.2 percent more instructions, most of it with `YAVS_NO_ARMS=1` too (the mechanism's always-on part, real by the probe rule). Reports, failures, traces and `std.env` call paths read as the calls (CLI test `interp_arms_read_as_calls`, cold and cached, every tier); perf test `arm_calls` (`--features clift`); `YAVS_NO_ARMS=1` turns them off; `--tier=interp` has no count and no arms. Known gap: under `--tier=auto` the `--profile` line samples skip the looks the watching loop makes inside an arm (the function samples name the callee). decisions.md "The interpreter takes small library calls through arms".
 
+### The memo of pure calls: a miss fills an evicted slot again (2026-11-18)
+
+The slot a memo table evicts is kept (at most 8 per process, `State::spare`) and the next miss fills it with its key and
+result instead of allocating a box and a byte block; hits, misses and `pmemo_off` are exactly as before (unit test
+`a_recycled_slot_holds_its_new_call`). Exact slope of a design where every call misses, instructions per call (bench
+builds, base to change): interpreter 13 389 to 13 232, 14 486 to 14 259 and 12 500 to 12 377, forced compiled 7 940 to
+7 751, 8 086 to 7 916 and 7 015 to 6 923. Measured on main 30ad46c35 (all-thread instructions, bench builds, worlds prepared by each binary, fixed relative output
+path, A/A = byte copy of the base): realbench, the 32 tests of up to about 30 G instructions x 16 fresh worlds x 2 runs,
+geomean sum 0.9993 (A/A 0.9995), no test beyond its A/A spread (`uvvm_axistream_vvc` 1.007 +-0.5 against 1.001 +-0.6,
+`uvvm_sb_slv` run 1 1.008 +-0.6 against 0.998 +-0.4); exact counts of all 40 tests (one run each): interpreter geomean
+0.9996 (A/A 1.0000), forced compiled 1.0000 (1.0000), `uvvm_util_rand` 0.989 interpreter and 0.9994 forced compiled
+(its 95 000 misses), every `pmemo_*` counter, exit code and output equal; the 26 bench designs level in both interpreter
+loops (geomean 1.0000 and 0.9997); the six VUnit cells within 0.1 percent per op in both loops (their first points
+0.1 percent above the base, as for any other world). `docs/decisions.md` "Memo of pure calls: a miss fills an
+evicted slot again".
+
 ### The memo of pure calls: dear functions with few callers judged again later (2026-11-15)
 
 A memoised function whose body is dear (`MemoSig::dear`) and that at most three processes call is no longer given up for

@@ -17128,6 +17128,23 @@ the next run".
   buffer (level: the cost of a miss is not its allocation).
 - **Measured**: `docs/STATUS.md` "The memo of pure calls: dear functions with few callers judged again later".
 
+## Memo of pure calls: a miss fills an evicted slot again (yavs-interp `pmemo.rs`, 2026-11-18)
+
+- **Rule** (`Slot::fill`, `State::spare`, `Memo::put`). A slot keeps its key and result bytes in a `Vec<u8>`. The slot a
+  table evicts (`Memo::put` now returns it) goes to a list of at most `SPARE` (8) per process, and the next miss fills
+  one of them instead of allocating the box and the byte block (`State::keep`), then refreshes `Slot::at`. Which slot is
+  evicted, the tables and the judgement are unchanged, so hits, misses and `pmemo_off` are exactly as before. Compiled
+  code reads a slot only through the table, never one on the spare list.
+- **Measured** (a throwaway design: a warm-up cycle of four keys that keeps the memo on, then calls that never
+  repeat, one pure function of 16 bits; slope of instructions per call, 3000 to 13000 calls, bench builds): interpreter -157 (an `unsigned`
+  result), -227 (a wider `unsigned` result) and -123 (a `natural` result), 1.0 to 1.6 percent of a call; forced compiled -189, -170 and -92, 1.3 to
+  2.4 percent. Realbench, the bench designs and the VUnit cells are level (misses are at most 1.3 percent of a test's
+  instructions, `uvvm_util_rand`; a saving of 100 to 250 of the 1500 or so a miss costs is below the spread): see
+  `docs/STATUS.md`.
+- **Why now.** "A miss that reuses the evicted slot's buffer" was tried and not kept ("level") in the section
+  "a dear function with few callers is judged again later" because broad series could not see it. It is kept on the exact
+  per-call slope; it costs one list per process and no work on a hit. Decided by the agent; nothing recorded is widened.
+
 ## Bounds of a length: `BoundsLen` of `c to x + c - 1` is `x` (yavs-ir `opt.rs` `len_reg`, 2026-11-15)
 
 - **Decision** (agent): the bounds `c to x + c - 1` or `x + c - 1 downto c`, for a constant `c` and a once-defined

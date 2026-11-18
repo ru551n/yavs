@@ -51,6 +51,8 @@ fn need(tries: u8) -> u32 {
 /// Processes that give a function's memo up before it is off for all of them (fewer when fewer
 /// processes call it: off once every caller gave it up, #762).
 const VOTES: u32 = 3;
+/// Evicted slots a process keeps for its next misses.
+const SPARE: usize = 8;
 /// Calls run to their end from inside one another (a pure function that calls itself): deeper
 /// calls are made as usual, so the native stack stays small.
 pub(crate) const NEST: u8 = 8;
@@ -99,24 +101,38 @@ pub struct Slot {
     vlen: u64,
     /// The address of `bytes`.
     at: usize,
-    bytes: Box<[u8]>,
+    bytes: Vec<u8>,
 }
 
 impl Slot {
     fn new(hash: u64, key: &[u8], val: Val) -> Slot {
+        let mut s = Slot {
+            hash: 0,
+            word: 0,
+            klen: 0,
+            vlen: 0,
+            at: 0,
+            bytes: Vec::new(),
+        };
+        s.fill(hash, key, val);
+        s
+    }
+
+    /// Make the slot hold this call: a slot the table dropped is filled again (`State::spare`),
+    /// so a miss allocates nothing when one is at hand.
+    fn fill(&mut self, hash: u64, key: &[u8], val: Val) {
         let (word, v): (u64, &[u8]) = match &val {
             Val::Word(w) => (*w, &[]),
             Val::Array(b) => (0, b),
         };
-        let bytes: Box<[u8]> = [key, v].concat().into();
-        Slot {
-            hash,
-            word,
-            klen: key.len() as u64,
-            vlen: v.len() as u64,
-            at: bytes.as_ptr() as usize,
-            bytes,
-        }
+        self.bytes.clear();
+        self.bytes.extend_from_slice(key);
+        self.bytes.extend_from_slice(v);
+        self.hash = hash;
+        self.word = word;
+        self.klen = key.len() as u64;
+        self.vlen = v.len() as u64;
+        self.at = self.bytes.as_ptr() as usize;
     }
 
     fn key(&self) -> &[u8] {
@@ -277,6 +293,10 @@ pub(crate) struct State {
     pub fresh: bool,
     /// The tables compiled code probes by itself, made with the first one shown.
     dir: Option<Arc<MemoDir>>,
+    /// Slots the tables evicted, kept to be filled again by the next misses (at most `SPARE`).
+    // (Boxes: a table holds its slots by address, which compiled code reads.)
+    #[allow(clippy::vec_box)]
+    spare: Vec<Box<Slot>>,
 }
 
 /// A hash of `key`: eight bytes a step.
@@ -528,15 +548,27 @@ impl State {
     /// Remember a call that ended with `val` (`hash` and `key` from [`Look::Miss`] and the
     /// call). The slot is found again: calls run in between may have grown the table.
     pub fn keep(&mut self, func: u32, hash: u64, key: &[u8], val: Val) {
-        let m = self.memo(func);
-        if m.slots.is_empty() {
+        if self.memo(func).slots.is_empty() {
             return;
         }
-        m.put(Box::new(Slot::new(hash, key, val)));
+        let slot = match self.spare.pop() {
+            Some(mut b) => {
+                b.fill(hash, key, val);
+                b
+            }
+            None => Box::new(Slot::new(hash, key, val)),
+        };
+        let m = self.memo(func);
+        let evicted = m.put(slot);
         if m.evicted >= m.slots.len() && m.slots.len() < LAST {
             m.grow();
             let at = self.index(func);
             self.reshow(at);
+        }
+        if let Some(old) = evicted
+            && self.spare.len() < SPARE
+        {
+            self.spare.push(old);
         }
         MISSES.fetch_add(1, Ordering::Relaxed);
     }
@@ -1050,14 +1082,16 @@ impl Memo {
     }
 
     /// Put `s` in a free one of its two slots, else in its first: the entry there moves to its
-    /// own other slot, whose entry is evicted (one step of cuckoo hashing).
-    fn put(&mut self, s: Box<Slot>) {
+    /// own other slot, whose entry is evicted (one step of cuckoo hashing). The evicted slot.
+    fn put(&mut self, s: Box<Slot>) -> Option<Box<Slot>> {
         let n = self.slots.len();
         let (i, j) = ways(s.hash, n);
         if self.slots[i].is_none() {
             self.slots[i] = Some(s);
+            None
         } else if self.slots[j].is_none() {
             self.slots[j] = Some(s);
+            None
         } else {
             let old = self.slots[i].replace(s).expect("full");
             let (a, b) = ways(old.hash, n);
@@ -1065,8 +1099,10 @@ impl Memo {
             if alt == i || self.slots[alt].is_some() {
                 self.evicted += 1;
             }
-            if alt != i {
-                self.slots[alt] = Some(old);
+            if alt == i {
+                Some(old)
+            } else {
+                self.slots[alt].replace(old)
             }
         }
     }
@@ -1229,5 +1265,53 @@ mod tests {
             })
             .count();
         assert!(hits >= 12, "{hits} of 16 hit");
+    }
+
+    /// Slots the table evicted are filled again by later misses: every key that is still held
+    /// answers with its own result, of whatever length it and the evicted ones had.
+    #[test]
+    fn a_recycled_slot_holds_its_new_call() {
+        let mut st = State::default();
+        let at = st.index(9);
+        st.memos[at].until = 0;
+        let key = |k: u64| -> Vec<u8> { (0..8 + (k % 5) * 8).map(|i| (k + i) as u8).collect() };
+        let bytes =
+            |k: u64| -> Vec<u8> { (0..3 + (k % 7) * 3).map(|i| (k * 3 + i) as u8).collect() };
+        let put = |st: &mut State, k: u64| {
+            st.key = key(k);
+            if matches!(st.look(at, false), Look::Miss) {
+                let (kb, h) = (st.key.clone(), hash(&st.key));
+                let val = if k.is_multiple_of(2) {
+                    Val::Word(k)
+                } else {
+                    Val::Array(bytes(k).into())
+                };
+                st.keep(9, h, &kb, val);
+            }
+        };
+        // More keys than the largest table holds, so slots are evicted and filled again.
+        let n = 4 * LAST as u64;
+        for k in 0..n {
+            put(&mut st, k);
+        }
+        assert!(st.spare.len() <= super::SPARE);
+        let mut held = 0;
+        for k in 0..n {
+            st.key = key(k);
+            let Look::Hit(i) = st.look(at, false) else {
+                continue;
+            };
+            held += 1;
+            let s = st.memos[at].slots[i].as_ref().expect("a hit has a slot");
+            assert_eq!(s.at, s.bytes.as_ptr() as usize);
+            match st.val(at, i) {
+                Some(super::ValRef::Word(w)) if k.is_multiple_of(2) => assert_eq!(w, k),
+                Some(super::ValRef::Array(b)) if !k.is_multiple_of(2) => {
+                    assert_eq!(b, &bytes(k)[..])
+                }
+                _ => panic!("key {k} holds another call's result"),
+            }
+        }
+        assert!(held > 0);
     }
 }

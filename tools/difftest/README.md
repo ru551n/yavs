@@ -108,7 +108,8 @@ of them hold asserts and reports. Buckets: identical; documented (only the delta
 processes that cycle mode does not evaluate, or delta cycles a monitor no longer sees, shown by the lines
 themselves; a vanished report counts as a member's when its process path is one of a member with dropped asserts,
 or `-` for an unlabelled process while such a member exists); known (differs, and `cyclegate.expected` lists the
-test with the checksum of its diff and the reviewed cause: a changed diff is not known any more); differs
+test with the checksum of its diff, or several comma-separated where the contracts or `YAVS_CYCLE_RAIL=off`
+give different diffs, and the reviewed cause: a changed diff is not known any more); differs
 otherwise (a wrong result in cycle mode: exit status 1, and the line to paste into the list after a review);
 refused (`E41xx`); skipped (the normal mode does not run it). A lost failure of a member ends the normal run
 early: such a test is reported as not compared after that point. Every test shows how many processes joined

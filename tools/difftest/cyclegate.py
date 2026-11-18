@@ -245,7 +245,7 @@ def known(r, expected):
     """A difference that is listed with the same diff is known; a listed one that changed is not."""
     if r["bucket"] == "differs" and r["name"] in expected:
         crc, cause = expected[r["name"]]
-        if crc == r.get("crc"):
+        if r.get("crc") in crc.split(","):  # one per contract or setting where they differ
             r.update(bucket="known", why=cause)
         else:
             r["why"] = f"the listed difference changed (checksum {crc} before, {r.get('crc')} now): review it\n" + r["why"]

@@ -760,7 +760,8 @@ or with `--cycle-report` instead to list every assert and report cycle mode drop
 }
 
 /// A41: the asserts and reports of severity error and failure below the top that cycle mode drops
-/// get one warning at the start (W4101), the first five listed, failure first; `--cycle-report`
+/// get one warning at the start (W4101), the first five listed, failure first and in a severity
+/// those that always report when reached first (`assert false`, `report`); `--cycle-report`
 /// lists every one with its severity. The failure ends the normal run, not the cycle run.
 #[test]
 fn dropped_error_and_failure_asserts_get_one_warning_and_the_report_lists_all() {
@@ -782,15 +783,15 @@ fn dropped_error_and_failure_asserts_get_one_warning_and_the_report_lists_all() 
         rc == Some(1) && out.contains("the design ends its own test"),
         "{out}"
     );
-    let warning = "warning[W4101]: 8 asserts and reports of severity error or failure are not \
-evaluated in cycle mode (1 failure, 6 error, 1 known at run time)
+    let warning = "warning[W4101]: 9 asserts and reports of severity error or failure are not \
+evaluated in cycle mode (2 failure, 6 error, 1 known at run time)
  |
- = note: awarn.vhd:26: severity failure, in cycle_awarn.dut.reg
- = note: awarn.vhd:32: a severity known only at run time, in cycle_awarn.dut.reg
- = note: awarn.vhd:18: severity error, in cycle_awarn.dut.reg
- = note: awarn.vhd:27: severity error, in cycle_awarn.dut.reg
- = note: awarn.vhd:28: severity error, in cycle_awarn.dut.reg
- = note: and 3 more
+ = note: awarn.vhd:29: severity failure, in cycle_awarn.dut.reg
+ = note: awarn.vhd:27: severity failure, in cycle_awarn.dut.reg
+ = note: awarn.vhd:36: a severity known only at run time, in cycle_awarn.dut.reg
+ = note: awarn.vhd:35: severity error, in cycle_awarn.dut.reg
+ = note: awarn.vhd:19: severity error, in cycle_awarn.dut.reg
+ = note: and 4 more
  = help: these do not stop the simulation in cycle mode; run without `--cycle` to evaluate them, \
 or with `--cycle-report` instead to list every assert and report cycle mode drops
 
@@ -812,18 +813,19 @@ or with `--cycle-report` instead to list every assert and report cycle mode drop
     assert!(!report.contains("W4101"), "{report}");
     assert!(
         report.contains(
-            "  each assert and report not evaluated, by severity (1 failure, 1 known at run time, \
+            "  each assert and report not evaluated, by severity (2 failure, 1 known at run time, \
 6 error, 1 warning, 1 note):
-    failure   awarn.vhd:26  cycle_awarn.dut.reg
-    run-time  awarn.vhd:32  cycle_awarn.dut.reg
-    error     awarn.vhd:18  cycle_awarn.dut.reg
-    error     awarn.vhd:27  cycle_awarn.dut.reg
-    error     awarn.vhd:28  cycle_awarn.dut.reg
+    failure   awarn.vhd:29  cycle_awarn.dut.reg
+    failure   awarn.vhd:27  cycle_awarn.dut.reg
+    run-time  awarn.vhd:36  cycle_awarn.dut.reg
+    error     awarn.vhd:35  cycle_awarn.dut.reg
+    error     awarn.vhd:19  cycle_awarn.dut.reg
     error     awarn.vhd:31  cycle_awarn.dut.reg
-    error     awarn.vhd:34  cycle_awarn.dut.reg
-    error     awarn.vhd:39  cycle_awarn.dut.assert (awarn.vhd:39)
-    warning   awarn.vhd:29  cycle_awarn.dut.reg
-    note      awarn.vhd:30  cycle_awarn.dut.reg
+    error     awarn.vhd:32  cycle_awarn.dut.reg
+    error     awarn.vhd:38  cycle_awarn.dut.reg
+    error     awarn.vhd:43  cycle_awarn.dut.assert (awarn.vhd:43)
+    warning   awarn.vhd:33  cycle_awarn.dut.reg
+    note      awarn.vhd:34  cycle_awarn.dut.reg
 "
         ),
         "{report}"

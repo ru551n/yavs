@@ -1,7 +1,8 @@
 -- Asserts and reports below the top-level unit, dropped in cycle mode (A41): `--cycle` warns
 -- once (W4101) about those of severity error and failure, `--cycle-report` lists every one. The
 -- failure fires at the 10th edge: the normal mode stops there, cycle mode runs on to the end.
--- The loop's assert and the function's (called twice) are one statement each.
+-- The loop's assert and the function's (called twice) are one statement each. `assert false`
+-- and a `report` always report when reached: each comes first of its severity.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -24,6 +25,9 @@ begin
     if rising_edge(clk) then
       n <= inc(inc(n));
       assert n /= 20 report "the design ends its own test" severity failure;
+      if n = 30 then
+        assert false report "end of test" severity failure;
+      end if;
       assert n < 250;
       assert n /= 251 report "explicit error" severity error;
       assert n /= 252 report "a warning" severity warning;

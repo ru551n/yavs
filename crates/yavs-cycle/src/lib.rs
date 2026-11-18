@@ -655,20 +655,24 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
 /// The asserts and reports cycle-based processes drop, once per statement and process: the
 /// severity's name, where, and the process.
 fn drops(db: &Db, e: &Elaborated, sel: &region::Selection) -> Vec<(&'static str, String, String)> {
-    let mut all: Vec<(u8, String, String)> = (sel.members.iter())
+    let mut all: Vec<(u8, bool, String, String)> = (sel.members.iter())
         .flat_map(|(pi, b)| {
             let label = e.hier.proc_label(&e.procs[*pi], yavs_elab::Case::Lrm);
-            (b.drops.iter()).map(move |&(span, sev)| (sev, at(db, span), label.clone()))
+            (b.drops.iter()).map(move |&(span, sev, sure)| (sev, sure, at(db, span), label.clone()))
         })
         .collect();
-    // Failure first, then a severity known only at run time (it may be failure), error, warning, note.
-    all.sort_by_key(|d| match d.0 {
-        3 => 0,
-        lower::SEV_RUNTIME => 1,
-        s => 4 - s,
+    // Failure first, then a severity known only at run time (it may be failure), error, warning,
+    // note; in each, first those that always report when reached (`assert false`: a design's end).
+    all.sort_by_key(|d| {
+        let rank = match d.0 {
+            3 => 0,
+            lower::SEV_RUNTIME => 1,
+            s => 4 - s,
+        };
+        (rank, !d.1)
     });
     (all.into_iter())
-        .map(|(sev, at, who)| {
+        .map(|(sev, _, at, who)| {
             let name = ["note", "warning", "error", "failure"]
                 .get(sev as usize)
                 .copied()

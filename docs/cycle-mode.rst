@@ -306,7 +306,7 @@ a small design with a testbench and four things cycle mode does not take:
   almost every list and is expected. *Behavioural* processes are the ones that are testbench by nature.
 * If cycle-based processes hold ``assert`` or ``report`` statements, a line counts them per process: they are not
   evaluated (:ref:`cycle-changes`). The next block lists each statement once (one in a loop or a called function
-  counts once per process here), by severity, failure first: the severity, where it is, and the process. The following two lines are fixed text: library warnings, and the asserts of
+  counts once per process here), in the order of the warning (W4101): the severity, where it is, and the process. The following two lines are fixed text: library warnings, and the asserts of
   the top-level unit, which are evaluated.
 * ``subset`` counts the processes that fit the rules. Fewer processes join than fit when one with a rarer
   problem needs something yavs does not implement yet, or a rule of the region as a whole keeps it out (the
@@ -489,7 +489,8 @@ The processes of the top-level unit, the testbench's, keep their checks (below).
 
 ``--cycle`` and ``--cycle-strict`` print one warning (W4101) at the start when the dropped statements include any of
 severity ``error`` or ``failure``, or of a severity known only at run time: how many, and where the first five are
-(the line and the process), failures first. Dropped notes and warnings are not in it; ``--cycle-report`` lists those
+(the line and the process), failures first, and first within a severity a ``report`` or an ``assert false``, which
+always reports when the run reaches it (the usual way a design ends its own test). Dropped notes and warnings are not in it; ``--cycle-report`` lists those
 too.
 
 .. note::

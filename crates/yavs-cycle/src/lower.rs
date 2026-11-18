@@ -720,8 +720,9 @@ pub(crate) struct Body {
     /// Asserts and reports left out (not evaluated in cycle mode).
     pub dropped: u32,
     /// The statements of those, once each (an unrolled loop or inlined call drops one many
-    /// times): where, and the severity (`SEV_RUNTIME` when not known during elaboration).
-    pub drops: Vec<(Span, u8)>,
+    /// times): where, the severity (`SEV_RUNTIME` when not known during elaboration), and whether
+    /// it always reports when reached (a `report`, an `assert false`).
+    pub drops: Vec<(Span, u8, bool)>,
     /// A process of the top-level unit: why an assert or report of it cannot be evaluated in
     /// region code (with `dropped` above 0), and how many are (`Op::Note`).
     pub note_why: Option<String>,
@@ -1162,7 +1163,7 @@ struct Lx<'a> {
     init: Vec<(u32, u64)>,
     var_words: Vec<(u32, u32)>,
     dropped: u32,
-    drops: Vec<(Span, u8)>,
+    drops: Vec<(Span, u8, bool)>,
     /// A process of the top-level unit: its asserts and reports are evaluated (A19) where they
     /// can be: at the clock edge of a clocked process (`at_edge`).
     top: bool,
@@ -2235,19 +2236,20 @@ impl Lx<'_> {
     fn drop_stmt(&mut self, s: StmtId) {
         self.dropped += 1;
         let st = &self.db.stmts[s];
-        let (sev, default) = match &st.kind {
-            StmtKind::Assert { severity, .. } | StmtKind::ConcAssert { severity, .. } => {
-                (*severity, 2)
+        let (sev, default, sure) = match &st.kind {
+            StmtKind::Assert { severity, cond, .. }
+            | StmtKind::ConcAssert { severity, cond, .. } => {
+                (*severity, 2, self.fold_bool(*cond) == Some(false))
             }
-            StmtKind::Report { severity, .. } => (*severity, 0),
-            _ => (None, 0),
+            StmtKind::Report { severity, .. } => (*severity, 0, true),
+            _ => (None, 0, false),
         };
         let sev = sev.map_or(default, |x| match self.fold(x) {
             Some(ConstValue::Enum(p)) if p < 4 => p as u8,
             _ => SEV_RUNTIME,
         });
         if !self.drops.iter().any(|d| d.0 == st.span) {
-            self.drops.push((st.span, sev));
+            self.drops.push((st.span, sev, sure));
         }
     }
 

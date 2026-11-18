@@ -2171,6 +2171,11 @@ which tools/difftest parses.
   (`Db::view_driven_below`, `Fx::view_leaf_slot`); the other leaves have no slot. Driving a non-static name below a
   view (`bs(i).ready`) is checked against the view by the name's own steps, not its longest
   static prefix (`E1903` only for an `in` element below the name).
+  The sensitivity of a concurrent call (and of `process (all)`) to an array mode view is the
+  whole array, `out` fields too (`Db::view_read_paths` stops at the array; cycle-mode agent,
+  2026-11-18): a field of every element is no static prefix the wait list can name, and the
+  path that named it stopped elaboration with an internal error. The cost is an extra
+  resumption on events of the `out` fields, which recompute the same values.
 - **`buffer` and `linkage` subprogram parameters** are `E1236` (LRM 4.2.2.1; the reference
   simulators reject them too); a view may still give an element those modes.
 - **Package signals with records in their type** are one package signal per leaf, like

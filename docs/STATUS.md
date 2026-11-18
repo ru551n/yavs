@@ -770,7 +770,7 @@ Correctness fixes found by reviewing the non-pass entries (2026-10-23):
 - The function form of `file_open` returned no value (internal error), and `file_position (f, FILE_ORIGIN_END)` was negative (a NATURAL error); it is the distance to the end now (`file12`, first suite).
 - `T'VALUE` of an array type (2019, `value2`, `value4`) is E2001 (not implemented) instead of an internal error; `T'VALUE` of composites is still missing.
 - An aggregate target with parts of a signal parameter (`issue3030`) is E2001 (not implemented) instead of an internal error.
-- A concurrent procedure call with mode view parameters is sensitive to the elements the view reads (`view6`, first suite).
+- A concurrent procedure call with mode view parameters is sensitive to the elements the view reads (`view6`, first suite); with an array mode view (`view (v) of arr_t`) to the whole array, `out` fields too (it stopped with an internal error, "field of a non-record", until 2026-11-18; `hierarchy/mode_view_array_concurrent_call`).
 - A deferred constant of a package instance in an architecture read as zero (`genpack16`, first suite); it reads the body's full declaration.
 - An alias with a partly constrained subtype (`alias y : arr(0 to n - 1) is x`, arrays of open arrays) keeps the aliased object's index range (`issue932`, first suite); it has its own index range now.
 - A record constant with open fields kept the bounds of its initial value (`issue1274`, first suite); it has its subtype's field bounds, in analysis (folded values) and in elaboration (called values).

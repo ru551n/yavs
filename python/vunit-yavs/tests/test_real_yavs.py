@@ -1203,7 +1203,9 @@ class TestRealYavs(unittest.TestCase):
             self.skipTest("this yavs has no cycle mode")
         project = self.tempdir / "project"
         project.mkdir()
-        (project / "counter.vhd").write_text(COUNTER, encoding="utf-8")
+        # A failure assert in the design, dropped in cycle mode: its warning (W4101) is ordinary output
+        dropped = COUNTER.replace("  q <= cnt;", '  assert cnt = cnt report "never fails" severity failure;\n  q <= cnt;')
+        (project / "counter.vhd").write_text(dropped, encoding="utf-8")
         (project / "tb_counter.vhd").write_text(COUNTER_TESTBENCH, encoding="utf-8")
         (project / "run.py").write_text(CYCLE_RUN, encoding="utf-8")
         proc = subprocess.run(
@@ -1222,6 +1224,7 @@ class TestRealYavs(unittest.TestCase):
         lines = re.findall(r"cycle mode: \d+ of \d+ processes run cycle-based", proc.stdout)
         self.assertEqual(len(lines), 1, proc.stdout)
         self.assertRegex(proc.stdout, r"(?s)cycle mode: \d+ of \d+.*pass .*counts \(")
+        self.assertEqual(proc.stdout.count("warning[W4101]"), 1, proc.stdout)
 
     def test_the_letters_are_those_of_yavs(self):
         yavs = str(Path(os.environ["VUNIT_YAVS_PATH"]) / "yavs") if "VUNIT_YAVS_PATH" in os.environ else "yavs"

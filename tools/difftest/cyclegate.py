@@ -296,9 +296,20 @@ def drop_down(text, down):
 def meta_pair(n, c):
     """Whether line c (cycle mode) is line n (normal mode) with its metavalues read two-state: of one
     length, and where they differ n holds 'U', 'X', 'Z', 'W' or '-' and c a digit (a bit, or a hex or
-    octal digit of the value computed from it), or n 'H' and c '1', or n 'L' and c '0'. Never the reverse."""
-    return len(n) == len(c) and all(a == b or (a in "UXZW-" and b in DIGITS) or (a, b) in (("H", "1"), ("L", "0"))
-                                    for a, b in zip(n, c))
+    octal digit of the value computed from it), or n 'H' and c '1', or n 'L' and c '0'. Never the reverse.
+    A '-' counts only as a logic value: `'-'`, or in a run of logic values holding a letter one (not the
+    sign of a number)."""
+    def dash(i):
+        if n[i - 1:i + 2] == "'-'":
+            return True
+        j, k = i, i
+        while j > 0 and n[j - 1] in "UXZWLH01-":
+            j -= 1
+        while k < len(n) - 1 and n[k + 1] in "UXZWLH01-":
+            k += 1
+        return bool(re.search("[UXZWLH]", n[j:k + 1]))
+    return len(n) == len(c) and all(a == b or (a in "UXZW" and b in DIGITS) or (a == "-" and b in DIGITS and dash(i))
+                                    or (a, b) in (("H", "1"), ("L", "0")) for i, (a, b) in enumerate(zip(n, c)))
 
 
 def meta_align(nl, cl):
@@ -484,6 +495,8 @@ def selftest():
     assert meta_pair("q=ZZ x='U' h='H'", "q=3F x='0' h='1'") and meta_pair("v=0X", "v=0A")
     assert not meta_pair("q=3F", "q=ZZ") and not meta_pair("q=10", "q=11") and not meta_pair("q=Z", "q=00")
     assert not meta_pair("h='H'", "h='0'") and not meta_pair("t=5", "t=6")
+    assert not meta_pair("q=-7", "q=17") and not meta_pair("i=-1 j=2", "i=01 j=2")  # a sign is no metavalue
+    assert meta_pair("v='-' w=U-01", "v='0' w=0101") and not meta_pair("w=0-01", "w=0101")
     n = ["exit\t0", "out\t1 q=ZZ r=05", "out\t2 q=ZZ r=06"]
     assert meta_align(n, ["exit\t0", "out\t1 q=00 r=05", "out\t2 q=1F r=06"]) == (n, 2)
     bad = ["exit\t0", "out\t1 q=00 r=05", "out\t2 q=00 r=07"]  # a wrong bit where the normal mode has none
@@ -508,7 +521,12 @@ def selftest():
     v = F.copy_variant(t)
     assert "rising_edge(clk0)" in v and "(clk0 => clk0, dk1 => clk0)" in v and "dk1 <= clk0 when" in v, v
     assert "port map (dk1 => dk1)" in v and '" dk1="' in v
-    assert F.copy_variant(t.replace("begin\n  dut", "  d2 : entity work.fz_top generic map (G_B => false);\nbegin\n  dut")) is None
+    two = ("library ieee;\nentity fz_s is end;\narchitecture a of fz_s is\nbegin\n  dk2 <= clk0 when G_B else clk1;\n"
+           "  process (dk2) begin end process;\nend architecture;\narchitecture a of fz_top is\nbegin\n"
+           "  u1 : entity work.fz_s generic map (G_B => true);\n  u2 : entity work.fz_s generic map (G_B => false);\n"
+           "end architecture;\n")
+    v = F.copy_variant(two)  # instances of both values: a copy of the entity for the false ones
+    assert "entity work.fz_s_f generic map (G_B => false)" in v and "process (clk1)" in v and "process (clk0)" in v, v
     assert F.copy_variant(t.replace("dk1 <= clk0 when G_B else clk1", "dk1 <= clk0 and e")) is None
     print("selftest ok")
 
@@ -559,9 +577,10 @@ def main():
             raise
     if a.json:
         a.json.write_text("\n".join(json.dumps(r) for r in res) + "\n")
+    mine = lambda cause: cause.startswith("default contract") == (a.contract == "default")  # the entries of this contract
     for r in res:
-        if r["name"] in expected and r["bucket"] in ("identical", "documented"):
-            print(f"note: {r['name']} no longer differs: remove it from cyclegate.expected")
+        if any(mine(c) for c in expected.get(r["name"], {}).values()) and r["bucket"] in ("identical", "documented", "contract"):
+            print(f"note: {r['name']} no longer differs: remove its entry for this contract from cyclegate.expected")
     c = {b: sum(r["bucket"] == b for r in res) for b in ("identical", "documented", "known", "contract", "differs", "refused", "skipped")}
     ran = [r for r in res if r["bucket"] in ("identical", "documented", "known", "contract", "differs")]
     with_m = sum(r["members"] > 0 for r in ran)

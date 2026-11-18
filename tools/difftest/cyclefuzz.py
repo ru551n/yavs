@@ -2,7 +2,9 @@
 """Differential fuzzer of cycle mode: random synchronous RTL in the region's subset, with a
 seeded testbench printing every output twice a clock, run normal and `--cycle` by one binary.
 Every difference is a bug: the designs have no metavalues (every signal initialised, inputs
-'0'/'1') and no asserts or reports in the region, the testbench samples between clock edges.
+'0'/'1') and no asserts or reports in the region, the testbench samples between clock edges; under
+the default contract only differences the contract classes explain are not (verdict `contract`:
+metavalues of the `zpass` inputs read two-state, a copied clock that is its source).
 Stdlib only. See README.md "Cycle mode fuzzer".
 
     cyclefuzz.py gen SEED                   # print the design of SEED
@@ -2333,6 +2335,15 @@ def copy_variant(text):
             out.append(l)
         found.update(src)
         return f"architecture a of {ent} is" + "\n".join(out) + "end architecture;"
+    # An entity whose instances give G_B both values gets a copy of its own for the false ones.
+    for ent in sorted(set(re.findall(r"entity work\.(\w+)\s+generic map", text))):
+        insts = re.findall(rf"entity work\.{ent}\s+generic map \([^)]*G_B => (\w+)", text)
+        if len(set(insts)) == 2:
+            m = re.search(rf"library ieee;\n(?:use [^\n]*\n)*entity {ent} is.*?end architecture;\n", text, re.S)
+            if not m:
+                return None
+            text = text[:m.end()] + "\n" + re.sub(rf"\b{ent}\b", ent + "_f", m.group(0)) + text[m.end():]
+            text = re.sub(rf"entity work\.{ent}(\s+generic map \([^)]*G_B => false)", rf"entity work.{ent}_f\1", text)
     found = {}
     try:
         v = re.sub(r"architecture a of (\w+) is(.*?)end architecture;", sub, text, flags=re.S)

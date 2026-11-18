@@ -298,7 +298,9 @@ no code in the cache fails); `--checks N` runs every Nth seed once more with `YA
 `YAVS_CYCLE_SKIP_CHECK=1`, `YAVS_CYCLE_IMPORT_CHECK=1` and `YAVS_CYCLE_GUARD=all`. Compared: exit status,
 standard output and standard error without the summary line. A `--cycle-report` run gives the members; the
 summary prints how many of the design's processes joined the region, per construct (the processes holding
-it), and the most common reasons of the others, so a pass is not vacuous (a seed with no member is `vacuous`). The exit status is 1 when a
+it), and the most common reasons of the others, so a pass is not vacuous (a seed with no member is `vacuous`). A seed whose differences the contract classes
+explain completely is `contract` (`documented` under the exact contract), a pass; with a clock the generator copies it
+also runs the normal mode on the copied-clock variant (`copy_variant`, in `s<seed>/src`). The exit status is 1 when a
 seed differs or does not compare (analysis or elaboration fails, the normal run fails or times out:
 a valid design, so a bug of the generator or of yavs) and when fewer than `--min-share` percent
 (default 60) of the designs' processes joined the region. A static index or slice outside its range

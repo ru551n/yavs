@@ -55,6 +55,19 @@ impl Env {
     }
 }
 
+/// `text` with the paths under `dir` made relative to it, in the form given and the canonical one
+/// (on Windows yavs may print the short form of the temp dir), with either separator.
+fn relative(text: &str, dir: &std::path::Path) -> String {
+    let mut out = text.to_string();
+    for d in [dir.canonicalize().expect("dir"), dir.to_path_buf()] {
+        let d = d.display().to_string();
+        out = out
+            .replace(&format!("{d}/"), "")
+            .replace(&format!("{d}\\"), "");
+    }
+    out
+}
+
 /// Every line of `out` is on the page, as the page shows it.
 fn on_page(page: &str, out: &str) {
     let text = std::fs::read_to_string(docs().join(page)).unwrap();
@@ -513,12 +526,7 @@ fn cycle_mode_page() {
         assert!(err.contains(&format!("error[{code}]")), "{err}");
     }
     // The page shows the files as relative paths.
-    let dir = e.0.canonicalize().expect("dir").display().to_string();
-    on_page(
-        page,
-        &err.replace(&format!("{dir}/"), "")
-            .replace(&format!("{dir}\\"), ""),
-    );
+    on_page(page, &relative(&err, &e.0));
     let (code, _, err) = e.yavs(&["run", "--cycle", "--surfer", WORK, "tb_counter"]);
     assert_eq!(code, 2);
     assert!(err.contains("error[E4102]"), "{err}");
@@ -526,7 +534,7 @@ fn cycle_mode_page() {
     let (code, _, err) = e.yavs(&["run", "--cycle", WORK, "tb_overflow"]);
     assert_eq!(code, 1, "{err}");
     // The page shows the path relative to where the files are.
-    on_page(page, &err.replace(&format!("{}/", e.0.display()), ""));
+    on_page(page, &relative(&err, &e.0));
     let (code, _, err) = e.yavs(&["run", "--cycle", "--cycle-strict", WORK, "tb_counter"]);
     assert_eq!(code, 2, "{err}");
 }

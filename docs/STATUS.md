@@ -25,6 +25,15 @@
 | `yavs lint` | all rule classes, `--facts`, reports, configuration, waivers (#895): `crates/yavs-lint`, `crates/yavs/src/lint.rs`, `docs/lint.rst`, `--yavs-lint` in `vunit-yavs`, problem matcher `$yavs` in VS Code; pinned in `crates/yavs/tests/lint.rs`. `file_list` in the configuration reads the files to check; every unknown key, rule id and rule group in the configuration or waiver file is E0134, all listed in one run, and the four YAML files yavs reads (these two, the coverage exclusion file and `cov --config`) are checked against declared schemas by one reader, `yavs_diag::yaml`, so a configuration written for a style tool needs its style settings removed first (#895). Rule ids of analysis (lint_006, lint_782) stay nameable and report nothing. Definite findings on the corpora and the realbench designs are confirmed real (#895); known noise of the advisory rules: see the issues linked there. lint_720 follows statements (#989); the rules beyond the definite class were compared with the source project's tests (#1002, `docs/decisions.md`), with `rtl:` and `testbench:` rule blocks and a heuristic for what a testbench is. |
 | M5, M10 | M5 in progress, partial (#143; what works and what does not is in `docs/vhpi.md`): the `vhpi_*` export surface (#266), `yavs run --vhpi` (#267), the hierarchy (#269), values and types (#270), puts (#271), callbacks (#272), foreign models (#274, #330, #357) and plusargs (#298) are done, `crates/yavs-vhpi`, coverage in `docs/vhpi.md`; cocotb 2.1.0's own simulator regression passes on yavs (`tools/cocotb/run.py`, 78 of 78 jobs, 43 of them run VHDL tests, at 1 and 4 threads, run in the `conformance` CI workflow, #122); M10 (the graphical debugger) is dropped: `yavs-gui` was built (slices G1 #388 and G2 #399, 2026-10-19) and removed again with `yavs run --gui` and its release files (maintainer, 2026-10-29; #871 closed 2026-10-31; `docs/plan.md` M10); the DAP server slices made for it (#396, #397, #398) were closed 2026-10-30 and DAP clients cover debugging. Corrected 2026-11-14: this row described the GUI as in progress) |
 
+### The start op of an interpreted call worked out once (2026-11-18)
+
+A call goes on at `Code::go` (the op after the callee's parameter loads, or its first op when its prologue loads
+nothing), worked out when the callee's ops are made, instead of testing `first`, `skip` and the plain flag on every call
+(`crates/yavs-interp/AGENTS.md`). Interpreted instructions of the verification library's queue, message, integer-array
+and AXI-stream cells 0.2 percent fewer per operation (the same with the layout probe on both sides); `Call` and
+`CallProt` 4 to 6 instructions cheaper, `Ret` 9.5 dearer by the code layout it moved; bench designs 0.9998; realbench
+and short whole runs under `--tier=auto` within their A/A.
+
 ### Forwarders in front of procedures that wait are inlined (2026-11-18)
 
 A procedure that may suspend only in the call it ends with (`send`, `receive`, `get_message` and `notify_net` of the

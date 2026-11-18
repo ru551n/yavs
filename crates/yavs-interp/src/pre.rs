@@ -1501,6 +1501,8 @@ pub(crate) struct Code {
     /// The op a call goes on at when it has written `Pre::pro` itself: after the ops that
     /// only load parameters (`NONE`: there are none).
     pub skip: u32,
+    /// `skip`, or `first` when there is none: where such a call goes on, without a test.
+    pub go: u32,
     /// The runs of drives of the `Op::DriveRun`s.
     pub runs: Vec<DriveRun>,
 }
@@ -2050,6 +2052,7 @@ fn prologue(code: &mut Code, params: &[(u32, Width)]) -> Box<[u32]> {
         k += 1;
     }
     code.skip = if any { k as u32 } else { NONE };
+    code.go = if any { k as u32 } else { code.first };
     if pro.iter().any(|&r| r != NONE) {
         pro.into()
     } else {
@@ -6317,6 +6320,7 @@ impl Code {
             loops,
             trace: std::env::var_os("YAVS_DUMPIR").is_some(),
             skip: NONE,
+            go: first,
             runs,
         }
     }

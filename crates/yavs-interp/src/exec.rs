@@ -6760,11 +6760,10 @@ impl Machine {
                 f = cf;
                 code = &cpre.code;
                 ops = &code.ops;
-                k = match code.first {
+                // (A plain call wrote the parameters' registers, `call_pre`: not loaded again.)
+                k = match if plain { code.go } else { code.first } {
                     pre::NONE => entry!(0)? as usize,
-                    // The parameters are in their registers (`call_pre`): not loaded again.
-                    _ if plain && code.skip != pre::NONE => code.skip as usize,
-                    first => first as usize,
+                    k => k as usize,
                 };
                 rebind!();
                 tick!();
@@ -7745,11 +7744,10 @@ impl Machine {
                     f = cf;
                     code = &cpre.code;
                     ops = &code.ops;
-                    k = match code.first {
+                    // (A plain call wrote the parameters' registers, `call_pre`: not loaded again.)
+                    k = match if plain { code.go } else { code.first } {
                         pre::NONE => entry!(0)? as usize,
-                        // The parameters are in their registers (`call_pre`): not loaded again.
-                        _ if plain && code.skip != pre::NONE => code.skip as usize,
-                        first => first as usize,
+                        k => k as usize,
                     };
                     rebind!();
                     tick!();

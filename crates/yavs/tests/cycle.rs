@@ -4854,6 +4854,51 @@ fn edge_settle(err: &str) -> (u64, u64) {
     (a.parse().expect("a number"), b.parse().expect("a number"))
 }
 
+/// An edge run of a set of classes that changed nothing is skipped until an input is read or
+/// another run changes the image (`idle.vhd`): an idle clock while the other toggles, a register
+/// that stops at its top, an input moved in the delta of an edge, between edges and an
+/// asynchronous reset from outside. Against the normal mode at widths 1 to 128: with the tests'
+/// checks (every run the rule skips runs and must change nothing) and with the skips made.
+#[test]
+fn an_edge_run_that_would_change_nothing_is_skipped() {
+    let dir = tempdir("cycle-idle");
+    let envs: [&[(&str, &str)]; 2] = [&[], &[("YAVS_CYCLE_SKIP_CHECK", "")]];
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("idle{w}.vhd"),
+            &with_width(include_str!("cycle/idle.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_idle");
+            assert_eq!(normal.len(), 377, "{w} {t:?} {normal:?}");
+            for env in envs {
+                let mut env = env.to_vec();
+                env.push(("YAVS_CYCLE_STATS", "1"));
+                let (cycle, err) =
+                    run_vars(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_idle", &env);
+                assert_eq!(cycle, normal, "width {w} {t:?} {env:?}\n{err}");
+                let n = |what: &str| -> u64 {
+                    (err.lines())
+                        .find_map(|l| l.strip_prefix(&format!("cycle stats: {what}: ")))
+                        .unwrap_or_else(|| panic!("no count of {what}\n{err}"))
+                        .parse()
+                        .expect("a number")
+                };
+                // Width 1 counts `sat` round forever: nothing is idle for long.
+                if w > 2 {
+                    assert!(
+                        n("edge runs checked that changed no word of the image") > 0,
+                        "{err}"
+                    );
+                    let skipped = n("edge runs skipped as idle");
+                    assert_eq!(skipped > 0, env.len() == 2, "{env:?}\n{err}");
+                }
+            }
+        }
+    }
+}
+
 /// Expression actuals of ports (a logic expression, a record aggregate, an integer and a vector
 /// expression) and array aggregates without a context (a range choice of a subtype, choices
 /// against the direction of the index subtype), against the normal mode.
@@ -5502,6 +5547,40 @@ fn logic_feeding_a_process_that_counts_its_runs_stays_out() {
             );
             for m in ["e3", "c7", "c9"] {
                 let label = format!("cycle_runcount.dut.{m} <= ...");
+                assert_eq!(row(&err, &label).0, "cycle-based:", "{err}");
+            }
+        }
+    }
+}
+
+/// Concurrent assignments with a delay below the top (inertial, a reject limit, transport with a
+/// delay per alternative) depend on one-delta glitches of their inputs: their logic stays in the
+/// event kernel, and that of an assignment without a delay joins; against the normal mode at
+/// widths 1 to 128 (with the logic in the region the delayed outputs differed).
+#[test]
+fn logic_feeding_a_delayed_assignment_stays_out() {
+    let dir = tempdir("cycle-inertial");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("inertial{w}.vhd"),
+            &with_width(include_str!("cycle/inertial.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_inertial");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_inertial");
+            assert_eq!(normal.len(), 22, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 4 of 14 processes run cycle-based"),
+                "{w}: {err}"
+            );
+            for m in ["c1", "g2", "c3"] {
+                let (_, r) = row(&err, &format!("cycle_inertial.dut.{m} <= ..."));
+                assert!(r.contains("E4129"), "{m}: {r}");
+            }
+            for m in ["b4", "c4", "y4"] {
+                let label = format!("cycle_inertial.dut.{m} <= ...");
                 assert_eq!(row(&err, &label).0, "cycle-based:", "{err}");
             }
         }

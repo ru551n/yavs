@@ -832,6 +832,49 @@ fn reports_of_initialisers_are_replayed() {
     }
 }
 
+/// A package that declares an array signal (its descriptor is written after its initialiser):
+/// the state of the packages before it is cached, it and those after it initialise every run.
+/// No elaboration-time call: the simulation initialises the packages itself.
+const DOPE: &str = "package first is\n  impure function get_id return integer;\nend;\n\
+package body first is\n  type counter_t is protected\n    impure function next_id return integer;\n  end protected;\n\
+  type counter_t is protected body\n    variable n : integer := 10;\n\
+    impure function next_id return integer is begin n := n + 1; return n; end;\n  end protected body;\n\
+  shared variable ctr : counter_t;\n\
+  impure function say return integer is begin report \"first init\"; return 1; end;\n\
+  constant said : integer := say;\n\
+  impure function get_id return integer is begin return ctr.next_id + said - 1; end;\nend;\n\
+package bus_p is\n  signal bus_s : bit_vector(5 downto 0);\nend;\n\
+use work.bus_p.all;\npackage after_p is\n  impure function width return integer;\nend;\n\
+package body after_p is\n  impure function w0 return integer is begin report \"after init\"; return bus_s'length; end;\n\
+  constant w : integer := w0;\n  impure function width return integer is begin return w; end;\nend;\n";
+
+const DOPETB: &str = "use work.first.all;\nuse work.bus_p.all;\nuse work.after_p.all;\nentity dopetb is end;\n\
+architecture a of dopetb is\nbegin\n  process\n  begin\n\
+    report \"id \" & integer'image(get_id) & \" next \" & integer'image(get_id) & \" w \" & integer'image(width);\n\
+    bus_s <= \"101010\";\n    wait for 1 ns;\n    report \"bus \" & integer'image(bus_s'length);\n    wait;\n  end process;\nend;\n";
+
+#[test]
+fn packages_before_an_array_signal_keep_their_state() {
+    let e = Env::new("initdope");
+    for (f, t) in [("dope.vhd", DOPE), ("dopetb.vhd", DOPETB)] {
+        std::fs::write(e.tmp.join(f), t).expect("write");
+        assert_eq!(e.yavs(&["analyze", "--work", &e.work(), f]).code, 0, "{f}");
+    }
+    let plain = same_everywhere(&e, "dopetb");
+    assert!(plain.stdout.contains("id 11 next 12 w 6"), "{plain:?}");
+    assert!(plain.stdout.contains("bus 6"), "{plain:?}");
+    let count = |o: &Out, what: &str| o.stderr.matches(what).count();
+    let warm = e.run_top("dopetb", &[]);
+    assert!(note(&warm, "hit init"), "{warm:?}");
+    assert!(!note(&warm, "store init"), "{warm:?}");
+    assert_eq!(plain, visible(&warm));
+    for what in ["first init", "after init"] {
+        assert_eq!(count(&plain, what), 1, "{what}: {plain:?}");
+        assert_eq!(count(&warm, what), 1, "{what}: {warm:?}");
+    }
+    assert_eq!(e.entry_files("init").len(), 1);
+}
+
 /// An initialiser that opens a file is not cached: a warm run does it again.
 #[test]
 fn package_that_opens_a_file_is_not_cached() {

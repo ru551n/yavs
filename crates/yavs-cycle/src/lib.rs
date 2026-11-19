@@ -2335,6 +2335,10 @@ fn finish(
                     uninit,
                     buf: Vec::new(),
                     read_now: Vec::new(),
+                    idle: rt::Idle {
+                        on: words <= rt::IDLE_WORDS && log.1 == 0 && clocks.len() <= 64,
+                        ..Default::default()
+                    },
                     cones: cones.clone(),
                     chunk_cone: chunk_cone.clone(),
                     mark: vec![0; mark_words],

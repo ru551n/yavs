@@ -190,6 +190,9 @@ cycle-based processes, this is the whole list of differences:
 * they are two-state: ``'X'``, ``'U'`` and ``'Z'`` read as ``0`` or ``1``;
 * their delta cycles are not visible, and a copied clock is the same clock as its source;
 * a failed check does not print its values;
+* a delayed assignment in the top-level unit stays in the event kernel, so a one-delta glitch of cycle-based logic
+  feeding it can change that waveform. Compute the delayed value from registered signals, or check
+  timing-sensitive waveforms in the normal mode;
 * waveforms, coverage, VHPI and the debugger are refused.
 
 If a test differs between the normal mode and ``--cycle`` for any other reason, it is a bug in cycle mode: please
@@ -684,8 +687,12 @@ The report and ``--cycle-strict`` give each reason a code. ``yavs --explain E411
        any force under ``--cycle-exact-meta``, keeps every process out)
      - Limitation. Force from the testbench instead.
    * - E4129
-     - Feeds a process outside the region that depends on delta cycles (the message names it)
-     - Let that reader join too (complete sensitivity list, no latch), or make it clocked.
+     - Feeds a process outside the region that depends on delta cycles (the message names it). A delayed
+       assignment (``after``, ``transport``, ``reject``) below the top-level unit is such a process: a one-delta
+       glitch in the normal mode removes or adds its pending value, so it stays out, and so does the logic
+       feeding it
+     - Let that reader join too (complete sensitivity list, no latch), or make it clocked. For a delayed
+       assignment, compute the delayed value from registered signals, or move the delay to the testbench.
    * - E4130
      - Is logic between clocks whose edges come in different delta cycles
      - Clock both from one clock, or make the second a plain copy (``clk_b <= clk_a;``).

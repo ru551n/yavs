@@ -1,0 +1,1 @@
+Cycle mode keeps the logic that feeds a delayed concurrent assignment (`after`, `transport` or `reject`) below the top-level unit in the event kernel, so a one-delta glitch removes or adds a transaction there as in the normal mode; before, such an assignment could show another waveform under `--cycle`.

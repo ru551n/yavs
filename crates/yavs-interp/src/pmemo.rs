@@ -82,11 +82,14 @@ pub(crate) fn enabled() -> bool {
     *ON.get_or_init(|| std::env::var_os("YAVS_NO_PMEMO").is_none())
 }
 
-/// What a call returned.
-pub(crate) enum Val {
+/// What a call returned, borrowed from where the machine holds it: [`Slot::fill`] copies it
+/// once, into the slot.
+pub(crate) enum Val<'a> {
     Word(u64),
     /// The descriptor bytes, then the element bytes of an array result.
-    Array(Box<[u8]>),
+    Array(&'a [u8], &'a [u8]),
+    /// The same for a flat array: its three bound words as bytes.
+    Flat([u8; 24], &'a [u8]),
 }
 
 /// One remembered call, laid out for compiled code too ([`Machine::memo_view`]): it reads
@@ -105,7 +108,7 @@ pub struct Slot {
 }
 
 impl Slot {
-    fn new(hash: u64, key: &[u8], val: Val) -> Slot {
+    fn new(hash: u64, key: &[u8], val: Val<'_>) -> Slot {
         let mut s = Slot {
             hash: 0,
             word: 0,
@@ -120,19 +123,31 @@ impl Slot {
 
     /// Make the slot hold this call: a slot the table dropped is filled again (`State::spare`),
     /// so a miss allocates nothing when one is at hand.
-    fn fill(&mut self, hash: u64, key: &[u8], val: Val) {
-        let (word, v): (u64, &[u8]) = match &val {
-            Val::Word(w) => (*w, &[]),
-            Val::Array(b) => (0, b),
-        };
+    fn fill(&mut self, hash: u64, key: &[u8], val: Val<'_>) {
         self.bytes.clear();
-        self.bytes.extend_from_slice(key);
-        self.bytes.extend_from_slice(v);
+        let (word, vlen) = match val {
+            Val::Word(w) => {
+                self.bytes.extend_from_slice(key);
+                (w, 0)
+            }
+            Val::Array(d, e) => (0, self.fill_array(key, d, e)),
+            Val::Flat(d, e) => (0, self.fill_array(key, &d, e)),
+        };
         self.hash = hash;
         self.word = word;
         self.klen = key.len() as u64;
-        self.vlen = v.len() as u64;
+        self.vlen = vlen;
         self.at = self.bytes.as_ptr() as usize;
+    }
+
+    /// The key, then an array result's descriptor and elements, into the emptied buffer; the
+    /// length of the result.
+    fn fill_array(&mut self, key: &[u8], d: &[u8], e: &[u8]) -> u64 {
+        self.bytes.reserve(key.len() + d.len() + e.len());
+        self.bytes.extend_from_slice(key);
+        self.bytes.extend_from_slice(d);
+        self.bytes.extend_from_slice(e);
+        (d.len() + e.len()) as u64
     }
 
     fn key(&self) -> &[u8] {
@@ -547,7 +562,7 @@ impl State {
 
     /// Remember a call that ended with `val` (`hash` and `key` from [`Look::Miss`] and the
     /// call). The slot is found again: calls run in between may have grown the table.
-    pub fn keep(&mut self, func: u32, hash: u64, key: &[u8], val: Val) {
+    pub fn keep(&mut self, func: u32, hash: u64, key: &[u8], val: Val<'_>) {
         if self.memo(func).slots.is_empty() {
             return;
         }
@@ -1012,18 +1027,18 @@ impl Machine {
 
     /// The result `v` of a call, as the memo keeps it; `None` when it cannot be read or is
     /// over `MAX_BYTES`.
-    fn memo_result(&self, ret: MemoArg, v: u64) -> Option<Val> {
+    fn memo_result(&self, ret: MemoArg, v: u64) -> Option<Val<'_>> {
         if let MemoArg::Flat(a) = ret {
-            let d: Vec<u8> = (self.ret_bounds().iter())
-                .flat_map(|x| x.to_le_bytes())
-                .collect();
+            let mut d = [0u8; 24];
+            let w = self.ret_bounds();
+            for k in 0..3 {
+                d[k * 8..k * 8 + 8].copy_from_slice(&w[k].to_le_bytes());
+            }
             let n = a.data_bytes(&d)?;
             if n + d.len() as u64 > MAX_BYTES as u64 {
                 return None;
             }
-            let mut out = d;
-            out.extend_from_slice(self.rd(v, n).ok()?);
-            return Some(Val::Array(out.into()));
+            return Some(Val::Flat(d, self.rd(v, n).ok()?));
         }
         let MemoArg::Array(a) = ret else {
             return Some(Val::Word(v));
@@ -1038,10 +1053,7 @@ impl Machine {
         if n + d.len() as u64 > MAX_BYTES as u64 {
             return None;
         }
-        let mut out = Vec::with_capacity(d.len() + n as usize);
-        out.extend_from_slice(d);
-        out.extend_from_slice(self.rd(data, n).ok()?);
-        Some(Val::Array(out.into()))
+        Some(Val::Array(d, self.rd(data, n).ok()?))
     }
 
     /// An array result `bytes` (descriptor, then elements) as a function with `Func::ret_flat`
@@ -1284,7 +1296,7 @@ mod tests {
                 let val = if k.is_multiple_of(2) {
                     Val::Word(k)
                 } else {
-                    Val::Array(bytes(k).into())
+                    Val::Array(&[], &bytes(k))
                 };
                 st.keep(9, h, &kb, val);
             }

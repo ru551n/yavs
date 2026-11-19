@@ -190,6 +190,27 @@ loops (geomean 1.0000 and 0.9997); the six VUnit cells within 0.1 percent per op
 0.1 percent above the base, as for any other world). `docs/decisions.md` "Memo of pure calls: a miss fills an
 evicted slot again".
 
+### The memo of pure calls: an array result is copied once (2026-11-19)
+
+A miss that keeps an array result no longer builds it as a `Vec`, boxes it and copies it again into the slot: the result
+is borrowed from the machine's memory and `Slot::fill` writes it after the key (`Val`, `docs/decisions.md` "Memo of pure
+calls: an array result is copied once, into its slot"). Exact slope of a design where every call misses, instructions per
+call (bench builds, base to change): interpreter -775 and -712 for `unsigned` results of 16 and 24 bits, forced compiled
+-661 and -664, a `natural` result -28 in both. Measured on main df66db694 (instructions, bench builds, worlds prepared by
+each binary, fixed relative output path, A/A = byte copy of the base, the probe rule applied: the change and the base
+each with a check added to a cold arm of the interpreter loop): the 40 realbench tests, one run each, exact counts:
+interpreter geomean 0.99968 (A/A 1.00014), forced `--tier=clift --no-cache` 0.99988 (A/A 1.00001), every `pmemo_*`
+counter, exit code and output equal; `uvvm_util_rand` 0.9923 and 0.9993, `vai_window_gen_interlock` 0.9983 forced compiled,
+`fletcher_bufferwriter_512` 0.9988; no test outside the A/A's own spread (up to +0.26 percent, `olo_fix_cordic_rot`, and
+-0.07 percent). `--tier=auto`, the 29 short tests x 16 fresh worlds: geomean 0.99884 (A/A 0.99915), no test beyond its
+spread. The 26 bench designs: interpreter loop and watching loop level (geomean 1.0000 and 0.9995, A/A 1.0000 and 0.9998);
+`delta_chain` in the interpreter loop reads 0.09 percent above its A/A, a layout effect (it makes no memoised call, and
+with the cold-arm check on both sides it reads 1.0000). The six VUnit cells: interpreter and watching loops -0.1 to -0.9
+percent per op on the cells with array results, forced compiled -0.5 to -4 percent, none above 1.000. Not kept the same
+day: handing the key from compiled code to the host's miss callbacks (-256 to -272 instructions per compiled miss, but
+slower than the A/A on compile time: forced compiled geomean 1.00035, `--tier=auto` 1.00049), recorded in the same
+`decisions.md` section.
+
 ### The memo of pure calls: dear functions with few callers judged again later (2026-11-15)
 
 A memoised function whose body is dear (`MemoSig::dear`) and that at most three processes call is no longer given up for

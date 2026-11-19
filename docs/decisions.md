@@ -17246,6 +17246,31 @@ the next run".
   "a dear function with few callers is judged again later" because broad series could not see it. It is kept on the exact
   per-call slope; it costs one list per process and no work on a hit. Decided by the agent; nothing recorded is widened.
 
+## Memo of pure calls: an array result is copied once, into its slot (yavs-interp `pmemo.rs`, 2026-11-19)
+
+- **Rule** (`Val`, `Machine::memo_result`, `Slot::fill`). A miss that keeps an array result used to build the result
+  as a `Vec` (descriptor, then elements), turn it into a `Box<[u8]>` and let `Slot::fill` copy it again behind the key.
+  `memo_result` now returns a `Val` that borrows the machine's own bytes (a flat array's three bound words are a
+  24-byte array in the value, the elements and a boxed array's descriptor are slices of the machine's memory), and
+  `Slot::fill` writes key, descriptor and elements into the slot's buffer in one pass. A scalar result no longer goes
+  through the array path at all. Slots, keys, hashes, evictions and the judgement are unchanged, so hits, misses and
+  `pmemo_off` are exactly as before.
+- **Measured** (throwaway design `memo_miss`: a warm-up of four keys that keeps the memo on, then calls that never
+  repeat, 16-bit argument; slope of instructions per call, 20 000 to 60 000 calls, bench builds, base to change):
+  an `unsigned` result, 16 and 24 bits wide: interpreter -775 and -712, forced compiled (`--tier=clift`, called from a
+  compiled function) -661 and -664, of about 17 400 to 19 200 and 7 100 to 7 950 a call; a `natural` result -28 in both
+  (the `fill` of a scalar is shorter). VUnit cells with array results (queues of vectors, `c_rr`, `c_sr`) -0.9 percent
+  per op in the interpreter loops and -4 percent forced compiled. Realbench and the bench designs are level or
+  better: see `docs/STATUS.md`.
+- **Tried and not kept: the key handed over by compiled code** (2026-11-19). A miss in compiled code calls
+  `yavs_rt_memo` and then `yavs_rt_memo_keep`, and each rebuilds the key and its hash that the inline probe had just
+  made. Passing the hash and the key's words through the argument buffer (a block after the failed slot compare that
+  stores them, a count of words in `out[3]`) took 256 to 272 instructions off a compiled miss, but the extra blocks and
+  stores cost every call site compile time: forced compiled exact counts of 40 realbench tests geomean 1.00035 (byte-copy
+  A/A 1.00001), `sc5_fifo_repack` +0.17 percent, and `--tier=auto` over 16 worlds of the 29 short tests geomean 1.00049
+  (A/A 0.99996), `sc5_fifo_repack` +0.6 percent. Slower than the A/A, so it stays on a branch. A cheaper way would
+  add no block per call site.
+
 ## Bounds of a length: `BoundsLen` of `c to x + c - 1` is `x` (yavs-ir `opt.rs` `len_reg`, 2026-11-15)
 
 - **Decision** (agent): the bounds `c to x + c - 1` or `x + c - 1 downto c`, for a constant `c` and a once-defined

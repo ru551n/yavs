@@ -67,9 +67,10 @@ pub const OBJ_MAX_BYTES: u64 = 256 << 20;
 /// 3 MB of it, and a suite with many of them would push the compiled tier's code out of [`OBJ_DIR`].
 pub const CYCLE_DIR: &str = "cycle";
 
-/// Entries and bytes kept in [`CYCLE_DIR`].
+/// Entries and bytes kept in [`CYCLE_DIR`] (the bytes by default: `yavs-cycle` sets them from
+/// `YAVS_CYCLE_CACHE_MIB`). A large accelerator's suite fills about 760 MB.
 pub const CYCLE_MAX_ENTRIES: usize = 16384;
-pub const CYCLE_MAX_BYTES: u64 = 512 << 20;
+pub const CYCLE_MAX_BYTES: u64 = 2 << 30;
 
 /// The subdirectory of [`DIR`] that holds the analysed-unit cache ([`Store::units_of_library`]):
 /// one entry per design unit of the library (`yavs_sem::units`), under limits of their own.
@@ -335,6 +336,12 @@ impl Store {
             direct: true,
             count: unknown(),
         }
+    }
+
+    /// The store kept to `max_bytes` bytes instead of its default limit.
+    pub fn with_max_bytes(mut self, max_bytes: u64) -> Store {
+        self.limits.1 = max_bytes;
+        self
     }
 
     /// The store of the analysed units of library directory `lib` ([`UNIT_DIR`]);
@@ -1025,6 +1032,19 @@ mod tests {
         let c = lib.clean().unwrap();
         assert_eq!(c.entries, 5 + 5 + 2);
         assert!(!lib.dir().exists());
+    }
+
+    /// The cycle store keeps 2 GiB by default; `with_max_bytes` sets its byte limit, and a put
+    /// past it is refused while the entries there are in use.
+    #[test]
+    fn the_cycle_store_takes_a_byte_limit() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(Store::cycle_of_library(d.path()).limits.1, 2 << 30);
+        let cyc = Store::cycle_of_library(d.path()).with_max_bytes(3000);
+        for i in 0..5 {
+            cyc.put("cycle", &key(&i.to_string()), &[7; 1000]);
+        }
+        assert_eq!(cyc.entries().len(), 2);
     }
 
     /// A suite larger than the limit, run again and again in the same order, with a minute

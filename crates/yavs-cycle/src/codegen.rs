@@ -503,7 +503,7 @@ fn threads() -> (usize, Option<Arc<dyn yavs_kernel::Tokens>>) {
 /// Keep the machine code of the region's functions in the compilation cache of library directory
 /// `lib` from now on (`None`: compile every function).
 pub fn set_cache(lib: Option<&Path>) {
-    *STORE.lock().unwrap_or_else(PoisonError::into_inner) = lib.map(Store::cycle_of_library);
+    *STORE.lock().unwrap_or_else(PoisonError::into_inner) = lib.map(crate::store::cycle_store);
 }
 
 /// The key of a function's machine code in the store: the yavs build ([`KeyBuilder`]), Cranelift's

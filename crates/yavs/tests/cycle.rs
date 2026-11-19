@@ -7017,6 +7017,32 @@ fn a_check_failing_on_the_second_image_ends_it() {
     }
 }
 
+/// `YAVS_CYCLE_CACHE_MIB` takes a whole number of MiB of at least 1; another value is an error
+/// before the run.
+#[test]
+fn the_cycle_store_size_takes_mib() {
+    let dir = tempdir("cycle-storemib");
+    analyze(&dir, "rail.vhd", include_str!("cycle/rail.vhd"));
+    let args = ["run", "--work=work:lib", "--cycle", "cycle_rail"];
+    for v in ["0", "2G", "-1", "99999999999999999"] {
+        let o = yavs_env(&dir, &args, &[("YAVS_CYCLE_CACHE_MIB", v)]);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(!o.status.success() && o.stdout.is_empty(), "{v}: {err}");
+        assert!(
+            err.contains("error[E4104]: YAVS_CYCLE_CACHE_MIB takes a whole number of MiB"),
+            "{err}"
+        );
+    }
+    for v in ["", "1", "4096"] {
+        let o = yavs_env(&dir, &args, &[("YAVS_CYCLE_CACHE_MIB", v)]);
+        assert!(
+            o.status.success(),
+            "{v}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+}
+
 /// `YAVS_CYCLE_RAIL` takes `off`, `no-reseed` and `cap=N`; another value is an error naming
 /// them, before the run.
 #[test]

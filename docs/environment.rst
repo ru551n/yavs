@@ -707,6 +707,11 @@ Compiled tiers: Cranelift
      - ``1``
      - unset
      - ``run``
+   * - ``YAVS_CYCLE_CACHE_MIB``
+     - The most a library's store of cycle mode's analyses and machine code (``yavs-cache/cycle``, ``--cycle``) keeps, in MiB. A suite of large designs, each with many generics, can need more than the default; at the limit a run stores nothing new while the entries there are in use, so the designs past it analyse and compile again on every run. Not a whole number of at least 1 is error ``E4104``.
+     - a whole number of at least 1
+     - ``2048``
+     - ``run``
    * - ``YAVS_CYCLE_REGS``
      - Developers: the most words of a cycle region (``--cycle``) that its compiled code keeps in registers at once (default 256, 16 in a function of more than 500 operations); past that the changed ones go to memory. A small value sends almost every word through memory, to test the code that does it.
      - a whole number of at least 1

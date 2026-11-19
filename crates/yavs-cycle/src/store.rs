@@ -42,10 +42,34 @@ fn get_shared(s: &Store, kind: &str, key: &Key) -> Option<yavs_cache::Entry> {
     let p = Key::from_hex(std::str::from_utf8(&e).ok()?)?;
     s.get(PAYLOAD, &p)
 }
+/// `YAVS_CYCLE_CACHE_MIB`: the bytes the cycle store of a library keeps, a whole number of MiB of
+/// at least 1; unset or empty [`yavs_cache::CYCLE_MAX_BYTES`], another value an error.
+pub(crate) fn store_bytes() -> Result<u64, String> {
+    let v = std::env::var_os("YAVS_CYCLE_CACHE_MIB").unwrap_or_default();
+    let v = v.to_string_lossy();
+    if v.is_empty() {
+        return Ok(yavs_cache::CYCLE_MAX_BYTES);
+    }
+    v.parse::<u64>()
+        .ok()
+        .filter(|&n| n > 0)
+        .and_then(|n| n.checked_mul(1 << 20))
+        .ok_or_else(|| format!("YAVS_CYCLE_CACHE_MIB takes a whole number of MiB of at least 1, such as `4096`, not `{v}`"))
+}
+
+/// The cycle store of library directory `lib`, kept to [`store_bytes`] (the default on a bad
+/// value: `plan` reports it).
+pub(crate) fn cycle_store(lib: &Path) -> Store {
+    Store::cycle_of_library(lib)
+        .with_max_bytes(store_bytes().unwrap_or(yavs_cache::CYCLE_MAX_BYTES))
+}
+
 /// Environment variables that change nothing the analysis gives (the test runner's token server
-/// differs per invocation; the others print, count or set the threads the code is made on).
+/// differs per invocation; the others print, count, size the store or set the threads the code
+/// is made on).
 const ENV_SKIP: &[&str] = &[
     "YAVS_CYCLE_CACHE_CHECK",
+    "YAVS_CYCLE_CACHE_MIB",
     "YAVS_CYCLE_STATS",
     "YAVS_CYCLE_THREADS",
     "YAVS_STD_CACHE",
@@ -245,7 +269,7 @@ pub fn analysis_cache(
 ) -> Option<ValuesHook> {
     *FOUND.lock().unwrap_or_else(PoisonError::into_inner) = None;
     let setup = lib.map(|l| Setup {
-        store: Store::cycle_of_library(l),
+        store: cycle_store(l),
         part,
         overrides,
         check: std::env::var_os("YAVS_CYCLE_CACHE_CHECK").is_some_and(|v| v == "1"),

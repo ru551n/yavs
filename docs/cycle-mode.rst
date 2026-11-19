@@ -929,7 +929,8 @@ file, reads another kind of file, an environment variable, the clock or foreign 
 (its functions are still cached one by one), and a design keeps at most
 16 analyses: a testbench whose every test case reads generics of its own (a case name) shares only the functions. Test
 cases whose analysis and region come out the same anyway keep one copy of them. The size of the store is
-limited (16384 entries, 512 MiB; a region of more functions than that keeps its code as a whole only), and
+limited (16384 entries, 2 GiB, ``YAVS_CYCLE_CACHE_MIB`` sets the bytes, :doc:`environment`; a region of more
+functions than that keeps its code as a whole only), and
 ``yavs cache clean --work=NAME:PATH`` empties it. ``--no-cache`` makes a run neither read nor write it, so such a run
 analyses and compiles every time.
 

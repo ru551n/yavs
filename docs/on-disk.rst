@@ -48,7 +48,7 @@ next testbench reads it instead.
 * The key of an entry holds the yavs build and the options, so an edit or another yavs makes a new
   entry. Nothing has to be cleaned by hand.
 * A library directory keeps at most about 4.75 GiB of cache: 4 GiB of design entries, 256 MiB of compiled
-  code, 512 MiB of analyzed units; and under ``--cycle`` another 512 MiB in ``yavs-cache/cycle`` for the analysis
+  code, 512 MiB of analyzed units; and under ``--cycle`` another 2 GiB (``YAVS_CYCLE_CACHE_MIB``) in ``yavs-cache/cycle`` for the analysis
   and machine code of the cycle region (:ref:`cycle-cache`). A suite only takes what it uses, about 10 MB for each testbench that runs
   more than once, so a suite of 120 testbenches in one library uses a little over 1 GB. Parallel runs can
   pass the limit by what they write in about 5 seconds.

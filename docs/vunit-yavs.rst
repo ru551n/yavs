@@ -44,14 +44,17 @@ as ``--name=value``.
        idle cores) (:doc:`running-faster`). Not passed to ``elab``. A ``--tier-compile`` in ``yavs.sim_flags``
        wins.
    * - ``yavs.cycle``
-     - Experimental. ``yavs run --cycle`` or ``--cycle-strict``: ``"off"`` (the default), ``"on"`` (the processes that fit run cycle-based,
-       the rest stays in the event kernel; the test output gets the line ``cycle mode: N of M processes run
-       cycle-based``, shown with ``-v`` for a passing test) or ``"strict"`` (the same, but a clocked or combinational process below the top-level unit that does
-       not fit is an error that lists them all). Set it per library, testbench, test or configuration. Cycle-based
-       processes drop their ``report`` and ``assert`` statements and library warnings, read metavalues as ``'0'`` and
-       have no waves; what it changes is in :doc:`cycle-mode`, and the flags are in the :doc:`cli-reference` (``--cycle``). A test that also has coverage,
-       ``--yavs-debug``, ``--yavs-interactive`` or ``--yavs-surfer`` fails before yavs starts, naming both. Not passed
-       to ``elab``. To see what would join, set ``yavs.sim_flags`` to ``["--cycle-report"]`` for one test with ``yavs.cycle`` ``"off"``: yavs prints the report and does not simulate, so that test fails. ``yavs.sim_flags`` ``["--cycle-exact-meta"]`` with ``yavs.cycle`` ``"on"`` or ``"strict"`` keeps the exact metavalue rules for a test, and the values in the message of a failed check.
+     - Experimental. ``yavs run --cycle`` or ``--cycle-strict``: ``"off"`` (the default), ``"on"`` (the processes that fit
+       run cycle-based, the rest in the event kernel; the test output gets the line ``cycle mode: N of M processes run
+       cycle-based``, shown with ``-v`` for a passing test) or ``"strict"`` (a clocked or combinational process below
+       the top-level unit that does not fit is an error). Set it for the whole run, a library, testbench, test or
+       configuration. Cycle-based processes below the top-level unit drop their ``report`` and ``assert`` statements,
+       and metavalues read as ``0`` or ``1``: :doc:`cycle-mode` lists what it changes. A test that also has coverage
+       (``--yavs-cov``, ``enable_coverage``), ``--yavs-debug``, ``--yavs-interactive`` or ``--yavs-surfer`` fails before
+       yavs starts, naming both. Not passed to ``elab``. To see what would join, set ``yavs.sim_flags`` to
+       ``["--cycle-report"]`` for one test with ``yavs.cycle`` ``"off"``: yavs prints the report and does not simulate,
+       so that test fails. ``yavs.sim_flags`` ``["--cycle-exact-meta"]`` with ``yavs.cycle`` ``"on"`` or ``"strict"``
+       keeps the exact metavalue rules for a test, and the values in the message of a failed check.
    * - ``yavs.cov_embed_sources``
      - ``yavs run --cov-embed-sources``: store the source text in the database, so the HTML report needs no
        checkout. The source text then travels with the database (:doc:`coverage`).

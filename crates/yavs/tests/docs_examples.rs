@@ -516,10 +516,18 @@ fn cycle_mode_page() {
             }
         }
     }
-    // The report and the strict errors.
-    let (code, _, err) = e.yavs(&["run", "--cycle-report", WORK, "tb_left_out"]);
-    assert_eq!(code, 0, "{err}");
+    // The exact metavalue rules, with the line that says how following the start values ended.
+    let (code, out, err) = e.yavs(&["run", "--cycle", "--cycle-exact-meta", WORK, "tb_metavalue"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert!(err.contains("still followed when the run ended"), "{err}");
+    on_page(page, &out);
     on_page(page, &err);
+    // The reports, with the block of dropped asserts, and the strict errors.
+    for top in ["tb_left_out", "tb_rtl_failure"] {
+        let (code, _, err) = e.yavs(&["run", "--cycle-report", WORK, top]);
+        assert_eq!(code, 0, "{err}");
+        on_page(page, &err);
+    }
     let (code, _, err) = e.yavs(&["run", "--cycle-strict", WORK, "tb_left_out"]);
     assert_eq!(code, 2, "{err}");
     for code in ["E4127", "E4119", "E4111", "E4121"] {

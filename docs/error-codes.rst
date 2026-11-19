@@ -617,7 +617,7 @@ Cycle mode (E4 and W4)
    * - _`E4103`
      - The file given to ``yavs run --cycle-report=FILE`` cannot be created or written (missing directory, permissions, full disk).
    * - _`E4104`
-     - An environment variable of cycle mode has a value it does not take, such as ``YAVS_CYCLE_SKIP_CHECK=yes`` (it takes ``1`` or ``full``).
+     - An environment variable of cycle mode has a value it does not take, such as ``YAVS_CYCLE_CACHE_MIB=0`` (it takes a whole number of MiB of at least 1).
    * - _`E4110`
      - Cycle mode takes a process with a wait only in one shape: ``wait until <edge>;`` as the first statement, the only wait, a clocked process (``rising_edge(clk)``, ``falling_edge(clk)`` or ``clk'event and clk = '1'``, optionally followed by ``and`` more conditions).
    * - _`E4111`
@@ -655,7 +655,7 @@ Cycle mode (E4 and W4)
    * - _`E4127`
      - A process outside the cycle region reads the history of a signal this process drives: ``'active``, ``'last_active``, ``'last_event``, ``'last_value``, ``'transaction``, ``'stable``, ``'quiet`` or ``'delayed``, directly or in a subprogram it calls (an edge test such as ``rising_edge`` is not history here).
    * - _`E4128`
-     - A ``force`` or ``release`` the design can run (in a process, or in a subprogram a process calls) changes a signal this process drives, which cycle-based code would not see, so the process stays in the event kernel; members that only read the forced signal still join.
+     - A ``force`` or ``release`` the design can run (in a process, or in a subprogram a process calls) changes a signal this process drives, which cycle-based code would not see, so the process stays in the event kernel; processes that only read the forced signal still join.
    * - _`E4129`
      - Combinational logic (or a register with an asynchronous reset) feeds a process outside the region whose result depends on the delta cycles its inputs change in: one that keeps a value from its previous run (a latch, a variable read before it is assigned, a combinational loop), has an incomplete sensitivity list, or stays out for another reason.
    * - _`E4130`
@@ -696,4 +696,4 @@ See also
 
 * :doc:`troubleshooting`: how to read a diagnostic, and the common problems.
 * :doc:`cli-reference`: ``--message-format``, ``-Werror`` and exit statuses.
-* :doc:`cycle-mode`: the codes E4101 to E4139 and what to do about them.
+* :doc:`cycle-mode`: what to do about the codes W4101, E4101 to E4104 and E4110 to E4139.

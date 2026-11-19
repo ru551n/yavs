@@ -15,7 +15,7 @@ the region, so a pass is not vacuous. See README.md.
 The gate compares exactly (`--contract exact`, the default): cycle runs take `--cycle-exact-meta`
 and YAVS_CYCLE_EXACT_CLOCKS=1, which keep the metavalue rules and copied clocks of the normal
 mode. `--contract default` runs plain `--cycle` (two-state metavalues, a copied clock is its
-source: docs/cycle-mode.rst "The contract in short") and also reports the region under the exact
+source: docs/cycle-mode.rst "What you give up") and also reports the region under the exact
 rules: where the two reports agree the test must pass as under the exact gate; where they differ
 a difference of the output is bucket `contract` (listed, not failing) and only a crash fails it. A
 failed check (E3009) is compared there by its code and source place only (no values in its message).

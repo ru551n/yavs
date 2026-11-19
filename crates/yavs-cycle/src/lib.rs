@@ -34,7 +34,7 @@ pub mod codes {
     pub const NOT_WITH: &str = "E4102";
     /// The file of `--cycle-report=FILE` cannot be written.
     pub const REPORT_FILE: &str = "E4103";
-    /// A developer environment variable of cycle mode with a value it does not take.
+    /// An environment variable of cycle mode with a value it does not take.
     pub const ENV_VALUE: &str = "E4104";
     /// Asserts and reports of severity error or failure that cycle-based processes drop (A41).
     pub const DROPPED_STOPS: &str = "W4101";

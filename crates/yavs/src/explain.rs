@@ -548,7 +548,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E4104",
-        "A developer environment variable of cycle mode has a value it does not take, such as `YAVS_CYCLE_SKIP_CHECK=yes` (it takes `1` or `full`). The message names the values it takes; unset the variable, or leave it empty, to turn the check off.",
+        "An environment variable of cycle mode has a value it does not take, such as `YAVS_CYCLE_SKIP_CHECK=yes` (it takes `1` or `full`). The message names the values it takes; unset the variable, or leave it empty, to turn the check off.",
     ),
     (
         "W4101",

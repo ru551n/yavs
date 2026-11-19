@@ -27,6 +27,9 @@ use crate::pre::{self, Op};
 use crate::scan::{Scan, ScanFrom, ScanShape};
 use crate::{InstData, NAT_ASK, NAT_CODE, ProcDriver, ProcRoots, Runtime, SharedState};
 
+/// The native of `std.standard.now`.
+const NOW: &str = "yavs.standard.now.void.r_delay_length";
+
 /// An execution failure before it becomes a `SimError` with a trace.
 #[derive(Debug)]
 pub(crate) enum Fault {
@@ -753,6 +756,9 @@ pub(crate) struct Machine {
     /// The reports it printed, to print again when its state is restored (`Some` while a
     /// package is initialised or a traced call runs, `call_values_traced`).
     pub(crate) init_reports: Option<Vec<(u8, String)>>,
+    /// `now` read without a kernel (elaboration: always 0 fs) does not taint the run
+    /// (`CallTrace::now_is_input`).
+    pub(crate) now_ok: bool,
     /// The first reports of this initialisation were printed by an earlier one (#874).
     pub(crate) reports_seen: usize,
     pub entry: FuncId,
@@ -1545,6 +1551,7 @@ impl Machine {
             pkg_init: None,
             tainted: None,
             init_reports: None,
+            now_ok: false,
             reports_seen: 0,
             entry,
             dbg: None,
@@ -5941,6 +5948,7 @@ impl Machine {
         if (self.pkg_init.is_some() || self.init_reports.is_some())
             && self.tainted.is_none()
             && !crate::native::pure(&n.symbol)
+            && !(self.now_ok && ctx.is_none() && n.symbol == NOW)
         {
             self.tainted = Some(format!("it calls `{}`", n.symbol));
         }

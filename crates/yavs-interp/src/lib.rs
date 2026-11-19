@@ -305,6 +305,11 @@ impl SharedState {
         self.tainted.is_some()
     }
 
+    /// How many reports of package initialisation an earlier initialisation printed (#874).
+    pub fn init_printed(&self) -> usize {
+        self.init_printed
+    }
+
     pub fn new(vars: Vec<u8>) -> SharedState {
         SharedState(Box::new(SharedData {
             vars,
@@ -2350,6 +2355,15 @@ impl Runtime {
     /// Take the program out of the runtime to grow it in place, without a copy: the runtime
     /// holds an empty one until [`Runtime::extend_from`] gets the grown program (the caller
     /// keeps the old statement count). `None` while anything else holds the program.
+    /// Replace the package data (a package state restored from bytes, `SharedState::state_image`,
+    /// for the same program).
+    pub fn set_package_data(&mut self, data: Vec<Arc<InstData>>) {
+        self.pkg_digest = (0..data.len())
+            .map(|_| std::sync::OnceLock::new())
+            .collect();
+        self.pkgs = data;
+    }
+
     pub fn take_program(&mut self) -> Option<Program> {
         Arc::get_mut(&mut self.prog).map(std::mem::take)
     }
@@ -3712,6 +3726,9 @@ pub struct CallTrace {
     /// Why its result cannot be reproduced from its arguments alone: it printed nothing but
     /// called a native that reads the environment, a file or a clock, or foreign code.
     pub tainted: Option<String>,
+    /// Set by the caller: `now` read during elaboration (no kernel, so always 0 fs) is an input
+    /// of the call like its arguments, not a reason to taint it (the session's replay, `srep`).
+    pub now_is_input: bool,
 }
 
 /// [`call_values`] that also says what the call did besides computing (`CallTrace`), so that
@@ -3724,8 +3741,12 @@ pub fn call_values_traced(
     args: &[CallVal],
     ret: Option<yavs_ir::TyId>,
     shared: Option<&Arc<Mutex<SharedState>>>,
+    now_is_input: bool,
 ) -> (Result<Option<CallVal>, SimError>, CallTrace) {
-    let mut t = CallTrace::default();
+    let mut t = CallTrace {
+        now_is_input,
+        ..Default::default()
+    };
     let r = call_values_inner(rt, func, inst, args, ret, shared, Some(&mut t));
     (r, t)
 }
@@ -3746,8 +3767,9 @@ fn call_values_inner(
 ) -> Result<Option<CallVal>, SimError> {
     let prog = rt.prog.clone();
     let mut m = Machine::new(rt, inst, Vec::new(), func);
-    if trace.is_some() {
+    if let Some(t) = &trace {
         m.init_reports = Some(Vec::new());
+        m.now_ok = t.now_is_input;
     }
     let mut guard = match shared {
         Some(s) => Some(s.lock().map_err(|_| {

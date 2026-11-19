@@ -178,6 +178,19 @@ instead. ``--yavs-no-jobserver`` turns the server off.
 ``-j N`` compiles with up to N ``yavs analyze`` calls at once, into different libraries; it gains
 on projects of many libraries, such as a set of verification components (:ref:`vunit-compiling`).
 
+Cycle mode
+----------
+
+Cycle mode (:doc:`cycle-mode`, experimental) runs the clocked and combinational RTL of a test as compiled code. Turn
+it on in the run script with the sim option ``yavs.cycle``, for the whole run or one testbench or test:
+
+.. code-block:: python
+
+    vu.set_sim_option("yavs.cycle", "on")
+
+It gives up some detail, such as asserts below the top-level unit, and it cannot be combined with coverage or
+debugging. Read :doc:`cycle-mode` before you rely on it.
+
 Other libraries in a test
 -------------------------
 

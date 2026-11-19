@@ -1,0 +1,1 @@
+The cycle mode guide is rewritten around what a user needs: whether to use it, a first run on the command line and in VUnit, what it gives up, how to check results against the normal mode, reading the report, fixing what stays out, CI and the cache.

@@ -156,6 +156,14 @@ Key the cache on the yavs version and on your sources, and let an older entry se
 entry of another yavs is ignored, or refused with ``L0004`` if its library format differs. In that case delete the
 directory and analyze again.
 
+Cycle mode
+----------
+
+Cycle mode (:doc:`cycle-mode`, experimental) can make long tests of synchronous RTL faster, but it is a different
+simulation. Keep a normal-mode job as the sign-off, and run cycle mode as a second job. Keep coverage, waveform and
+debug jobs in the normal mode. The cycle part of the compile cache is in the library directories too, so caching
+them as above keeps it warm. :ref:`cycle-mode-ci` has the details.
+
 A GitHub Actions job
 --------------------
 
@@ -219,4 +227,5 @@ See also
 * :doc:`on-disk`: what is in the directories you cache.
 * :doc:`coverage`: exclusions and report formats.
 * :doc:`vunit`: running tests with VUnit.
+* :doc:`cycle-mode`: the opt-in mode for synchronous RTL.
 * :doc:`cli-reference`: the exit statuses.

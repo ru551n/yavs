@@ -125,8 +125,8 @@ run stops when it differs:
 Every comparing tool here (`cyclegate.py`, `cyclereplay.py`, `cyclebig.py`, `cyclefuzz.py`, `seeddiff.py`) compares
 exactly by default, `--contract exact`: its cycle runs take `--cycle-exact-meta` and `YAVS_CYCLE_EXACT_CLOCKS=1`,
 which keep the normal mode's metavalue rules, a copied clock a clock of its own and the values in a failed check's
-message, so a difference is a bug. The default contract of `--cycle` gives up those (`docs/cycle-mode.rst`, "The
-contract in short"): `--contract default` runs plain `--cycle`, and a difference is bucket (fuzzer verdict)
+message, so a difference is a bug. The default contract of `--cycle` gives up those (`docs/cycle-mode.rst`, "What
+you give up"): `--contract default` runs plain `--cycle`, and a difference is bucket (fuzzer verdict)
 `contract` only when the contract classes below explain all of it; whatever is left fails, as under the exact
 contract. Run the gates in both contracts before a push:
 

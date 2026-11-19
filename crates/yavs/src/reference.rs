@@ -548,7 +548,7 @@ See also
 
 * :doc:`troubleshooting`: how to read a diagnostic, and the common problems.
 * :doc:`cli-reference`: ``--message-format``, ``-Werror`` and exit statuses.
-* :doc:`cycle-mode`: the codes E4101 to E4139 and what to do about them.
+* :doc:`cycle-mode`: what to do about the codes W4101, E4101 to E4104 and E4110 to E4139.
 ";
 
 /// The command list of the user guide's interactive debugger page, included there.

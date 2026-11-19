@@ -125,7 +125,7 @@ branches in the settle).
 | An edge run is skipped when the same set of edge classes ran last without changing any word of the image and no input was read since (`rt::Idle`: the image copied before a run and compared after its export; the sets known idle are forgotten at any input read and any run that changed a word, a run the rule does not watch included). Only for an image of at most `IDLE_WORDS` (4096) words and a region without notes (a top-level report prints at every edge); after 16 watched runs in a row without a skip the rule rests for 256 edge runs. Under `YAVS_CYCLE_SKIP_CHECK=full` a run the rule would skip runs and must leave the image as it was (an internal error otherwise) | The kernel skips a clocked process whose inputs did not change (idle skip); the region ran at every edge: SatCat5 `slip_decoder_tb` (5 of 7 processes, 9 operations) cost 0.419 G instructions against 0.334 G in the normal mode, 99.6 % of its edge runs changing nothing; with the rule 0.350 G. `cfgbus_host_axi_tb` 0.8 % fewer (74 681 of 200 000 edges skipped), Microwatt and the ac701 board (images over the limit), `cfgbus_port_stats_tb` (an input moves at every edge) and the Open Logic CORDIC bench within 0.3 %, interpreted testbench, 2026-11-19. A per-class rule (an idle clock beside a busy one) and a writer-side change flag instead of the copy were not built | `src/rt.rs` `Idle`, `idle_end`, `wake`; `tests/cycle/idle.vhd` |
 | The trigger functions are cut into pieces, one per member, and into functions of about 4000 operations (`CHUNK`); a member longer than that is cut into parts of about that size (`cut`): at top-level operations, and an `if` larger than that inside its branches, every part behind the same condition, unless a branch writes the condition's word; a part that goes on in the next stores every changed word, scratch ones too, and the next reads them from memory. Registers hold words only within a part; the edge function calls the settle's functions instead of compiling them again | The compile time of one function grows faster than its size: a member of 39 000 operations as one function took twice the cycles (2.3 to 2.6 G against 1.1 to 1.2 G) for the same instructions; a branch saves and forgets the words in registers. With the register cap the cut changes instructions by a few percent only | `src/codegen.rs` |
 | Before a member's operations are cut and compiled, consecutive `If`s whose conditions their chains compute the same way join (`codegen::join_ifs`, at every level of `If`s): a chain is the operations just before an `If` that write the words its condition is made from (one word each, no check, no branch, no run-time address: `chain_dst`); the later `If`'s branches go behind the earlier one and its chain goes, when that chain is the earlier one but for the words it writes, every word either chain writes is written once in the member and no chain operation reads a word it or a later operation of its chain writes (what the last run left; `a := a and en; if a = '1'` then the same with `b` looks alike and reads other values: they joined in the first version, a wrong result, `tests/cycle/joinif.vhd`), the earlier `If`'s branches write nothing either chain reads or writes, and what the later chain writes holds no state and is read only there (`chain_ext`, `count_writes`). Operations move into the result (a clone per level of nested `If`s was quadratic). Not across members or settle steps, not in shared bodies or loop group members | An unrolled `for` loop testing a condition that does not change with the loop parameter (a register file's `if write_index = list_idx` per bit) was a compare and a branch per element; with thousands of such branches in a clock-edge function every one mispredicted when the condition changed. ac701 boot test (`test_flash_slot_boots_into_ddr`, warm, pinned, `--tier=interp`, two runs each): cycles 120.0 and 129.4 to 111.2 and 107.7 G, branch misses 1006 and 1133 to 514 and 481 M, instructions 195.5 to 194.2 G; region code 2.38 to 2.05 MB, conditional branches 26.9 to 19.4 k. At the default tier runs of one binary differ by up to 10 percent (the compile thread): one run each 98.5 to 91.2 G cycles and 890 to 440 M branch misses (normal mode 425 M), another run of the joined binary 107 G and 600 M; the system test, one run each, 135.2 to 110.4 G cycles, 1127 to 499 M misses. NEORV32, Microwatt and hdl-modules `axi_cdc` under `--tier=interp`: instructions equal, cycles within run-to-run noise. If-conversion (both branches computed, a select) would remove the branch too but runs more instructions: not built | `src/codegen.rs` `join_ifs` |
-| The machine code of every function of the region is kept in a store of its own in the work library (`yavs-cache` `Store::cycle_of_library`, `yavs-cache/cycle/`, kind `cycle`, 16384 entries and 512 MiB; not with `--no-cache`), under a key of what the code generator makes the function from (`fun_key`: the yavs build (`KeyBuilder`: format and `build_id`), Cranelift's version, the target's triple and flags (`YAVS_CYCLE_FLAGS` and the verifier among them), the signature, the checks and whether they store their operands, the register cap (`YAVS_CYCLE_REGS`), a shared body's blocks and bases, and each part's operations and live-out words, empty parts that change no code left out); the entry lists the `keep` bits of the words the generator asked about and the places of the error words and the log when it used them (`Gen::kept`, `Gen::err`, `Gen::log`, `entry`), and is a hit only where all are the same (`from_entry`), so test cases whose images differ elsewhere share a function; a hit is linked with `define_function_bytes` and builds no function body. A function with relocations is not kept. `YAVS_CYCLE_CACHE_CHECK=1` compiles every function and fails (`E9999`) where its entry holds other code. A region of more functions than the store keeps (`Store::max_entries`, 16384) is not cached function by function: it could never be warm, and every function is a file. With the analysis cache (next row) a warm run builds no function body: the region's code is one entry (`cyc3c`) under the analysis key plus Cranelift's version and the target's triple and flags, linked with `define_function_bytes`; a function with relocations keeps the region out of that entry. A missing, cut short or damaged entry is a miss (`Store::get` validates it); `YAVS_CYCLE_DISASM` compiles every function | The code generator and Cranelift are deterministic, so the same inputs give the same code; the key was Cranelift's own hash of the built function until 2026-11-17, which built every function body only to compute it (`net_regs` cold start-up with the functions cached: codegen 182 to 32 M instructions); Cranelift compile was 1.4 to 3.7 G of a 2.4 to 7 G start-up of the vhdl-ai-test benches, and test cases of one design and generics make the same functions. The bodies' building and hashing were 0.1 to 0.2 G of a warm start-up before the region's code was kept whole. A store of its own: `cnn_accel_top` makes 2.7 MB of entries per design and generics, and its test bench has about 90 of them, which would have filled the 256 MiB of `obj/` and pushed the compiled tier's code out | `src/codegen.rs` `fun_key`, `crates/yavs/src/elab.rs` |
+| The machine code of every function of the region is kept in a store of its own in the work library (`yavs-cache` `Store::cycle_of_library`, `yavs-cache/cycle/`, kind `cycle`, 16384 entries and 2 GiB, `YAVS_CYCLE_CACHE_MIB`; not with `--no-cache`), under a key of what the code generator makes the function from (`fun_key`: the yavs build (`KeyBuilder`: format and `build_id`), Cranelift's version, the target's triple and flags (`YAVS_CYCLE_FLAGS` and the verifier among them), the signature, the checks and whether they store their operands, the register cap (`YAVS_CYCLE_REGS`), a shared body's blocks and bases, and each part's operations and live-out words, empty parts that change no code left out); the entry lists the `keep` bits of the words the generator asked about and the places of the error words and the log when it used them (`Gen::kept`, `Gen::err`, `Gen::log`, `entry`), and is a hit only where all are the same (`from_entry`), so test cases whose images differ elsewhere share a function; a hit is linked with `define_function_bytes` and builds no function body. A function with relocations is not kept. `YAVS_CYCLE_CACHE_CHECK=1` compiles every function and fails (`E9999`) where its entry holds other code. A region of more functions than the store keeps (`Store::max_entries`, 16384) is not cached function by function: it could never be warm, and every function is a file. With the analysis cache (next row) a warm run builds no function body: the region's code is one entry (`cyc3c`) under the analysis key plus Cranelift's version and the target's triple and flags, linked with `define_function_bytes`; a function with relocations keeps the region out of that entry. A missing, cut short or damaged entry is a miss (`Store::get` validates it); `YAVS_CYCLE_DISASM` compiles every function | The code generator and Cranelift are deterministic, so the same inputs give the same code; the key was Cranelift's own hash of the built function until 2026-11-17, which built every function body only to compute it (`net_regs` cold start-up with the functions cached: codegen 182 to 32 M instructions); Cranelift compile was 1.4 to 3.7 G of a 2.4 to 7 G start-up of the vhdl-ai-test benches, and test cases of one design and generics make the same functions. The bodies' building and hashing were 0.1 to 0.2 G of a warm start-up before the region's code was kept whole. A store of its own: `cnn_accel_top` makes 2.7 MB of entries per design and generics, and its test bench has about 90 of them, which would have filled the 256 MiB of `obj/` and pushed the compiled tier's code out | `src/codegen.rs` `fun_key`, `crates/yavs/src/elab.rs` |
 | A failed check stores its operands in the error words only under `--cycle-exact-meta`; plain `--cycle` (owner A34: error code and place are the floor, the text may differ) says what failed without the values (`Check::message(None)`, `bare`; a division's zero divisor and its too large quotient are one site, so one message), and every check's cold block jumps with its site to one exit per function instead of returning (one epilogue). Measured 2026-11-17 on one binary, `--cycle --no-cache`, sum of the region's code bytes: ac701 boot 2.035 MB to 1.706 MB (dropping the stores alone 1.928 MB, the shared exit the rest), cnn_accel_top 1.591 to 1.283, conv_core 0.301 to 0.238, NEORV32 0.521 to 0.514, Microwatt 0.282 to 0.274; Cranelift instructions -1.9 % on ac701 boot; run-time instructions and cycles unchanged within daytime noise (the hot path is the same compare and branch). A shared exit reached straight from the compare (the site moved into a register on the hot path) and one cold block per site were tried: the first puts a move on every check's path, the second saved nothing | `src/codegen.rs` `Gen::check`, `Gen::exit`, `src/lower.rs` `Check::bare`, `src/rt.rs` `failed` |
 | The functions the cache does not have are built and compiled on `--threads` threads (`auto`: up to 8; at most the CPUs the run may use), the threads past the first only on tokens under a token server; one thread compiles in function order, several the largest first. Lookups, definitions, the cache's entries and every printed line stay in function order. The default `--threads=1` compiles on one thread, as before | The functions are independent and Cranelift gives the same code for the same function on any thread: the machine code (`YAVS_CYCLE_DISASM`), the function entries' payloads and the store files of two cold runs are identical at 1, 4 and 8 threads (net_regs, NEORV32, `cnn_accel_top`). Wall of a cold start-up (empty cycle store), median of 7 on 4 timing cores, 2026-11-17 daytime: net_regs 0.167 to 0.132 s, NEORV32 (0 fs) 0.456 to 0.344 s, `cnn_accel_top` (0 fs) 0.758 to 0.563 s at 4 threads; instructions of all threads 0.4 to 0.5 percent more, the same at 1 thread (largest first there cost 0.4 percent). With `--threads=4` (the kernel's pool too) on the branch head of the same day: net_regs 0.131 to 0.120 s, NEORV32 0.431 to 0.324 s, `cnn_accel_top` 0.757 to 0.497 s; 8 threads on 8 cores no faster than 4 (0.506 and 0.497 s). The largest function bounds it (`cnn_accel_top`: 27 to 60 ms of a 343 ms compile). Under a test runner, `--threads` (or the token server) is what keeps parallel simulations from taking more cores than they were given; a wider default for a run from the shell is the owner's call | `src/codegen.rs` `compile`, `crates/yavs/src/elab.rs` |
 | The analysis (the region's `Selection`: members, lowered bodies, settle order, boundary, the reasons of the rest) is kept in the cycle store too (`src/store.rs`; not with `--no-cache` or without a work library). Its key is the yavs build, the analysis of the closure (`StageCache::identity`: files, their hashes, the analysis options, `Db::stage_extent`), the source files in order, what the command line asked that the analysis depends on (top, libraries, port collapsing, lowering options, resolution, `--ieee-warnings`, `--load`, plusargs, source maps), every `YAVS_` environment variable but `YAVS_CYCLE_CACHE_CHECK`, `YAVS_STD_CACHE` and `YAVS_LOG`, and the `-g` texts of the top-level generics something READ: the walk (K1, the index), the value passes and the selection (K2, named by the index). Reads are noted where every value is read, `ScopeVals` (`yavs-elab` `watch`); an iteration over values counts as reading all. A hit leaves the value passes out (`ElabConfig::values`). Text files the elaboration walk reads from disk (`file_open` for reading, `endfile`, `readline`, `file_close` on them: `yavs_interp::file_calls`, `files_read`) are in K1 with their name, bytes and the working directory. Not kept: a design whose elaboration called any other native that is not pure or foreign code (`yavs_interp::outside_calls` above `file_calls`), or read a file after the walk, value passes that printed a report, more than `PER_DESIGN` (16) analyses of one K1 (`Store::sightings`: `tb_cnn_accel_top` reads a case name per test case, 4 MB of analysis and code each, which would push the functions its 558 test cases share out of the 512 MiB). The payloads of `cyc3` and `cyc3c` are kept by a hash of their bytes (kind `cyc3p`, `put_shared`, `get_shared`): an entry holds the hex of its payload's key, written after the payload, and a missing payload is a miss, so keys whose analysis and region come out the same (two test cases that read a case name the analysis does not use) keep one copy. `YAVS_CYCLE_CACHE_CHECK=1` makes the analysis and the code again on a hit and fails (`E9999`) where they differ. With the code (`cyc3c`) the built region is kept (`Built`: everything the kernel process is made from, the summary line, and `codegen::CodePlan`: the functions, what each trigger function runs as function indices, tables, guards, settle units; the check sites apart, decoded when a check first fails, `rt::Sites`): a `--cycle` hit (`Setup::fast`; not `--cycle-strict`, `--cycle-report`, the check or `YAVS_CYCLE_DISASM`) decodes neither the selection nor the members' operations and builds nothing (`codegen::from_blob`, `finish`); the check compares the entry with the region built and compiled again | The checker, selection and lowering were 0.1 to 0.8 G of every start-up (`net_regs` 1.30 G cycle against 0.30 G normal); a test runner's configuration generic holds the test's name, output path and a seed per run, so a key over every generic never hits across test cases, while the generics that size the design are read by the walk. Elaboration and the analysis are deterministic, so a run whose values agree on every generic the run that made the entry read takes the same path and reads the same. Start-up after it (M instructions, warm): `net_regs` 1301 to 366 (normal 298), `weight_buffer` 516 to 353 (normal 371), Open Logic `axi_master_simple` 853 to 704 (normal 712) | `src/store.rs`, `yavs-elab` `eval.rs` `watch`, `walk.rs` |
@@ -238,3 +238,186 @@ YAVS_CYCLE_CACHE_CHECK=1 YAVS_BIN=... python3 -I tools/difftest/cyclegate.py --w
 ## 6. Coordination
 
 - The hooks in other crates are kept small (`yavs-elab` `Region`, `build.rs`; `yavs` `run_design`) so the branch follows main with cheap merges.
+
+## 7. Detail moved from the user guide
+
+`docs/cycle-mode.rst` was cut down to what a user needs (2026-11-19). The detail below was on that page; it still
+describes what the code does, and a change to it updates this section. Every user-visible difference stays on the
+user page, if only in one line: this section holds the mechanism and the exact conditions.
+
+### How the region runs
+
+The member processes are scheduled once at elaboration and compiled together. Large combinational processes whose
+inputs did not change since their last run are not run again, and between clock edges only the logic a changed
+input reaches runs. At a clock edge only the logic that the registers of that clock and the changed inputs reach
+runs, and only the outputs that logic writes are compared with what was last driven, so in a design with several
+clocks an edge of one clock costs what that clock's part of the design costs. With several clocks, the members of
+each clock edge run together, one clock after the other: when checks of two clocks fail at the same edge, the run
+stops with that of the clock that runs first, and a top-level checker's message on one clock can come before the
+failure of a process on another. A failed check stores no values, so each check is less code; `--cycle-exact-meta`
+keeps them.
+
+### What a member may contain (exact conditions)
+
+Arrays of more than a few thousand elements (memories; E4133 has the sizes) are written at run-time indices, or held
+in a shared variable that one clocked process alone uses in its clock-edge body. A shift operator such as `sll` by a
+count computed at run time joins only when the count's subtype cannot be negative (`natural`). Qualified record
+aggregates join when their fields provably fit their subtypes. Slices and indices may be bounded by variables whose
+values are known on every path (`lo := hi + 1; v(hi downto lo) := ...`). Conditions may call the design's pure
+functions of generics.
+
+A top-level process with an assert or report joins only when it is clocked, the assert is at its clock edge, it reads
+only signals the region drives, and its message uses string literals, `&`, `'image` and `to_string` of integers,
+enumerations, `std_ulogic` and `boolean`, or `to_string`, `to_hstring` and `to_ostring` of vectors. Otherwise it is
+behavioural, or E4136 when it reads a signal the region does not drive alone.
+
+### Delta rules behind E4129, E4130 and E4132
+
+- E4129: combinational logic, or a register with an asynchronous reset (the normal mode can change it twice in one
+  time step: at the edge and at a reset made by another register), that feeds, back to the registers, a process
+  outside the region whose result may depend on the delta cycles its inputs change in: one that keeps a value of an
+  earlier run (a combinational loop included, such as `l <= d when en = '1' else l;`), or, below the top-level unit,
+  one that drives a signal and has an incomplete sensitivity list or that cycle mode could not show keeps no value (a
+  process with a `'Z'` and a variable). A concurrent assignment with a final `else` that reads nothing it drives and
+  stays out for its `'Z'` or its `after` alone does not count, nor does a process that acts at clock edges alone.
+  Testbench code (the top-level unit, and a monitor that drives no signal) sees the computed values earlier instead.
+- E4130: a clock gated or computed by an assignment comes one delta cycle after its source; a plain copy is its
+  source. The edges of clocks made by assignments with a delay (`clk <= not clk after 5 ns;`) all come in the first
+  delta cycle of their time step, and those of clock processes that wait for a time and assign without a delay in
+  the second, when yavs knows the delays and times at elaboration: logic between clocks of one of these kinds joins,
+  and so does logic that registers of the second kind (or of a clock process whose time yavs does not know, whose
+  edges come in the second delta cycle or later) feed and registers of the first or second kind sample. The path
+  counts whatever lies on it: processes outside the region for any reason (a testbench process excepted), registers
+  outside the region, ports. Logic that computes a clock from what the region drives is E4131.
+- E4132: the normal mode can change such a register at the edge and again a delta later, and that pulse resets or
+  clocks the other process; the region computes the edge and the reset together and would not show the pulse.
+
+### Copied clocks that keep their own edges
+
+A copy whose start value would give it an edge at time 0 that its source does not have (a `clk'event and clk = '1'`
+user of a copy of a clock that starts at `'1'`) is no copy. When a process in the event kernel has a clock edge on the
+copy, the members on that copy keep the copy's own edges too, so that process samples them as in the normal mode.
+`YAVS_CYCLE_EXACT_CLOCKS=1` keeps every copy a clock of its own (the gates' exact contract).
+
+### Elaboration-time calls and constants
+
+A call of a pure function whose arguments are all known during elaboration (generics and constants: `log2(DEPTH)`,
+a check of a register map) is evaluated once, while the design is elaborated, and its value is built into the
+region. The design's own `assert` and `report` messages of that call are produced once for each process holding it,
+at 0 fs, in that process's name, with the normal mode's text; the normal mode gives them each time the statement runs,
+so in cycle mode such a message appears once, at 0 fs, and also when the run never takes the branch the call is in.
+The notes and warnings of `ieee` and `std` the call gives (a truncating `to_unsigned`) are dropped. A call that
+reports with severity error or failure keeps its process in the event kernel. A call with arguments that only an
+unrolled loop or an enclosing call knows joins only when its assertions are shown to hold. In a process of the
+top-level unit any such message keeps the process out.
+
+A message made while a constant is evaluated (`constant c : t := f(3);` where `f` reports) appears once, as in the
+normal mode, also when every process of the constant's declarative region joins. `--cycle-report` does not run the
+design and does not show it. Known gap (on the user page in one line): when every process of that region joins and
+the function has no `report` or `assert` of the design's own, the region's constants are not evaluated in the run, so
+an `ieee` warning they give is not made and one that fails (an overflow) does not stop the run.
+
+### `--cycle-exact-meta`: the second image
+
+The region runs the same code a second time on a second set of values ("the second image" of the summary line),
+where every `'U'` at the start, and every metavalue that reaches an input in that time, is `1` instead of `0`. An
+output bit that differs between the two depends on a start value, and the testbench reads `'U'` there (a register
+without reset shows `'U'` until it is first written, and the event from `'U'` to `0` at time 0 is gone). It ends,
+and outputs are `0` and `1` again, when the two agree on every word that holds state (compared every 16 clock
+edges), at 1024 clock edges of any clock (`RAIL_CAP`, `YAVS_CYCLE_RAIL`), or when a range or index check fails on the
+second image only, which never stops the run.
+
+It is not the normal mode's `'U'`: a bit is `'U'` when its value depends on a start value, so `q and not q` gives `0`
+where the normal mode gives `'U'`. Followed: signals, registers, variables of clocked processes, the words of memories
+without an initial value (a word nothing wrote shows `'U'`, also to the testbench), and the variables of a called
+subprogram without one (`'U'` at every call); a metavalue that reaches an input while the second image runs (a bit
+that depends only on `'X'`, `'Z'`, `'W'` or `'-'` shows `'X'`, one that needs a `'U'` shows `'U'`; two more sets of
+values run from the first such metavalue on, one with only the `'U'` ones at 1 and one with only the others);
+choices and conversions on such a value in a combinational process, where the second set takes the branch the
+region's own values take (`=`, `/=`, `if s then`, `case`, `std_match`, `numeric_std` comparisons, `to_integer` as an
+index, `to_01`, `to_bit`). Where the region's choice is the normal mode's (`s = '1'` is false for a `'U'`), the result
+is the normal mode's. This holds where the value compared is a signal (a register, a port, a field or slice of one);
+a comparison of a variable, a value computed first or an element chosen at run time takes the branch its own value
+gives (`?=` too). Integers have no `'U'`: they start at `'left` in both sets.
+
+Where it still differs from the normal mode (the user page lists these in one sentence):
+
+- The region's own set reads a `'U'` as `0`: `y <= a when s = '0' else b` with `s` `'U'` gives `a` where the normal
+  mode gives `b`.
+- A clocked process makes its choices on each set's own values: a choice on a `'U'` gives `'U'` where the two branches
+  differ, and an index of a `'U'` address may fail its range check on the second set, which then ends. Taking the
+  region's choices there too made a `'U'` in a CPU's cache that the normal mode does not have; the cause is not known
+  yet, so the clocked choices stay per set.
+- A choice on a variable or a computed value may differ between the sets: the bits it decides show `'U'`.
+- So a clocked process with a choice keeps a register's value where both sets agreed and only the second changed it
+  (as the normal mode keeps a register whose enable is `'U'`); a register that takes a `'U'` from its data while
+  keeping its value in the region's own set then reads `0` or `1`. `docs/examples/cycle/metavalue.vhd` shows it:
+  `eq` is `1` under exact-meta, `0` in the normal mode.
+- `numeric_std` arithmetic on a metavalue gives all `'X'` in the normal mode, here only the dependent bits.
+- A `'U'` the region drives that comes back to an input through a process outside reads as `0` in the region's own
+  set, so the region's values may differ from a run without the second image. No rule can avoid it: the process
+  outside may pass the value on as it is or inverted.
+
+E4137 under exact-meta covers a process that assigns a metavalue literal to a signal the testbench reads (a process
+of the top-level unit, or a behavioural one), and one that passes on to such a signal a `'Z'` that a process outside
+sets in its own statements, or that any process outside but a behavioural one passes on in a value it assigns (also
+one that stays out for another reason, such as a delay). A line another driver pulls up never holds a `'Z'`; a `'Z'`
+made in a called subprogram, given by a generic or passed on by a behavioural process is not seen.
+
+### The report's lines
+
+- `subset`: the processes that fit the rules. Fewer join than fit when one needs something yavs does not implement
+  yet or a rule of the region as a whole keeps it out (E4101, E4128 to E4137).
+- A loop group: processes that depend on each other in a circle without a combinational loop; the region evaluates
+  them with more work per clock.
+- `boundary`: `signal leaves exported` are the signals the region drives for processes outside (a record counts per
+  field), and the number in brackets how many of them nothing outside waits on, which makes them cheap. `inputs` are
+  the signals the region reads from the kernel, `wake the region` those whose change makes it run between edges. The
+  `wakes:` line says how many of those have a combinational path to a signal something outside reads (computed at
+  once) and how many wait for the next edge.
+- Plain-language wording of these lines is an open item (`lib.rs` `plan`); the user page explains them briefly.
+
+### The cache in detail
+
+Kept in `<library dir>/yavs-cache/cycle` (section 3 has the stores and keys): the analysis (which processes join, and
+their code before it is compiled), the region as built, and the machine code. `--cycle-strict` builds the region from
+the cached analysis; `--cycle-report` returns before building any region. A warm run takes the region and links the
+code (about half the start-up of a run without `--cycle` on a large accelerator whose region is most of the design).
+
+The key holds the design and sources, the top-level generics whose value elaboration or analysis reads (a test
+runner's configuration string, which only the testbench reads while it runs, does not split entries; VUnit
+`generics=` that the design reads do), the options, the `YAVS_` variables except the neutral ones (`store.rs`:
+`YAVS_CYCLE_CACHE_CHECK`, `YAVS_CYCLE_CACHE_MIB`, `YAVS_CYCLE_STATS`, `YAVS_CYCLE_THREADS`, `YAVS_STD_CACHE`,
+`YAVS_LOG`, `YAVS_TOKENS`, `YAVS_CONSOLE_HOOK`, `YAVS_COUNTERS`), the yavs build, and the contents of text files
+read at elaboration (a program loaded into a memory). Elaboration that writes a file, reads another kind of file, an
+environment variable, the clock or foreign code stores no analysis; its functions are still cached one by one. A
+design keeps at most 16 analyses, so a testbench whose every test case reads generics of its own (a case name)
+shares only the functions; identical analyses keep one copy. The store holds 16384 entries and 2 GiB
+(`YAVS_CYCLE_CACHE_MIB`); a region of more functions than that keeps its code as a whole only.
+
+Compilation uses `--threads` threads (one by default, `auto` up to 8, at most the CPUs; past the first, only on
+tokens a test runner lends). The machine code, the result and the cache contents are the same at any count. Under
+vunit-yavs the token server is on by default and every test runs with `--threads=auto`.
+
+### Developer variables
+
+`docs/environment.rst` keeps one short row each (its test needs a row for every variable); the full text:
+
+- `YAVS_CYCLE_CACHE_CHECK` (`1`; default unset): For testing only. `1`: a run that finds the analysis of its cycle region (`--cycle`), the region as it was built or its machine code in the compilation cache makes them again and stops with an internal error when they differ from the cached ones (to test the cache).
+- `YAVS_CYCLE_REGS` (a whole number of at least 1; default `256`): Developers: the most words of a cycle region (`--cycle`) that its compiled code keeps in registers at once (default 256, 16 in a function of more than 500 operations); past that the changed ones go to memory. A small value sends almost every word through memory, to test the code that does it.
+- `YAVS_CYCLE_CHECKS` (`off`, `on`, `all`; default checks on): Developers and tests. `off`: the code of a cycle region (`--cycle`) leaves out its integer overflow and range checks and clamps an index chosen at run time into its array, to measure what the checks cost. Results are wrong where a check would have failed. `all`: the checks, and after the processes of a loop group (processes reading through one another what they drive) one more run of each, which must change nothing; a change stops the run with an internal error (a debug build does this unless the value is `on`). `on`: the checks without that run, also in a debug build (for the tests).
+- `YAVS_CYCLE_CHUNK` (a whole number of at least 1; default `4000`): Developers: the operations of each compiled function of a cycle region (`--cycle`), about (default 4000); a member longer than that is cut into parts. A small value cuts every member, to test the cut.
+- `YAVS_CYCLE_THREADS` (a whole number of at least 1; default the count of `--threads` (1 unless given), at most the CPUs the run may use): Developers: the threads the functions of a cycle region (`--cycle`) are compiled on, in place of the count of `--threads`; under a test runner's token server the threads past the first still run only on the tokens it lends. The machine code is the same whatever the number.
+- `YAVS_CYCLE_DISASM` (any value; default unset): Developers: prints the machine code of the functions of a cycle region (`--cycle`) on standard error. They are compiled, not taken from the compilation cache.
+- `YAVS_CYCLE_EDGE_OUTPUTS` (`1`; default unset): Developers: `1`, an experiment: a cycle region (`--cycle`) settles and drives its outputs only at clock edges and at changes of asynchronous resets, so a process outside sees a change of an output that follows an input combinationally only after the next edge. Results can differ from the normal mode's; for developers measuring what that costs and gains.
+- `YAVS_CYCLE_EXACT_CLOCKS` (`1`; default unset): For testing only: `1` keeps every clock copied by an assignment a clock of its own in a cycle region (`--cycle`), so its edges come a delta cycle after its source's as in the normal mode, and the logic between the two stays in the event simulation. The comparison gates and the fuzzer use it, with `--cycle-exact-meta`, to compare cycle mode with the normal mode exactly. Another value is an error (E4104).
+- `YAVS_CYCLE_RAIL` (`off`, `cap=N`, `no-reseed`; default unset (1024 edges)): For developers: how a cycle region under `--cycle-exact-meta` follows the `'U'` start values on its second image: `off` not at all, `cap=N` for at most N clock edges instead of 1024, `no-reseed` without setting the metavalues that reach an input after time 0. Another value is an error (E4104).
+- `YAVS_CYCLE_FLAGS` (`name=value,...`; default unset): Developers: more Cranelift settings for the code of a cycle region (`--cycle`), as `name=value` pairs separated by commas (for example `opt_level=none`), to measure what they cost; a name or value Cranelift does not know is an internal error of the region.
+- `YAVS_CYCLE_EXCLUDE` (`dcache_slow,icache`; default none): Developers: a comma-separated list of texts; a process whose name holds one of them stays in the event simulation under `--cycle` (to find which member makes a run differ).
+- `YAVS_CYCLE_RUNCOUNT` (`off`; default unset): Developers: `off` lets the logic feeding a process outside the region whose result may depend on the delta cycles its inputs change in join the region anyway. It can give wrong results; it shows what that rule protects and what it costs.
+- `YAVS_CYCLE_SEEDS` (`seeds.txt`; default unset): Developers: a file to write, under `--cycle` or `--cycle-report`, with the signals driven by the processes outside the region whose result may depend on the delta cycles its inputs change in, one a line, as `YAVS_TRACE_SIGNALS` reads them (`tools/difftest/seeddiff.py`).
+- `YAVS_CYCLE_DOWNSTREAM` (`down.txt`; default unset): Developers: a file to write, under `--cycle-report`, with the processes outside the region that read a signal the region drives, directly or through other processes outside, one a line as the console names them; the comparison gates use it to tell a library warning such a process gives or loses because of a value cycle mode reads as `0` from one any other process gives (`tools/difftest/README.md`).
+- `YAVS_CYCLE_GUARD` (`all`; default only processes large enough to repay the comparison): Developers: `all` lets a cycle region (`--cycle`) skip every combinational step whose inputs did not change since its last run, also the small ones it would otherwise always run (for the tests).
+- `YAVS_CYCLE_IMPORT_CHECK` (`1`; default unset): For testing only. `1`: a cycle region (`--cycle`), which reads only the inputs that changed since its last wake, reads all of them again after each wake and stops with an internal error if one differs.
+- `YAVS_CYCLE_SKIP_CHECK` (`1`, `full`; default unset): For testing only. `1`: a cycle region (`--cycle`) runs every process it would skip because the values it reads did not change since its last run, and stops with an internal error if that run changes what the process drives. `full`: also runs each of the region's runs a second time on a copy with no process skipped (at a clock edge every one, not only those the edge's clocks and the changed inputs reach), and stops with an internal error if a signal, a variable or an output differs. Another value is error E4104.
+- `YAVS_CYCLE_STATS` (any value; default unset): Developers: prints on standard error, for a cycle region (`--cycle`), each compiled function's operations, Cranelift instructions, machine code bytes, compile time and whether its machine code came from the compilation cache, the threads it compiled on, and how many of its processes would compile to the same code (shapes); after the run, the region's wakes, the edges of each clock, the work of the processes the runs at an edge and without one left out, the inputs read most often in wakes without a clock edge, what the exports compared and drove and the imports read, and how often each skippable process ran and was skipped.

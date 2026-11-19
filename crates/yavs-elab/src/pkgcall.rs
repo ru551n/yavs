@@ -327,19 +327,26 @@ impl std::fmt::Debug for LibInit {
 }
 
 impl InitKey {
-    fn part(&self, resolution: yavs_std::arith::TimeResolution) -> Vec<u8> {
+    /// The key part for the state of the first `n` packages.
+    fn part(&self, resolution: yavs_std::arith::TimeResolution, n: usize) -> Vec<u8> {
         let mut p = self.part.clone();
         p.push(resolution as u8);
+        p.extend((n as u32).to_le_bytes());
         p
     }
 
-    fn get(&self, resolution: yavs_std::arith::TimeResolution) -> Option<yavs_diag::Buffer> {
-        self.cache.get(&self.extent, "init", &self.part(resolution))
+    fn get(
+        &self,
+        resolution: yavs_std::arith::TimeResolution,
+        n: usize,
+    ) -> Option<yavs_diag::Buffer> {
+        self.cache
+            .get(&self.extent, "init", &self.part(resolution, n))
     }
 
-    fn put(&self, resolution: yavs_std::arith::TimeResolution, bytes: &[u8]) {
+    fn put(&self, resolution: yavs_std::arith::TimeResolution, n: usize, bytes: &[u8]) {
         self.cache
-            .put(&self.extent, "init", &self.part(resolution), bytes);
+            .put(&self.extent, "init", &self.part(resolution, n), bytes);
     }
 }
 
@@ -358,8 +365,9 @@ impl LibInit {
 /// `shared`, `fix` completing each package's data, and return the runtime with all of them
 /// bound. With `start`, the packages' data is a copy of it instead (initialised already, by
 /// the elaboration session, [`Start`]). With `cache` (and no `start`), the state the
-/// initialisers made is read from the stage cache and they do not run; a cold run stores it
-/// unless they did more than compute. `fix` must then change nothing the initialisers read.
+/// initialisers of the packages before the first call and the first descriptor to write made is
+/// read from the stage cache and they do not run; a cold run stores it unless they did more
+/// than compute. `fix` must then change nothing the initialisers read.
 /// With `calls`, the elaboration-time calls made before a package was initialised run before
 /// it ([`Replay`]); the caller runs the rest with the runtime returned.
 #[allow(clippy::too_many_arguments)] // ponytail: one more setting; bundle into a struct when the next one comes
@@ -415,11 +423,18 @@ pub(crate) fn init_packages(
                 .iter()
                 .any(|p| p.signals.iter().any(|s| s.dope.is_some()))
     };
-    let whole = cache.filter(|_| !dope(packages) && clean == packages.len());
+    // The packages before the first with a descriptor to write: their state is the same in every
+    // run of the closure, also when a later package declares an array signal.
+    let head = (packages.iter())
+        .position(|p| dope(std::slice::from_ref(p)))
+        .unwrap_or(packages.len())
+        .min(clean);
+    let whole = cache.filter(|_| head > 0);
+    let mut first = 0;
     if let Some(k) = whole
-        && let Some(bytes) = k.get(resolution)
+        && let Some(bytes) = k.get(resolution, head)
         && let vars = shared.lock().map_or(0, |s| s.vars.len())
-        && let Some((d, mut st)) = yavs_interp::restore_state(&bytes, packages.len(), vars)
+        && let Some((d, mut st)) = yavs_interp::restore_state(&bytes, head, vars)
     {
         set_printed(&mut st);
         st.replay_init_reports();
@@ -428,8 +443,11 @@ pub(crate) fn init_packages(
                 "shared state poisoned".into(),
             ))
         })? = st;
-        let data: Vec<Arc<InstData>> = d.into_iter().map(Arc::new).collect();
-        return Runtime::new(prog.clone(), bind(&data));
+        data = d.into_iter().map(Arc::new).collect();
+        if head == packages.len() {
+            return Runtime::new(prog.clone(), bind(&data));
+        }
+        first = head;
     }
     // The packages of the library prefix up to the first with such a signal: read back, or made
     // now and stored for the next closure.
@@ -441,8 +459,7 @@ pub(crate) fn init_packages(
             .min(clean);
         (n > 0).then_some((l, n))
     });
-    let mut first = 0;
-    if let Some((l, n)) = lib
+    if let Some((l, n)) = lib.filter(|_| first == 0)
         && let Some(bytes) =
             l.cache
                 .prefix_get(l.level, crate::libstage::INIT, &l.part(resolution, n))
@@ -494,6 +511,16 @@ pub(crate) fn init_packages(
         };
         fix(p, &mut d)?;
         data.push(Arc::new(d));
+        if let Some(k) = whole
+            && first < head
+            && data.len() == head
+            && let Ok(s) = shared.lock()
+        {
+            match s.state_image(&data) {
+                Ok(image) => k.put(resolution, head, &image),
+                Err(why) => k.cache.note(&format!("no init entry: {why}")),
+            }
+        }
         if let Some((l, n)) = lib
             && first == 0
             && data.len() == n
@@ -510,14 +537,6 @@ pub(crate) fn init_packages(
                 }
                 Err(why) => l.cache.note(&format!("no library init entry: {why}")),
             }
-        }
-    }
-    if let Some(k) = whole
-        && let Ok(s) = shared.lock()
-    {
-        match s.state_image(&data) {
-            Ok(image) => k.put(resolution, &image),
-            Err(why) => k.cache.note(&format!("no init entry: {why}")),
         }
     }
     let rt = Runtime::new(prog.clone(), bind(&data))?;

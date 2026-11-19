@@ -3260,10 +3260,13 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
     packages are initialised, external names in them bind later). Like `low` it holds only for a
     `Db` that has not grown since its analysis and only when the lowered packages are cached.
   - *Both paths use it:* the elaboration session's first initialisation (and each rebuild after an
-    undone call) and the simulation start when no session ran (`init_packages` with a key). A
-    design whose packages have an array signal with open bounds (`PackageIr::signals[].dope`) is
-    not served at the simulation start: its descriptors are written between two initialisers
-    (`fix`) and a later initialiser may read them.
+    undone call) and the simulation start when no session ran (`init_packages` with a key). At
+    the simulation start the entry holds the packages before the first with an array signal with
+    open bounds (`PackageIr::signals[].dope`; the key holds their count): its descriptors are
+    written between two initialisers (`fix`) and a later initialiser may read them, so it and the
+    packages after it are initialised on every run. The VUnit test benches of hdl-modules and
+    Open Logic have such a package last in their list (21 packages): before 2026-11-19 none of
+    them was served, and their initialisation was about a quarter of a short test's start-up.
   - *Reports are replayed:* what an initialiser reports (`report`, an ieee warning; the line
     `** Note: (init): text` on stderr, counted for the exit status) is recorded with the state and
     printed and counted again, in order, when the state is restored (`SharedState::replay_init_reports`),

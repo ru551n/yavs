@@ -770,6 +770,178 @@ fn a_call_taken_in_an_arm_is_counted_and_made_once_the_callee_is_flagged() {
     );
 }
 
+/// A frame with arms that the watching loop hands over to the loop with the tier as it enters
+/// its first arm (the pc one past the plain code) goes on in the arm, not at the op that runs
+/// off the end of the plain code (#1171: "pc N beyond"). The tier flags the armed function
+/// while a frame of it runs, as a compile that ends then does.
+#[test]
+fn an_armed_frame_handed_over_at_its_first_arm_goes_on_in_the_arm() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, OnceLock};
+    // Flags `.2` once its arms exist, at an ask of the count for `.1`.
+    struct FlagLate(
+        OnceLock<Arc<yavs_interp::NativeFlags>>,
+        FuncId,
+        FuncId,
+        Arc<Program>,
+        AtomicBool,
+    );
+    impl yavs_interp::Tier for FlagLate {
+        fn run(&self, _: FuncId, _: u32, _: &mut dyn yavs_interp::TierHost) -> Option<u32> {
+            None
+        }
+        fn ready(&self, _: FuncId) -> bool {
+            false
+        }
+        fn asked(&self, f: FuncId) {
+            if f == self.1 && !self.3.arm_sites(self.2).is_empty() {
+                self.0.get().unwrap().set(self.2);
+                self.4.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+    // `pads` calls of a function before `mid` move the phase of the watching loop's looks.
+    let build = |pads: usize| {
+        let mut pb = ProgramBuilder::new();
+        let int = integer(&mut pb);
+        let sq = pb.declare("square", FuncKind::Function, None);
+        let mid = pb.declare("mid", FuncKind::Function, None);
+        let proc_ = pb.declare("p", FuncKind::Process, None);
+        {
+            // 31 * x: too large to be inlined, small enough for an arm.
+            let mut fb = pb.define(sq);
+            let x = fb.param("x", Width::B8, ParamClass::Value, Mode::In, None);
+            stmt(&mut fb, StmtKind::Return);
+            let v = load(&mut fb, AddrSpace::Frame, x, Width::B8);
+            let mut r = v;
+            for _ in 0..30 {
+                r = bin(&mut fb, IntOp::Add, r, v);
+            }
+            fb.emit(Inst::Ret { v: Some(r) });
+            fb.finish();
+        }
+        {
+            // s := 0; for i in 0 to n - 1 loop s := s + square(i); end loop; return s.
+            let mut fb = pb.define(mid);
+            let n = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
+            let i = fb.local("i", int, 8, 8);
+            let s = fb.local("s", int, 8, 8);
+            let (head, done) = (fb.block(), fb.block());
+            stmt(&mut fb, StmtKind::VarAssign);
+            let zero = fb.int(0);
+            store(&mut fb, AddrSpace::Frame, i, zero, Width::B8);
+            store(&mut fb, AddrSpace::Frame, s, zero, Width::B8);
+            fb.emit(Inst::Br { to: head });
+            fb.at(head);
+            stmt(&mut fb, StmtKind::VarAssign);
+            let v = load(&mut fb, AddrSpace::Frame, i, Width::B8);
+            let args = fb.regs(&[v]);
+            let r = fb.reg(RegTy::I64);
+            fb.emit(Inst::Call {
+                func: sq,
+                args,
+                dst: Some(r),
+            });
+            let sv = load(&mut fb, AddrSpace::Frame, s, Width::B8);
+            let s1 = bin(&mut fb, IntOp::Add, sv, r);
+            store(&mut fb, AddrSpace::Frame, s, s1, Width::B8);
+            let one = fb.int(1);
+            let v1 = bin(&mut fb, IntOp::Add, v, one);
+            store(&mut fb, AddrSpace::Frame, i, v1, Width::B8);
+            let lim = load(&mut fb, AddrSpace::Frame, n, Width::B8);
+            let more = cmp(&mut fb, CmpOp::Lt, v1, lim);
+            fb.emit(Inst::CondBr {
+                c: more,
+                t: head,
+                f: done,
+            });
+            fb.at(done);
+            // Longer than the optimiser inlines.
+            stmt(&mut fb, StmtKind::Return);
+            let r = load(&mut fb, AddrSpace::Frame, s, Width::B8);
+            let mut pad = r;
+            for _ in 0..80 {
+                pad = bin(&mut fb, IntOp::Add, pad, r);
+            }
+            let pad = bin(&mut fb, IntOp::Mul, pad, zero);
+            let r = bin(&mut fb, IntOp::Add, r, pad);
+            fb.emit(Inst::Ret { v: Some(r) });
+            fb.finish();
+        }
+        {
+            // s <= the sum of mid(300 + k), k counting the activations.
+            let mut fb = pb.define(proc_);
+            let k = fb.local("k", int, 8, 8);
+            wait_for(&mut fb, 10 * NS);
+            stmt(&mut fb, StmtKind::SigAssign);
+            let kv = load(&mut fb, AddrSpace::Frame, k, Width::B8);
+            let one = fb.int(1);
+            let k1 = bin(&mut fb, IntOp::Add, kv, one);
+            store(&mut fb, AddrSpace::Frame, k, k1, Width::B8);
+            let mut sum = fb.int(0);
+            for _ in 0..pads {
+                let args = fb.regs(&[k1]);
+                let r = fb.reg(RegTy::I64);
+                fb.emit(Inst::Call {
+                    func: sq,
+                    args,
+                    dst: Some(r),
+                });
+                sum = bin(&mut fb, IntOp::Add, sum, r);
+            }
+            let base = fb.int(300);
+            let n = bin(&mut fb, IntOp::Add, base, k1);
+            let args = fb.regs(&[n]);
+            let r = fb.reg(RegTy::I64);
+            fb.emit(Inst::Call {
+                func: mid,
+                args,
+                dst: Some(r),
+            });
+            sum = bin(&mut fb, IntOp::Add, sum, r);
+            drive(&mut fb, 0, 0, sum, Width::B8);
+            fb.emit(Inst::Br { to: BlockId(0) });
+            fb.finish();
+        }
+        let mut d = Design::new(pb);
+        d.signals = vec![byte_sig("s", 1, 8)];
+        d.procs = vec![ProcSpec {
+            name: "p",
+            func: proc_,
+            drives: vec![(0, 1)],
+        }];
+        (d, sq, mid)
+    };
+    for pads in 0..3 {
+        let (d, _, _) = build(pads);
+        let (want, r) = d.run(Time::ns(400));
+        assert!(r.is_ok());
+        let (d, sq, mid) = build(pads);
+        let rt = Runtime::new(d.prog.clone(), Default::default()).unwrap();
+        let tier = Arc::new(FlagLate(
+            OnceLock::new(),
+            sq,
+            mid,
+            d.prog.clone(),
+            AtomicBool::new(false),
+        ));
+        let flags = rt.native_flags();
+        assert!(tier.0.set(flags.clone()).is_ok());
+        assert!(rt.set_tier(tier.clone()));
+        flags.arm_count(&d.prog, 4, 0, 4);
+        let (mut sim, t, _) = d.build_rt(1, rt, |p, _| p);
+        sim.run_until(Time::ns(200)).unwrap();
+        assert!(!d.prog.arm_sites(mid).is_empty(), "pads {pads}: no arms");
+        // The count of `square` runs out again in an arm of a frame of `mid`.
+        flags.set_count(sq, 4);
+        let r = sim.run_until(Time::ns(400));
+        assert!(r.is_ok(), "pads {pads}: {r:?}");
+        assert_eq!(*t.0.lock().unwrap(), want, "pads {pads}");
+        assert!(tier.4.load(Ordering::Relaxed), "pads {pads}: never flagged");
+        assert!(flags.retiers() > 0, "pads {pads}: no hand-over");
+    }
+}
+
 /// The profile's sampler names a function the tier runs on a native frame for an interpreted
 /// caller as itself, compiled, not as its caller (#760).
 #[test]

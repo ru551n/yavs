@@ -1479,7 +1479,8 @@ pub(crate) struct Code {
     /// The IR pc of each op (of its first instruction when it stands for several).
     pub at: Vec<u32>,
     /// For each IR pc (and one past the end), the op execution goes on at from there;
-    /// `NONE` inside a fused op, which no frame ever stops at.
+    /// `NONE` inside a fused op, which no frame ever stops at, and one past the end, where only
+    /// a frame with arms stands (in its first arm, #1171).
     pub entry: Vec<u32>,
     /// `entry[0]`, so a call finds the first op without reading `entry`.
     pub first: u32,
@@ -6185,9 +6186,15 @@ impl Code {
             }
         }
         let no_tier = merged;
-        let entry: Vec<u32> = next
-            .iter()
-            .map(|&p| start.get(p as usize).copied().unwrap_or(NONE))
+        // Pc `n` is no entry: a frame there is in the first arm of its armed form (`arm_entry`),
+        // not at the op that runs off the end (#1171).
+        let entry: Vec<u32> = (next.iter().enumerate())
+            .map(|(pc, &p)| {
+                (pc < n)
+                    .then(|| start.get(p as usize).copied())
+                    .flatten()
+                    .unwrap_or(NONE)
+            })
             .collect();
         // Jump targets as op indices. A target is the first executed instruction of a
         // block, never inside a fused op; should one be, a jump is left to the step path and

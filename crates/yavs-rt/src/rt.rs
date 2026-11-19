@@ -6,6 +6,7 @@
 // `env` and `mem` pointers `enter` made: one safety contract for all of them, stated on `enter`.
 #![allow(clippy::missing_safety_doc, clippy::not_unsafe_ptr_arg_deref)]
 
+use smallvec::smallvec;
 use std::any::Any;
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
@@ -3845,25 +3846,37 @@ pub fn bad_reg(f: &Func) -> Option<Reg> {
         .find(|r| r.0 >= n)
 }
 
+/// What [`inline_regs`] returns: inline, as the policy asks it of every instruction of a function
+/// (`native::native_local`), where a heap vector each was most of that walk.
+pub type InlineRegs = smallvec::SmallVec<[Reg; 8]>;
+
 /// The registers an inline instruction touches (the compiled code indexes `regs` with them);
 /// `Reg(u32::MAX)` for an operand list outside the function.
-pub fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
-    let pair = |r: Reg, w: Width| {
+pub fn inline_regs(f: &Func, i: &Inst) -> InlineRegs {
+    let pair = |r: Reg, w: Width| -> InlineRegs {
         if w == Width::Sig {
-            vec![r, Reg(r.0.saturating_add(1))]
+            smallvec![r, Reg(r.0.saturating_add(1))]
         } else {
-            vec![r]
+            smallvec![r]
         }
     };
     match *i {
-        Inst::AddrOf { dst, .. } => vec![dst],
-        Inst::Alloc { dst, size } => vec![dst, size],
-        Inst::LayoutOf { dst, desc, .. } => vec![dst, desc],
-        Inst::Load { dst, addr, w } => [vec![addr], pair(dst, w)].concat(),
-        Inst::Store { addr, src, w } => [vec![addr], pair(src, w)].concat(),
-        Inst::Copy { dst, src, bytes } => vec![dst, src, bytes],
-        Inst::Zero { addr, .. } => vec![addr],
-        Inst::Pos { dst, dope, idx, .. } => vec![dst, dope, idx],
+        Inst::AddrOf { dst, .. } => smallvec![dst],
+        Inst::Alloc { dst, size } => smallvec![dst, size],
+        Inst::LayoutOf { dst, desc, .. } => smallvec![dst, desc],
+        Inst::Load { dst, addr, w } => {
+            let mut v = smallvec![addr];
+            v.extend(pair(dst, w));
+            v
+        }
+        Inst::Store { addr, src, w } => {
+            let mut v = smallvec![addr];
+            v.extend(pair(src, w));
+            v
+        }
+        Inst::Copy { dst, src, bytes } => smallvec![dst, src, bytes],
+        Inst::Zero { addr, .. } => smallvec![addr],
+        Inst::Pos { dst, dope, idx, .. } => smallvec![dst, dope, idx],
         Inst::SlicePos {
             dst,
             dope,
@@ -3871,19 +3884,19 @@ pub fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
             right,
             dir,
             ..
-        } => vec![dst, dope, left, right, dir],
+        } => smallvec![dst, dope, left, right, dir],
         Inst::Field {
             dst, base, layout, ..
-        } => vec![dst, base, layout],
-        Inst::DopeLen { dst, dope, .. } => vec![dst, dope],
+        } => smallvec![dst, base, layout],
+        Inst::DopeLen { dst, dope, .. } => smallvec![dst, dope],
         Inst::BoundsLen {
             dst,
             left,
             right,
             dir,
-        } => vec![dst, left, right, dir],
+        } => smallvec![dst, left, right, dir],
         Inst::RetBounds { left, right, dir } | Inst::TakeBounds { left, right, dir } => {
-            vec![left, right, dir]
+            smallvec![left, right, dir]
         }
         Inst::BoundsPos {
             dst,
@@ -3892,61 +3905,65 @@ pub fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
             dir,
             idx,
             ..
-        } => vec![dst, left, right, dir, idx],
+        } => smallvec![dst, left, right, dir, idx],
         Inst::BoundsSlice { dst, regs, .. } => {
-            let mut v = vec![dst];
+            let mut v = smallvec![dst];
             v.extend_from_slice(f.regs(regs).unwrap_or(&[]));
             v
         }
-        Inst::Deref { dst, handle, .. } => vec![dst, handle],
-        Inst::MemEq { dst, a, b, n } => vec![dst, a, b, n],
+        Inst::Deref { dst, handle, .. } => smallvec![dst, handle],
+        Inst::MemEq { dst, a, b, n } => smallvec![dst, a, b, n],
         Inst::ArrCmp {
             dst, a, b, la, lb, ..
-        } => vec![dst, a, b, la, lb],
-        Inst::LGet { dst, base, idx } => vec![dst, base, idx],
+        } => smallvec![dst, a, b, la, lb],
+        Inst::LGet { dst, base, idx } => smallvec![dst, base, idx],
         Inst::LCopy {
             dst,
             dst_off,
             src,
             src_off,
             n,
-        } => vec![dst, dst_off, src, src_off, n],
-        Inst::LSet { base, idx, v } => vec![base, idx, v],
-        Inst::LEq { dst, a, b, n } => vec![dst, a, b, n],
-        Inst::LKey { dst, a, n } => vec![dst, a, n],
-        Inst::LFill { base, idx, n, v } => vec![base, idx, n, v],
+        } => smallvec![dst, dst_off, src, src_off, n],
+        Inst::LSet { base, idx, v } => smallvec![base, idx, v],
+        Inst::LEq { dst, a, b, n } => smallvec![dst, a, b, n],
+        Inst::LKey { dst, a, n } => smallvec![dst, a, n],
+        Inst::LFill { base, idx, n, v } => smallvec![base, idx, n, v],
         Inst::SigVal {
             dst, offset, len, ..
-        } => vec![dst, Reg(dst.0.saturating_add(1)), offset, len],
-        Inst::SubtypeCheck { dope, want, .. } => vec![dope, want],
+        } => smallvec![dst, Reg(dst.0.saturating_add(1)), offset, len],
+        Inst::SubtypeCheck { dope, want, .. } => smallvec![dope, want],
         Inst::MakeDope { at, parts } => match f.regs(parts) {
-            Some(rs) => [&[at], rs].concat(),
-            None => vec![Reg(u32::MAX)],
+            Some(rs) => {
+                let mut v = smallvec![at];
+                v.extend_from_slice(rs);
+                v
+            }
+            None => smallvec![Reg(u32::MAX)],
         },
-        Inst::Const { dst, .. } | Inst::ConstF { dst, .. } => vec![dst],
+        Inst::Const { dst, .. } | Inst::ConstF { dst, .. } => smallvec![dst],
         Inst::Move { dst, src } | Inst::IToF { dst, src } | Inst::FToI { dst, src } => {
-            vec![dst, src]
+            smallvec![dst, src]
         }
         Inst::FToIRange {
             dst, src, lo, hi, ..
-        } => vec![dst, src, lo, hi],
-        Inst::Select { dst, c, a, b } => vec![dst, c, a, b],
-        Inst::CoverIn { dst, acc, src, .. } => vec![dst, acc, src],
+        } => smallvec![dst, src, lo, hi],
+        Inst::Select { dst, c, a, b } => smallvec![dst, c, a, b],
+        Inst::CoverIn { dst, acc, src, .. } => smallvec![dst, acc, src],
         Inst::Bin { dst, a, b, .. }
         | Inst::FBin { dst, a, b, .. }
         | Inst::Phys { dst, a, b, .. }
         | Inst::Cmp { dst, a, b, .. }
         | Inst::FCmp { dst, a, b, .. }
-        | Inst::Bool { dst, a, b, .. } => vec![dst, a, b],
-        Inst::Un { dst, a, .. } | Inst::FUn { dst, a, .. } => vec![dst, a],
-        Inst::Check { v, lo, hi, .. } | Inst::FCheck { v, lo, hi, .. } => vec![v, lo, hi],
+        | Inst::Bool { dst, a, b, .. } => smallvec![dst, a, b],
+        Inst::Un { dst, a, .. } | Inst::FUn { dst, a, .. } => smallvec![dst, a],
+        Inst::Check { v, lo, hi, .. } | Inst::FCheck { v, lo, hi, .. } => smallvec![v, lo, hi],
         Inst::BinRange {
             dst, a, b, lo, hi, ..
-        } => vec![dst, a, b, lo, hi],
-        Inst::Index { dst, base, pos, .. } => vec![dst, base, pos],
-        Inst::CondBr { c, .. } => vec![c],
-        Inst::Case { v, .. } => vec![v],
-        _ => vec![],
+        } => smallvec![dst, a, b, lo, hi],
+        Inst::Index { dst, base, pos, .. } => smallvec![dst, base, pos],
+        Inst::CondBr { c, .. } => smallvec![c],
+        Inst::Case { v, .. } => smallvec![v],
+        _ => smallvec![],
     }
 }
 

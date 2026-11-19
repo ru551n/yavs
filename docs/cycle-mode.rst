@@ -803,6 +803,8 @@ Read the first line of ``--cycle-report``:
   does not speed up that part.
 * **The test is short.** The first run compiles the region, which takes longer the larger the region is. Later runs
   take it from the cache (:ref:`cycle-cache`).
+* **An idle region is cheap.** A clocked region whose edge run would change nothing is skipped, so a part of the
+  design that is idle in a clock costs little.
 
 .. _cycle-mode-ci:
 

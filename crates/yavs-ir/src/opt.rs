@@ -607,6 +607,12 @@ pub fn bodies_kept() -> u64 {
     BODIES_KEPT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Procedures that may suspend optimised to find out whether they are forwarders in front of a
+/// procedure that waits (a work counter: `YAVS_COUNTERS`).
+pub fn wait_tries() -> u64 {
+    inline::wait_tries()
+}
+
 fn optimize_body_with(
     prog: &Program,
     id: FuncId,

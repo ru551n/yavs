@@ -5918,7 +5918,11 @@ Decisions:
   optimised to find out (`ends_with_wait`: it ends with the call that may suspend, makes at most two other calls,
   `MAX_WAIT_CALLS`, and has no wait, `now`, report, drive or other effect of its own, `never_inlined`): a library's
   message procedures that build a message and send it end the same way, and optimising each of them only to refuse it
-  cost a short test that names many of them about 3 M instructions, most of them never called in that run. The allocations need no statement marker of their own: the
+  cost a short test that names many of them about 3 M instructions, most of them never called in that run. Nor is one
+  that makes an object (`New`, `NewFill`, `NewFrame`) in the block of that call before it (2026-11-19): no optimisation
+  removes the object while the call after it stays (it may become a `NewFrame`, dead code keeps it) and no inlined body
+  has one, so optimising it can only refuse it (two such message procedures of an I2C component were 0.37 M of the
+  0.87 M instructions a short test of it spent making forwarders; counter `opt_wait_tries`, perf design `wait_objects`). The allocations need no statement marker of their own: the
   call they replace was already one that leaves temporaries (`opt::leaves_temps`; a procedure that may suspend never
   has `NO_TEMPS`), so the caller's markers free them as they freed the call's, and in a process `opt/slots.rs` places
   them in the frame. A function that inlined only such procedures is not walked again (`Inlined::Waits`: their code
@@ -5935,6 +5939,21 @@ Decisions:
   transfers 0.15 and 0.8 percent; short whole runs of those cells under `--tier=auto` (fresh worlds) 0.2 to 1.1 percent
   fewer; the 26 bench designs level. Cost: a run that optimises the callers of these forwarders makes them, about
   0.75 M instructions in a short test of an I2C component (0.03 percent), whether or not it sends many messages.
+  Cut on 2026-11-19, with the inlining result unchanged (the `YAVS_DUMPIR` code of every function equal to main's on the
+  verification library cells, `tests/cli/wait_forwarders.vhd` and the realbench short tests): the object rule above, and
+  the maps of making and placing forwarders and the forwarder cache hash with the optimiser's `Fx` instead of SipHash
+  (the cache is asked at every call of every function optimised, and a forwarder's maps at every register it reads).
+  Making the forwarders of that I2C test costs 0.47 M instead of 0.87 M, of a short test that sends nothing (the
+  integer-array cell: `send` and `receive` made, never called) 0.21 M instead of 0.26 M; what remains of the cost there
+  is mostly the callers' own work on the inlined bodies (`opt/slots.rs` places the `receive` actor array in the frame
+  of two processes that never reach the call: 0.24 M). The hashing is also an offset: the whole optimiser of that I2C
+  test does 1.9 percent less. Short whole runs against the procedure before this inlining existed (16 fresh worlds,
+  byte-copy A/A 0.9999 to 1.0002 there): integer-array cell 0.998, 0.996 and 0.997 (cold, first and second run of a world;
+  main 1.0002, 1.0007, 1.0005); the other cells at or below the A/A, interpreted and under `--tier=auto`, and within
+  noise of main in warm runs. What remains of the inlining's own cost in that cell is 0.41 M (0.47 M before: making 0.21 M
+  and the two processes' own work), none of it used in that test; the rest of the gain is the hashing. (The third run of
+  the integer-array cell under `--tier=auto` takes one of two policy outcomes 1.3 percent apart on every binary, so its
+  geomean over 16 worlds moves by the draw; medians equal the A/A's.)
 
 ## Shared offsets must stay memoisable and fusable (yavs-ir `opt/memo.rs`, `opt/share.rs`, yavs-interp `pre.rs`, #534, 2026-10-22)
 

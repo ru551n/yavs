@@ -38,13 +38,18 @@
 mod arms;
 
 pub(crate) use arms::{enabled as arms_enabled, make_armed};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use super::FxMap;
 use crate::{
     AddrSpace, BlockId, BoolOp, CmpOp, FuncId, FuncKind, Inst, Reg, RegTy, Role, StmtId, ViaNode,
     Width,
 };
+
+/// A set hashed as [`FxMap`] is (small keys the program made, never hostile: SipHash was a
+/// good part of making a forwarder).
+type FxSet<T> = HashSet<T, std::hash::BuildHasherDefault<super::Fx>>;
 
 /// The most instructions of an inlined body of one path.
 const MAX_BODY: usize = 24;
@@ -113,8 +118,8 @@ impl Forwarder {
 /// wide variant and the callee's own optimisation start from.
 #[derive(Default, Debug)]
 pub struct FwdCache(
-    Mutex<HashMap<(u32, u8), Fwd>>,
-    pub(super) Mutex<HashMap<u32, Box<crate::Func>>>,
+    Mutex<FxMap<(u32, u8), Fwd>>,
+    pub(super) Mutex<FxMap<u32, Box<crate::Func>>>,
 );
 
 type Fwd = Option<Arc<Forwarder>>;
@@ -242,6 +247,9 @@ fn make(
     {
         return None;
     }
+    if susp {
+        WAIT_TRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     let mut c = if let Some(o) = published {
         Box::new(o.clone())
     } else {
@@ -270,7 +278,7 @@ fn make(
         return None;
     }
     // The registers holding the address of a parameter's slot.
-    let mut frame: HashMap<u32, u32> = HashMap::new();
+    let mut frame: FxMap<u32, u32> = FxMap::default();
     for i in &c.code {
         if let Inst::AddrOf {
             dst,
@@ -314,7 +322,7 @@ fn make(
         }
         // A register loaded from two parameters' slots holds each in turn: it takes them as
         // moves, as a register defined elsewhere does.
-        let mut from: HashMap<u32, u32> = HashMap::new();
+        let mut from: FxMap<u32, u32> = FxMap::default();
         for i in &c.code {
             if let Inst::Load { dst, addr, .. } = *i
                 && let Some(&off) = frame.get(&addr.0)
@@ -636,7 +644,7 @@ fn no_effect(i: &Inst) -> bool {
 /// (`merge_consts` leaves such code, `kill_unreachable` keeps the definition for it): the one
 /// definition in a block that is no longer reached moves to the entry.
 fn keep_definitions(blocks: &mut [Vec<Ent>], seen: &[bool], operands: &[Reg]) {
-    let (mut read, mut defined) = (HashSet::new(), HashSet::new());
+    let (mut read, mut defined) = (FxSet::default(), FxSet::default());
     for (i, ..) in blocks
         .iter()
         .zip(seen)
@@ -1166,16 +1174,33 @@ fn allowed(prog: &crate::Program, i: &Inst, susp: bool) -> bool {
 const MAX_WAIT_CALLS: usize = 2;
 
 /// The lowered code of a procedure that may suspend ends with the call that may (the shape
-/// `waits_last` wants of the optimised code), calls little else (`MAX_WAIT_CALLS`) and has none
-/// of the effects no optimisation removes and no inlined body has (`never_inlined`): only then
-/// is it optimised to find out.
+/// `waits_last` wants of the optimised code), calls little else (`MAX_WAIT_CALLS`), has none
+/// of the effects no optimisation removes and no inlined body has (`never_inlined`) and makes no
+/// object on the way to that call (a message procedure that builds one: optimising two of them
+/// to refuse them was half of what making forwarders cost a short test): only then is it
+/// optimised to find out.
 fn ends_with_wait(prog: &crate::Program, f: &crate::Func) -> bool {
     let mut any = false;
     let mut calls = 0usize;
+    // The block of `pc` made an object before it (`New`, `NewFill`, `NewFrame`): no optimisation
+    // removes one while the call after it stays (it may become a `NewFrame`; dead code keeps it),
+    // and no inlined body has one (`allowed`).
+    let mut starts = vec![false; f.code.len() + 1];
+    for b in f.blocks.values() {
+        starts[b.start as usize] = true;
+    }
+    let mut made = false;
     for (pc, i) in f.code.iter().enumerate() {
         if never_inlined(i) {
             return false;
         }
+        if starts[pc] {
+            made = false;
+        }
+        made |= matches!(
+            i,
+            Inst::New { .. } | Inst::NewFill { .. } | Inst::NewFrame { .. }
+        );
         let func = match *i {
             Inst::Call { func, .. } => func,
             Inst::CallProt { .. } => {
@@ -1191,6 +1216,9 @@ fn ends_with_wait(prog: &crate::Program, f: &crate::Func) -> bool {
         {
             calls += 1;
             continue;
+        }
+        if made {
+            return false;
         }
         any = true;
         // What runs after it: statement markers, jumps, the return.
@@ -1211,6 +1239,13 @@ fn ends_with_wait(prog: &crate::Program, f: &crate::Func) -> bool {
         }
     }
     any && calls <= MAX_WAIT_CALLS
+}
+
+static WAIT_TRIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Procedures that may suspend optimised to find out whether they are forwarders (`make`).
+pub(super) fn wait_tries() -> u64 {
+    WAIT_TRIES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// An effect no optimisation removes and no inlined body has (`allowed`): a procedure that may
@@ -1351,9 +1386,9 @@ struct Site {
 
 /// Where each register of the body lives in the caller at one site: a parameter the body never
 /// writes is the argument itself, any other register is a new one.
-fn place(site: &Site, reg_ty: &mut Vec<RegTy>) -> HashMap<u32, Reg> {
+fn place(site: &Site, reg_ty: &mut Vec<RegTy>) -> FxMap<u32, Reg> {
     let fw = &site.fw;
-    let mut at: HashMap<u32, Reg> = HashMap::new();
+    let mut at: FxMap<u32, Reg> = FxMap::default();
     for (k, regs) in fw.params.iter().enumerate() {
         for &r in regs {
             if fw.defs[r.0 as usize] == 0 {
@@ -1484,7 +1519,7 @@ fn tabbed(prog: &crate::Program, func: FuncId) -> bool {
 /// One site expanded: its registers placed in the caller, and what a trace shows.
 struct Expand<'a> {
     site: &'a Site,
-    at: HashMap<u32, Reg>,
+    at: FxMap<u32, Reg>,
     loc: StmtId,
     sv: u32,
     round: Round,
@@ -1719,7 +1754,7 @@ fn run_with(
         return Inlined::No;
     }
     // The calls to inline and their callees.
-    let mut sites: HashMap<usize, Site> = HashMap::new();
+    let mut sites: FxMap<usize, Site> = FxMap::default();
     let mut added = 0usize;
     // (Once per function, not per call: the code does not change in this loop.)
     let has_cat = f

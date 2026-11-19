@@ -980,6 +980,10 @@ case!(
     &[],
     [("calls", Max(103)), ("ops", Max(2450))]
 );
+// A procedure that makes an object before the call that waits is no forwarder and is not
+// optimised to find out (`opt/inline.rs` `ends_with_wait`): the forwarders `send` and
+// `notify_net` are (3 without the rule: `post` too).
+case!(wait_objects, "acc=1275", &[], [("opt_wait_tries", Max(2))]);
 // A pointer table's methods taken through interpreter arms once the tier's count of their caller and
 // its wait ran out (`opt/inline/arms.rs`; nothing compiles, every function being above the size
 // limit): 12609 interpreted calls, 27201 without arms (`YAVS_NO_ARMS=1`); 6 ops more per call taken

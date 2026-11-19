@@ -45,7 +45,12 @@ of `'active` before the call. Traces, `std.env` call paths, reports and timeouts
 `YAVS_NO_WAIT_INLINE=1` turns it off. Measured (instructions per operation against main): a message 1.3 percent fewer
 interpreted and 5.6 percent fewer under `--tier=clift`, a request 0.7 and 3.2 percent, an AXI-stream transfer 0.15 and 0.8
 percent; short whole runs of those cells under `--tier=auto` 0.2 to 1.1 percent fewer; bench designs level. A run that
-optimises the callers pays about 0.75 M instructions for making the forwarders (0.03 percent of a short test).
+optimises the callers paid about 0.75 M instructions for making the forwarders (0.03 percent of a short test); since
+2026-11-19 a message procedure that makes an object before the call that waits is not optimised to find out
+(`opt_wait_tries`, perf design `wait_objects`) and the forwarder maps and cache hash with the optimiser's `Fx`: making
+them costs about half in the I2C test (0.47 M), 0.21 M in a short test that sends nothing, with the same inlined code.
+The callers' own work on the inlined bodies stays (0.2 M in that test); with the hashing, short runs of those cells are
+at or below the procedure before this inlining.
 decisions.md "A procedure in front of a procedure that waits is inlined".
 
 ### Edge waits through user `"and"`, `std_logic_1164` gates and concurrent assertions (2026-11-17)

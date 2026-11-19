@@ -1,0 +1,30 @@
+error[E4116]: `force` or `release` is not supported in cycle mode
+  --> $DIR/strictforce.vhd:15:7
+   |
+15 |       r <= force '1';
+   |       ^^^^^^^^^^^^^^^
+   |
+   = note: in process t_e4116.dut.f (strictforce.vhd:12)
+   = note: why: `force` and `release` change a signal from outside its drivers, which cycle-based code does not see
+   = help: force signals from the testbench, not from a process of the design; or run with `--cycle` to leave this process in the event simulation
+
+error[E4128]: a signal forced elsewhere in the design is not supported in cycle mode
+  --> $DIR/strictforce.vhd:20:3
+   |
+15 |         r <= force '1';
+   |         --------------- the design forces a signal here
+...
+20 | /   reg : process (clk)
+21 | |   begin
+22 | |     if rising_edge(clk) then
+23 | |       r <= a;
+24 | |     end if;
+25 | |   end process;
+   | |______________^ t_e4116.dut.r
+   |
+   = note: in process t_e4116.dut.reg (strictforce.vhd:20)
+   = note: why: a `force` or `release` the design can run changes a signal this process drives, which cycle-based code would not see; when yavs cannot tell which signal a force changes (a signal parameter), it keeps every process in the event simulation
+   = help: this is a limitation of yavs, not a problem in your design: run with `--cycle` to leave this process in the event simulation, or drive the signal from the testbench instead of forcing it; force a signal through an external name or by name rather than through a signal parameter
+
+error: aborting due to 2 previous errors
+

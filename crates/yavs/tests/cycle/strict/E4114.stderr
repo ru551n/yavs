@@ -1,0 +1,12 @@
+error[E4114]: a method of a protected object is not supported in cycle mode
+   --> $DIR/strict.vhd:108:18
+    |
+108 |       q <= a and flag.get;
+    |                  ^^^^^^^^
+    |
+    = note: in process t_e4114.dut.p (strict.vhd:105)
+    = note: why: cycle-based code has no dynamic memory and no state shared between processes
+    = help: pass values between processes through signals; keep shared variables, protected objects and access values in the testbench; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 1 previous error
+

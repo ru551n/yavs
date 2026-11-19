@@ -30,9 +30,72 @@ pub type Val = yavs_sem::stat::ConstValue;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ScopeVals(Vec<(DeclId, Val)>);
 
+/// Reads of the top-level generics' values, for cycle mode's analysis cache: which of them
+/// elaboration and the region analysis read (`watch`). Every read of a value goes through
+/// [`ScopeVals`], so its accessors note them.
+pub mod watch {
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
+    use yavs_sem::Id as _;
+
+    /// At most this many generics are watched; a top level with more reads all of them.
+    pub const MAX: usize = 64;
+    static ON: AtomicBool = AtomicBool::new(false);
+    static N: AtomicU32 = AtomicU32::new(0);
+    static IDS: [AtomicU32; MAX] = [const { AtomicU32::new(u32::MAX) }; MAX];
+    static READ: AtomicU64 = AtomicU64::new(0);
+
+    /// Watch these declarations from now on, nothing read yet.
+    pub fn start(ds: &[yavs_sem::DeclId]) {
+        for (i, d) in ds.iter().take(MAX).enumerate() {
+            IDS[i].store(d.index() as u32, Relaxed);
+        }
+        N.store(ds.len().min(MAX) as u32, Relaxed);
+        READ.store(if ds.len() > MAX { u64::MAX } else { 0 }, Relaxed);
+        ON.store(true, Relaxed);
+    }
+
+    /// Stop watching; the reads so far stay.
+    pub fn stop() {
+        ON.store(false, Relaxed);
+    }
+
+    /// Watch again, nothing read.
+    pub fn resume() {
+        READ.store(0, Relaxed);
+        ON.store(true, Relaxed);
+    }
+
+    /// The watched declarations read since `start` or `resume`, as bits of their order.
+    pub fn reads() -> u64 {
+        READ.load(Relaxed)
+    }
+
+    #[inline]
+    pub(crate) fn note(d: yavs_sem::DeclId) {
+        if ON.load(Relaxed) {
+            let n = N.load(Relaxed) as usize;
+            if let Some(i) = IDS[..n]
+                .iter()
+                .position(|x| x.load(Relaxed) == d.index() as u32)
+            {
+                READ.fetch_or(1 << i, Relaxed);
+            }
+        }
+    }
+
+    /// Every watched declaration counts as read (an iteration over values).
+    #[inline]
+    pub(crate) fn all() {
+        if ON.load(Relaxed) {
+            READ.store(u64::MAX, Relaxed);
+        }
+    }
+}
+
 impl ScopeVals {
     pub fn get(&self, d: &DeclId) -> Option<&Val> {
         let i = self.0.binary_search_by_key(d, |e| e.0).ok()?;
+        watch::note(*d);
         Some(&self.0[i].1)
     }
 
@@ -59,10 +122,12 @@ impl ScopeVals {
     }
 
     pub fn values(&self) -> impl Iterator<Item = &Val> {
+        watch::all();
         self.0.iter().map(|e| &e.1)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&DeclId, &Val)> {
+        watch::all();
         self.0.iter().map(|e| (&e.0, &e.1))
     }
 
@@ -2603,6 +2668,85 @@ pub(crate) fn calls_impure(db: &Db, e: ExprId) -> bool {
         })
     })
     .is_some()
+}
+
+/// Whether evaluating `e` may call an impure function: directly, or in a function it calls
+/// (its statements, its declarations and the ranges of their subtypes, its formals'),
+/// transitively. A call it cannot see into counts as one.
+pub(crate) fn may_call_impure(db: &Db, e: ExprId) -> bool {
+    fn expr(db: &Db, e: ExprId, seen: &mut std::collections::HashSet<DeclId>) -> bool {
+        let mut calls = Vec::new();
+        db.walk_expr(e, &mut |x| {
+            if let ExprKind::Call { callee, .. } = db.exprs[x].kind {
+                calls.push(callee);
+            }
+        });
+        calls.into_iter().any(|c| callee(db, c, seen))
+    }
+    fn ranges(db: &Db, st: SubtypeId, seen: &mut std::collections::HashSet<DeclId>) -> bool {
+        db.subtype_ranges(st).into_iter().any(|r| match r {
+            RangeC::Explicit { left, right, .. } => expr(db, *left, seen) || expr(db, *right, seen),
+            RangeC::Attr {
+                prefix: AttrPrefix::Expr(p),
+                ..
+            } => expr(db, *p, seen),
+            _ => false,
+        })
+    }
+    fn callee(db: &Db, c: DeclId, seen: &mut std::collections::HashSet<DeclId>) -> bool {
+        let c = match &db.decls[c].kind {
+            DeclKind::Alias(yavs_sem::decl::Alias::NonObject { target }) => *target,
+            _ => c,
+        };
+        if !seen.insert(c) {
+            return false;
+        }
+        let Some(sp) = db.decls[c].kind.subprogram() else {
+            return true;
+        };
+        if matches!(
+            sp.kind,
+            yavs_sem::decl::SubprogramKind::Function { pure: false }
+        ) {
+            return true;
+        }
+        let yavs_sem::decl::Body::Hir { scope, stmts } = &sp.body else {
+            return false;
+        };
+        for p in sp.params.iter() {
+            if ranges(db, p.subtype, seen) || p.default.is_some_and(|x| expr(db, x, seen)) {
+                return true;
+            }
+        }
+        for &d in &db.scopes[*scope].order {
+            let bad = match &db.decls[d].kind {
+                DeclKind::Object(o) => {
+                    ranges(db, o.subtype, seen) || o.default.is_some_and(|x| expr(db, x, seen))
+                }
+                DeclKind::Subtype(st) => ranges(db, *st, seen),
+                _ => false,
+            };
+            if bad {
+                return true;
+            }
+        }
+        let mut todo: Vec<yavs_sem::StmtId> = stmts.to_vec();
+        while let Some(s) = todo.pop() {
+            if let yavs_sem::hir::StmtKind::ProcCall(call) = &db.stmts[s].kind
+                && callee(db, call.callee, seen)
+            {
+                return true;
+            }
+            let mut xs = Vec::new();
+            db.stmt_exprs(s, &mut |x, _| xs.push(x));
+            if xs.into_iter().any(|x| expr(db, x, seen)) {
+                return true;
+            }
+            todo.extend(db.stmt_children(s));
+        }
+        false
+    }
+    expr(db, e, &mut std::collections::HashSet::new())
 }
 
 /// Whether expression `e` names a signal or port.

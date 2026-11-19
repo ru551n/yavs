@@ -12,7 +12,7 @@ use crate::signal::{Range, Signal, SignalId};
 use crate::value::Buf;
 
 /// How a leaf lies in an image.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ImageKind {
     /// One logic element: its code less the bias, little endian in the leaf's bytes.
     Code(u8),
@@ -22,10 +22,14 @@ pub enum ImageKind {
     Scalar,
     /// Elements of a byte signal as they are kept.
     Raw,
+    /// No value: a little-endian `u64` of 8 bytes counting the updates that changed an element
+    /// (or its word's cover) of the leaf, for a reader that re-reads only what changed (cycle
+    /// mode).
+    Count,
 }
 
 /// One leaf instance: elements `k .. k + len` of `sig`, at `voff .. voff + vsize` of the image.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ImageItem {
     pub sig: SignalId,
     pub k: u32,
@@ -36,7 +40,7 @@ pub struct ImageItem {
 }
 
 /// What an image holds. Equal specs share one image, whichever process asked.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ImageSpec {
     pub size: u32,
     pub items: Box<[ImageItem]>,
@@ -143,7 +147,8 @@ impl Images {
                 items.sort_unstable_by_key(|t| (t.sig, t.k));
                 for g in items.chunk_by(|a, b| a.sig == b.sig) {
                     let sig = &mut signals[g[0].sig.0 as usize];
-                    for t in g {
+                    // A count starts at 0: it counts the updates from here on.
+                    for t in g.iter().filter(|t| t.kind != ImageKind::Count) {
                         write_item(sig, t, &mut bytes);
                     }
                     // The changes listed, as their cover when no waiter wants them exact: exact
@@ -302,6 +307,7 @@ fn fits(spec: &ImageSpec, signals: &[Signal]) -> bool {
             ImageKind::Planes => logic && t.vsize == t.len.div_ceil(64) * 32,
             ImageKind::Scalar => !logic && t.len == 1,
             ImageKind::Raw => !logic,
+            ImageKind::Count => t.vsize == 8,
         };
         storage
             && t.k.checked_add(t.len).is_some_and(|e| e <= sig.ty.len)
@@ -361,6 +367,10 @@ fn write_item(sig: &Signal, t: &ImageItem, bytes: &mut [u8]) {
                 }
             };
             put_le(o, v);
+        }
+        ImageKind::Count => {
+            let n = u64::from_le_bytes(o[..8].try_into().unwrap_or_default());
+            o[..8].copy_from_slice(&n.wrapping_add(1).to_le_bytes());
         }
         ImageKind::Planes | ImageKind::Raw => {
             let ok = sig.cur.write_to(k, len, o);

@@ -481,9 +481,43 @@ impl Db {
     }
 
     /// The paths below a signal with mode view `m` to the elements it reads (`in`, `inout`):
-    /// the sensitivity of a concurrent procedure call (11.4).
+    /// the sensitivity of a concurrent procedure call (11.4). Below an array (`view (v) of
+    /// arr_t`) the path stops at the array: a static prefix names no field of every element.
+    // ponytail: an array view reads its whole array, `out` fields too (an extra resumption on
+    // their events); expand per element with static index steps if that ever matters.
     pub fn view_read_paths(&self, m: Mode) -> Vec<Vec<LspStep>> {
-        self.view_paths(m, &[], |m| matches!(m, Mode::In | Mode::Inout))
+        fn walk(t: &ModeTree, path: &mut Vec<LspStep>, out: &mut Vec<Vec<LspStep>>) -> bool {
+            match t {
+                ModeTree::Leaf(m) => {
+                    let read = matches!(m, Mode::In | Mode::Inout);
+                    if read {
+                        out.push(path.clone());
+                    }
+                    read
+                }
+                ModeTree::Record { elems, .. } => {
+                    let mut any = false;
+                    for (i, e) in elems.iter().enumerate() {
+                        path.push(LspStep::Field(i as u32));
+                        any |= walk(e, path, out);
+                        path.pop();
+                    }
+                    any
+                }
+                ModeTree::Array(e) => {
+                    let n = out.len();
+                    let any = walk(e, path, out);
+                    out.truncate(n);
+                    if any {
+                        out.push(path.clone());
+                    }
+                    any
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.port_mode_tree(m), &mut Vec::new(), &mut out);
+        out
     }
 
     fn view_paths(&self, m: Mode, steps: &[LspStep], keep: fn(Mode) -> bool) -> Vec<Vec<LspStep>> {

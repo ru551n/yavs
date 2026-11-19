@@ -1,0 +1,12 @@
+error[E4110]: a wait that is not `wait until <edge>;` is not supported in cycle mode
+  --> $DIR/strict.vhd:38:5
+   |
+38 |     wait on a;
+   |     ^^^^^^^^^^
+   |
+   = note: in process t_e4110.dut.p (strict.vhd:36)
+   = note: why: a cycle-based process runs once per clock edge or input change, so its only wait can be `wait until <edge>;` as its first statement
+   = help: write it as a clocked process (`if rising_edge(clk) then ... end if;`) or as a combinational process with a sensitivity list; a model with waits belongs in the testbench; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 1 previous error
+

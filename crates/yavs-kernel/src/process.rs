@@ -829,7 +829,8 @@ pub trait LiveSink: Send + Sync {
 /// A buffered side effect, committed after the delta in elaboration order. The flag on a
 /// report or output: already written to the live sink.
 pub(crate) enum Effect {
-    Report(Severity, String, bool),
+    /// Severity, message, shown live already, the process it is reported as.
+    Report(Severity, String, bool, ProcId),
     Output(Vec<u8>, bool),
     Stop(i32),
     Finish(i32),
@@ -2755,6 +2756,42 @@ impl Ctx<'_> {
         self.assign_planes_fast(d, r, Time::ZERO, planes, None, DelayMode::Transport)
     }
 
+    /// `assign_planes_now` of the whole of direct driver `d` (at most 64 elements) for a caller
+    /// that assigns each of its drivers at most once per run and only with a value other than
+    /// the one it drove last (cycle mode's export): no skip test and no search for earlier
+    /// entries of the driver. False, nothing done, where `assign_planes_now` must run.
+    #[inline]
+    pub fn publish_planes(&mut self, d: DriverId, planes: [u64; 4]) -> bool {
+        let Some(info) = self.sh.drivers.get(d.0 as usize) else {
+            return false;
+        };
+        let len = info.range.len;
+        if !info.direct
+            || info.owner != self.pid
+            || len == 0
+            || len > 64
+            || !self.st.calm(info.local as usize)
+        {
+            return false;
+        }
+        debug_assert!(
+            !self.has_entries(info, 1) && !self.has_entries(info, 2),
+            "publish_planes: a second assignment of a driver in one run"
+        );
+        let m = yavs_logic::wide::nmask(len as usize);
+        self.mark_entries(info, 2);
+        self.st.act |= ACT_ASSIGNED;
+        self.st.gate_off(info.local);
+        self.st.outv.push(OutV {
+            sig: info.signal.0,
+            slot: info.slot,
+            elem: info.range.offset,
+            len,
+            planes: planes.map(|p| p & m),
+        });
+        true
+    }
+
     /// `assign_planes_now` of more than 64 elements, the plane blocks as `assign_blocks` takes
     /// them: the fast case only, false (nothing done) where `assign_blocks` must run.
     #[inline]
@@ -3577,17 +3614,25 @@ impl Ctx<'_> {
 
     /// `report` / `assert`.
     pub fn report(&mut self, severity: Severity, msg: impl Into<String>) {
+        self.report_as(self.pid, severity, msg);
+    }
+
+    /// `report` / `assert` of process `pid`, made by this one (a cycle region reporting for a
+    /// member it runs): shown and committed as `pid`'s.
+    pub fn report_as(&mut self, pid: ProcId, severity: Severity, msg: impl Into<String>) {
         let msg = msg.into();
         let live = match self.sh.live {
             Some(l) if self.live => {
-                let name = &self.sh.names[self.pid.0 as usize];
+                let name = &self.sh.names[pid.0 as usize];
                 l.report(self.sh.now, self.sh.delta, name, severity, &msg);
                 true
             }
             _ => false,
         };
         self.st.act |= ACT_SLOW;
-        self.st.effects.push(Effect::Report(severity, msg, live));
+        self.st
+            .effects
+            .push(Effect::Report(severity, msg, live, pid));
     }
 
     /// Buffered textio `OUTPUT` text, delivered to observers at commit in elaboration order

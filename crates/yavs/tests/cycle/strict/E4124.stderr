@@ -1,0 +1,46 @@
+error[E4124]: a signal with two drivers is not supported in cycle mode
+   --> $DIR/strict.vhd:248:3
+    |
+248 | /   one : process (clk)
+249 | |   begin
+250 | |     if rising_edge(clk) then
+251 | |       q <= a;
+252 | |     end if;
+253 | |   end process;
+    | |______________^ t_e4124.q is driven by t_e4124.dut.two too
+254 | /   two : process (clk)
+255 | |   begin
+256 | |     if rising_edge(clk) then
+257 | |       q <= b;
+258 | |     end if;
+259 | |   end process;
+    | |______________- t_e4124.dut.two also drives t_e4124.q
+    |
+    = note: in process t_e4124.dut.one (strict.vhd:248)
+    = note: why: in cycle-based code every signal element has exactly one source, its process
+    = help: drive each element from one process, or merge the sources into one process; or run with `--cycle` to leave this process in the event simulation
+
+error[E4124]: a signal with two drivers is not supported in cycle mode
+   --> $DIR/strict.vhd:254:3
+    |
+248 | /   one : process (clk)
+249 | |   begin
+250 | |     if rising_edge(clk) then
+251 | |       q <= a;
+252 | |     end if;
+253 | |   end process;
+    | |______________- t_e4124.dut.one also drives t_e4124.q
+254 | /   two : process (clk)
+255 | |   begin
+256 | |     if rising_edge(clk) then
+257 | |       q <= b;
+258 | |     end if;
+259 | |   end process;
+    | |______________^ t_e4124.q is driven by t_e4124.dut.one too
+    |
+    = note: in process t_e4124.dut.two (strict.vhd:254)
+    = note: why: in cycle-based code every signal element has exactly one source, its process
+    = help: drive each element from one process, or merge the sources into one process; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 2 previous errors
+

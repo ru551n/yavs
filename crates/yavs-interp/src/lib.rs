@@ -47,7 +47,7 @@ mod tier_census;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-pub use env::{AssertSite, Sources, elaboration_reports};
+pub use env::{AssertSite, Sources, capture_elab_reports, elaboration_reports, set_library_files};
 use yavs_ffi::ForeignFn;
 use yavs_ir::{ForeignId, FuncId, FuncKind, Program};
 use yavs_kernel::{
@@ -208,6 +208,87 @@ pub(crate) struct ProcRoots {
 /// `Machine::publish_shared` (one with no roots to find is skipped).
 pub(crate) static SERIAL_EXECS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static SHARED_PUBLISHES: AtomicU64 = AtomicU64::new(0);
+
+/// Calls of natives that are not pure (files, the environment, clocks) and of foreign code made
+/// while [`watch_outside`] is on: cycle mode does not keep its analysis of a design whose
+/// elaboration read anything outside the sources.
+static OUTSIDE_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static OUTSIDE: AtomicU64 = AtomicU64::new(0);
+
+/// Of those, the calls that only read a text file opened for reading from disk (`file_open`,
+/// `endfile`, `readline`, `file_close`), and every such file: its name as given and its bytes
+/// when it was opened (`None`: it could not be opened).
+static FILE_CALLS: AtomicU64 = AtomicU64::new(0);
+type FileRead = (Vec<u8>, Option<Vec<u8>>);
+static FILES: std::sync::Mutex<Vec<FileRead>> = std::sync::Mutex::new(Vec::new());
+thread_local! {
+    /// The native running now read a file only ([`note_file_call`]).
+    static FILE_CALL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Count calls that read outside the sources from now on (`on`), or stop counting.
+pub fn watch_outside(on: bool) {
+    OUTSIDE_ON.store(on, Ordering::Relaxed);
+}
+
+/// The calls counted by [`watch_outside`] so far.
+pub fn outside_calls() -> u64 {
+    OUTSIDE.load(Ordering::Relaxed)
+}
+
+/// Of [`outside_calls`], those that only read a file of [`files_read`].
+pub fn file_calls() -> u64 {
+    FILE_CALLS.load(Ordering::Relaxed)
+}
+
+/// How many [`files_read`] holds.
+pub fn files_read_count() -> usize {
+    FILES.lock().unwrap_or_else(|e| e.into_inner()).len()
+}
+
+/// The text files opened for reading while [`watch_outside`] was on, in order: the name as
+/// given and the bytes it had then (`None`: it could not be opened).
+pub fn files_read() -> Vec<FileRead> {
+    FILES.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+#[inline]
+pub(crate) fn note_outside(pure: impl FnOnce() -> bool) {
+    FILE_CALL.set(false);
+    if OUTSIDE_ON.load(Ordering::Relaxed) && !pure() {
+        OUTSIDE.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// After the native [`note_outside`] was told of: it only read a file of [`files_read`].
+#[inline]
+pub(crate) fn note_outside_done() {
+    if FILE_CALL.replace(false) && OUTSIDE_ON.load(Ordering::Relaxed) {
+        FILE_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// The running native read a text file opened for reading from disk, and nothing else.
+pub(crate) fn note_file_call() {
+    FILE_CALL.set(true);
+}
+
+/// Text file `name` was opened for reading from disk (`ok`) or could not be: kept with its
+/// bytes for [`files_read`].
+pub(crate) fn note_file_open(name: &[u8], ok: bool) {
+    // Larger files, and what is not a plain file (a pipe, a device), stay outside calls.
+    const MAX: u64 = 64 << 20;
+    if OUTSIDE_ON.load(Ordering::Relaxed) {
+        let path = yavs_std::file::path_of(name);
+        let plain = std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() <= MAX);
+        let bytes = (ok && plain).then(|| std::fs::read(&path).ok()).flatten();
+        if ok && bytes.is_none() {
+            return;
+        }
+        (FILES.lock().unwrap_or_else(|e| e.into_inner())).push((name.to_vec(), bytes));
+        FILE_CALL.set(true);
+    }
+}
 
 /// `(serial_execs, shared_publishes)`, see [`SERIAL_EXECS`].
 pub fn serial_stats() -> (u64, u64) {
@@ -376,6 +457,10 @@ pub fn suppress_ieee_warnings(ieee_dir: std::path::PathBuf) {
 pub(crate) fn ieee_warnings_off() -> bool {
     IEEE_DIR.get().is_some()
 }
+
+/// The high bit of a report's severity byte in `init_reports` and call traces: made by the
+/// standard library.
+pub(crate) const LIB_REPORT: u8 = 0x80;
 
 impl Default for Limits {
     fn default() -> Limits {
@@ -2621,6 +2706,18 @@ impl Runtime {
         self.asserts.counts()[s as usize]
     }
 
+    /// A report of severity `s` made outside the interpreter (a cycle region's top-level
+    /// member): counted as an assert of `std.env` and formatted as the interpreter's own; `None`
+    /// when the severity is disabled (`SetVhdlAssertEnable`).
+    pub fn assert_report(
+        &self,
+        ctx: &yavs_kernel::Ctx<'_>,
+        s: yavs_kernel::Severity,
+        text: String,
+    ) -> Option<String> {
+        self.asserts.report(ctx, s, text)
+    }
+
     /// Run compiled code of `tier` where it has some, from now on (`yavs run --tier`).
     /// Elaboration-time code that already ran stayed interpreted; a debugger keeps a
     /// process interpreted. Returns `false` if a tier was set before.
@@ -3756,6 +3853,7 @@ pub fn call_native(
             .natives
             .get(native)
             .ok_or_else(|| exec::ice(format!("no native {native}")))?;
+        note_outside(|| native::pure(&n.symbol));
         let Some(fun) = m.rt.natives.get(native.0 as usize).copied().flatten() else {
             return Err(Fault::Runtime(format!(
                 "native subprogram `{}` is not implemented in yavs yet",
@@ -3777,8 +3875,9 @@ pub fn call_native(
                 }
             }
         }
-        let v = fun(&mut m, &mut None, n.ty, &cells)?;
-        result(&mut m, &prog, ret, false, v)
+        let v = fun(&mut m, &mut None, n.ty, &cells);
+        note_outside_done();
+        result(&mut m, &prog, ret, false, v?)
     })();
     r.map_err(|e| m.error(e, None))
 }

@@ -1,0 +1,1 @@
+The test runner package `vunit-yavs` has the experimental sim option `yavs.cycle` (`"off"`, `"on"` or `"strict"`), settable per library, testbench, test or configuration, which runs the test with `yavs run --cycle` or `--cycle-strict`.

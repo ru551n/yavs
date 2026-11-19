@@ -77,7 +77,7 @@ class TestTokenServer(unittest.TestCase):
     def start(self, num_threads=None, cap=None):
         """Register a test and connect its simulation"""
         if self.server is None:
-            self.server = TokenServer(num_threads)
+            self.server = TokenServer(num_threads, grace=0)  # The grace has tests of its own
         client = self.server.add(cap)
         sim = Sim(self.server, client)
         self.addCleanup(sim.close)
@@ -103,7 +103,7 @@ class TestTokenServer(unittest.TestCase):
         self.assertEqual(lend_order(2, [3, 0], [3, 0]), [0, 0])
 
     def test_env_names_the_port_and_the_secret(self):
-        self.server = TokenServer(4)
+        self.server = TokenServer(4, grace=0)
         client = self.server.add()
         self.assertEqual(self.server.env(client, {"A": "1"}), {"A": "1", ENV: f"{self.server.port}:{client.secret}"})
         self.assertNotEqual(self.server.add().secret, client.secret)
@@ -116,7 +116,7 @@ class TestTokenServer(unittest.TestCase):
         self.assertEqual(self.lent(), [7])
 
     def test_a_wrong_secret_is_closed_unanswered(self):
-        self.server = TokenServer(4)
+        self.server = TokenServer(4, grace=0)
         client = self.server.add()
         sim = Sim(self.server, client, secret="wrong")
         self.addCleanup(sim.close)
@@ -124,7 +124,7 @@ class TestTokenServer(unittest.TestCase):
         self.assertEqual(self.lent(), [])
 
     def test_a_secret_of_an_ended_test_is_closed(self):
-        self.server = TokenServer(4)
+        self.server = TokenServer(4, grace=0)
         client = self.server.add()
         self.server.remove(client)
         sim = Sim(self.server, client)
@@ -141,6 +141,40 @@ class TestTokenServer(unittest.TestCase):
         sims[0].want(3)
         wait_for(lambda: self.lent() == [3, 3, 3, 3])
         self.assertEqual(4 + sum(self.lent()), 16)
+
+    def test_a_slot_freed_and_retaken_within_the_grace_is_not_lent(self):
+        # -p 2 on 4 slots: when a test ends, its worker's slot waits for the next test, so the slots are never
+        # oversubscribed when it starts
+        self.server = TokenServer(4, workers=2, grace=10)
+        first_client, first = self.start()
+        _, second = self.start()
+        self.assertEqual(first.want(3), (1, 2))
+        self.server.remove(first_client)
+        self.assertEqual(second.want(3), (1, 2))
+        _, third = self.start()
+        self.assertEqual(2 + sum(self.lent()), 4)
+        self.assertEqual(third.want(3), (1, 0))
+
+    def test_the_workers_wait_their_grace_before_their_first_test(self):
+        # -p 4 on 4 slots: the first test, however long after the server's start, may not take the slots of the
+        # workers about to start theirs
+        self.server = TokenServer(4, workers=4, grace=0.3)
+        time.sleep(0.4)
+        _, first = self.start()
+        self.assertEqual(first.want(3), (1, 0))
+        self.assertEqual(first.line(), "1 3\n")  # Once their grace ran out: no other test came
+
+    def test_a_slot_free_past_the_grace_is_lent(self):
+        # -p 2 on 2 slots: the tail of a run, a worker without tests; its slot is lent once the grace ran out
+        self.server = TokenServer(2, workers=2, grace=0.3)
+        first_client, first = self.start()
+        _, second = self.start()
+        self.assertEqual(second.want(1), (1, 0))
+        start = time.monotonic()
+        self.server.remove(first_client)
+        self.assertEqual(second.line(), "1 1\n")
+        self.assertGreaterEqual(time.monotonic() - start, 0.3)
+        self.assertEqual(first.line(), "")
 
     def test_breadth_first_newest_first(self):
         # -p 7 with 3 tests: 4 free tokens; wants arrive oldest first and nothing is taken back
@@ -217,7 +251,7 @@ class TestTokenServer(unittest.TestCase):
         self.server.remove(client)
 
     def test_close_stops_the_server(self):
-        self.server = TokenServer(4)
+        self.server = TokenServer(4, grace=0)
         port = self.server.port
         self.server.close()
         self.server = None

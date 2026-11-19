@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- New sim option `yavs.cycle` (`"off"`, `"on"`, `"strict"`), experimental like cycle mode itself: runs the test with
+  `yavs run --cycle` or `--cycle-strict`; a test that also has coverage, a debug session or waves fails before yavs
+  starts and says why.
+- The token server is on by default, at any `-p`, with one slot for each CPU the run may use (not `-p`): the CPUs no
+  test uses are lent to the simulations, which run with `--threads=auto`. A test slot keeps its CPU for one second
+  after its test ends, so its next test finds it free, and the slots of workers out of tests are lent in the tail.
+  `--yavs-no-jobserver` or `VUNIT_YAVS_JOBSERVER=off` turns it off; `--yavs-jobserver` is still accepted. Under the
+  server the threads of `--yavs-max-threads N` past the first run only on lent tokens. Before, the opt-in server
+  lent a test slot's CPU the moment its test ended, and the next test often started on a full machine.
+
 ## 0.20.2 (2026-11-16)
 
 - The one-call-at-a-time compile of libraries that read each other, kept for yavs 0.19.1 and older, is gone: with `-j N`

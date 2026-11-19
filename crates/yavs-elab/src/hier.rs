@@ -23,7 +23,7 @@ use crate::eval::Val;
 macro_rules! id {
     ($($(#[$m:meta])* $name:ident),*) => {$(
         $(#[$m])*
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub u32);
         impl $name {
             pub fn index(self) -> usize {
@@ -245,7 +245,7 @@ pub(crate) fn spell(i: Ident, case: Case) -> String {
 // Shapes: the elaborated, fully constrained subtype of a signal.
 
 /// Bounds of one index range, as positions (`i64`, enumeration positions for enum indexes).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Bounds {
     pub left: i64,
     pub dir: Direction,

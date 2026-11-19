@@ -1202,6 +1202,13 @@ pub struct SimControl {
     directb: Vec<OutB>,
     /// Signals with direct transactions (`commit_out`) for the next update.
     direct_sigs: Vec<u32>,
+    /// A signal is quiet (`Builder::quiet`): `cycle` finishes such signals at the end of the
+    /// processes of each cycle (`Phase::EndOfProcesses` is then in `phase_mask`).
+    quiet_any: bool,
+    /// A quiet signal has idle-skip readers: `finish_quiet` arms them at a change, through the
+    /// signals it collects in `quiet_arm` (kept between cycles).
+    quiet_readers: bool,
+    quiet_arm: Vec<u32>,
     ops: Vec<SignalOp>,
     /// Signals with events in the current cycle.
     changed_sigs: Vec<u32>,
@@ -1818,6 +1825,9 @@ impl SimControl {
             directv: Vec::new(),
             directb: Vec::new(),
             direct_sigs: Vec::new(),
+            quiet_any: false,
+            quiet_readers: false,
+            quiet_arm: Vec::new(),
             ops: Vec::new(),
             changed_sigs: Vec::new(),
             in_changed: vec![false; nsignals as usize],
@@ -1929,6 +1939,20 @@ impl SimControl {
             s.live = true;
             s.set_lean_words();
         });
+        for i in 0..sim.signals.len() {
+            // A guard reads activity; the idle-skip readers are armed by `finish_quiet`.
+            let read = sim.guard_readers.contains_key(&(i as u32));
+            let s = &mut sim.signals[i];
+            s.quiet &= !read && s.quiet_ok();
+            sim.quiet_any |= s.quiet;
+            sim.quiet_readers |=
+                s.quiet && sim.readers_start.get(i) != sim.readers_start.get(i + 1);
+        }
+        // `cycle` finishes the quiet signals behind this bit: no test of its own in a run
+        // without them.
+        if sim.quiet_any {
+            sim.phase_mask |= 1 << Phase::EndOfProcesses as u32;
+        }
         Ok(sim)
     }
 
@@ -2266,6 +2290,9 @@ impl SimControl {
             .iter()
             .filter(|&&p| self.observers.iter().any(|o| o.wants_phase(p)))
             .fold(0, |m, &p| m | 1 << p as u32);
+        if self.quiet_any {
+            self.phase_mask |= 1 << Phase::EndOfProcesses as u32;
+        }
         self.watch_changes = self.observers.iter().any(|o| o.wants_value_changes());
         self.next_wanted = self.observers.iter().any(|o| o.wants_next_time());
         self.log_forces = self.observers.iter().any(|o| o.wants_forces());
@@ -3083,9 +3110,49 @@ impl SimControl {
         } else {
             self.run_batch(ready, false, false)?;
         }
-        self.phase(Phase::EndOfProcesses);
-
+        // The bit is in `phase_mask` when a signal is quiet: a plain run tests nothing more, and
+        // `phase` stays small enough to be inlined.
+        if self.phase_mask & 1 << Phase::EndOfProcesses as u32 != 0 {
+            if self.quiet_any && !self.direct_sigs.is_empty() {
+                self.finish_quiet();
+            }
+            self.phase(Phase::EndOfProcesses);
+        }
         self.last_delta()
+    }
+
+    /// Quiet signals (`Builder::quiet`) with direct commits of this cycle that nothing waits on
+    /// now, every wait of the cycle registered: their values change at once, with no event, and
+    /// they need no next delta. A change arms every idle-skip reader (no reader guard is asked:
+    /// its condition is read a delta earlier than the event would have come).
+    #[inline(never)]
+    fn finish_quiet(&mut self) {
+        let (now, cycle) = (self.now, self.cycle + 1);
+        if !self.quiet_readers {
+            let signals = &mut self.signals;
+            self.direct_sigs
+                .retain(|&s| signals[s as usize].finish_quiet(now, cycle).is_none());
+            return;
+        }
+        let mut arm = std::mem::take(&mut self.quiet_arm);
+        let (signals, starts) = (&mut self.signals, &self.readers_start);
+        self.direct_sigs.retain(|&s| {
+            let Some(changed) = signals[s as usize].finish_quiet(now, cycle) else {
+                return true;
+            };
+            if changed && starts.get(s as usize) != starts.get(s as usize + 1) {
+                arm.push(s);
+            }
+            false
+        });
+        for &s in &arm {
+            let (a, b) = (starts[s as usize] as usize, starts[s as usize + 1] as usize);
+            for rd in &self.readers[a..b] {
+                self.armed[rd.p as usize] = true;
+            }
+        }
+        arm.clear();
+        self.quiet_arm = arm;
     }
 
     /// f/g: at the last delta of this time, postponed processes. Also after initialization
@@ -5432,9 +5499,9 @@ impl SimControl {
     fn commit(&mut self, process: ProcId, effects: Vec<Effect>) {
         for e in effects {
             match e {
-                Effect::Report(severity, message, live) => {
+                Effect::Report(severity, message, live, by) => {
                     let report = Report {
-                        process: Some(process),
+                        process: Some(by),
                         context: None,
                         severity,
                         message,

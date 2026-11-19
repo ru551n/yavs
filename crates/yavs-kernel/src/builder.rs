@@ -102,7 +102,7 @@ pub struct IdleRead {
 /// nor the reset condition true would only evaluate them and suspend again, so the kernel
 /// leaves the process suspended (`Config::edge_triggers`). Edges as the IEEE 1164 functions
 /// define them: `'event`, and the value and `'last_value` through `To_X01`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EdgeTrigger {
     pub signal: SignalId,
     pub elem: u32,
@@ -298,6 +298,17 @@ impl Builder {
             return self.usage("real_valued: the signal's elements are not 8 bytes".into());
         }
         self.signals[s.0 as usize].float = true;
+    }
+
+    /// Let a change of `s` that nothing can see happen without an event (cycle mode, for the
+    /// signals its region drives): kept by `SimControl::new` only for a lean register that keeps
+    /// no history and has no reader the kernel skips idle processes by, and used while nothing
+    /// waits on it or observes it. Its value is the same at every read; no event, wake or delta
+    /// is made for it.
+    pub fn quiet(&mut self, s: SignalId) {
+        if let Some((s, _)) = self.chk(s.into()) {
+            self.signals[s.0 as usize].quiet = true;
+        }
     }
 
     /// Keep no byte codes for `s`: no process reads a single element of it, so refreshing a code

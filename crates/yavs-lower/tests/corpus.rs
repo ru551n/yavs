@@ -353,6 +353,7 @@ const PASS: &[&str] = &[
     "hierarchy/mode_view_param_nested",
     "hierarchy/mode_view_param_procs",
     "hierarchy/mode_view_ports",
+    "hierarchy/mode_view_array_concurrent_call",
     "hierarchy/mode_view_concurrent_call",
     "hierarchy/port_operator_call_syntax",
     "hierarchy/mode_view_assoc_array",

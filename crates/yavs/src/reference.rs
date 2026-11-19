@@ -450,6 +450,7 @@ See also
 * :doc:`vunit-yavs`: the options of the VUnit package.
 * :doc:`environment`: environment variables.
 * :doc:`error-codes`: every diagnostic code.
+* :doc:`cycle-mode`: what ``--cycle``, ``--cycle-strict`` and ``--cycle-report`` change.
 ";
 
 /// The index of diagnostic codes, relative to the repository root.
@@ -484,7 +485,7 @@ fn first_sentence(text: &str) -> String {
 /// `docs/error-codes.rst`: every code of the tables behind `yavs --explain`, by the stage it
 /// belongs to, with the first sentence of its explanation.
 fn error_index() -> String {
-    const GROUPS: [(&str, &str, &str); 6] = [
+    const GROUPS: [(&str, &str, &str); 7] = [
         (
             "E0",
             "Syntax, command line, waveforms, coverage, debugger, plugins",
@@ -494,6 +495,7 @@ fn error_index() -> String {
         ("E1", "Semantic analysis", "E1 and W1"),
         ("E2", "Elaboration", "E2 and W2"),
         ("E3", "Run time", "E3 and W3"),
+        ("E4", "Cycle mode", "E4 and W4"),
         ("E9", "Internal errors", "E9"),
     ];
     let mut codes = crate::explain::all();
@@ -546,6 +548,7 @@ See also
 
 * :doc:`troubleshooting`: how to read a diagnostic, and the common problems.
 * :doc:`cli-reference`: ``--message-format``, ``-Werror`` and exit statuses.
+* :doc:`cycle-mode`: the codes E4101 to E4139 and what to do about them.
 ";
 
 /// The command list of the user guide's interactive debugger page, included there.

@@ -312,7 +312,14 @@ impl Elaborated {
         let spans = e
             .trace
             .iter()
-            .filter_map(|&s| prog.and_then(|p| p.stmts.get(s)).map(|i| i.span));
+            .filter_map(|&s| prog.and_then(|p| p.stmts.get(s)).map(|i| i.span))
+            .chain(
+                e.trace
+                    .is_empty()
+                    .then(|| e.at.iter().copied())
+                    .into_iter()
+                    .flatten(),
+            );
         for (k, span) in spans.enumerate() {
             d = if k == 0 {
                 d.with_primary(span, "")
@@ -1117,6 +1124,10 @@ impl Elaborated {
             foreign_archs,
             ext_procs,
             model_vals,
+            pkg_vals,
+            region_vals,
+            region_ranges,
+            region_calls,
             sigs,
             regions,
             var_ports,
@@ -1328,6 +1339,25 @@ impl Elaborated {
         for (&leaf, &region) in &ir.res_regions {
             let d = self.region_data(&rt, ir, region, &shared, &mut once, &mut insts, &mut base)?;
             res_inst.insert(leaf, d);
+        }
+        // Cycle mode: a region whose processes all run cycle-based still evaluates its run-time
+        // constants when they may report or fail (LRM 14.4.1). The regions are made in process
+        // order, as the normal mode makes them, so reports come in its order.
+        if let Some(r) = &self.region {
+            let members: std::collections::HashSet<usize> = r.members.iter().copied().collect();
+            for (pi, p) in self.procs.iter().enumerate() {
+                let i = self.instance_of(p.scope);
+                let region = self.hier.scope(p.scope).parent.unwrap_or(i);
+                let mut up = Some(region);
+                let mut loud = !members.contains(&pi);
+                while let Some(s) = up.filter(|_| !loud) {
+                    loud |= self.loud_consts.contains(&s);
+                    up = (s != i).then(|| self.hier.scope(s).parent).flatten();
+                }
+                if loud {
+                    self.region_data(&rt, ir, region, &shared, &mut once, &mut insts, &mut base)?;
+                }
+            }
         }
         let res = |d: yavs_sem::DeclId,
                    leaf: crate::LeafId|
@@ -2366,6 +2396,47 @@ fn res_index_of(db: &Db, param: yavs_sem::SubtypeId) -> (i64, bool) {
 }
 
 /// Whether `scope` declares a constant with an initial value that has no value at analysis time.
+/// The scopes of `regions` (elaborated scope to its declarative regions) that declare a
+/// constant [`loud_constant`] holds for.
+pub(crate) fn loud_scopes(
+    db: &Db,
+    regions: &HashMap<ScopeId, Vec<yavs_sem::ScopeId>>,
+) -> std::collections::HashSet<ScopeId> {
+    let mut memo = HashMap::new();
+    (regions.iter())
+        .filter(|(_, rs)| rs.iter().any(|&r| loud_constant(db, r, &mut memo)))
+        .map(|(&s, _)| s)
+        .collect()
+}
+
+/// Whether `scope` declares a constant only the run-time evaluation gives whose initial value
+/// calls a subprogram that may report (not a pure function free of asserts and reports).
+fn loud_constant(
+    db: &Db,
+    scope: yavs_sem::ScopeId,
+    memo: &mut HashMap<yavs_sem::DeclId, bool>,
+) -> bool {
+    db.scopes[scope].order.iter().any(|&d| {
+        let yavs_sem::decl::DeclKind::Object(o) = &db.decls[d].kind else {
+            return false;
+        };
+        let Some(x) = o.default.filter(|&x| db.value(x).is_none()) else {
+            return false;
+        };
+        if o.class != yavs_sem::decl::ObjClass::Constant || o.role != yavs_sem::decl::ObjRole::Plain
+        {
+            return false;
+        }
+        let mut loud = false;
+        db.walk_expr(x, &mut |y| {
+            if let yavs_sem::hir::ExprKind::Call { callee, .. } = &db.exprs[y].kind {
+                loud |= !crate::walk::pure_function(db, *callee, memo, true, 0);
+            }
+        });
+        loud
+    })
+}
+
 fn runtime_constant(db: &Db, scope: yavs_sem::ScopeId) -> bool {
     db.scopes[scope].order.iter().any(|&d| {
         matches!(&db.decls[d].kind, yavs_sem::decl::DeclKind::Object(o)

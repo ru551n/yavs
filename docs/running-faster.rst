@@ -93,6 +93,13 @@ Threads
 (the default) unless you measured a gain, or use ``--threads=auto``, which uses more threads only while they make
 the run faster: :doc:`threads`.
 
+Cycle mode
+----------
+
+``--cycle`` runs the synchronous RTL of a design as compiled code evaluated once per clock edge, and gives up some
+detail for it (two-state values, no reports from the design's own processes). It is opt-in and experimental
+(its options may change): :doc:`cycle-mode`.
+
 Finding where the time goes
 ---------------------------
 
@@ -107,5 +114,6 @@ See also
 --------
 
 * :doc:`threads`: more threads, and when they help.
+* :doc:`cycle-mode`: the opt-in mode for synchronous RTL.
 * :doc:`on-disk`: where the cache lives.
 * :doc:`performance`: how yavs compares with other simulators.

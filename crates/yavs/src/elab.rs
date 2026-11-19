@@ -113,6 +113,8 @@ enum ResolutionArg {
 
 #[cfg_attr(test, derive(Debug))]
 #[derive(ClapArgs)]
+#[command(group(clap::ArgGroup::new("cycle_mode").multiple(true)
+    .args(["cycle", "cycle_strict", "cycle_report"])))]
 pub struct RunArgs {
     #[command(flatten)]
     common: Common,
@@ -222,6 +224,45 @@ pub struct RunArgs {
     /// point is missing).
     #[arg(long, value_name = "LIB[:ENTRY]")]
     vhpi: Vec<String>,
+    /// Cycle mode, experimental (its options and results may change in a later release): the
+    /// processes that can run cycle-based (clocked and combinational ones in what it supports) run
+    /// as one region on a static schedule with compiled code; the rest stays in the event kernel.
+    /// One line on standard error says how many processes joined; `--cycle-report` lists them all,
+    /// with reasons. The asserts and reports of cycle-based processes below the top-level unit are
+    /// not evaluated; those of the top-level unit are, at the clock edge in compiled code or with
+    /// their process in the event kernel, so the checks of a testbench run as in the normal mode (a
+    /// checker entity instantiated below the top joins and loses them). Not with a debug session,
+    /// `--wave`, `--cov`, `--vhpi`, `--surfer` or `--activity` (E4102). The strict form is
+    /// `--cycle-strict`, given instead of this option.
+    #[arg(long, conflicts_with = "cycle_strict")]
+    cycle: bool,
+    /// Cycle mode in its strict form, experimental, instead of `--cycle`: the same selection, but a
+    /// process below the top-level design unit that is not behavioural and cannot run cycle-based
+    /// is an error, and the run stops before simulation. Each error names the construct that is not
+    /// supported, points at its statement, and says why and how to fix it, with the code of the
+    /// reason (E4110 to E4139; E4101 for what yavs does not implement yet); one error per statement
+    /// lists the processes it keeps out, sorted by file and line, at most 40.
+    #[arg(long)]
+    cycle_strict: bool,
+    /// Analyse the design for cycle mode (experimental) and print the region report to standard
+    /// error, or with FILE write it there: the summary, the processes that stay in the event kernel
+    /// grouped by reason (most common first), the asserts and reports cycle mode does not evaluate,
+    /// the clocks, the loop groups, the boundary and the cycle-based processes. Nothing is compiled
+    /// or simulated; the exit status is 0. Given instead of `--cycle` and `--cycle-strict`. An
+    /// unwritable FILE is E4103, before any work.
+    #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true,
+          conflicts_with_all = ["cycle", "cycle_strict"])]
+    cycle_report: Option<Option<String>>,
+    /// With `--cycle`, `--cycle-strict` or `--cycle-report` (experimental): keep the exact
+    /// metavalue rules. By default a metavalue (`'U'`, `'X'`, `'Z'`, ...) reaching the region is
+    /// read as `0` and no process stays out for one; with this option a process that would hide a
+    /// metavalue from the testbench (it assigns a metavalue literal to a signal the testbench
+    /// reads, or passes on a `'Z'` from outside) stays in the event kernel, so the testbench sees
+    /// what the normal mode gives it. A register or variable without a start value shows the
+    /// testbench `'U'` while its value depends on it, for up to 1024 clock edges. A failed
+    /// check's message then also gives its values, as in the normal mode.
+    #[arg(long, requires = "cycle_mode")]
+    cycle_exact_meta: bool,
     // The text names the tiers this build has, so it is built by `tier_help`.
     #[arg(long, value_enum, help = tier_help())]
     tier: Option<TierArg>,
@@ -524,6 +565,34 @@ impl RunArgs {
         self.dap.is_some() || self.interactive || !self.do_commands.is_empty()
     }
 
+    /// Whether cycle mode analyses the design: `--cycle`, `--cycle-strict` or `--cycle-report`.
+    fn cycle_on(&self) -> bool {
+        self.cycle || self.cycle_strict || self.cycle_report.is_some()
+    }
+
+    /// The option `--cycle` cannot be used with: it records, shows, counts or changes signals
+    /// inside the region. `--surfer` is named before the `--wave` it implies. Left allowed:
+    /// `--profile` (samples the interpreter, so the region's time is one entry of the kernel),
+    /// `--assert-summary` (counts the asserts that run, and the region drops its own),
+    /// `--shuffle`, `--hang-report`, `--time-report`; the `--wave-*` options do nothing alone.
+    fn not_with_cycle(&self) -> Option<&'static str> {
+        if self.debugged() {
+            Some("a debug session")
+        } else if self.surfer.is_some() {
+            Some("`--surfer`")
+        } else if self.wave.is_some() {
+            Some("`--wave`")
+        } else if self.cov.is_some() {
+            Some("`--cov`")
+        } else if !self.vhpi.is_empty() {
+            Some("`--vhpi`")
+        } else if self.activity.is_some() {
+            Some("`--activity`")
+        } else {
+            None
+        }
+    }
+
     /// Whether the wave file holds variables: asked for, or a debug session, where `wave add` of a
     /// variable then has its history since time 0.
     fn wave_vars(&self) -> bool {
@@ -633,11 +702,14 @@ pub enum SeverityArg {
 }
 
 /// The elaborated design, or the exit code of the failed stage.
+#[allow(clippy::too_many_arguments)]
 fn elaborate(
     c: &Common,
     lowering: yavs_elab::LowerOptions,
     compile_all: bool,
     collapse_ports: bool,
+    keep_values: bool,
+    values: Option<yavs_elab::ValuesHook>,
     format: MessageFormat,
     color: bool,
     encoding: yavs_syntax::Encoding,
@@ -767,6 +839,8 @@ fn elaborate(
             collapse_ports: collapse_ports && !c.no_collapse_ports,
             // Hidden test aid: `YAVS_PACKS=off` gives every leaf a kernel signal of its own.
             packs: std::env::var("YAVS_PACKS").map_or(true, |v| v != "off"),
+            keep_values,
+            values,
             ..yavs_elab::ElabConfig::default()
         };
         yavs_elab::elaborate(&mut db, t, &c.generics, &cfg)
@@ -1073,6 +1147,8 @@ pub fn elab(
         yavs_elab::LowerOptions::default(),
         false,
         true,
+        false,
+        None,
         format,
         color,
         encoding,
@@ -1468,11 +1544,41 @@ fn prepare(
     };
     // A debugger or VHPI plugin may force or deposit any port: those runs keep ports apart.
     let collapse = !a.debugged() && a.vhpi.is_empty();
+    let compile_all = a.tier() == TierArg::Clift;
+    // Cycle mode's analysis is kept in the work library's cycle store, keyed by what it depends
+    // on: these options, besides the analysis, the generics it reads and the environment.
+    let values = a.cycle_on().then(|| {
+        let c = &a.common;
+        let work = c.work.split_once(':').map_or("", |(_, d)| d);
+        // Not the library paths: the analysis key names every file of the closure and its library.
+        let part = format!(
+            "{}|{}|{}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}",
+            c.top,
+            collapse && !c.no_collapse_ports,
+            compile_all,
+            lowering,
+            a.resolution as u8,
+            a.ieee_warnings.map(|w| w as u8),
+            c.load,
+            a.plusargs,
+            a.source_map,
+            a.cycle_exact_meta,
+        );
+        yavs_cycle::analysis_cache(
+            (!c.no_cache && !work.is_empty()).then(|| std::path::Path::new(work)),
+            part.into_bytes(),
+            c.generics.clone(),
+            !a.cycle_strict && a.cycle_report.is_none(),
+        )
+    });
     let (mut out, db, e) = elaborate(
         &a.common,
         lowering,
-        a.tier() == TierArg::Clift,
+        compile_all,
         collapse,
+        // Cycle mode lowers code that reads constants a plain run evaluates only when needed.
+        a.cycle_on(),
+        values.flatten(),
         format,
         color,
         encoding,
@@ -1757,6 +1863,49 @@ fn run_design(
         out.emit(&SourceMap::default(), &d);
         return out.finish(2);
     }
+    // A report file that cannot be written fails before any work.
+    let mut report_file = None;
+    if let Some(Some(path)) = &a.cycle_report {
+        match std::fs::File::create(path) {
+            Ok(f) => report_file = Some(f),
+            Err(err) => {
+                let mut out = Out::new(format, color);
+                out.emit(
+                    &SourceMap::default(),
+                    &Diagnostic::error(
+                        yavs_cycle::codes::REPORT_FILE,
+                        format!("cannot write the cycle report file `{path}`"),
+                    )
+                    .with_note(err.to_string()),
+                );
+                return out.finish(2);
+            }
+        }
+    }
+    // Cycle mode cannot serve what observes or changes signals inside its region.
+    if (a.cycle || a.cycle_strict)
+        && let Some(option) = a.not_with_cycle()
+    {
+        let flag = if a.cycle_strict {
+            "--cycle-strict"
+        } else {
+            "--cycle"
+        };
+        let mut out = Out::new(format, color);
+        out.emit(
+            &SourceMap::default(),
+            &Diagnostic::error(
+                yavs_cycle::codes::NOT_WITH,
+                format!("`{flag}` cannot be used with {option}"),
+            )
+            .with_note(
+                "cycle mode keeps the signals inside its region in its own image, which this \
+                 option would observe or change",
+            )
+            .with_help(format!("run without `{flag}`")),
+        );
+        return out.finish(2);
+    }
     // `--surfer` without `--wave`: `<top>.fst` beside the work library directory.
     if a.surfer.is_some() && a.wave.is_none() {
         let dir = a.common.work.split_once(':').map_or("", |(_, d)| d);
@@ -1866,6 +2015,66 @@ fn run_design(
     let none = SourceMap::default();
     if let Some(why) = token_warning {
         out.emit(&none, &token_gone(why));
+    }
+    // Cycle mode: select and compile the region while the analysis is still there.
+    let mut cycle_metas = None;
+    let mut cycle_reporter: Option<yavs_cycle::Reporter> = None;
+    if a.cycle_on() {
+        let mode = match (a.cycle_strict, a.cycle_report.is_some()) {
+            (true, _) => yavs_cycle::Mode::Strict,
+            (_, true) => yavs_cycle::Mode::Report,
+            _ => yavs_cycle::Mode::Run,
+        };
+        // The region's machine code is kept in the work library's compilation cache, as the
+        // compiled tier's is; not with `--no-cache`.
+        let work = a.common.work.split_once(':').map_or("", |(_, d)| d);
+        yavs_cycle::set_cache(
+            (!a.common.no_cache && !work.is_empty()).then(|| std::path::Path::new(work)),
+        );
+        // Its functions compile on `--threads` threads (those past the first on tokens under a
+        // token server), no more than the CPUs the run may use.
+        let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+        yavs_cycle::set_threads(
+            a.threads.count().min(cpus),
+            tokens
+                .clone()
+                .map(|p| p as std::sync::Arc<dyn yavs_kernel::Tokens>),
+        );
+        yavs_cycle::set_exact_meta(a.cycle_exact_meta);
+        match yavs_cycle::plan(&db, &e, mode) {
+            Ok(plan) => {
+                if mode == yavs_cycle::Mode::Report {
+                    use std::io::Write as _;
+                    let written = match &mut report_file {
+                        Some(f) => f.write_all(plan.report.as_bytes()),
+                        None => std::io::stderr().write_all(plan.report.as_bytes()),
+                    };
+                    if let Err(err) = written {
+                        let mut d = Diagnostic::error(
+                            yavs_cycle::codes::REPORT_FILE,
+                            "cannot write the cycle report",
+                        );
+                        d = d.with_note(err.to_string());
+                        out.emit(&SourceMap::default(), &d);
+                        return out.finish(2);
+                    }
+                    return out.finish(0);
+                }
+                eprint!("{}", plan.summary);
+                if let Some(d) = &plan.warning {
+                    out.emit(&db.sources, d);
+                }
+                e.region = plan.region;
+                cycle_metas = Some(plan.metas);
+                cycle_reporter = Some(plan.reporter);
+            }
+            Err(ds) => {
+                for d in &ds {
+                    out.emit(&db.sources, d);
+                }
+                return out.finish(2);
+            }
+        }
     }
     let cfg_profile = a
         .profile
@@ -2063,6 +2272,16 @@ fn run_design(
     let on_pipe = sim.interrupt();
     crate::stdout::on_broken(move || on_pipe.stop());
     let mut rt = built.as_ref().map(|b| b.rt.clone());
+    // The asserts of the cycle region's top-level members go through the normal mode's report
+    // path: the assert counts (the exit status), enables and formats.
+    if let (Some(slot), Some(rt)) = (&cycle_reporter, &rt) {
+        let rt = rt.clone();
+        let _ = slot.set(Arc::new(
+            move |ctx: &yavs_kernel::Ctx<'_>, s: yavs_kernel::Severity, t: String| {
+                rt.assert_report(ctx, s, t)
+            },
+        ));
+    }
     // Toggle coverage watches the value-change bus; without it nothing is subscribed.
     let toggles = kind(CovKindArg::Toggle).then(|| {
         let (t, skipped) = yavs_cov::toggle::toggles(&db, &e, a.cov_toggle_max);
@@ -2331,6 +2550,9 @@ fn run_design(
                 yavs_elab::assert_summary_text(rt.as_deref(), &db.sources)
             ),
         }
+    }
+    if let Some(line) = cycle_metas.as_ref().and_then(|m| m.summary()) {
+        eprint!("{line}");
     }
     if let Some((path, err)) = activity_error {
         out.emit(
@@ -2647,6 +2869,9 @@ fn observers(
     view: &ViewSlot,
 ) -> Result<Option<(String, yavs_wave::Recorder)>, Box<Diagnostic>> {
     let none = SourceMap::default();
+    if let Some(t) = Trace::from_env(e) {
+        sim.subscribe(Box::new(t));
+    }
     if !a.vhpi.is_empty() {
         if let Some(b) = built.cloned() {
             yavs_vhpi::set_runtime(b);
@@ -2782,6 +3007,87 @@ fn observers(
 
 /// Prints reports and `OUTPUT` text on stdout in the documented format (cli-contract section 5;
 /// tools/difftest parses it).
+/// Developers (`YAVS_TRACE=FILE` with `YAVS_TRACE_SIGNALS=LIST`, one leaf name a line, as
+/// `YAVS_CYCLE_SEEDS` writes them): at the end of each time step, every listed signal whose
+/// value changed since the last line, as `time name value`; tools/difftest/seeddiff.py
+/// compares the trace of the normal mode with that of `--cycle`.
+struct Trace {
+    sigs: Vec<(yavs_kernel::SigRef, String, String)>,
+    out: std::io::BufWriter<std::fs::File>,
+}
+
+impl Trace {
+    fn from_env(e: &yavs_elab::Elaborated) -> Option<Trace> {
+        let path = std::env::var_os("YAVS_TRACE")?;
+        let list = std::env::var_os("YAVS_TRACE_SIGNALS")?;
+        let names = std::fs::read_to_string(&list)
+            .map_err(|x| eprintln!("YAVS_TRACE_SIGNALS: {}: {x}", list.to_string_lossy()))
+            .ok()?;
+        let want: std::collections::HashSet<&str> = names.lines().collect();
+        let sigs: Vec<_> = (0..e.nets.leaves.len() as u32)
+            .map(|l| (l, e.leaf_name(yavs_elab::LeafId(l))))
+            .filter(|(_, n)| want.contains(n.as_str()))
+            .map(|(l, n)| {
+                let l = yavs_elab::LeafId(l);
+                let r = yavs_kernel::Range::new(0, e.nets.leaf(l).ty.len);
+                (e.nets.kref(l, r), n, String::new())
+            })
+            .collect();
+        let found: std::collections::HashSet<&str> = sigs.iter().map(|s| s.1.as_str()).collect();
+        if let Some(miss) = want.iter().find(|n| !found.contains(**n)) {
+            eprintln!(
+                "YAVS_TRACE: {} of {} signals not in this design, such as `{miss}`",
+                want.len() - found.len(),
+                want.len()
+            );
+        }
+        let f = std::fs::File::create(&path)
+            .map_err(|x| eprintln!("YAVS_TRACE: {}: {x}", path.to_string_lossy()))
+            .ok()?;
+        Some(Trace {
+            sigs,
+            out: std::io::BufWriter::new(f),
+        })
+    }
+}
+
+impl yavs_kernel::Observer for Trace {
+    fn wants_phase(&self, p: yavs_kernel::Phase) -> bool {
+        matches!(
+            p,
+            yavs_kernel::Phase::EndOfTimeStep | yavs_kernel::Phase::EndOfSim
+        )
+    }
+
+    fn wants_value_changes(&self) -> bool {
+        false
+    }
+
+    fn phase(&mut self, hook: &mut yavs_kernel::Hook<'_>, p: yavs_kernel::Phase) {
+        use std::io::Write;
+        if p == yavs_kernel::Phase::EndOfSim {
+            let _ = writeln!(self.out, "{} - end", hook.now().as_fs());
+            let _ = self.out.flush();
+            return;
+        }
+        let t = hook.now().as_fs();
+        let mut wrote = false;
+        for (s, name, last) in &mut self.sigs {
+            let Ok(v) = hook.value(*s) else { continue };
+            let v = v.to_string();
+            if *last != v {
+                let _ = writeln!(self.out, "{t} {name} {v}");
+                *last = v;
+                wrote = true;
+            }
+        }
+        // A run that ends at its stop time exits without dropping the observer.
+        if wrote {
+            let _ = self.out.flush();
+        }
+    }
+}
+
 struct Printer;
 
 impl yavs_kernel::Observer for Printer {

@@ -260,6 +260,18 @@ identical to a run without it, at any `--threads`.
   16384 objects and 256 MiB, apart from the 4 GiB of entries, under the same rule at the limit. (The removed
   LLVM tier kept its modules there as `obj-<key>.img`.) `route-<key>.img`, one per design, holds how each compiled function
   first called the others, so that an unchanged design makes the same bodies in every run (#1035).
+- `--cycle-exact-meta` (with `--cycle`, `--cycle-strict` or `--cycle-report`, else a usage error, exit 2) keeps the
+  metavalue rules that hold processes out of the cycle region so the testbench sees the normal mode's metavalues;
+  without it metavalues read as `0` at the region's boundary (user, 2026-11-17). It is part of the key
+  of the cached analysis. With it the region also follows the `'U'` start values on a second image for up to
+  1024 clock edges and drives `'U'` where the output depends on them (owner decision A38, 2026-11-17); its end is
+  a line of the summary on standard error starting `cycle mode: 'U' start values`.
+- With `--cycle` or `--cycle-strict` the machine code of every function of the cycle region is kept in
+  `<dir>/yavs-cache/cycle/cycle-<key>.img` of the work library (the function's body, the target with its Cranelift
+  settings, the yavs build); a later run that makes a function with the same key links it instead of compiling it,
+  so test cases of one design and generics compile the region once. The region is still selected and lowered
+  every run. Same rules as the entries above; the directory keeps at most 16384 entries and 512 MiB, apart from
+  the compiled tier's.
   `clifpre-<key>.img`, one per function, names the `clif-<key>.img` of its code and the symbols it
   refers to, under a key of everything the code depends on, so a warm run links without translating.
 - **Analysed units** (#537, #539, user decision 2026-10-22, `docs/decisions.md` "Analysed-unit
@@ -282,7 +294,8 @@ identical to a run without it, at any `--threads`.
   lost a race with an edit is a miss. A library directory that cannot be written is read and never fails. `analyze --no-cache` neither reads nor writes them; `yavs
   cache clean` removes them. The directory keeps at most 16384 entries and 512 MiB, apart from the 4 GiB
   of entries, under the same rule at the limit (a read does not refresh a unit's time, so its age is the
-  age of the entry). A library directory therefore holds at most about 4.75 GiB of cache.
+  age of the entry). A library directory therefore holds at most about 4.75 GiB of cache, and under `--cycle` up to
+  2 GiB more of cycle mode's analyses and machine code (`YAVS_CYCLE_CACHE_MIB`).
 - **Shared std/ieee units** (#564, user decision 2026-10-26, `docs/decisions.md` "Shared std/ieee units"):
   the analysed units of the built-in `std` and `ieee` are kept once per user in
   `$YAVS_STD_CACHE/yavs-cache/units/`, default `yavs/std` in the user's cache directory (`$XDG_CACHE_HOME`
@@ -691,15 +704,22 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   the compile thread takes it (`auto`, so their order and number depend on timing). The test
   runner passes neither; use `yavs.sim_flags`. It passes `--tier-compile` from the sim option
   `yavs.tier_compile` (before `yavs.sim_flags`, which win).
-- Threads: yavs defaults to `--threads=1`. The test runner already runs `-p N`
-  simulations in parallel and passes a thread count only when the user sets one: the sim
+- Cycle mode: the sim option `yavs.cycle` (`off`, `on`, `strict`) becomes `--cycle` or `--cycle-strict` on `yavs run`
+  (never `elab`), before `yavs.sim_flags`. With a debug session, coverage or `--wave` the runner fails the test before
+  starting yavs, naming both (yavs itself answers E4102). `--cycle-exact-meta` has no sim option of its own:
+  `yavs.sim_flags` passes it after the cycle flag.
+- Threads: yavs defaults to `--threads=1`. The sim
   option `yavs.max_threads` (or the runner argument `--yavs-max-threads N` for every test; both
   take a number or `auto`) becomes `--threads=N` before the raw flags, so `--threads` in
-  `yavs.sim_flags` still wins; none under `--dap` or for `elab`. With the runner's
-  `--yavs-jobserver` and `-p N` above 1 (`-p 0` is one job per CPU), the runner starts a token server and every `yavs run`
+  `yavs.sim_flags` still wins; none under `--dap` or for `elab`. The runner starts a token server
+  by default (owner, 2026-11-17; before that only with `--yavs-jobserver` and `-p N` above 1) at
+  any `-p`, with one slot per CPU the runner may use (its affinity); none with one CPU, under
+  `--yavs-debug` or `--yavs-interactive`, or with `--yavs-no-jobserver` or
+  `VUNIT_YAVS_JOBSERVER=off`. Under it every `yavs run`
   gets `--threads=auto` (or `yavs.max_threads` when set, before the raw flags) and its own
-  `YAVS_TOKENS`: the runner lends the CPU slots no test uses as tokens, at most
-  `min(N, 8) - 1` per test with `auto` and `yavs.max_threads - 1` with a number, breadth first,
+  `YAVS_TOKENS`: the runner lends as tokens the slots left after the running tests and the `-p`
+  workers whose test ended less than a second ago (`GRACE`; all N until the first test starts), at most
+  `min(slots, 8) - 1` per test with `auto` and `yavs.max_threads - 1` with a number, breadth first,
   newest test first, and never takes back a token in use (python/vunit-yavs/README.md "Token
   server"). Before 2026-11-07 the default under the server was `--threads=min(N, 4)`.
 - `--threads=auto` (#884): at most 8 threads, and no more than the CPUs the process may run on
@@ -998,7 +1018,7 @@ While a call is under way, the simulation stays at its end if it gets there. If 
 
 ## 7. Environment
 
-The test runner sets no yavs environment variables (only `YAVS_TOKENS` under `--yavs-jobserver`, section 5). `YAVS_STDLIB` overrides the std/ieee
+The test runner sets no yavs environment variables (only `YAVS_TOKENS` under its token server, section 5). `YAVS_STDLIB` overrides the std/ieee
 tree (section 3); `YAVS_STD_CACHE` names the directory of the shared std/ieee units, or `off`; `--std-cache` overrides it (section 3). Simulator hooks from the test runner packages
 can add `elab_flags`, `run_flags` and run environment; the test runner applies
 `elab_flags` to both `run` and `elab`, and `run_flags` only to `run`. `YAVS_HUGE_HEAP=0` stops yavs

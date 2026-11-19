@@ -25,7 +25,7 @@ use crate::hier::{
     DriverDecl, ImplicitKind, Leaf, LeafId, LeafRes, ObjId, ObjKind, PortEdge, ProcIdx, ScopeId,
     ScopeKind, Sel, Shape, SigObj, Whole,
 };
-use crate::{ElabConfig, Elaborated, ProcInst, Top, VarObj, codes};
+use crate::{ElabConfig, Elaborated, ProcInst, RegionCall, Top, VarObj, codes};
 
 type R<T> = Result<T, Box<Diagnostic>>;
 
@@ -532,6 +532,15 @@ pub(crate) fn elaborate(
 ) -> Result<Elaborated, Vec<Diagnostic>> {
     load_bodies(db)?;
     db.bind_package_paths();
+    // The standard library's files: cycle mode drops their notes and warnings of folded calls,
+    // also those a call cache entry of any run kept (A23).
+    let root = yavs_sem::default_stdlib();
+    yavs_interp::set_library_files(
+        (0..db.sources.len())
+            .map(|i| yavs_diag::FileId(i as u32))
+            .filter(|&f| std::path::Path::new(&db.sources.get(f).path).starts_with(&root))
+            .collect(),
+    );
     let pkg_uses = package_externals(db)?;
     let mut e = Elab {
         db,
@@ -566,6 +575,14 @@ pub(crate) fn elaborate(
         UnitHir::Entity { ports, .. } => ports.len(),
         _ => 0,
     };
+    // Cycle mode's analysis cache keys only the top-level generics something reads.
+    let top_generics: Vec<DeclId> = match &e.db.units[top.entity].hir {
+        UnitHir::Entity { generics, .. } if cfg.keep_values => generics.to_vec(),
+        _ => Vec::new(),
+    };
+    if cfg.keep_values {
+        crate::watch::start(&top_generics);
+    }
     let gens = (0..n_gen).map(|_| A::Default).collect();
     let ports = (0..n_port).map(|_| A::Open).collect();
     let r = e.instance(
@@ -683,7 +700,13 @@ pub(crate) fn elaborate(
         e.check_sources();
     }
     if e.errors.is_empty() && e.cfg.collapse_ports {
-        crate::collapse::ports(e.db, &mut e.m.nets, &e.m.sigs, &mut e.procs);
+        crate::collapse::ports(
+            e.db,
+            &mut e.m.nets,
+            &e.m.sigs,
+            &mut e.procs,
+            e.cfg.keep_values,
+        );
     }
     if !e.errors.is_empty() {
         let mut v = e.db.take_diagnostics();
@@ -691,10 +714,46 @@ pub(crate) fn elaborate(
         v.append(&mut e.errors);
         return Err(v);
     }
-    let forced = crate::collapse::forced(e.db, &e.m.sigs);
+    let forced = crate::collapse::forced(e.db, &e.m.sigs, &e.procs);
     e.m.nets.place(e.cfg.packs, forced.as_ref());
     let lean = crate::lean::leaves(e.db, &e.m.nets);
     let no_codes = crate::keep_codes::leaves(e.db, &e.m.nets);
+    let mut reads = crate::GenericReads {
+        walk: crate::watch::reads(),
+        decls: top_generics,
+        ..Default::default()
+    };
+    reads.skipped =
+        e.cfg.keep_values && (e.cfg.values.as_ref()).is_some_and(|h| (h.0)(e.db, &reads));
+    let values = e.cfg.keep_values && !reads.skipped;
+    let printed = || {
+        use yavs_kernel::Severity as S;
+        [S::Note, S::Warning, S::Error, S::Failure]
+            .map(yavs_interp::elaboration_reports)
+            .iter()
+            .sum::<u64>()
+    };
+    let before = printed();
+    // Cycle mode's value passes evaluate apart from the model: what they report is not printed,
+    // the run makes each report as a plain run does.
+    let (region_vals, region_ranges) = if values {
+        yavs_interp::capture_elab_reports(|| e.region_values()).0
+    } else {
+        Default::default()
+    };
+    let region_calls = if values {
+        e.process_calls()
+    } else {
+        Default::default()
+    };
+    let loud_consts = if e.cfg.keep_values {
+        crate::sim::loud_scopes(e.db, &e.m.regions)
+    } else {
+        Default::default()
+    };
+    reads.values = crate::watch::reads();
+    reads.reported = printed() != before;
+    crate::watch::stop();
     e.m.calls.flush();
     Ok(Elaborated {
         lean,
@@ -706,8 +765,15 @@ pub(crate) fn elaborate(
         procs: e.procs,
         foreign_archs: e.foreign_archs,
         ext_procs: Vec::new(),
+        region: None,
         convs: std::mem::take(&mut e.m.convs),
         model_vals: e.m.vals,
+        pkg_vals: std::mem::take(&mut e.m.pkg),
+        region_vals,
+        region_ranges,
+        region_calls,
+        generic_reads: reads,
+        loud_consts,
         sigs: e.m.sigs,
         pkg_sigs: Default::default(),
         regions: e.m.regions,
@@ -1561,6 +1627,171 @@ impl Elab<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Cycle mode: the values of the constants of every region and package of the design that
+    /// nothing evaluated (a plain elaboration evaluates one when something first needs it), apart
+    /// from the model: afterwards the model and the calls made are as before, so the lowering
+    /// and the run see what a plain elaboration leaves (a constant that fails its subtype check
+    /// still fails at run time). One that cannot be evaluated has no value.
+    #[allow(clippy::type_complexity)]
+    fn region_values(
+        &mut self,
+    ) -> (
+        HashMap<(Option<ScopeId>, DeclId), Val>,
+        HashMap<(ScopeId, ExprId), crate::Bounds>,
+    ) {
+        let db: &Db = self.db;
+        let (vals, pkg) = (self.m.vals.clone(), self.m.pkg.clone());
+        let mark = self.m.session.mark();
+        let mut out = std::collections::HashMap::new();
+        let mut ranges = HashMap::new();
+        // Only what evaluates without an impure call (whose effects on package state would
+        // happen twice): a deferred constant by its full declaration.
+        let constant = |d: DeclId, deferred: bool| match &db.decls[d].kind {
+            DeclKind::Object(o) if o.class == ObjClass::Constant && o.role == ObjRole::Plain => o
+                .default
+                .is_some_and(|x| !crate::eval::may_call_impure(db, x)),
+            DeclKind::Object(o) if deferred && o.role == ObjRole::Deferred => {
+                yavs_lower::deferred_completion(db, d).is_some_and(|f| {
+                    matches!(&db.decls[f].kind, DeclKind::Object(o)
+                        if o.default.is_some_and(|x| !crate::eval::may_call_impure(db, x)))
+                })
+            }
+            _ => false,
+        };
+        // A shared variable that is not of a protected type: its initial value (cycle mode runs a
+        // memory held in one as a variable of the process that alone uses it).
+        let shared = |d: DeclId| match &db.decls[d].kind {
+            DeclKind::Object(o) if o.class == ObjClass::SharedVariable => {
+                !matches!(
+                    db.types[db.base(o.subtype)].kind,
+                    TypeKind::Protected { .. }
+                ) && o
+                    .default
+                    .is_some_and(|x| !crate::eval::may_call_impure(db, x))
+            }
+            _ => false,
+        };
+        let mut regions: Vec<(ScopeId, Vec<yavs_sem::ScopeId>)> = self
+            .m
+            .regions
+            .iter()
+            .map(|(s, r)| (*s, r.clone()))
+            .collect();
+        regions.sort_by_key(|r| r.0);
+        for (s, rs) in regions {
+            for r in rs {
+                for &d in &db.scopes[r].order {
+                    if constant(d, false)
+                        && let Ok(v) = self.m.value_of(db, d, Some(s), db.decls[d].span)
+                    {
+                        out.insert((Some(s), d), v);
+                    }
+                    if shared(d)
+                        && let DeclKind::Object(o) = &db.decls[d].kind
+                        && let Some(init) = o.default
+                        && let Ok(v) = self.m.eval(db, init, Some(s))
+                    {
+                        out.insert((Some(s), d), v);
+                    }
+                    // The globally static ranges of its types and subtypes that are not
+                    // locally static (a function of generics): the dynamic ones are in
+                    // `Elaborated::ranges` already.
+                    if let DeclKind::Type(_) | DeclKind::Subtype(_) = db.decls[d].kind {
+                        for rc in db.declared_ranges(d) {
+                            if let yavs_sem::types::RangeC::Explicit { left, right, .. } = *rc
+                                && db.dynamic_range(rc).is_none()
+                                && (db.exprs[left].stat < Staticness::Locally
+                                    || db.exprs[right].stat < Staticness::Locally)
+                                && !crate::eval::may_call_impure(db, left)
+                                && !crate::eval::may_call_impure(db, right)
+                                && let Ok(b) = self.m.range(db, rc, Some(s), db.decls[d].span)
+                            {
+                                ranges.insert((s, left), b);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (_, unit) in db.units.iter() {
+            if unit.kind != UnitKind::Package {
+                continue;
+            }
+            for &d in &db.scopes[unit.scope].order {
+                if constant(d, true)
+                    && let Ok(v) = self.m.value_of(db, d, None, db.decls[d].span)
+                {
+                    out.insert((None, d), v);
+                }
+            }
+        }
+        self.m.vals = vals;
+        self.m.pkg = pkg;
+        // Calls of impure functions made on the way are undone; if that fails, the values are
+        // not kept (the package state may differ). Pure calls are only forgotten.
+        if self.m.session.undo_pure(db, mark).is_err() {
+            out.clear();
+            ranges.clear();
+        }
+        (out, ranges)
+    }
+
+    /// With [`ElabConfig::keep_values`]: the globally static calls of pure functions in the
+    /// statements of each process, by the process's scope and the call: cycle mode folds them
+    /// (a `while` loop over a string generic) and reports what they reported. Evaluated apart
+    /// from the model, their reports kept, not printed; one that fails has no value.
+    fn process_calls(&mut self) -> HashMap<(ScopeId, ExprId), RegionCall> {
+        use yavs_sem::hir::ExprKind;
+        let db: &Db = self.db;
+        let (vals, pkg) = (self.m.vals.clone(), self.m.pkg.clone());
+        let mark = self.m.session.mark();
+        let mut out = HashMap::new();
+        let mut quiet: HashMap<DeclId, bool> = HashMap::new();
+        let procs: Vec<(ScopeId, Option<ScopeId>, StmtId)> = (self.procs.iter())
+            .map(|p| (p.scope, self.m.hier.scope(p.scope).parent, p.stmt))
+            .collect();
+        for (ps, region, stmt) in procs {
+            let mut stmts = vec![stmt];
+            let mut calls = Vec::new();
+            while let Some(s) = stmts.pop() {
+                stmts.extend(db.stmt_children(s));
+                db.stmt_exprs(s, &mut |x, _| {
+                    db.walk_expr(x, &mut |y| {
+                        if let ExprKind::Call {
+                            callee,
+                            method_of: None,
+                            ..
+                        } = &db.exprs[y].kind
+                            && db.exprs[y].stat == Staticness::Globally
+                            && db.exprs[y].value.is_none()
+                        {
+                            calls.push((y, *callee));
+                        }
+                    })
+                });
+            }
+            for (y, f) in calls {
+                if !pure_function(db, f, &mut quiet, false, 0)
+                    || crate::eval::may_call_impure(db, y)
+                {
+                    continue;
+                }
+                let (v, reports) =
+                    yavs_interp::capture_elab_reports(|| self.m.eval(db, y, region).ok());
+                // A failed call without a report is left to cycle mode's own folding.
+                if v.is_some() || !reports.is_empty() {
+                    out.insert((ps, y), RegionCall { val: v, reports });
+                }
+            }
+        }
+        self.m.vals = vals;
+        self.m.pkg = pkg;
+        if self.m.session.undo_pure(db, mark).is_err() {
+            out.clear();
+        }
+        out
     }
 
     /// A 2019 variable port (LRM 6.5.2) denotes its actual's protected object: the shared
@@ -3129,13 +3360,15 @@ impl Elab<'_> {
             (self.static_elem(s, l)? == (leaf, elem)).then_some(())?;
         }
         let logic = |e: &Self, l: LeafId| e.m.nets.leaf(l).ty.elem == Elem::Logic;
-        let reset = match reset {
-            Some(r) => {
+        let reset = match reset.map(|r| self.reset_level(s, r)) {
+            Some(None) => return None,
+            Some(Some(Some(r))) => {
                 let (x, pos) = self.db.level_of(r)?;
                 let (rl, re) = self.static_elem(s, x)?;
                 (logic(self, rl) && pos <= 8).then_some((rl, re, pos as u8))
             }
-            None => None,
+            // A reset branch that never runs: only the edge wakes the process.
+            Some(Some(None)) | None => None,
         };
         if (legacy || reset.is_some()) && !logic(self, leaf) {
             return None;
@@ -3148,6 +3381,44 @@ impl Elab<'_> {
             legacy,
             reset,
         })
+    }
+
+    /// The level test (`rst = '1'`) an asynchronous reset condition `r` comes to once the static
+    /// operands of its `and`s are folded (`rst = '1' and G`): `Some(None)` when one is false and
+    /// the others cannot fail, so the branch never runs; `None` for another form.
+    fn reset_level(&mut self, s: ScopeId, r: ExprId) -> Option<Option<ExprId>> {
+        let db: &Db = self.db;
+        if db.level_of(r).is_some() {
+            return Some(Some(r));
+        }
+        let ExprKind::Call {
+            callee,
+            args,
+            method_of: None,
+            implicit_cond: false,
+        } = &db.exprs[r].kind
+        else {
+            return None;
+        };
+        let decl = &db.decls[*callee];
+        let boolean = Some(db.base(db.exprs[r].subtype)) == db.well_known.boolean;
+        if !(decl.implicit && boolean && decl.name.key().as_str() == "\"and\"") {
+            return None;
+        }
+        let [a, b] = &args[..] else {
+            return None;
+        };
+        let (Actual::Expr(a), Actual::Expr(b)) = (&a.actual, &b.actual) else {
+            return None;
+        };
+        for (k, other) in [(*a, *b), (*b, *a)] {
+            match self.static_val(s, k) {
+                Some(Val::Enum(1)) => return self.reset_level(s, other),
+                Some(Val::Enum(0)) if self.safe_operand(other) => return Some(None),
+                _ => {}
+            }
+        }
+        None
     }
 
     /// The signal parts the condition of the guard `g` of block `b` reads; `None` while one is
@@ -6343,4 +6614,72 @@ fn conv_index(
     m.convs.push(c);
     m.nets.fn_reads.push(reads);
     Ok(m.convs.len() as u32 - 1)
+}
+
+/// Whether `f` is a pure function (`ieee` and `std` count), every function of the design it calls
+/// is one, and, with `quiet`, none of them holds an `assert` or `report`; `false` for a body the
+/// scan cannot see.
+pub(crate) fn pure_function(
+    db: &Db,
+    f: DeclId,
+    memo: &mut HashMap<DeclId, bool>,
+    quiet: bool,
+    depth: u32,
+) -> bool {
+    use yavs_sem::decl::{Body, SubprogramKind};
+    use yavs_sem::hir::{ExprKind, StmtKind};
+    if let Some(&q) = memo.get(&f) {
+        return q;
+    }
+    let Some(sp) = db.decls[f].kind.subprogram() else {
+        return false;
+    };
+    if ["ieee.", "std."]
+        .iter()
+        .any(|p| sp.mangled.as_str().starts_with(p))
+    {
+        return true;
+    }
+    let Body::Hir { stmts, .. } = &sp.body else {
+        return matches!(sp.body, Body::Implicit(_));
+    };
+    if sp.kind != (SubprogramKind::Function { pure: true }) || depth > 16 {
+        return false;
+    }
+    // A recursion counts as quiet while it is scanned.
+    memo.insert(f, true);
+    let mut all: Vec<StmtId> = stmts.to_vec();
+    let mut ok = true;
+    while let Some(s) = all.pop() {
+        if quiet
+            && matches!(
+                db.stmts[s].kind,
+                StmtKind::Assert { .. } | StmtKind::Report { .. }
+            )
+        {
+            ok = false;
+            break;
+        }
+        all.extend(db.stmt_children(s));
+        let mut callees = Vec::new();
+        db.stmt_exprs(s, &mut |x, _| {
+            db.walk_expr(x, &mut |y| {
+                if let ExprKind::Call { callee, .. } = &db.exprs[y].kind {
+                    callees.push(*callee);
+                }
+            })
+        });
+        if let StmtKind::ProcCall(c) = &db.stmts[s].kind {
+            callees.push(c.callee);
+        }
+        if !callees
+            .into_iter()
+            .all(|c| pure_function(db, c, memo, quiet, depth + 1))
+        {
+            ok = false;
+            break;
+        }
+    }
+    memo.insert(f, ok);
+    ok
 }

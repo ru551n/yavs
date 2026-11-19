@@ -160,16 +160,20 @@ Share CPU cores
 functions, and apart from a tier-up thread that prepares functions alongside it, it keeps at most its own threads
 busy, so ``-p N`` on N cores leaves the computer usable. On a
 machine with idle cores, ``vu.set_sim_option("yavs.tier_compile", "background")`` compiles alongside the run
-instead, at the lowest system priority (:doc:`running-faster`). Near the end of a regression, when only long
-tests are left, the token server can lend the idle slots to them as threads:
+instead, at the lowest system priority (:doc:`running-faster`). The token server of ``vunit-yavs`` lends the CPUs
+no test uses to the running simulations as threads: those ``-p N`` leaves idle, and near the end of a regression
+those of the test slots that ran out of tests. It is on by default, sized to the CPUs the run may use, and keeps a
+test slot's CPU for its next test, so threads do not keep more CPUs busy than the machine has:
 
 .. code-block:: bash
 
-    python run.py -p 8 --yavs-jobserver
+    python run.py -p 8
+    python run.py -p 8 --yavs-no-jobserver
 
-It helps only when those long tests gain from threads. Under the server every simulation runs with
-``--threads=auto``: it takes the idle slots only while its threads make it faster (:doc:`threads`).
-``--yavs-max-threads N`` or ``yavs.max_threads`` gives a fixed number instead.
+It helps only when those tests gain from threads, and under ``--cycle`` while a test compiles its region on a
+cold cache. Under the server every simulation runs with ``--threads=auto``: it takes the idle CPUs only while its
+threads make it faster (:doc:`threads`). ``--yavs-max-threads N`` or ``yavs.max_threads`` gives a fixed cap
+instead. ``--yavs-no-jobserver`` turns the server off.
 
 ``-j N`` compiles with up to N ``yavs analyze`` calls at once, into different libraries; it gains
 on projects of many libraries, such as a set of verification components (:ref:`vunit-compiling`).

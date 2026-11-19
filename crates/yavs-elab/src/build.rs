@@ -14,6 +14,13 @@ fn usage(m: String) -> SimError {
 }
 
 impl Elaborated {
+    /// Process `pi` is a member of the cycle region.
+    fn is_member(&self, pi: usize) -> bool {
+        self.region
+            .as_ref()
+            .is_some_and(|r| r.members.binary_search(&pi).is_ok())
+    }
+
     /// Kernel signal names, as texts show them: the leaf's object path, plus record fields.
     pub fn leaf_name(&self, l: crate::LeafId) -> String {
         let leaf = self.nets.leaf(l);
@@ -81,6 +88,11 @@ impl Elaborated {
         let mut b = Builder::new();
         let nets = &self.nets;
         let mut guards = Vec::new();
+        let quiet = |k: usize| {
+            self.region
+                .as_ref()
+                .is_some_and(|r| r.quiet.binary_search(&(k as u32)).is_ok())
+        };
         for (k, &(a, z)) in nets.packs.iter().enumerate() {
             if z.0 != a.0 + 1 {
                 // A pack of record leaves (#686): logic, unresolved or `resolved`, no guard.
@@ -109,8 +121,11 @@ impl Elaborated {
                     b.lean_events(id);
                     b.no_history(id);
                 }
-                if (a.0..z.0).all(|l| self.no_codes.get(l as usize) == Some(&true)) {
+                if quiet(k) || (a.0..z.0).all(|l| self.no_codes.get(l as usize) == Some(&true)) {
                     b.no_codes(id);
+                }
+                if quiet(k) {
+                    b.quiet(id);
                 }
                 continue;
             }
@@ -157,8 +172,11 @@ impl Elaborated {
             if self.bare.get(i) == Some(&true) {
                 b.no_history(id);
             }
-            if self.no_codes.get(i) == Some(&true) {
+            if quiet(k) || self.no_codes.get(i) == Some(&true) {
                 b.no_codes(id);
+            }
+            if quiet(k) {
+                b.quiet(id);
             }
             if let Some(g) = leaf.guard {
                 guards.push((id, g, leaf.disconnect));
@@ -221,7 +239,21 @@ impl Elaborated {
         // Counters in the lowered code (statement, branch, condition coverage) count each
         // activation, so the processes the kernel runs itself stay interpreted.
         let counters_off = self.ir.as_ref().is_none_or(|ir| ir.program.cov.is_empty());
-        for p in &self.procs {
+        let mut region_ds: Vec<crate::RegionDriver> = Vec::new();
+        for (pi, p) in self.procs.iter().enumerate() {
+            // A member of the cycle region keeps its place in the process order (process ids
+            // index `procs`) but runs nothing: the region process owns its drivers, made below.
+            if self.is_member(pi) {
+                let idle = |_: &mut yavs_kernel::Ctx<'_>| Ok(());
+                let name = self.hier.dotted_in(p.scope, Case::Lrm);
+                let pid = b.process(&name, ProcFlags::default(), &[], idle);
+                // Its reports, which the region makes as it (`Ctx::report_as`), name it as the
+                // normal mode does.
+                if p.what.is_some() {
+                    b.process_label(pid, self.proc_label(p));
+                }
+                continue;
+            }
             // Drivers of one process on adjacent elements of one kernel signal that one target
             // names together (a whole record of a pack, #686) are one kernel driver; `ds` has
             // one entry per declaration. Fields assigned one by one keep a driver each: a
@@ -505,6 +537,52 @@ impl Elaborated {
             (p.built)(&ds);
             let idle = |_: &mut yavs_kernel::Ctx<'_>| Ok(());
             b.process(&p.name, ProcFlags::default(), &ds, idle);
+        }
+        // The cycle region, after every other process (`yavs-cycle`). The drivers of its members
+        // on adjacent elements of one kernel signal are one kernel driver: the region exports
+        // each as one value. A driver with an initial value of its own keeps its own.
+        if let Some(r) = &self.region {
+            let mut parts: Vec<(yavs_kernel::SignalId, Range, usize)> = (r.members.iter())
+                .flat_map(|&pi| self.procs[pi].drivers.iter())
+                .map(|&d| {
+                    let (s, rr) = nets.kpart(nets.drivers[d].leaf, nets.drivers[d].range);
+                    (s, rr, d)
+                })
+                .collect();
+            parts.sort_unstable_by_key(|&(s, rr, _)| (s.0, rr.offset));
+            let mut i = 0;
+            while i < parts.len() {
+                let (s, mut rr, d0) = parts[i];
+                let mut j = i + 1;
+                while let Some(&(t, q, d)) = parts.get(j)
+                    && nets.drivers[d0].init.is_none()
+                    && nets.drivers[d].init.is_none()
+                    && t == s
+                    && q.offset == rr.offset + rr.len
+                {
+                    rr.len += q.len;
+                    j += 1;
+                }
+                let id = b.driver(s.slice(rr.offset, rr.len));
+                if let Some(v) = &nets.drivers[d0].init {
+                    b.driver_init(id, v);
+                }
+                region_ds.extend(parts[i..j].iter().map(|&(_, _, d)| crate::RegionDriver {
+                    decl: d,
+                    driver: id,
+                    signal: s,
+                    range: rr,
+                }));
+                i = j;
+            }
+            let mut own: Vec<DriverId> = region_ds.iter().map(|d| d.driver).collect();
+            own.sort_unstable_by_key(|d| d.0);
+            own.dedup();
+            let proc = (r.make)(&region_ds)?;
+            let pid = b.process_boxed(&r.name, ProcFlags::default(), &own, proc);
+            if let Some(t) = r.trigger {
+                b.edge_trigger(pid, t);
+            }
         }
         let mut sim = b.build(cfg)?;
         // Hang and loop reports name the fields of a pack, not the pack.

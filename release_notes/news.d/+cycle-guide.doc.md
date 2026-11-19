@@ -1,0 +1,1 @@
+The user guide has a page on cycle mode (`--cycle`, `--cycle-strict`, `--cycle-report` and the `yavs.cycle` test runner option): when it pays, what runs cycle-based, how to read the report, and the complete list of what it changes, such as two-state values and the reports and assertions of cycle-based processes that are not produced.

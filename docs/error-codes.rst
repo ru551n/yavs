@@ -599,6 +599,86 @@ Run time (E3 and W3)
    * - _`W3102`
      - A process has no wait statement, no sensitivity list and calls no procedure that waits.
 
+Cycle mode (E4 and W4)
+----------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 12 88
+
+   * - Code
+     - Meaning
+   * - _`E4101`
+     - Cycle mode can run this kind of logic, but yavs does not implement the construct the error names in cycle-based code yet: a limitation of yavs, not a problem in the design.
+   * - _`W4101`
+     - Cycle-based processes below the top-level design unit hold ``assert`` or ``report`` statements of severity error or failure (or a severity known only at run time), which cycle mode (``yavs run --cycle`` or ``--cycle-strict``) does not evaluate: they never print and never stop the simulation, so a design that ends its own test with such an assert below the top runs on until ``--stop-time`` or the testbench ends it.
+   * - _`E4102`
+     - ``yavs run --cycle`` (or ``--cycle-strict``) cannot be used with an option that records, shows, counts or changes signals inside the cycle region: a debug session (``--dap``, ``--interactive``, ``--do``), ``--wave``, ``--surfer`` (which records a waveform), ``--cov``, ``--vhpi`` or ``--activity``.
+   * - _`E4103`
+     - The file given to ``yavs run --cycle-report=FILE`` cannot be created or written (missing directory, permissions, full disk).
+   * - _`E4104`
+     - An environment variable of cycle mode has a value it does not take, such as ``YAVS_CYCLE_SKIP_CHECK=yes`` (it takes ``1`` or ``full``).
+   * - _`E4110`
+     - Cycle mode takes a process with a wait only in one shape: ``wait until <edge>;`` as the first statement, the only wait, a clocked process (``rising_edge(clk)``, ``falling_edge(clk)`` or ``clk'event and clk = '1'``, optionally followed by ``and`` more conditions).
+   * - _`E4111`
+     - A cycle-based process has no time inside a clock cycle: an ``after`` delay (other than zero), ``transport``, a ``reject`` limit or a waveform of several elements keeps it in the event kernel.
+   * - _`E4112`
+     - Cycle mode keeps no signal history: ``'last_value``, ``'last_event``, ``'last_active``, ``'stable``, ``'quiet``, ``'delayed``, ``'transaction``, ``'active``, ``'driving``, ``'driving_value``, ``'event`` anywhere but in the process's own edge test, or an edge test (``rising_edge``, ``falling_edge``, a ``'event`` form) of a signal other than the process's clock inside the body of a clocked process or of a subprogram it calls, keep the process in the event kernel.
+   * - _`E4113`
+     - Cycle mode computes two-state values, integers and enumerations: a real or physical (time) value computed at run time, or a signal or variable of such a type, keeps the process in the event kernel.
+   * - _`E4114`
+     - Shared variables used other than by the clock-edge body of one clocked process, methods of protected objects, allocators and access values in expressions keep a process in the event kernel.
+   * - _`E4115`
+     - Postponed processes, guarded blocks, guarded signals and assignments and ``null`` waveforms keep a process in the event kernel: cycle mode has no end of a time step and models no guarded signals.
+   * - _`E4116`
+     - ``force`` and ``release`` change a signal from outside its drivers: a process using them stays in the event kernel.
+   * - _`E4117`
+     - A call cycle mode cannot follow keeps the process in the event kernel: a foreign subprogram, a subprogram whose body is not known, or, called by a combinational process, a subprogram that changes a variable or signal it is not given (a procedure of a clocked process may change the process's own registers).
+   * - _`E4118`
+     - Two-state values have no high impedance: a process that uses the value ``'Z'`` stays in the event kernel.
+   * - _`E4119`
+     - A combinational process that does not assign a signal element it drives on every path keeps that element's value from one run to the next: a latch, which is state, not combinational logic.
+   * - _`E4120`
+     - A variable of a combinational process read before it is assigned on some path keeps its value from the previous run of the process: state, not combinational logic.
+   * - _`E4121`
+     - A combinational process that reads a signal its sensitivity list does not name, or a clocked process whose asynchronous reset branch does, is not run by the normal mode when that signal changes, so its result is not a function of what it reads.
+   * - _`E4122`
+     - Combinational logic in which an element depends on itself (through other processes or within one) has no single settled value: a combinational loop.
+   * - _`E4123`
+     - A clocked process of a shape cycle mode does not take: statements outside the edge test, an edge test inside other statements, an ``else`` after it, statements before a ``wait until`` (they run once at initialisation), a ``wait`` inside another statement, a clock that is not one element of a signal, a reset branch whose condition reads no signal or reads the clock, a sensitivity list that does not name the clock or every signal of the asynchronous reset, or a ``wait until`` whose ``on`` list does not name the clock.
+   * - _`E4124`
+     - Cycle mode needs every element a process of the region drives to have that process as its only source: an element another process drives too, a guarded signal or a signal with a resolution function of its own (other than ``std_logic``'s) keeps the process in the event kernel.
+   * - _`E4125`
+     - Clocks come from outside the region.
+   * - _`E4126`
+     - yavs cannot yet follow a construct of the process far enough to show that it is clocked or combinational logic: an ``out`` actual, an assignment target or a statement of an unusual form, a signal it cannot place in the design, or an internal mismatch it asks you to report.
+   * - _`E4127`
+     - A process outside the cycle region reads the history of a signal this process drives: ``'active``, ``'last_active``, ``'last_event``, ``'last_value``, ``'transaction``, ``'stable``, ``'quiet`` or ``'delayed``, directly or in a subprogram it calls (an edge test such as ``rising_edge`` is not history here).
+   * - _`E4128`
+     - A ``force`` or ``release`` the design can run (in a process, or in a subprogram a process calls) changes a signal this process drives, which cycle-based code would not see, so the process stays in the event kernel; members that only read the forced signal still join.
+   * - _`E4129`
+     - Combinational logic (or a register with an asynchronous reset) feeds a process outside the region whose result depends on the delta cycles its inputs change in: one that keeps a value from its previous run (a latch, a variable read before it is assigned, a combinational loop), has an incomplete sensitivity list, or stays out for another reason.
+   * - _`E4130`
+     - Logic between registers of two clocks whose edges come in different delta cycles of one time step: a clock gated or computed by an assignment comes one delta cycle after its source (a plain copy is its source).
+   * - _`E4131`
+     - Logic that computes part of a clock from a signal the region drives.
+   * - _`E4132`
+     - A register whose asynchronous reset another register makes, and whose output is the clock or the asynchronous reset of a process.
+   * - _`E4133`
+     - A memory (an array signal of more than 4096 logic elements or 64 integers) that is written in an asynchronous reset branch, written both at run-time indices and at fixed ones, or read outside the region.
+   * - _`E4134`
+     - Some elements of a signal are driven by this process and others by a process outside the region.
+   * - _`E4135`
+     - The process drives a signal that also gets its value from a port connection or a constant source, which yavs does not model in cycle-based code yet.
+   * - _`E4136`
+     - An assert or report of the top-level unit reads a signal the region does not drive alone.
+   * - _`E4137`
+     - Under ``--cycle-exact-meta``, a process assigns a metavalue literal (``'U'``, ``'X'``, ...) to a signal the testbench reads, or passes on a ``'Z'`` from a process outside to such a signal.
+   * - _`E4138`
+     - An external name (``<<signal .tb.dut.x : std_logic>>``) in the process.
+   * - _`E4139`
+     - A loop cycle mode cannot unroll.
+
 Internal errors (E9)
 --------------------
 
@@ -616,3 +696,4 @@ See also
 
 * :doc:`troubleshooting`: how to read a diagnostic, and the common problems.
 * :doc:`cli-reference`: ``--message-format``, ``-Werror`` and exit statuses.
+* :doc:`cycle-mode`: the codes E4101 to E4139 and what to do about them.

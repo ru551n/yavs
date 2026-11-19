@@ -38,6 +38,10 @@ pub struct ErrorInfo {
     /// Statement ids of the VHDL call stack, innermost first. Filled by the
     /// interpreter or the LLVM tier; empty for kernel-level errors.
     pub trace: Vec<StmtId>,
+    /// The source places of the failing statement or operation and the calls around it,
+    /// innermost first, for code with no statement ids (cycle mode); `trace` wins when it is
+    /// not empty.
+    pub at: Vec<yavs_diag::Span>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,6 +97,7 @@ impl SimError {
             delta: 0,
             process: None,
             trace: Vec::new(),
+            at: Vec::new(),
         }))
     }
 

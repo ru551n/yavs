@@ -1,0 +1,12 @@
+error[E4121]: an incomplete sensitivity list is not supported in cycle mode
+   --> $DIR/strict.vhd:201:16
+    |
+201 |     q <= a and b;
+    |                ^ the process reads t_e4121.b, which the list does not name
+    |
+    = note: in process t_e4121.dut.p (strict.vhd:199)
+    = note: why: the event simulation does not run the process when that signal changes, so its result is not a function of what it reads, and cycle-based code would compute another result
+    = help: use `process (all)`, or name every signal the process reads in its sensitivity list; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 1 previous error
+

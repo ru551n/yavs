@@ -17,6 +17,7 @@ mod keep_codes;
 mod lean;
 pub mod libstage;
 mod pkgcall;
+pub mod reach;
 mod sim;
 mod stuck;
 mod summary;
@@ -29,7 +30,7 @@ mod tests;
 
 pub use callcache::stats as call_cache_stats;
 pub use collapse::source_steps as elab_source_steps;
-pub use eval::{Class, ConvFn, Enc, Model, ScopeVals, Side, Val, elem_of};
+pub use eval::{Class, ConvFn, Enc, Model, ScopeVals, Side, Val, elem_of, watch};
 pub use hier::{
     Bounds, Case, DriverDecl, Hierarchy, ImplicitKind, Leaf, LeafId, LeafLoc, LeafRes, NetGraph,
     ObjId, ObjKind, PortEdge, ProcIdx, Scope, ScopeId, ScopeKind, Sel, Shape, SigObj,
@@ -151,6 +152,42 @@ pub struct ElabConfig {
     /// Store runs of record leaves in one kernel signal (`NetGraph::place`, #686): on by
     /// default; off (one signal per leaf) with the hidden test aid `YAVS_PACKS=off`.
     pub packs: bool,
+    /// Also evaluate, apart (`Elaborated::constant`), every constant of the design's regions and
+    /// packages that a plain elaboration leaves until something needs it (cycle mode lowers code
+    /// that reads them); one that cannot be evaluated has no value. Off by default.
+    pub keep_values: bool,
+    /// With `keep_values`: asked after the walk, with the top-level generics it read
+    /// ([`GenericReads::walk`]); `true` leaves the value passes out (cycle mode has its analysis
+    /// from its cache, so nothing reads their values).
+    pub values: Option<ValuesHook>,
+}
+
+/// See [`ElabConfig::values`].
+#[derive(Clone)]
+pub struct ValuesHook(pub std::sync::Arc<ValuesFn>);
+
+/// The function of a [`ValuesHook`].
+pub type ValuesFn = dyn Fn(&Db, &GenericReads) -> bool + Send + Sync;
+
+impl std::fmt::Debug for ValuesHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ValuesHook")
+    }
+}
+
+/// With [`ElabConfig::keep_values`]: which generics of the top-level entity elaboration read
+/// (`eval::watch`), as bits of their order in `decls`.
+#[derive(Clone, Debug, Default)]
+pub struct GenericReads {
+    pub decls: Vec<yavs_sem::DeclId>,
+    /// Read by the walk.
+    pub walk: u64,
+    /// Read by the walk and the value passes.
+    pub values: u64,
+    /// The value passes were left out ([`ElabConfig::values`]).
+    pub skipped: bool,
+    /// The value passes printed a report.
+    pub reported: bool,
 }
 
 impl Default for ElabConfig {
@@ -159,6 +196,8 @@ impl Default for ElabConfig {
             max_depth: 1000,
             collapse_ports: true,
             packs: true,
+            keep_values: false,
+            values: None,
         }
     }
 }
@@ -413,6 +452,48 @@ pub struct ExtProc {
 /// Called with the driver ids of an [`ExtProc`] when the simulation is built.
 pub type DriversBuilt = std::sync::Arc<dyn Fn(&[yavs_kernel::DriverId]) + Send + Sync>;
 
+/// A cycle region (`yavs-cycle`, `yavs run --cycle`): its member processes keep their place in
+/// the kernel's process order but run no code and own no driver; one process made by `make`
+/// after all others owns their drivers and does their work.
+pub struct Region {
+    pub name: String,
+    /// Indices into `Elaborated::procs`, ascending.
+    pub members: Vec<usize>,
+    /// The region wakes only on this edge (`yavs_kernel::Builder::edge_trigger`).
+    pub trigger: Option<yavs_kernel::EdgeTrigger>,
+    /// Kernel signals the region exports and nothing outside waits on, ascending: they keep no
+    /// byte codes (`yavs_kernel::Builder::no_codes`) and may change without an event
+    /// (`yavs_kernel::Builder::quiet`).
+    pub quiet: Vec<u32>,
+    pub make: RegionMake,
+}
+
+/// One driver declaration of a region member: its index in `NetGraph::drivers`, its kernel
+/// driver, and the kernel signal and range that driver covers (drivers of one target on
+/// adjacent elements are one kernel driver).
+#[derive(Clone, Copy, Debug)]
+pub struct RegionDriver {
+    pub decl: usize,
+    pub driver: yavs_kernel::DriverId,
+    pub signal: yavs_kernel::SignalId,
+    pub range: yavs_kernel::Range,
+}
+
+/// Makes the region's process from the drivers of its members, at every build.
+pub type RegionMake = std::sync::Arc<
+    dyn Fn(&[RegionDriver]) -> Result<Box<dyn yavs_kernel::Process>, yavs_kernel::SimError>
+        + Send
+        + Sync,
+>;
+
+/// A call cycle mode may fold (`Elaborated::region_calls`): its value, none when it failed, and
+/// the reports it made, `(severity, text)` in order, which were not printed.
+#[derive(Clone, Debug)]
+pub struct RegionCall {
+    pub val: Option<Val>,
+    pub reports: Vec<(u8, String)>,
+}
+
 pub struct Elaborated {
     pub top: Top,
     pub hier: Hierarchy,
@@ -424,8 +505,28 @@ pub struct Elaborated {
     /// Processes a VHPI plugin created for foreign architectures (`vhpi_create`), set by the
     /// caller before building: each owns drivers and runs no code.
     pub ext_procs: Vec<ExtProc>,
+    /// The cycle region, set by the caller before building (`yavs run --cycle`).
+    pub region: Option<Region>,
     /// Values of generics, generate parameters and constants per scope (for lowering).
     pub model_vals: Vec<ScopeVals>,
+    /// The values of the package constants elaboration evaluated.
+    pub pkg_vals: std::collections::HashMap<yavs_sem::DeclId, Val>,
+    /// With [`ElabConfig::keep_values`]: the constants nothing evaluated during elaboration, by
+    /// instance scope (`None`: a package's), evaluated apart from the model.
+    pub region_vals: std::collections::HashMap<(Option<ScopeId>, yavs_sem::DeclId), Val>,
+    /// With [`ElabConfig::keep_values`]: the globally static ranges, not locally static, of the
+    /// types and subtypes of each instance's regions (a function of generics), evaluated apart
+    /// from the model, as [`Elaborated::range`] gives them.
+    pub region_ranges: std::collections::HashMap<(ScopeId, yavs_sem::ExprId), Bounds>,
+    /// With [`ElabConfig::keep_values`]: the globally static calls of pure functions in the
+    /// statements of each process, by the process's scope and the call: value and reports.
+    pub region_calls: std::collections::HashMap<(ScopeId, yavs_sem::ExprId), RegionCall>,
+    /// With [`ElabConfig::keep_values`]: the top-level generics elaboration read.
+    pub generic_reads: GenericReads,
+    /// With [`ElabConfig::keep_values`]: the scopes declaring a constant only the run-time
+    /// evaluation gives whose initial value calls a subprogram that may report; the build runs
+    /// such a region's declarative part when only cycle region members use it.
+    pub loud_consts: std::collections::HashSet<ScopeId>,
     /// Per leaf: nothing asks for the event history of single elements of this signal, so
     /// the kernel keeps only each block's last event (`lean.rs`). Clear it to keep the history
     /// of every signal; empty means the same.
@@ -545,6 +646,21 @@ impl Elaborated {
         pkg.get(&d).copied()
     }
 
+    /// The bounds of the range of a type or subtype declaration whose left bound is `left`,
+    /// seen from `scope`, if elaboration evaluated them.
+    pub fn range(&self, scope: ScopeId, left: yavs_sem::ExprId) -> Option<Bounds> {
+        let mut cur = Some(scope);
+        while let Some(s) = cur {
+            if let Some(&b) =
+                (self.ranges.get(&(s, left))).or_else(|| self.region_ranges.get(&(s, left)))
+            {
+                return Some(b);
+            }
+            cur = self.hier.scope(s).parent;
+        }
+        None
+    }
+
     /// The value of generic or constant `d` seen from `scope`, if elaboration computed it.
     pub fn value(&self, scope: ScopeId, d: yavs_sem::DeclId) -> Option<&Val> {
         let mut cur = Some(scope);
@@ -555,6 +671,22 @@ impl Elaborated {
             cur = self.hier.scope(s).parent;
         }
         None
+    }
+
+    /// The value of constant `d` seen from `scope`: of the regions around it, else of a package,
+    /// including those only [`ElabConfig::keep_values`] evaluated.
+    pub fn constant(&self, scope: ScopeId, d: yavs_sem::DeclId) -> Option<&Val> {
+        if let Some(v) = self.value(scope, d) {
+            return Some(v);
+        }
+        let mut cur = Some(scope);
+        while let Some(s) = cur {
+            if let Some(v) = self.region_vals.get(&(Some(s), d)) {
+                return Some(v);
+            }
+            cur = self.hier.scope(s).parent;
+        }
+        (self.pkg_vals.get(&d)).or_else(|| self.region_vals.get(&(None, d)))
     }
 }
 

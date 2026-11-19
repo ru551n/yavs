@@ -1,0 +1,22 @@
+error[E4122]: a combinational loop is not supported in cycle mode
+   --> $DIR/strict.vhd:215:3
+    |
+215 |   x <= a xor y;
+    |   ^^^^^^^^^^^^^ t_e4122.dut.x -> t_e4122.dut.y <= ... (strict.vhd:216) -> t_e4122.dut.y -> t_e4122.dut.x <= ... (strict.vhd:215) -> t_e4122.dut.x
+    |
+    = note: in process t_e4122.dut.x <= ... (strict.vhd:215)
+    = note: why: logic in which an element depends on itself has no single settled value, so it cannot be put in a static order
+    = help: break the loop with a register, or split the signal so that no element depends on itself; or run with `--cycle` to leave this process in the event simulation
+
+error[E4122]: a combinational loop is not supported in cycle mode
+   --> $DIR/strict.vhd:216:3
+    |
+216 |   y <= not x;
+    |   ^^^^^^^^^^^ t_e4122.dut.x -> t_e4122.dut.y <= ... (strict.vhd:216) -> t_e4122.dut.y -> t_e4122.dut.x <= ... (strict.vhd:215) -> t_e4122.dut.x
+    |
+    = note: in process t_e4122.dut.y <= ... (strict.vhd:216)
+    = note: why: logic in which an element depends on itself has no single settled value, so it cannot be put in a static order
+    = help: break the loop with a register, or split the signal so that no element depends on itself; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 2 previous errors
+

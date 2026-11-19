@@ -32,6 +32,7 @@ or later (`pip install vunit-yavs` installs it, a pre-release) and yavs 0.20.2 o
 | `yavs.sim_flags` | `yavs run`, such as `--assert-summary`, `--activity`, `--hang-report`, `--wave-include`: they pass through to the run |
 | `yavs.max_threads` (integer, at least 1, or `"auto"`) | `yavs run --threads=N`, the most threads of one simulation; `"auto"` is `--threads=auto`, more threads only while they make the run faster |
 | `yavs.tier_compile` (`"wait"` or `"background"`) | `yavs run --tier-compile=MODE`: `wait` (yavs's default) makes a simulation wait while a function compiles, `background` compiles alongside it on a thread at the lowest system priority |
+| `yavs.cycle` (`"off"`, `"on"` or `"strict"`) | `yavs run --cycle` for `"on"`, `--cycle-strict` for `"strict"` (cycle mode, below); default `"off"`. Not passed to `elab` |
 | `enable_coverage` (VUnit's option) | `yavs run --cov-file=<test output>/yavs/coverage.ycov --cov-test=<test name>` with the kinds below (coverage, below) |
 | `yavs.cov_kind` (list of strings) | `yavs run --cov-kind=LIST`: `statement`, `branch`, `toggle`, `condition`, `assert`, `expression`, `combination`, `fsm`. No kind is on by default |
 | `yavs.init_files.after_load` | Console command files sourced after each `vunit_load` |
@@ -56,7 +57,8 @@ or later (`pip install vunit-yavs` installs it, a pre-release) and yavs 0.20.2 o
 | `--yavs-cov-detailed` | That report also lists what never ran, under each instance. In a script both go through `merge_coverage("coverage", args=["--below=100", "--detailed"])` |
 | `--yavs-cov-exclude FILE` | `results.merge_coverage()` reports without the items this exclusion file lists (`yavs cov report --exclude`); repeatable. A run script passes the same in `merge_coverage("coverage", args=["--exclude", file])` |
 | `--yavs-cov-config FILE` | `results.merge_coverage()` reads exclusion files, root and kinds from this file (`yavs cov report --config`). A run script passes `args=["--config", file]` |
-| `--yavs-jobserver` | Lends the CPU slots of `-p N` that no test uses to the running simulations through a token server (below) |
+| `--yavs-no-jobserver` | Runs without the token server (below), which is on by default (environment variable `VUNIT_YAVS_JOBSERVER=off` for run scripts with a command line of their own) |
+| `--yavs-jobserver` | The token server, the default; accepted for scripts written when it was not |
 
 Compiling (the dependency-graph batching and `-j` need a release newer than 0.19.1): files go to `yavs analyze` in the project's dependency order, the out-of-date ones only. A call takes a ready
 file and the later files of its library, standard and flags whose dependencies are done or in the call (always on); a
@@ -65,8 +67,28 @@ up to N calls run at once, never two into one library (yavs locks a library for 
 or older, into libraries that read each other (they could wait for each other's lock, yavs #1150), so a project of many libraries gains most. Output is printed per finished call. With a VUnit that has `--batch-compile` and `--parallel-compile`
 (5.0.0.dev16 does not have them), those flags hand the compile to VUnit instead, and `-j` has no effect.
 
-Without `yavs.max_threads` or `--yavs-max-threads` no thread count is passed, and yavs runs with
-its default, unless the token server runs (`--threads=auto`, below). An explicit `--threads` in `yavs.sim_flags` comes after the cap and wins.
+With the token server (the default) every simulation runs with `--threads=auto` unless `yavs.max_threads` or
+`--yavs-max-threads` gives a number. Without the server and without those, no thread count is passed, and yavs runs
+with its default, one thread. An explicit `--threads` in `yavs.sim_flags` comes after the cap and wins.
+
+## Cycle mode
+
+Cycle mode is experimental: the option, its values and what yavs gives up under it may change in a later release.
+
+```python
+vu.set_sim_option("yavs.cycle", "on")                                       # every test
+vu.library("lib").test_bench("tb_counter").set_sim_option("yavs.cycle", "strict")  # one testbench; also per test or configuration
+```
+
+`"on"` runs the clocked and combinational processes that fit cycle mode on a static schedule and leaves the rest to the
+event kernel; the test output shows `cycle mode: N of M processes run cycle-based` (VUnit prints a passing test's output with `-v`). `"strict"` makes a process below
+the top-level unit that does not fit an error. A wrong value is refused at setup, naming the three values.
+
+- Cycle-based processes drop their `report` and `assert` statements, and library warnings.
+- They are two-state: metavalues read as `'0'`. Outside processes keep full semantics.
+- There are no waves, and none of coverage, `--yavs-debug`, `--yavs-interactive` or `--yavs-surfer` in the same test (the test fails before yavs starts, error E4102 of yavs).
+
+All the rules are in the `--cycle` entry of the yavs command line reference. To see what would join, set `yavs.sim_flags` to `["--cycle-report"]` for one test with `yavs.cycle` `"off"`: yavs prints the report and does not simulate, so that test fails. `yavs.sim_flags` `["--cycle-exact-meta"]` with `yavs.cycle` `"on"` or `"strict"` keeps the exact metavalue rules for a test, and the values in the message of a failed check.
 
 ## Coverage
 
@@ -125,20 +147,27 @@ waiting for a debugger on the port. The waves and coverage files of such a run a
 
 ## Token server
 
-With `-p N --yavs-jobserver` (Linux and Windows; `-p 0`, one job per CPU, counts as the CPU count) the run script starts a token server on
-127.0.0.1 and lends the CPU slots of `-p N` that no test uses to the running simulations. Every
-simulation runs with `--threads=auto` (unless `yavs.max_threads` or `--yavs-max-threads` says otherwise) and gets
-`YAVS_TOKENS=<port>:<secret>`, a secret of its own; yavs runs its extra threads only on tokens the
-server lends, and asks for them only while it has work for them. One CPU slot per running test is
-free, the other `N - k` (for `k` running tests) are lent: breadth first (every test gets one extra
-before any gets a second) and newest test first within a round, at most `yavs.max_threads - 1` per
-test (`min(N, 8) - 1` with `auto`). With `auto` a simulation whose threads do not make it faster asks for no
-tokens after its first fraction of a second. A token in use is never taken back, so a test that starts while every token is out runs at
-once: the total is `N` in the steady state, not at every instant. A simulation gives its tokens
-back when it stops using them and when it ends in any way, also when it is killed. The tail of a
-regression, a few long tests on a machine of idle slots, gets faster on designs whose processes
-run in parallel well. If the server cannot start (a blocked local socket) the run warns and every
-simulation uses one thread.
+By default (Linux and Windows), at any `-p`, the run script starts a token server on 127.0.0.1 with one slot for
+each CPU the run may use (its CPU affinity, so `taskset` counts; none with one CPU, nor under `--yavs-debug` or
+`--yavs-interactive`). Every simulation runs with `--threads=auto` (unless `yavs.max_threads` or
+`--yavs-max-threads` says otherwise) and gets `YAVS_TOKENS=<port>:<secret>`, a secret of its own; yavs runs its
+extra threads only on tokens the server lends, and asks for them only while it has work for them (a group of
+processes worth sharing, or a cycle region to compile). Each running test keeps one slot, and so does each of the
+`-p N` workers for `GRACE` (1 second) after its test ends, and all N until the first test starts. Measured under
+the test runner (2026-11-17, 336 test starts of `-p 4`), a worker started its next test 2 ms after its last one
+ended in the median and 0.33 s at most; the grace is three times that. The other slots are lent: breadth first
+(every test gets one extra before any gets a second) and newest test first within a round, at most
+`yavs.max_threads - 1` per test (`min(C, 8) - 1` with `auto`, for `C` slots); `yavs.max_threads` set to 1 takes
+none. So a worker's next test finds its slot free, and in the tail of a regression the slots of the workers out
+of tests are lent a second after they ran out. With `auto` a simulation whose threads do not make it faster asks
+for no tokens after its first fraction of a second. A token in use is never taken back: a worker that idles past
+the grace and then starts a test again shares its slot until a simulation lowers its want. A simulation gives its
+tokens back when it stops using them and when it ends in any way, also when it is killed. If the server cannot
+start (a blocked local socket) the run warns and every simulation uses one thread.
+
+`--yavs-no-jobserver` (or `VUNIT_YAVS_JOBSERVER=off`) runs without it: then `--yavs-max-threads N` gives every
+simulation N threads of its own, whatever the others use. Under the server the threads of `--yavs-max-threads N`
+past the first run only on lent tokens.
 
 ## The console
 

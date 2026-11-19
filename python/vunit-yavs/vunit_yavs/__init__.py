@@ -16,6 +16,7 @@ and selected with VUNIT_SIMULATOR=yavs.
 
 import argparse
 import atexit
+import difflib
 import logging
 import re
 import subprocess
@@ -72,6 +73,28 @@ class TierCompileOption(Option):
             raise ValueError(f"Option {self.name!r} must be \"wait\" or \"background\". Got {value!r}")
 
 
+CYCLE_FLAGS = {"off": None, "on": "--cycle", "strict": "--cycle-strict"}
+
+
+class CycleOption(Option):
+    """
+    Must be "off", "on" (yavs run --cycle) or "strict" (yavs run --cycle-strict)
+    """
+
+    def validate(self, value):
+        if value in CYCLE_FLAGS:
+            return
+        if isinstance(value, bool):
+            hint = f' Did you mean {"on" if value else "off"!r}?'
+        else:
+            close = difflib.get_close_matches(str(value), CYCLE_FLAGS, 1)
+            hint = f" Did you mean {close[0]!r}?" if close else ""
+        raise ValueError(
+            f"Option {self.name!r} must be \"off\" (the default), \"on\" (yavs run --cycle) or \"strict\" "
+            f"(yavs run --cycle-strict). Got {value!r}.{hint}"
+        )
+
+
 def _debug_port(text):
     """argparse type of --yavs-debug: a TCP port, 0 for a free one"""
     if not text.isdigit() or int(text) > 65535:
@@ -118,6 +141,26 @@ def _max_threads_from_environment():
         return _max_threads(text)
     except argparse.ArgumentTypeError as exc:
         return refuse(f"VUNIT_YAVS_MAX_THREADS: {exc}")
+
+
+JOBSERVER_VALUES = ("on", "off")
+
+
+def _jobserver_from_environment():
+    """VUNIT_YAVS_JOBSERVER=on|off, for a run script that parses its own command line (no --yavs-no-jobserver)"""
+    text = environ.get("VUNIT_YAVS_JOBSERVER", "on")
+    if text not in JOBSERVER_VALUES:
+        close = difflib.get_close_matches(text, JOBSERVER_VALUES, 1)
+        hint = f" Did you mean {close[0]!r}?" if close else ""
+        refuse(f"VUNIT_YAVS_JOBSERVER must be 'on' (the default) or 'off', got {text!r}.{hint}")
+    return text == "on"
+
+
+def usable_cpus():
+    """The CPUs this process may run on (a taskset or CPU affinity counts)"""
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0))
+    return os.cpu_count() or 1
 
 
 def _exit_with_failure():
@@ -256,6 +299,7 @@ class YavsInterface(SimulatorInterface):
         ListOfStringOption("yavs.sim_flags"),
         ThreadsOption("yavs.max_threads"),
         TierCompileOption("yavs.tier_compile"),
+        CycleOption("yavs.cycle"),
         ListOfStringOption("yavs.cov_kind"),
         BooleanOption("yavs.cov_embed_sources"),
         # Files of console commands, sourced at the points VUnit sources its init files
@@ -349,11 +393,19 @@ class YavsInterface(SimulatorInterface):
             "VUNIT_YAVS_MAX_THREADS, for run scripts with a command line of their own.",
         )
         group.add_argument(
+            "--yavs-no-jobserver",
+            action="store_true",
+            default=False,
+            help="Run without the token server: every simulation on one thread unless yavs.max_threads or "
+            "--yavs-max-threads says otherwise. By default the server lends the CPUs that no test uses to the "
+            "running simulations, which then run with --threads=auto. Default: the environment variable "
+            "VUNIT_YAVS_JOBSERVER=off does the same, for run scripts with a command line of their own.",
+        )
+        group.add_argument(
             "--yavs-jobserver",
             action="store_true",
             default=False,
-            help="Lend the CPU slots of -p N that no test uses to the running simulations through a token server; "
-            "each simulation runs with --threads=auto (yavs.max_threads or --yavs-max-threads sets another value).",
+            help="The token server; the default, accepted for older scripts.",
         )
 
         group.add_argument(
@@ -472,14 +524,18 @@ class YavsInterface(SimulatorInterface):
             check_interactive_args(args, debug_port)
 
         tokens = None
-        # -p 0 means one job per CPU: the test runner resolves it the same way (#1141)
-        jobs = (args.num_threads or cpu_count()) if getattr(args, "yavs_jobserver", False) else 1
-        if jobs > 1:
+        # The budget is the CPUs the run may use, at any -p; a worker's slot is lent only once it stayed free
+        # (TokenServer grace). -p 0 is one job per CPU, as the test runner resolves it.
+        # A debugger session is one simulation on one thread.
+        serve = not getattr(args, "yavs_no_jobserver", False) and _jobserver_from_environment()
+        cpus = usable_cpus()
+        jobs = getattr(args, "num_threads", 1) or cpu_count()
+        if serve and cpus > 1 and debug_port is None and not interactive:
             try:
-                tokens = TokenServer(jobs)
+                tokens = TokenServer(cpus, workers=jobs)
             except OSError as exc:
                 # Tokens only speed a run up: every simulation then runs on one thread (#878)
-                LOGGER.warning("--yavs-jobserver: cannot start the token server (%s); simulations use one thread", exc)
+                LOGGER.warning("cannot start the yavs token server (%s); simulations use one thread", exc)
             else:
                 atexit.register(tokens.close)
 
@@ -752,6 +808,27 @@ class YavsInterface(SimulatorInterface):
         interactive = self._interactive and not elaborate_only
         debug = (self._debug_port is not None or interactive) and not elaborate_only
         surfer = self._surfer is not None and not elaborate_only
+        cycle = config.sim_options.get("yavs.cycle", "off")
+        if cycle != "off" and not elaborate_only:
+            # yavs refuses these with E4102; saying so here names the option to drop
+            coverage = self._coverage.enabled or config.sim_options.get("enable_coverage", False)
+            blocked = [
+                name
+                for name, on in (
+                    ("--yavs-debug", self._debug_port is not None),
+                    ("--yavs-interactive", interactive),
+                    ("--yavs-surfer (waves)", surfer),
+                    ("coverage (--yavs-cov, enable_coverage)", coverage),
+                )
+                if on
+            ]
+            if blocked:
+                print(
+                    f"error: the sim option yavs.cycle={cycle!r} cannot be combined with {', '.join(blocked)}: "
+                    "cycle mode does not keep signals, waves or coverage inside its region (yavs error E4102). "
+                    'Fix: drop those, or set yavs.cycle to "off" for this test.'
+                )
+                return False
         if debug or surfer:
             if not self._take_debug_session(test_suite_name):
                 return False
@@ -766,7 +843,7 @@ class YavsInterface(SimulatorInterface):
             cmd += ["--ieee-warnings=off"]
 
         # The cap goes first, so --threads in the raw flags below wins (last one wins); a DAP run is one thread.
-        # With a token server every simulation may use the -p N slots, on tokens, while its threads gain.
+        # With a token server every simulation may use the idle CPUs, on tokens, while its threads gain.
         max_threads = config.sim_options.get("yavs.max_threads", self._max_threads)
         if max_threads is None and self._tokens is not None:
             max_threads = "auto"
@@ -777,6 +854,10 @@ class YavsInterface(SimulatorInterface):
         tier_compile = config.sim_options.get("yavs.tier_compile")
         if tier_compile is not None and not elaborate_only:
             cmd += [f"--tier-compile={tier_compile}"]
+
+        # Cycle mode, before the raw flags too (a --cycle in yavs.sim_flags is the simulator's to judge)
+        if cycle != "off" and not elaborate_only:
+            cmd += [CYCLE_FLAGS[cycle]]
 
         if not elaborate_only and (self._coverage.enabled or config.sim_options.get("enable_coverage", False)):
             if debug:

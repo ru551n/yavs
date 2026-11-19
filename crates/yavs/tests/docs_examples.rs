@@ -55,6 +55,19 @@ impl Env {
     }
 }
 
+/// `text` with the paths under `dir` made relative to it, in the form given and the canonical one
+/// (on Windows yavs may print the short form of the temp dir), with either separator.
+fn relative(text: &str, dir: &std::path::Path) -> String {
+    let mut out = text.to_string();
+    for d in [dir.canonicalize().expect("dir"), dir.to_path_buf()] {
+        let d = d.display().to_string();
+        out = out
+            .replace(&format!("{d}/"), "")
+            .replace(&format!("{d}\\"), "");
+    }
+    out
+}
+
 /// Every line of `out` is on the page, as the page shows it.
 fn on_page(page: &str, out: &str) {
     let text = std::fs::read_to_string(docs().join(page)).unwrap();
@@ -463,4 +476,65 @@ fn time_and_exit_status() {
     let (code, out, _) = e.yavs(&["run", WORK, "err_tb", "--exit-severity=error"]);
     assert_eq!(code, 1);
     assert!(!out.contains("more"), "{out}");
+}
+
+/// `docs/cycle-mode.rst`: its examples, normal mode and `--cycle`, print what the page shows.
+#[test]
+fn cycle_mode_page() {
+    let e = Env::new("docs_cycle");
+    let files = [
+        "counter.vhd",
+        "tb_counter.vhd",
+        "left_out.vhd",
+        "rtl_failure.vhd",
+        "delta.vhd",
+        "metavalue.vhd",
+        "overflow.vhd",
+    ];
+    e.copy("cycle", &files);
+    let mut args = vec!["analyze", "--std=2008", WORK];
+    args.extend(files);
+    e.ok(&args);
+    let page = "cycle-mode.rst";
+    // (top, exit status of the normal mode, of --cycle)
+    for (top, normal, cycle) in [
+        ("tb_counter", 0, 0),
+        ("tb_left_out", 0, 0),
+        ("tb_rtl_failure", 1, 0),
+        ("tb_delta", 0, 0),
+        ("tb_metavalue", 0, 0),
+    ] {
+        for (flag, want) in [(None, normal), (Some("--cycle"), cycle)] {
+            let mut args = vec!["run", WORK];
+            args.extend(flag);
+            args.push(top);
+            let (code, out, err) = e.yavs(&args);
+            assert_eq!(code, want, "{top} {flag:?}\n{out}\n{err}");
+            if top != "tb_left_out" {
+                on_page(page, &out);
+                on_page(page, &err);
+            }
+        }
+    }
+    // The report and the strict errors.
+    let (code, _, err) = e.yavs(&["run", "--cycle-report", WORK, "tb_left_out"]);
+    assert_eq!(code, 0, "{err}");
+    on_page(page, &err);
+    let (code, _, err) = e.yavs(&["run", "--cycle-strict", WORK, "tb_left_out"]);
+    assert_eq!(code, 2, "{err}");
+    for code in ["E4127", "E4119", "E4111", "E4121"] {
+        assert!(err.contains(&format!("error[{code}]")), "{err}");
+    }
+    // The page shows the files as relative paths.
+    on_page(page, &relative(&err, &e.0));
+    let (code, _, err) = e.yavs(&["run", "--cycle", "--surfer", WORK, "tb_counter"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("error[E4102]"), "{err}");
+    on_page(page, &err);
+    let (code, _, err) = e.yavs(&["run", "--cycle", WORK, "tb_overflow"]);
+    assert_eq!(code, 1, "{err}");
+    // The page shows the path relative to where the files are.
+    on_page(page, &relative(&err, &e.0));
+    let (code, _, err) = e.yavs(&["run", "--cycle", "--cycle-strict", WORK, "tb_counter"]);
+    assert_eq!(code, 2, "{err}");
 }

@@ -1,0 +1,12 @@
+error[E4126]: an `out` or `inout` parameter associated part by part is not supported in cycle mode
+   --> $DIR/strict.vhd:937:5
+    |
+937 |     two(a, y(1) => u, y(0) => w);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ pass one whole variable or signal to it
+    |
+    = note: in process t_e4126.dut.p (strict.vhd:934)
+    = note: why: yavs cannot follow this construct far enough yet to show that the process is clocked or combinational logic
+    = help: this is a limitation of yavs, not a problem in your design: run with `--cycle` to leave this process in the event simulation, or write the construct more simply
+
+error: aborting due to 1 previous error
+

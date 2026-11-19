@@ -14,8 +14,8 @@ What threads do
 ``yavs run --threads=N`` lets one simulation use N threads, a whole number of at least 1. The default
 is 1. ``--threads=auto`` decides while the run goes (`Letting yavs decide`_).
 
-* Only the evaluation of VHDL processes is shared. Analysis, elaboration and most of the rest of a run
-  stay on one thread.
+* Only the evaluation of VHDL processes is shared, and under ``--cycle`` the compilation of the region
+  before time 0 (:doc:`cycle-mode`). Analysis, elaboration and most of the rest of a run stay on one thread.
 * The output, reports, waves, coverage and exit status are identical at any thread count.
 * The processes that wake in one delta cycle go to the threads only when yavs estimates that the work
   is worth the hand-over. A smaller group stays on the main thread, as with ``--threads=1``. yavs measures
@@ -101,16 +101,17 @@ faster at 4 threads and 3.25 at 8, whole run, measured 2026-10-28. The measured 
 Regressions: threads or parallel tests
 --------------------------------------
 
-Running tests side by side uses cores better than threads inside one test. Nothing shares the CPU
-between simulations by itself: with ``-p 8`` and ``--threads=8`` the threads of all runs add up. So leave
-``--threads`` at 1 when a runner already runs tests in parallel, or use the token server.
+Running tests side by side uses cores better than threads inside one test. yavs alone does not share the CPU
+between simulations: with ``-p 8`` and ``--threads=8`` the threads of all runs add up. A test runner's token
+server shares it, and the ``vunit-yavs`` package starts one by default (`With VUnit`_).
 
 The token server
 ----------------
 
-With ``-p N`` a test runner runs N tests side by side. Near the end of a regression most of those N
-slots are idle while a few long simulations finish alone. The token server lends the idle slots to
-those simulations as extra threads, so the tail ends sooner.
+With ``-p N`` a test runner runs N tests side by side. On a machine with more CPUs than N, the others are
+idle: with ``-p 1`` all but one are. Near the end of a regression most slots are idle while a few long
+simulations finish alone. The token server lends the idle CPUs to the running simulations as extra threads,
+so they end sooner, without more threads in all than the machine has.
 
 * It is a small server of the test runner on ``127.0.0.1``. The ``vunit-yavs`` package has one
   (next section). It works on Linux and Windows alike.
@@ -120,36 +121,47 @@ those simulations as extra threads, so the tail ends sooner.
 * ``--threads=N`` is the cap. The simulation owns its main thread and can use up to N - 1 more, as tokens
   are lent. It starts its extra threads with the first token. With no token lent, it runs as with
   ``--threads=1``.
-* yavs asks for a token only when a group of processes is worth sharing, and never waits for one. It gives
-  tokens back when the groups stay small, and all of them when the simulation ends, however it ends.
+* yavs asks for a token only when a group of processes is worth sharing, or, under ``--cycle``, while it
+  compiles the region (:doc:`cycle-mode`), and never waits for one. It gives tokens back when the groups
+  stay small, and all of them when the simulation ends, however it ends.
 * The output does not depend on the tokens.
 
 With VUnit
 ----------
 
-Turn it on with ``--yavs-jobserver`` together with ``-p`` above 1. With ``-p 1`` there is nothing to lend
-and the flag does nothing:
+The ``vunit-yavs`` package starts the token server by default, at any ``-p``, with one slot for each CPU the run
+may use (a ``taskset`` or CPU affinity counts). Each running test keeps one, and so does each of the ``-p N`` test
+slots for one second after its test ends, since its next test starts within milliseconds. The other CPUs are lent:
+those ``-p`` never uses, and in the tail of a regression those of the test slots that ran out of tests.
 
 .. code-block:: bash
 
-    python run.py -p 8 --yavs-jobserver
-    python run.py -p 8 --yavs-jobserver --yavs-max-threads 4
+    python run.py -p 8
+    python run.py -p 8 --yavs-max-threads 4
+    python run.py -p 8 --yavs-no-jobserver
 
-With the server every simulation runs with ``--threads=auto``: it asks for tokens only while its threads
+Under the server every simulation runs with ``--threads=auto``: it asks for tokens only while its threads
 gain, and gives them back when they do not. ``--yavs-max-threads N`` gives every simulation ``--threads=N``
-instead (``--yavs-max-threads auto`` is the default). A test can have its own value with
-``vu.set_sim_option("yavs.max_threads", 2)`` or ``"auto"``. Without the server ``--yavs-max-threads N`` simply runs
-each simulation with ``--threads=N``. If the server cannot start (a blocked local socket), the run prints a
-warning and goes on without a server, as if ``--yavs-jobserver`` had not been given. A run script with a command line of its own can set
-``VUNIT_YAVS_MAX_THREADS`` instead of the flag.
+instead (``--yavs-max-threads auto`` is the default); those threads past the first also run only on lent tokens.
+A test can have its own value with ``vu.set_sim_option("yavs.max_threads", 2)`` or ``"auto"``; with ``1`` it
+takes no tokens and still counts as a running test. If the server cannot start (a blocked local socket), the run
+prints a warning and every simulation runs on one thread.
 
-A run never keeps more than N threads busy once it has settled. A test that starts while every slot is
-lent starts at once, so the total can briefly exceed N.
+``--yavs-no-jobserver`` runs without the server: then nothing is passed unless ``--yavs-max-threads`` or
+``yavs.max_threads`` is set, and ``--yavs-max-threads N`` gives each simulation N threads of its own, whatever
+the others use. A run script with a command line of its own sets ``VUNIT_YAVS_JOBSERVER=off`` for the same, and
+``VUNIT_YAVS_MAX_THREADS`` for ``--yavs-max-threads``. ``--yavs-jobserver``, from the time the server was not the
+default, is still accepted and changes nothing.
 
-Turn the server on only for a regression whose longest tests gain from threads when run alone (`How to
-decide`_): the gain is in the tail, and the server gives nothing to a tail of processor models or
-testbench-style tests. The measurements are in
-`parallel.md <https://github.com/ru551n/yavs/blob/main/docs/parallel.md>`__.
+A run does not keep more threads busy than the CPUs: a test slot's next test finds its CPU free. A lent token is
+not taken back, so a test slot that stays idle for more than a second and then starts a test again (a runner that
+waits for dependencies) can briefly share its CPU.
+
+The gain is on designs whose threads gain when run alone (`How to decide`_), in a run of ``-p N`` below the CPU
+count, in the tail of any regression, and under ``--cycle`` while a test compiles its region on a cold cache. Processor models and
+testbench-style tests ask for no tokens after a short trial. A run that gains spends more CPU time for a shorter
+wall time. The
+measurements are in `parallel.md <https://github.com/ru551n/yavs/blob/main/docs/parallel.md>`__.
 
 See also
 --------

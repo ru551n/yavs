@@ -1,0 +1,15 @@
+error[E4115]: a postponed process is not supported in cycle mode
+   --> $DIR/strict.vhd:122:3
+    |
+122 | /   p : postponed process (a)
+123 | |   begin
+124 | |     q <= a;
+125 | |   end process;
+    | |______________^
+    |
+    = note: in process t_e4115.dut.p (strict.vhd:122)
+    = note: why: cycle mode has no end of a time step and no guarded signals
+    = help: use a plain process and an ordinary signal with one driver; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 1 previous error
+

@@ -537,10 +537,151 @@ const EXPLAIN: &[(&str, &str)] = &[
         "W3102",
         "A process has no wait statement, no sensitivity list and calls no procedure that waits. It never gives control back to the simulator, so time cannot advance and the run does not end by itself; it can only end through `stop` or `finish`, a failed assertion or an error. A process that should run once ends with `wait;`.",
     ),
+    // yavs-cycle: cycle mode (`yavs run --cycle`)
+    (
+        "E4101",
+        "Cycle mode can run this kind of logic, but yavs does not implement the construct the error names in cycle-based code yet: a limitation of yavs, not a problem in the design. `yavs run --cycle-strict` reports it for a process below the top-level design unit; the headline names the construct and the label points at the statement. Run with `--cycle` to leave the process in the event simulation, or write the construct another way (the label often says how). Every other reason a process stays out has a code of its own (E4110 to E4139). A behavioural process (one that waits for a time, waits forever, has several waits, calls a procedure that waits, or uses files or text input and output) and every process of the top-level design unit, the testbench, stay in the event kernel without an error. `--cycle-report` lists every process with its reason.",
+    ),
+    (
+        "E4102",
+        "`yavs run --cycle` (or `--cycle-strict`) cannot be used with an option that records, shows, counts or changes signals inside the cycle region: a debug session (`--dap`, `--interactive`, `--do`), `--wave`, `--surfer` (which records a waveform), `--cov`, `--vhpi` or `--activity`. Cycle mode keeps those signals in an image of its own and updates the kernel only with what processes outside the region read. Run without `--cycle` for these. `--profile`, `--assert-summary`, `--shuffle`, `--hang-report` and `--time-report` are allowed: they do not read the signals of the region, but `--profile` shows the region's time as one entry and `--assert-summary` counts only the asserts that run.",
+    ),
+    (
+        "E4103",
+        "The file given to `yavs run --cycle-report=FILE` cannot be created or written (missing directory, permissions, full disk). The check is made before any work, so a run does not end with its report lost.",
+    ),
+    (
+        "E4104",
+        "An environment variable of cycle mode has a value it does not take, such as `YAVS_CYCLE_SKIP_CHECK=yes` (it takes `1` or `full`). The message names the values it takes; unset the variable, or leave it empty, to turn the check off.",
+    ),
+    (
+        "W4101",
+        "Cycle-based processes below the top-level design unit hold `assert` or `report` statements of severity error or failure (or a severity known only at run time), which cycle mode (`yavs run --cycle` or `--cycle-strict`) does not evaluate: they never print and never stop the simulation, so a design that ends its own test with such an assert below the top runs on until `--stop-time` or the testbench ends it. The warning counts them by severity and names the first five (where the statement is and the process), then how many more. Run without `--cycle` to evaluate them, or run with `--cycle-report` instead to list every assert and report cycle mode drops, warnings and notes included. Asserts and reports of processes of the top-level unit, the testbench, are evaluated and are not counted here.",
+    ),
+    (
+        "E4110",
+        "Cycle mode takes a process with a wait only in one shape: `wait until <edge>;` as the first statement, the only wait, a clocked process (`rising_edge(clk)`, `falling_edge(clk)` or `clk'event and clk = '1'`, optionally followed by `and` more conditions). Any other wait (`wait on a;`, a wait on a level) keeps the process in the event kernel. A process that waits for a time, waits forever, waits more than once or calls a procedure that waits is behavioural and stays in the event kernel without this code.",
+    ),
+    (
+        "E4111",
+        "A cycle-based process has no time inside a clock cycle: an `after` delay (other than zero), `transport`, a `reject` limit or a waveform of several elements keeps it in the event kernel.",
+    ),
+    (
+        "E4112",
+        "Cycle mode keeps no signal history: `'last_value`, `'last_event`, `'last_active`, `'stable`, `'quiet`, `'delayed`, `'transaction`, `'active`, `'driving`, `'driving_value`, `'event` anywhere but in the process's own edge test, or an edge test (`rising_edge`, `falling_edge`, a `'event` form) of a signal other than the process's clock inside the body of a clocked process or of a subprogram it calls, keep the process in the event kernel. An edge test in a process that is not of the clocked shape, such as a combinational process, or after an `elsif` or `else`, is E4123.",
+    ),
+    (
+        "E4113",
+        "Cycle mode computes two-state values, integers and enumerations: a real or physical (time) value computed at run time, or a signal or variable of such a type, keeps the process in the event kernel. Constant expressions elaboration folds are fine.",
+    ),
+    (
+        "E4114",
+        "Shared variables used other than by the clock-edge body of one clocked process, methods of protected objects, allocators and access values in expressions keep a process in the event kernel. A memory in a shared variable (not of a protected type) that one clocked process alone reads and writes, in its clock-edge body and not in a subprogram, runs cycle-based as a variable of that process; when another process uses it too, the order the two run in on a common edge decides the normal mode's result, and both stay out. A process that declares a protected object, a file or an access value (text lines) is behavioural instead, the testbench kind, and has no error under `--cycle-strict`.",
+    ),
+    (
+        "E4115",
+        "Postponed processes, guarded blocks, guarded signals and assignments and `null` waveforms keep a process in the event kernel: cycle mode has no end of a time step and models no guarded signals.",
+    ),
+    (
+        "E4116",
+        "`force` and `release` change a signal from outside its drivers: a process using them stays in the event kernel.",
+    ),
+    (
+        "E4117",
+        "A call cycle mode cannot follow keeps the process in the event kernel: a foreign subprogram, a subprogram whose body is not known, or, called by a combinational process, a subprogram that changes a variable or signal it is not given (a procedure of a clocked process may change the process's own registers). The label names the subprogram and what it does.",
+    ),
+    (
+        "E4118",
+        "Two-state values have no high impedance: a process that uses the value `'Z'` stays in the event kernel.",
+    ),
+    (
+        "E4119",
+        "A combinational process that does not assign a signal element it drives on every path keeps that element's value from one run to the next: a latch, which is state, not combinational logic. The label names the element, and where it can, the statement that leaves it unassigned. Assign every driven element on every path, for example a default assignment at the start of the process. An element the process never assigns at all keeps its initial value and is no latch.",
+    ),
+    (
+        "E4120",
+        "A variable of a combinational process read before it is assigned on some path keeps its value from the previous run of the process: state, not combinational logic. The label names the variable and the read. Assign it before reading it on every path.",
+    ),
+    (
+        "E4121",
+        "A combinational process that reads a signal its sensitivity list does not name, or a clocked process whose asynchronous reset branch does, is not run by the normal mode when that signal changes, so its result is not a function of what it reads. Cycle mode computes it from every read and would give another result: the process stays in the event kernel. Name every signal it reads, or write `process (all)`.",
+    ),
+    (
+        "E4122",
+        "Combinational logic in which an element depends on itself (through other processes or within one) has no single settled value: a combinational loop. The label prints the loop, element by element and process by process. The processes in it stay in the event kernel.",
+    ),
+    (
+        "E4123",
+        "A clocked process of a shape cycle mode does not take: statements outside the edge test, an edge test inside other statements, an `else` after it, statements before a `wait until` (they run once at initialisation), a `wait` inside another statement, a clock that is not one element of a signal, a reset branch whose condition reads no signal or reads the clock, a sensitivity list that does not name the clock or every signal of the asynchronous reset, or a `wait until` whose `on` list does not name the clock. A clocked process is `if <edge> then ... end if;`, optionally after an asynchronous reset branch `if <reset> then ... elsif <edge> then` (any condition on signals of the list), or `wait until <edge>;` first.",
+    ),
+    (
+        "E4124",
+        "Cycle mode needs every element a process of the region drives to have that process as its only source: an element another process drives too, a guarded signal or a signal with a resolution function of its own (other than `std_logic`'s) keeps the process in the event kernel.",
+    ),
+    (
+        "E4125",
+        "Clocks come from outside the region. When combinational logic of the region makes one (a gated clock, a copy), that process stays in the event kernel, which computes the clock; when a register of the region makes one (a divider), the processes that use it stay in the event kernel. An asynchronous reset may be made inside the region.",
+    ),
+    (
+        "E4126",
+        "yavs cannot yet follow a construct of the process far enough to show that it is clocked or combinational logic: an `out` actual, an assignment target or a statement of an unusual form, a signal it cannot place in the design, or an internal mismatch it asks you to report. A limitation of yavs, not a problem in the design: run with `--cycle` to leave the process in the event simulation, or write the construct more simply.",
+    ),
+    (
+        "E4127",
+        "A process outside the cycle region reads the history of a signal this process drives: `'active`, `'last_active`, `'last_event`, `'last_value`, `'transaction`, `'stable`, `'quiet` or `'delayed`, directly or in a subprogram it calls (an edge test such as `rising_edge` is not history here). The region publishes only the values that change and keeps no history of what it drives, so every process driving that signal stays in the event kernel. The label names the reading attribute.",
+    ),
+    (
+        "E4128",
+        "A `force` or `release` the design can run (in a process, or in a subprogram a process calls) changes a signal this process drives, which cycle-based code would not see, so the process stays in the event kernel; members that only read the forced signal still join. A force whose target yavs cannot tell (a signal parameter) keeps every process out, and so does any force under `--cycle-exact-meta`, whose rules for `'Z'` do not follow forced values. Forces in units the design does not instantiate and in subprograms nothing calls do not count. Under `--cycle-strict` each such process below the top-level unit is an error that points at the force. A limitation of yavs: drive the signal from the testbench instead of forcing it, or run with `--cycle`.",
+    ),
+    (
+        "E4129",
+        "Combinational logic (or a register with an asynchronous reset) feeds a process outside the region whose result depends on the delta cycles its inputs change in: one that keeps a value from its previous run (a latch, a variable read before it is assigned, a combinational loop), has an incomplete sensitivity list, or stays out for another reason. The event simulation changes the logic over several delta cycles and the reader sees each step; cycle-based code changes it in one step, so the reader would see other values or run another number of times. The second label names the reader. Fix the reader so that it can join the region too, or make it a clocked process.",
+    ),
+    (
+        "E4130",
+        "Logic between registers of two clocks whose edges come in different delta cycles of one time step: a clock gated or computed by an assignment comes one delta cycle after its source (a plain copy is its source). The event simulation samples such logic before its new value arrives; cycle-based code would hand over the settled value. Clock both registers from one clock, or make the second clock a plain copy of the first.",
+    ),
+    (
+        "E4131",
+        "Logic that computes part of a clock from a signal the region drives. Cycle-based code gives its outputs one delta cycle after its inputs change, where the event simulation takes one delta cycle per level of logic, so the clock edge would come early. Make the clock in the testbench, or use a clock enable instead of logic on the clock.",
+    ),
+    (
+        "E4132",
+        "A register whose asynchronous reset another register makes, and whose output is the clock or the asynchronous reset of a process. The event simulation can change it at the clock edge and again one delta cycle later; that pulse clocks or resets the other process, and cycle-based code, which settles both at once, would not give it. The second label names the process it clocks or resets. Use a synchronous reset, or a reset that does not come from another register.",
+    ),
+    (
+        "E4133",
+        "A memory (an array signal of more than 4096 logic elements or 64 integers) that is written in an asynchronous reset branch, written both at run-time indices and at fixed ones, or read outside the region. yavs keeps a large memory in cycle-based code only when it is written at run-time indices in the clock-edge branch and read inside the region. A limitation of yavs: write and read it that way, or run with `--cycle`.",
+    ),
+    (
+        "E4134",
+        "Some elements of a signal are driven by this process and others by a process outside the region. yavs does not split one signal between cycle-based code and the event simulation yet. The second label names the other driver. A limitation of yavs: drive all elements from processes that can run cycle-based, or split the signal in two.",
+    ),
+    (
+        "E4135",
+        "The process drives a signal that also gets its value from a port connection or a constant source, which yavs does not model in cycle-based code yet. A limitation of yavs: drive the signal from one process only, or run with `--cycle`.",
+    ),
+    (
+        "E4136",
+        "An assert or report of the top-level unit reads a signal the region does not drive alone. Its process stays in the event simulation so that the check sees the values it sees there. Processes of the top-level unit are never an error under `--cycle-strict`; the code appears in `--cycle-report`. Nothing to fix.",
+    ),
+    (
+        "E4137",
+        "Under `--cycle-exact-meta`, a process assigns a metavalue literal (`'U'`, `'X'`, ...) to a signal the testbench reads, or passes on a `'Z'` from a process outside to such a signal. The testbench must then see the metavalue the event simulation gives it, and cycle-based code gives only '0' and '1'. Run without `--cycle-exact-meta` (two-state values at the boundary, the default), or assign '0' or '1' instead.",
+    ),
+    (
+        "E4138",
+        "An external name (`<<signal .tb.dut.x : std_logic>>`) in the process. yavs does not follow external names in cycle-based code yet. A limitation of yavs: pass the signal through a port, or run with `--cycle`.",
+    ),
+    (
+        "E4139",
+        "A loop cycle mode cannot unroll. Cycle-based code unrolls every loop, so a loop needs bounds known during elaboration (constants, generics), its process at most 65 536 statement runs of loops, and `exit` and `next` of the innermost loop only. A loop without an exit cannot run in a process that must finish each run. Give the loop static bounds, split a very large loop, and jump only out of the innermost loop.",
+    ),
     // every stage
     (
         "E9999",
-        "An internal compiler error (\"this is a bug in yavs\"). Please report it with the input that triggers it.",
+        "An internal compiler error (\"this is a bug in yavs\"). Please report it with the input that triggers it. In the cycle-mode region report it is a reason yavs's own earlier checks should rule out: the process stays in the event kernel, and `--cycle-strict` gives it as an error.",
     ),
 ];
 

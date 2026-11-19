@@ -1,0 +1,12 @@
+error[E4112]: the attribute `'last_value` is not supported in cycle mode
+  --> $DIR/strict.vhd:64:8
+   |
+64 |   q <= a'last_value;
+   |        ^^^^^^^^^^^^
+   |
+   = note: in process t_e4112.dut.q <= ... (strict.vhd:64)
+   = note: why: cycle-based code keeps only the present value of each signal, not its history
+   = help: use an edge test of the process's own clock, or keep the old value in a register of your own; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 1 previous error
+

@@ -1,0 +1,29 @@
+error[E4131]: logic in a clock path is not supported in cycle mode
+   --> $DIR/strict.vhd:958:3
+    |
+958 |     gclk <= clk and r;
+    |     ^^^^^^^^^^^^^^^^^^ it computes part of the clock t_e4131.dut.gclk from t_e4131.dut.r, which the region drives
+959 | /   user : process (gclk)
+960 | |   begin
+961 | |     if rising_edge(gclk) then
+962 | |       q <= 'Z';
+963 | |     end if;
+964 | |   end process;
+    | |______________- t_e4131.dut.user is clocked by t_e4131.dut.gclk
+    |
+    = note: in process t_e4131.dut.gclk <= ... (strict.vhd:958)
+    = note: why: cycle-based code gives its outputs one delta cycle after its inputs change, where the event simulation takes one delta cycle per level of logic, so the clock edge would come early
+    = help: make the clock in the testbench, or use a clock enable instead of logic on the clock; or run with `--cycle` to leave this process in the event simulation
+
+error[E4118]: the value `'Z'` is not supported in cycle mode
+   --> $DIR/strict.vhd:962:12
+    |
+962 |       q <= 'Z';
+    |            ^^^
+    |
+    = note: in process t_e4131.dut.user (strict.vhd:959)
+    = note: why: cycle-based code uses two-state values, which have no high impedance
+    = help: keep tri-state buses in the testbench or at the top of the design, or drive '0' and '1' with a separate enable signal; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 2 previous errors
+

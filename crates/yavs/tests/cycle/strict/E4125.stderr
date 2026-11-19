@@ -1,0 +1,19 @@
+error[E4125]: a clock made inside the design is not supported in cycle mode
+   --> $DIR/strict.vhd:272:3
+    |
+272 |     gclk <= clk and en;
+    |     ^^^^^^^^^^^^^^^^^^^ this logic makes t_e4125.dut.gclk, the clock of t_e4125.dut.p
+273 | /   p : process (gclk)
+274 | |   begin
+275 | |     if rising_edge(gclk) then
+276 | |       q <= a;
+277 | |     end if;
+278 | |   end process;
+    | |______________- t_e4125.dut.p is clocked by t_e4125.dut.gclk
+    |
+    = note: in process t_e4125.dut.gclk <= ... (strict.vhd:272)
+    = note: why: cycle-based code runs on edges of clocks that come from outside the region; a clock made inside it would change between those edges
+    = help: make the clock in the testbench, or use a clock enable on the main clock instead of a gated or divided clock; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 1 previous error
+

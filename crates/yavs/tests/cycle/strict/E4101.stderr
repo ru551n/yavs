@@ -1,0 +1,14 @@
+error[E4101]: a `while` loop or a loop without a scheme is not supported in cycle mode
+  --> $DIR/strict.vhd:19:7
+   |
+19 | /       while v > 3 loop
+20 | |         v := v - 3;
+21 | |       end loop;
+   | |_______________^
+   |
+   = note: in process t_e4101.dut.p (strict.vhd:14)
+   = note: why: yavs does not implement this construct in cycle-based code yet
+   = help: this is a limitation of yavs, not a problem in your design: run with `--cycle` to leave this process in the event simulation, or write the construct another way
+
+error: aborting due to 1 previous error
+

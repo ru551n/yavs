@@ -4134,15 +4134,30 @@ impl Machine {
     }
 
     /// A report an earlier initialisation of this package already printed and counted.
-    pub(crate) fn init_report_seen(&mut self, s: yavs_kernel::Severity, text: &str) -> bool {
+    pub(crate) fn init_report_seen(
+        &mut self,
+        s: yavs_kernel::Severity,
+        text: &str,
+        lib: bool,
+    ) -> bool {
         if self.reports_seen == 0 {
             return false;
         }
         self.reports_seen -= 1;
         if let Some(r) = self.init_reports.as_mut() {
-            r.push((s as u8, text.to_string()));
+            let flag = if lib { crate::LIB_REPORT } else { 0 };
+            r.push((s as u8 | flag, text.to_string()));
         }
         true
+    }
+
+    /// The statement at the top frame's pc is in a source file of the standard library (A23,
+    /// `env::set_library_files`).
+    fn in_library(&self, prog: &Program, f: &Func) -> bool {
+        let pc = self.frames.last().map_or(0, |fr| fr.pc as usize);
+        (f.loc.get(pc))
+            .and_then(|&s| prog.stmts.get(s))
+            .is_some_and(|st| crate::env::library_file(st.span.file))
     }
 
     fn driver_ref(&self, d: &ProcDriver) -> R<(SigRef, Elem)> {
@@ -5922,6 +5937,7 @@ impl Machine {
                 yavs_ir::native_shown(&n.symbol)
             );
         };
+        crate::note_outside(|| crate::native::pure(&n.symbol));
         if (self.pkg_init.is_some() || self.init_reports.is_some())
             && self.tainted.is_none()
             && !crate::native::pure(&n.symbol)
@@ -5933,6 +5949,7 @@ impl Machine {
         cells.clear();
         self.push_args(&mut cells, f, args, None, 0)?;
         let v = fun(self, ctx, n.ty, &cells);
+        crate::note_outside_done();
         let v = match v {
             Ok(v) => v,
             Err(e) => {
@@ -12189,8 +12206,9 @@ impl Machine {
                     // to stderr at once, ahead of the first cycle. Severity failure stops
                     // elaboration as it stops a run.
                     None => {
+                        let lib = self.in_library(prog, f);
                         if self.rt.replay.load(std::sync::atomic::Ordering::Relaxed)
-                            || self.init_report_seen(s, &text)
+                            || self.init_report_seen(s, &text, lib)
                         {
                             return Ok(Flow::Next);
                         }
@@ -12203,9 +12221,10 @@ impl Machine {
                             Ok(()) => return Ok(Flow::Next),
                             Err(text) => text,
                         };
-                        crate::env::print_elab(s, &text);
+                        crate::env::print_elab_from(s, &text, lib);
                         if let Some(r) = self.init_reports.as_mut() {
-                            r.push((s as u8, text.clone()));
+                            let flag = if lib { crate::LIB_REPORT } else { 0 };
+                            r.push((s as u8 | flag, text.clone()));
                         }
                         if s >= yavs_kernel::Severity::Failure {
                             return rt_err_f!("report of severity failure: {text}");

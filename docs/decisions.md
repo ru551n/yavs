@@ -2186,6 +2186,11 @@ which tools/difftest parses.
   (`Db::view_driven_below`, `Fx::view_leaf_slot`); the other leaves have no slot. Driving a non-static name below a
   view (`bs(i).ready`) is checked against the view by the name's own steps, not its longest
   static prefix (`E1903` only for an `in` element below the name).
+  The sensitivity of a concurrent call (and of `process (all)`) to an array mode view is the
+  whole array, `out` fields too (`Db::view_read_paths` stops at the array; cycle-mode agent,
+  2026-11-18): a field of every element is no static prefix the wait list can name, and the
+  path that named it stopped elaboration with an internal error. The cost is an extra
+  resumption on events of the `out` fields, which recompute the same values.
 - **`buffer` and `linkage` subprogram parameters** are `E1236` (LRM 4.2.2.1; the reference
   simulators reject them too); a view may still give an element those modes.
 - **Package signals with records in their type** are one package signal per leaf, like
@@ -3628,6 +3633,12 @@ user's performance priority:
   element) is an edge too, as an event ending on that value from any value (not the IEEE 1164
   function, which also needs the old value to be '0' or 'L'). Other literals ('H', ...) and
   non-`std_ulogic` signals are not recognised.
+- A reset condition with static operands of an `and` (cycle-mode agent, 2026-11-18): `R and G`
+  or `G and R` with `G` a static BOOLEAN the elaborator evaluates (a generic) is `R` when `G` is
+  true; when it is false the branch never runs and the trigger has no reset, provided the other
+  operands cannot fail (levels of static signal names), so only edges wake the process. Exact: an
+  event of the reset signal alone would run the process to no effect. Cycle mode takes the same
+  registers (a reset gated by a generic, common in IP cores).
 
 ## One edge-test instruction for every clock-edge idiom (yavs-sem, yavs-ir, yavs-lower, yavs-interp, yavs-llvm, yavs-kernel, yavs-elab, #632, #589, #590, #591, 2026-10-23)
 
@@ -13961,6 +13972,13 @@ code in the compilation cache" and the 512 notes.
   limit frees a sixteenth of it (at least one) and keeps the count it ends with. The byte limit is unchanged. The same
   store type serves `obj/` and `units/`, so they have the same limits and the same fix. Tests count sweeps
   (`a_run_far_over_the_limit_sweeps_once`, `a_sweep_at_the_entry_limit_frees_a_batch`).
+- **A cycle region with more functions than the store keeps is not cached** (`yavs-cycle` `codegen.rs`): it could never be
+  warm, and each function is a file (about 40 us of the first run). A cycle region of 38001 functions
+  (`YAVS_CYCLE_CHUNK=5` on `elab_heavy`, a limit of 16384) did not finish in 100 s with the cache before the fix above,
+  against 1.4 s without it. Measured per function (a hit
+  against a compile, the first run pays about 40 us more per entry): 3 us saved at 10 to 20 Cranelift instructions, 10 us at
+  20 to 30, 80 us at 80 and more, so a first run is repaid by one warm run from about 80 instructions and by four at 25.
+  Functions cut at the default size are thousands of operations, so there is no threshold per function.
 
 
 ## Coverage kinds are opt in (#1020, 2026-11-01)
@@ -15025,6 +15043,18 @@ whole-signal read, the call, the result's check and copy, the wide drive).
   simulation whose threads do not gain gives its tokens back after its trial and asks for none until the next one, so
   the cap no longer has to protect the processor tests; a gaining one can use up to 8. `yavs.max_threads` and
   `--yavs-max-threads` take a number or `auto`.
+- **Decision: the vunit-yavs token server is on by default, sized to the usable CPUs, and a worker's slot is lent only
+  after it stayed free for `GRACE` (1 s)** (owner, 2026-11-17: on by default, from the CPUs and not from `-p` alone,
+  no oversubscription, and the grace so the tail is lent at any `-p`). Slots = the CPUs of the runner's affinity;
+  free = slots - max(running + waiting, 1) - lent, `waiting` = the `-p` workers whose test ended less than the grace
+  ago (all of them until the first test starts); no server with one CPU, under `--yavs-debug` or
+  `--yavs-interactive`, or with `--yavs-no-jobserver` / `VUNIT_YAVS_JOBSERVER=off`. Why: with one slot per running
+  test, a slot freed between two tests of a worker was lent at once to a simulation with a standing want, and lent
+  tokens are never taken back, so the next test started on a full machine: 45 of 172 test starts of a `-p 4` run on
+  4 CPUs (probe). A reserve of `-p` slots (the first fix) stopped that but lent nothing in the tail. The grace is three
+  times the longest gap measured from a test's end to its worker's next start (0.33 s, median 2 ms, 336 starts of
+  `-p 4` runs, normal and cycle mode). Limit: a worker idle past the grace that starts a test again shares its slot
+  until a simulation lowers its want.
 
 ## Copies of subprograms by the descriptors of their arguments (`opt/subcopy.rs`, `copies.rs`, 2026-11-03; landed with the maintainer's ruling of 2026-11-07)
 
@@ -17486,3 +17516,18 @@ the parked retune package.
   of a wait without an edge (22.6 M on the boot testbench); these shapes remove 1.9 M of them. The largest rest is a verification
   component's protocol checker that waits on its clock and two message signals (`wait on aclk, net, runner`) and tests
   `rising_edge(aclk)` inside: a wait on a list, which no edge rule covers.
+
+## Cycle mode on `main`, experimental (`crates/yavs-cycle`, owner decisions R1 to R4, 2026-11-18)
+
+- **Merged into `main` by a merge commit** once its gates passed on a trial merge (CI on Linux and Windows, a
+  normal-mode comparison of instructions on the bench designs and real designs, binary size). Its commits stay
+  reachable for bisecting.
+- **Experimental:** the user guide page, the `--help` texts and the release notes say that its options, codes and
+  the designs it accepts may change in a later release without a deprecation period.
+- **`yavs-cycle` and Cranelift are unconditional dependencies of `yavs`**, no cargo feature: a build without
+  `--features clift` compiles Cranelift too.
+- **Normal-mode start-up costs accepted:** the hooks it needs in elaboration and the kernel cost a little start-up
+  work in every run (under 2 percent of the instructions of an elaboration on the measured designs).
+- The design decisions of the mode itself (what joins the region, the two-state contract, what is dropped, the
+  cache) are the owner decisions A1 to A40 in `crates/yavs-cycle/AGENTS.md` section 3, and the user-visible ones are
+  in `docs/cycle-mode.rst`.

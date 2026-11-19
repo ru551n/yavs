@@ -31,6 +31,8 @@ const UNCOLLAPSED: ElabConfig = ElabConfig {
     max_depth: 1000,
     collapse_ports: false,
     packs: true,
+    keep_values: false,
+    values: None,
 };
 
 fn try_elab(

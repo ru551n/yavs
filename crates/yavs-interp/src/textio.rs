@@ -437,7 +437,11 @@ impl Machine {
             if name == STD_OUTPUT && matches!(kind, FileOpenKind::Write | FileOpenKind::Append) {
                 FileSlot::Output { open: true }
             } else {
-                match TextFile::open(name, kind) {
+                let f = TextFile::open(name, kind);
+                if kind == FileOpenKind::Read && name != yavs_std::file::STD_INPUT {
+                    crate::note_file_open(name, f.as_ref().is_ok_and(|f| f.reads_disk()));
+                }
+                match f {
                     Ok(f) => FileSlot::Text(f),
                     Err(s) => return Ok(s),
                 }
@@ -653,13 +657,22 @@ fn file_close(
 ) -> R<Option<u64>> {
     let cell = arg(a, 0)?;
     if m.load(cell, Width::B4)? != 0 {
-        m.with_file(cell, |s| match s {
-            FileSlot::Text(f) => f.close().map_err(file_err),
+        let disk = m.with_file(cell, |s| match s {
+            FileSlot::Text(f) => {
+                let disk = f.reads_disk();
+                f.close().map_err(file_err).map(|()| disk)
+            }
             FileSlot::Output { open } => {
                 *open = false;
-                Ok(())
+                Ok(false)
             }
         })?;
+        if disk {
+            crate::note_file_call();
+        }
+    } else {
+        // A file object that was never opened (closed as its subprogram returns): no file read.
+        crate::note_file_call();
     }
     Ok(None)
 }
@@ -682,7 +695,11 @@ fn endfile(
     _: Option<TyId>,
     a: Args<'_>,
 ) -> R<Option<u64>> {
-    text(m, arg(a, 0)?, |f| f.endfile()).map(|b| Some(b.into()))
+    let (end, disk) = text(m, arg(a, 0)?, |f| Ok((f.endfile()?, f.reads_disk())))?;
+    if disk {
+        crate::note_file_call();
+    }
+    Ok(Some(end.into()))
 }
 
 fn flush(
@@ -815,7 +832,10 @@ fn readline(
     _: Option<TyId>,
     a: Args<'_>,
 ) -> R<Option<u64>> {
-    let l = text(m, arg(a, 0)?, |f| f.readline())?;
+    let (l, disk) = text(m, arg(a, 0)?, |f| Ok((f.readline()?, f.reads_disk())))?;
+    if disk {
+        crate::note_file_call();
+    }
     m.line_set(arg(a, 1)?, &l)?;
     Ok(None)
 }

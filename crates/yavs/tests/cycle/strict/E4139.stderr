@@ -1,0 +1,15 @@
+error[E4139]: an `exit` of an outer loop is not supported in cycle mode
+   --> $DIR/strict.vhd:436:9
+    |
+436 | /         for j in 0 to 3 loop
+437 | |           exit outer when a(j) = '1';
+438 | |           n := n + 1;
+439 | |         end loop;
+    | |_________________^
+    |
+    = note: in process t_e4139.dut.p (strict.vhd:430)
+    = note: why: cycle-based code unrolls every loop, so it needs bounds known during elaboration, a size it can unroll, and `exit` and `next` of the innermost loop only
+    = help: give the loop bounds known during elaboration (constants or generics), split a very large loop, and use `exit` and `next` only for the innermost loop; or run with `--cycle` to leave this process in the event simulation
+
+error: aborting due to 1 previous error
+

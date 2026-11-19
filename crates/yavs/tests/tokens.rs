@@ -226,6 +226,47 @@ fn tokens_come_back_and_output_is_the_same() {
     s.closed();
 }
 
+/// `--cycle` compiles its region's functions on the threads past the first only on tokens: a run
+/// lent none compiles on one thread, one lent two on at most three, with the output of one thread.
+#[test]
+fn cycle_mode_compiles_on_tokens_only() {
+    let t = common::tempdir("tokens-cycle");
+    let lib = analyze(&t);
+    let run = |server: Option<&Server>, threads: &str| {
+        let mut c = yavs();
+        // Every member a function of its own; nothing from the cache.
+        c.args(["run", &lib, threads, "--cycle", "--no-cache", "tok"])
+            .env("YAVS_CYCLE_STATS", "1")
+            .env("YAVS_CYCLE_CHUNK", "1");
+        if let Some(s) = server {
+            c.env("YAVS_TOKENS", s.env());
+        }
+        let o = c.output().expect("run");
+        let err = String::from_utf8_lossy(&o.stderr).into_owned();
+        assert!(o.status.success(), "{err}");
+        let on: usize = (err.lines())
+            .find_map(|l| {
+                l.strip_prefix("cycle stats: compiled on ")?
+                    .strip_suffix(" threads")
+            })
+            .unwrap_or_else(|| panic!("no thread count in\n{err}"))
+            .parse()
+            .expect("number");
+        (o.stdout, on)
+    };
+    let (one, on) = run(None, "--threads=1");
+    assert_eq!(on, 1);
+    assert!(String::from_utf8_lossy(&one).contains("sum "));
+    for tokens in [0, 2] {
+        let s = Server::new(tokens);
+        let (out, on) = run(Some(&s), "--threads=4");
+        assert_eq!(out, one, "{tokens} tokens");
+        assert!(on <= 1 + tokens, "{on} threads on {tokens} tokens");
+        s.closed();
+        assert!(s.state().max_held <= tokens);
+    }
+}
+
 /// Start an endless run with `--threads=3` and wait until it holds tokens.
 fn holding(lib: &str, extra: &[&str]) -> (Server, Child) {
     let s = Server::new(8);

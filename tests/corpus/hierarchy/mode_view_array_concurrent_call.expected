@@ -1,0 +1,2 @@
+exit	0
+diag	note	2000000	0	:mode_view_array_concurrent_call:check	ok

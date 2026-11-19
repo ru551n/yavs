@@ -367,9 +367,70 @@ pub fn elaboration_reports(s: Severity) -> u64 {
     ELAB_COUNTS[s as usize].load(Ordering::Relaxed)
 }
 
+thread_local! {
+    /// The reports of elaboration-time calls being captured (`capture_elab_reports`).
+    static CAPTURE: std::cell::RefCell<Option<Vec<(u8, String)>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with the reports of elaboration-time calls on this thread kept, neither printed
+/// nor counted: cycle mode evaluates calls apart from the model and reports them itself. Notes and
+/// warnings of the standard library (a native `ieee` subprogram, a statement of one of the
+/// [`set_library_files`]) are dropped (A23).
+pub fn capture_elab_reports<T>(f: impl FnOnce() -> T) -> (T, Vec<(u8, String)>) {
+    let outer = CAPTURE.with(|c| c.replace(Some(Vec::new())));
+    let r = f();
+    let got = CAPTURE.with(|c| c.replace(outer)).unwrap_or_default();
+    (r, got)
+}
+
+thread_local! {
+    /// The standard library's source files of the design this thread elaborates.
+    static LIBRARY: std::cell::RefCell<std::rc::Rc<std::collections::HashSet<yavs_diag::FileId>>> =
+        std::cell::RefCell::new(std::rc::Rc::default());
+}
+
+/// The standard library's source files of the design this thread elaborates from now on: their
+/// reports are marked as the library's wherever they are kept, so that a call cache entry made
+/// outside [`capture_elab_reports`] is dropped when replayed inside it (A23).
+pub fn set_library_files(files: std::collections::HashSet<yavs_diag::FileId>) {
+    LIBRARY.with(|l| l.replace(std::rc::Rc::new(files)));
+}
+
+/// `file` is one of the standard library's ([`set_library_files`]).
+pub(crate) fn library_file(file: yavs_diag::FileId) -> bool {
+    LIBRARY.with(|l| l.borrow().contains(&file))
+}
+
+/// Keep a report when `capture_elab_reports` runs; `false` when it does not.
+fn captured(s: Severity, text: &str) -> bool {
+    CAPTURE.with(|c| match c.borrow_mut().as_mut() {
+        Some(v) => {
+            v.push((s as u8, text.to_string()));
+            true
+        }
+        None => false,
+    })
+}
+
+fn capturing() -> bool {
+    CAPTURE.with(|c| c.borrow().is_some())
+}
+
+/// A report made while no kernel runs, by the standard library when `lib`: a note or warning of
+/// it is dropped while [`capture_elab_reports`] runs (A23), else as [`print_elab`].
+pub(crate) fn print_elab_from(s: Severity, text: &str, lib: bool) {
+    if lib && s <= Severity::Warning && capturing() {
+        return;
+    }
+    print_elab(s, text);
+}
+
 /// The line of a report made while no kernel runs.
 pub(crate) fn print_elab(s: Severity, text: &str) {
     use std::io::Write;
+    if captured(s, text) {
+        return;
+    }
     let name = ["Note", "Warning", "Error", "Failure"][s as usize];
     let mut o = std::io::stderr().lock();
     let _ = writeln!(o, "** {name}: (init): {text}");
@@ -378,8 +439,14 @@ pub(crate) fn print_elab(s: Severity, text: &str) {
 /// Print and count again the reports a package initialisation made (`SharedState::replay_init_reports`).
 pub(crate) fn replay_elab(reports: &[(u8, String)]) {
     for (s, text) in reports {
-        ELAB_COUNTS[*s as usize].fetch_add(1, Ordering::Relaxed);
-        print_elab(sev_of(*s), text);
+        let (lib, s) = (s & crate::LIB_REPORT != 0, s & !crate::LIB_REPORT);
+        if lib && sev_of(s) <= Severity::Warning && capturing() {
+            continue;
+        }
+        if !capturing() {
+            ELAB_COUNTS[s as usize].fetch_add(1, Ordering::Relaxed);
+        }
+        print_elab(sev_of(s), text);
     }
 }
 
@@ -490,7 +557,7 @@ impl Asserts {
     pub(crate) fn report_elab(&self, s: Severity) -> bool {
         let g = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let on = g.base.enabled[s as usize];
-        if on {
+        if on && !capturing() {
             ELAB_COUNTS[s as usize].fetch_add(1, Ordering::Relaxed);
         }
         on

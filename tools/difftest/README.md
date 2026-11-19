@@ -98,6 +98,221 @@ to stderr in the reference simulator and stdout in the second reference simulato
 - `wallclock`: ISO timestamps (`2026-10-23T08:16:29`) in the output are replaced by a placeholder, for tests that print the time of day and would differ when two runs straddle a second. Always on in `external.py` (#567); off elsewhere. Nothing else is masked.
 - `time`, `stderr`: extra, off by default.
 
+## Cycle mode gate
+
+`cyclegate.py` runs the corpus, the designs of `crates/yavs/tests/cycle` and the bench designs of
+`tools/bench/designs` twice with the same binary (`YAVS_BIN`, flags of `YAVS_RUN_FLAGS` for both), normal and
+`--cycle`, and compares exit status and console output in the canonical form (the summary line of cycle mode is
+taken out of stderr). A third run with `--cycle-report` (analysis only) gives the members of each test and which
+of them hold asserts and reports. Buckets: identical; documented (only the delta of report stamps, reports and asserts of member
+processes that cycle mode does not evaluate, or delta cycles a monitor no longer sees, shown by the lines
+themselves; a vanished report counts as a member's when its process path is one of a member with dropped asserts,
+or `-` for an unlabelled process while such a member exists); known (differs, and `cyclegate.expected` lists the
+test with the checksum of its diff, or several comma-separated where the contracts or `YAVS_CYCLE_RAIL=off`
+give different diffs, and the reviewed cause: a changed diff is not known any more); differs
+otherwise (a wrong result in cycle mode: exit status 1, and the line to paste into the list after a review);
+refused (`E41xx`); skipped (the normal mode does not run it). A lost failure of a member ends the normal run
+early: such a test is reported as not compared after that point. Every test shows how many processes joined
+the region, and the summary counts the tests with at least one member. `--only corpus|cycle|bench`, `--filter`,
+`--jobs`, `-v`, `--json FILE`, `--selftest`. `--warm` runs every cycle run first in a library of its own, then the compared run on a copy of
+that library, with the region's machine code from the compilation cache, compares the two (a difference fails the test)
+and counts the tests that ran with region code in the cache; with
+`YAVS_CYCLE_CACHE_CHECK=1` every hit is made again (the analysis, the region and each function's code) and the
+run stops when it differs:
+
+    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclegate.py [--warm]
+
+Every comparing tool here (`cyclegate.py`, `cyclereplay.py`, `cyclebig.py`, `cyclefuzz.py`, `seeddiff.py`) compares
+exactly by default, `--contract exact`: its cycle runs take `--cycle-exact-meta` and `YAVS_CYCLE_EXACT_CLOCKS=1`,
+which keep the normal mode's metavalue rules, a copied clock a clock of its own and the values in a failed check's
+message, so a difference is a bug. The default contract of `--cycle` gives up those (`docs/cycle-mode.rst`, "The
+contract in short"): `--contract default` runs plain `--cycle`, and a difference is bucket (fuzzer verdict)
+`contract` only when the contract classes below explain all of it; whatever is left fails, as under the exact
+contract. Run the gates in both contracts before a push:
+
+    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclegate.py --contract default -v
+
+### Contract classes
+
+The classes are normalisations, each applied one way and only where its evidence holds; after them the two runs
+must be identical (or differ only by what the exact gate calls documented). `cyclegate.py` holds them
+(`contract_lines`, `meta_pair`, `drop_down`, with `--selftest` cases for each, negatives included); the gate, the
+replay (console and written files), the fuzzer (`explained`) and `cyclebig.py` (written files) use them.
+
+| Class | Rule | Evidence | Contracts |
+|---|---|---|---|
+| metavalue read as 0 or 1 | a cycle line equals the normal line but where the normal line holds `U`, `X`, `Z`, `W` or `-` and the cycle line a digit (`0`-`9`, `A`-`F`: a bit, or a hex digit of a value computed from it), or `H` against `1`, `L` against `0`; lines of one length, paired in order by their text with digits and metavalues masked; never a metavalue on the cycle side | the cycle run's `metavalue elements read as 0` line, a member's metavalue literal or an input nothing drives in the region report (`meta_evidence`); `cyclebig.py` has no report and applies it to files only | default |
+| library metavalue warnings of processes outside | a `NUMERIC_STD...: metavalue detected` note or warning record (`** ...` and its `Process NAME` line) of a process in the region's downstream set is taken out of both runs; the class is used when the two runs' records differ. The downstream set (`YAVS_CYCLE_DOWNSTREAM=FILE` on the report run, `region::downstream`) is every process outside that reads a leaf the region exports, directly or through other processes outside, port edges (both ways) and implicit signals: only those can see a value the region gave two-state (the default contract, A31) or a `'U'` start it gave as 0 (A21, A23c; also under the exact contract). A warning of any other process outside must be the same in both runs | the downstream set | default: `contract`; exact: `documented` |
+| library warnings of members | as A33: the region gives none; taken out of both runs (`drop_ieee`) | the region report's members | both (documented) |
+| a copied clock is its source (fuzzer) | the design with every clock the generator copies (`dk <= clk0;`, or the clock a generic chooses when every instance gives it one value) replaced by its source in every use but its assignment, ports and the testbench's writes (`copy_variant`) runs in the normal mode, and the cycle run equals that run, the metavalue class applied to it under its own evidence: exactly the A32 semantics, a register of the source read directly on a copy gives its value before the edge | a copy in the design (`copy_reference` runs only then) | default |
+| message of a failed check | `E3009` compared by its code and source place (`difftest.code_loc`) | none needed: the code and place stay | default |
+
+Not automatic, and so a failure until reviewed: a copied clock's delta order outside the fuzzer (A32: a register of
+the source read directly on a copy gives its value before the edge; no text rule can tell those values from wrong ones,
+and a run that only equals the exact rules' would hide a wrong result of the copy rules, as seed 134 was;
+`cyclegate.expected` takes a reviewed entry per contract, keyed by the diff's checksum), and a testbench or process
+outside whose control flow depends on a metavalue the region now gives as 0 (an assert on a `'Z'`, a wait for
+`valid /= '0'`): its extra or missing lines are reviewed by hand with `cyclereplay.py -v` and the run's directory.
+The fuzzer keeps its checker off the outputs that pass on a `'Z'` for this reason.
+
+
+The gate has no large design. `cyclebig.py` is its companion for the big ones, required before every push that
+changes which processes join the region: it runs realbench worlds (made by
+`tools/realbench/run.py --prepare` under `YAVS_REALBENCH_CACHE`, named `<test>-<label>`, `--label` default `yavs`)
+normal and `--cycle` with one binary to one stop time (the table `GATE` in the script), each mode in a copy of the
+world, and compares exit status, the console (standard output without report records) and every text file the run
+wrote in its working directory (on NEORV32 the CPU's instruction traces and the UART logs). A `?` in the normal
+mode's file matches any character (a metavalue digit, read as 0 in cycle mode). Reports are counted, not compared:
+NEORV32 prints about 80 000 library metavalue warnings and configuration notes from processes that join the region,
+and cycle mode evaluates none of them. The region's member count must be the one `GATE` holds, and the normal
+console must hold the test's `expect` lines. A run that compared nothing (no member, or no output) fails, and so
+does a test without a world (the command that makes it is printed). Default tests `neorv32_dual_full` and
+`microwatt_coremark_short`, both to completion in about a minute (6 s and 56 s on 2026-11-16): Microwatt runs to
+1369 us in both modes, past "Execution completed."; the normal mode ends with its RTL's `end of test` failure (exit
+status 1), which cycle mode drops by decision (exit status 0), and `GATE` expects each. `--selftest` checks the
+comparison:
+
+    YAVS_REALBENCH_CACHE=<cache> python3 -I tools/difftest/cyclebig.py target/release/yavs
+
+`seeddiff.py` is the safety net of the run-count rule, which console equality is too weak for (Microwatt's
+`dcache_request` gave a stale `req_nc` from 0.3 us on, and the console lost one line at the very end). It asks
+`--cycle-report` with `YAVS_CYCLE_SEEDS` for the signals driven by the processes outside the region whose result
+may depend on the delta cycles their inputs change in, runs both modes with `YAVS_TRACE` (each listed signal at
+the end of every time step where it changed), and compares the traces time step by time step. A difference only
+where the normal mode holds a metavalue is counted apart; any other fails (exit status 1). `--seeds LIST` traces the list of another binary
+(the one before a change that lets processes join). With `YAVS_CYCLE_RUNCOUNT=off` it finds the Microwatt
+divergence at 0.345 us:
+
+    python3 -I tools/difftest/seeddiff.py --bin target/release/yavs --cwd WORLD -- run --work=work:WORLD/work ... top
+
+A recorded command file extends the gate to runs it does not contain, the benches of a test runner.
+`cyclereplay.py` takes recorded `yavs run` command lines (one run per entry, with its working
+directory) and runs each normal and with `--cycle` with one binary (`--bin` or `YAVS_BIN`), each mode in its own
+copy of the run's output directory (its path is replaced in every argument, so the files a test
+writes land in the copy). The libraries the runs name (`--work=` and `--map=` outside the output directory) are
+copied once per replay, without their `yavs-cache/`, and the runs use the copies: the caches a run writes land
+there, so a recorded or shared library is never written. A `--std-cache=DIR` of a run is replaced by the replay's own.
+The copies and that std store are removed at the end, unless `--libs DIR` keeps them in DIR: a later replay with the
+same DIR runs on them as the first left them, its caches included. With `--warm` each cycle run runs with
+`YAVS_CYCLE_STATS=1` (those lines are taken out of its console), the summary counts the runs that took the region and
+the analysis from the cache (or checked them, under `YAVS_CYCLE_CACHE_CHECK=1`) and the functions taken from it, and a
+run of a test with members that took neither the region nor every function from the cache differs ("not warm"). Tests of one design share the store within a
+replay too: only the first run of each analysis is cold. It compares the exit status, the simulation end time (the times of the `stop` and
+`finish` events, else the last report), the console in the canonical form and every file the run wrote
+(a `?` in the normal mode's file matches any character). From the console it takes out the delta of report
+stamps, the cycle summary line and the reports and asserts of cycle-based processes, found through a
+`--cycle-report` run as `cyclegate.py` does; a `stop` or `finish` event is never taken out. The buckets are
+identical, documented (a lost failure of a cycle-based process may end the normal run, the rest is then not
+compared), differs (any other difference, with the first differing line and both end times; exit status 1),
+timeout (the cycle run does not finish in `--timeout` while the normal one does: not compared, listed) and
+skipped (the normal run does not finish). Each test shows `[members/processes in the region]` and the summary
+counts the tests with a member, so a pass is not vacuous. `--jobs` (default 2), `--filter`, `--budget SECONDS` (start no further test after that), `--mask REGEX` (text that differs between runs by itself, such as the name of a temporary directory a test makes), `--env K=V`,
+`--subst OLD=NEW`, `--libs DIR`, `--warm`, `--prefix` (a command before every run, such as `tools/claim core --`), `--timeout`, `--memory`,
+`--json FILE`, `-v`, `--selftest`. A command file is JSON lines, `{"name", "cwd", "dir", "argv", "env"}`;
+`--record OUT_DIR...` writes it from the output directories of a VUnit run with yavs (`test_output/*/*/args.rsp`,
+the response file of each run), run in the directory the test runner ran in (`--cwd`):
+
+    python3 -I tools/difftest/cyclereplay.py --record <vunit out dir> --env K=V > cmds.jsonl
+    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclereplay.py cmds.jsonl --jobs 2 -v
+    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclereplay.py cmds.jsonl --libs L         # cold, kept
+    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclereplay.py cmds.jsonl --libs L         # warm, as users run
+    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclereplay.py cmds.jsonl --libs L --warm  # proof it is warm
+
+`--count` measures what the compared tests cost, in cycles next to instructions: after the compare each test runs
+normal and `--cycle` again, `--count-warmups` times uncounted (default 2: the cache stores a design on its second run)
+and once under `perf stat` (user space: instructions, cycles, branch misses, L1 instruction and data cache misses),
+without `YAVS_CYCLE_STATS` (its counts are work, and every `YAVS_` variable is in the analysis cache's key). Each test
+line (`-v`) shows the ratios cycle over normal, the summary the geometric mean of each over the tests with members and
+the totals, and `--json` keeps the counts. Pin the runs with `--prefix 'tools/claim core --'`; a test whose counted run
+ends with another exit status than its compared one is not counted. Each count is one run at the recorded tier: under `--tier=auto` the compile thread's timing moves instructions and cycles by up to about 10 percent between runs of one binary (2026-11-17), so compare two binaries over repeated replays, or on commands recorded with `--tier=interp` (whose instruction counts repeat exactly). Report cycles with instructions: the two diverge
+where region code is large or branches unpredictably.
+
+    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclereplay.py cmds.jsonl --libs L --count --prefix 'tools/claim core --' -v
+
+A test runner that has run the tests already needs no second run to record them: any simulator wrapper that
+exits at `run` still leaves each test's response file. The files are copied before each run; files written
+outside the output directory, or relative to the working directory, are not isolated or compared.
+
+## Cycle mode fuzzer
+
+`cyclefuzz.py` generates random synchronous designs in the subset of cycle mode, each with a testbench
+that drives seeded random stimulus and prints every output of the design twice a clock, between clock
+edges, and runs each design normal and `--cycle` with one binary (`--bin`, default `YAVS_BIN`). A design
+is deterministic from its seed (and the version of the generator, whose hash each JSON line records).
+
+    python3 -I tools/difftest/cyclefuzz.py gen 7                      # the design of seed 7
+    python3 -I tools/difftest/cyclefuzz.py run --seeds 0:300 --warm --checks 5 --bin target/release/yavs
+    python3 -I tools/difftest/cyclefuzz.py shrink 7 --bin ...          # a failing seed reduced to a small reproducer
+    python3 -I tools/difftest/cyclefuzz.py shrink 7 --reason "did not count" --bin ...  # reduced while the report holds the text
+    python3 -I tools/difftest/cyclefuzz.py check DIR --bin ...         # a reproducer `DIR/d.vhd` edited by hand
+
+The designs hold what cycle mode must give the normal result for: `std_ulogic`, vectors, `unsigned`,
+`signed`, integer subtypes, enumerations, records and arrays of all of these (constants, generics, both
+directions, bounds not at 0, widths around 1, 63, 64, 65 and 128), `numeric_std` arithmetic, shifts,
+`resize`, comparisons, slices, concatenations, aggregates (`others`, named and range choices), `if`,
+`case`, `for` loops with `exit` and `next`, package functions and procedures, clocked processes (both
+edges, both edge forms, `wait until`, `q <= d when rising_edge(c)`, synchronous and asynchronous resets,
+enables, memories written at run-time indices), combinational processes, concurrent assignments of
+all three kinds, `for generate`, hierarchy with generics, expression actuals and partial associations
+of ports, two clocks (made by two concurrent assignments or by one process), and processes cycle mode
+must leave in the event kernel (latches, variables keeping state, waits in time, and a process that
+waits on a register and reads logic following it: the run-count class).
+
+Each seed also switches on, each with a chance of 30 percent, some of these constructs (`--feat` names the
+ones every seed uses; the seed's line of `--json` and the `-- tbprocs=` line of its design list them):
+
+| name | what |
+|---|---|
+| `rtslice` | slices whose bounds are known at run time only, read and written, of elements chosen at run time |
+| `md` | arrays of two dimensions, indexed by run-time values, as signals, memories and constants |
+| `bigmem` | memories of 65 to 512 entries, bounds not at 0, both directions |
+| `ucon` | records and arrays of unconstrained vectors constrained by a subtype (VHDL-2008) |
+| `alias` | aliases of slices (with a range of their own) and record fields, of signals and of variables, read and written |
+| `while` | `while` loops and loops with an `exit`, counted by a variable, bounded by a constant or a run-time value |
+| `caseq` | `case?`, `select?` and `?=` with `'-'` (VHDL-2008) |
+| `impure` | impure functions of the architecture reading signals, called from every kind of process |
+| `sigparam` | package procedures with signal parameters, called in processes and as concurrent procedure calls |
+| `ifgen` | if-generate with `elsif` and `else` (two generates in VHDL-1993), one alternative with a signal of its own |
+| `cgen` | generics of vector, record and array types, given in generic maps or by default |
+| `gwidth` | one entity with a width generic instantiated at several widths (1 to 129) |
+| `assert` | asserts and reports in the design's processes, and a checker of the testbench at the clock edge |
+| `zpass` | a `'Z'` the testbench drives passed on to outputs (copy, mux, register), and data with metavalues read only when valid |
+| `inout` | a tri-state `std_logic` pin the testbench pulls to `'H'` or `'L'`, read back with `to_x01` |
+| `dclk` | clocks made by the design: gated, divided by a register, copied, chosen by a generic |
+| `xout` | concurrent assignments with `after 0 ns` (outside the region in both contracts), and a path from a register of `clk0` through a member and such an assignment to a register on `clk0` gated twice |
+| `view` | VHDL-2019 seeds only, with a chance of 50 percent drawn apart from the others (the other seeds keep their designs): a record signal whose `x` a concurrent call drives through a mode view that reads its `y`; `y` from a concurrent assignment, or from a call through the converse view |
+
+A seed is VHDL-2008, or with a chance of 10 percent each VHDL-1993 (no 2008 operators or forms, `buffer` ports,
+the testbench stops its clocks) or VHDL-2019 (`--std` sets it). Every signal and variable is initialised and
+the inputs are `'0'` and `'1'` except where `zpass` and `inout` say, so any difference is a bug. Not compared:
+the metavalue warnings of time 0 (an expression actual is `'U'` until its equivalent process runs), and the
+reports of the design's own asserts (their text starts `fzmsg`), which cycle mode drops; the testbench's
+checker is compared. The generator avoids the `numeric_std` "vector truncated" warnings: cycle mode gives
+them at other deltas or, for a call folded during elaboration, once at time 0. Not generated, because the
+user guide documents them as differences: a metavalue the region reads as 0 where it changes a result, a
+`'U'` start value, `'H'`/`'L'` passed on to an output.
+
+Each seed runs, per tier of `--tiers` (default `interp,clift`), the normal mode and `--cycle` cold (no
+region code in the cache); `--warm` runs it again with the region from the cache (a cold run that left
+no code in the cache fails); `--checks N` runs every Nth seed once more with `YAVS_CYCLE_CHECKS=all`,
+`YAVS_CYCLE_SKIP_CHECK=1`, `YAVS_CYCLE_IMPORT_CHECK=1` and `YAVS_CYCLE_GUARD=all`. Compared: exit status,
+standard output and standard error without the summary line. A `--cycle-report` run gives the members; the
+summary prints how many of the design's processes joined the region, per construct (the processes holding
+it), and the most common reasons of the others, so a pass is not vacuous (a seed with no member is `vacuous`). A seed whose differences the contract classes
+explain completely is `contract` (`documented` under the exact contract), a pass; with a clock the generator copies it
+also runs the normal mode on the copied-clock variant (`copy_variant`, in `s<seed>/src`). The exit status is 1 when a
+seed differs or does not compare (analysis or elaboration fails, the normal run fails or times out:
+a valid design, so a bug of the generator or of yavs) and when fewer than `--min-share` percent
+(default 60) of the designs' processes joined the region. A static index or slice outside its range
+(warning `W1404` at analysis) counts as a failed analysis. Simulations run under
+`systemd-run --user --scope -p MemoryMax=2G`, at most 2 at a time, and wait while less than 20 GB of
+memory is available. Passing seeds' directories are removed (`--keep` keeps them); `--json FILE` appends
+a line per seed. `shrink` deletes processes, statements, signals, ports, constants, subprograms, aliases and impure
+functions, replaces expressions by a constant or an operand, narrows vectors (to half, one less, 1, 64 and
+8 elements) and shortens the run,
+keeping each step that still differs in the same run (or, with `--reason`, still shows the reason);
+`shrink` regenerates the seed from the current generator, so shrink a seed with the version that found it.
+
 ## Plugging yavs in
 
 `--candidate` takes a reference label (`sim1`, `sim2`: key `difftest` of its section in the untracked `tools/sims.local.conf`, with keys `difftest_relaxed` and `difftest_ignore`), `yavs` or any bash command template. The built-in `yavs`

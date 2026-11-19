@@ -228,6 +228,11 @@ identical to a run without it, at any `--threads`.
 - The elaboration-time calls of a closure whose session can be replayed (kinds `sreq`, `send`) are stored by the
   first run after the optimised copies of those calls (`sopt`) are stored, usually the third, and taken from the
   fourth on: the third run of such a testbench is dearer, the steady state starts one run later. Output is the same.
+- Runs of one closure that start together (a parallel test runner's first round) make its entries once: the run that
+  makes the analysis image holds an operating system lock on `<kind>-<key>.lock` until its elaboration ends, and a
+  run that misses one of the closure's entries meanwhile waits for it, all its waits together at most
+  `YAVS_CACHE_WAIT_MS` (2000 ms; `0` never waits), then makes it itself; each stored step of the elaboration-time calls has one maker the same way. A
+  maker that ends in any way, killed too, lets the waiting runs go at once. Output is the same (branch only).
 - The lowered form of the packages with run-time objects (signals, shared variables, constants
   that are not static) is kept beside it, `<dir>/yavs-cache/low-<key>.img`, when the design is
   elaborated without instantiating anything at elaboration time and the lowering is neither tiny

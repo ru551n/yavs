@@ -1644,7 +1644,16 @@ The elaboration-time session itself is replayed (stage entries `sreq` and `send`
 calls and arguments an earlier run of the closure stored takes their results and the package state they left instead of
 making the calls (`docs/decisions.md` "The elaboration-time session is replayed"). The 114-test AXI-stream suite at `-p1`:
 92.4 / 89.9 / 86.1 G to 76.7 / 70.5 / 71.0 G per round, a short test 586 M to 414 M; at `-p0` later rounds 90.3 G to
-72.8 G. `YAVS_SREP=0` turns it off, `YAVS_SREP_CHECK=1` runs the calls and compares. Not on main: waits for a decision.
+72.8 G. `YAVS_SREP=0` turns it off, `YAVS_SREP_CHECK=1` runs the calls and compares.
+
+One maker of a closure's entries while the others wait (branch only, 2026-11-20): the run that makes a
+closure's image holds the making (`Store::make`, an operating system file lock) until its elaboration ends, and a run that
+misses a stage entry meanwhile waits for it (`Store::wait_made`, all waits of a run within `YAVS_CACHE_WAIT_MS`, 2 s); each step of the
+elaboration-time session that is not stored has one maker the same way, and a run that stores the session's steps merges
+them with what other runs stored since it read them. A killed maker lets the waiters go at once (`tests/cache.rs`,
+`yavs-cache` `tests/processes.rs`). The 114-test suite at `-p0`, first round: 104.7 G to 83.5 G (32 threads), 86.4 G to
+79.2 G and 3.33 s to 3.26 s of round wall (8 threads); later rounds, `-p1`, the cells and the realbench short tests
+unchanged (`docs/decisions.md` "One maker of a closure's entries, the others wait").
 
 `Inst::visit` and `visit_mut` are generic over the closure instead of `dyn FnMut` (the optimiser, the predecoder and the verifier
 call them for every operand): `yavs run --no-cache` to 0 fs, instructions over the 42 realbench tests, geometric mean 0.973

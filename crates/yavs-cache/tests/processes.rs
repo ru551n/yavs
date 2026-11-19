@@ -131,3 +131,57 @@ fn a_killed_writer_leaves_no_wrong_entry() {
         "a damaged entry was not healed"
     );
 }
+
+const CHILD_HOLD: &str = "CACHE_TEST_CHILD_HOLD";
+
+/// The child's part for the hold test: take the making of entry 0 and sleep until killed.
+#[test]
+fn child_holds() {
+    let Some(dir) = std::env::var_os(CHILD_HOLD) else {
+        return;
+    };
+    let _held = Store::of_library(Path::new(&dir))
+        .make("t", &key(0))
+        .expect("the parent holds nothing");
+    std::fs::write(Path::new(&dir).join("held"), b"").unwrap();
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
+
+/// A run that makes an entry and is killed lets the waiting runs go at once, not after the
+/// waiting limit; while it lives they wait up to the limit and go on without it.
+#[test]
+fn a_killed_maker_releases_its_waiters() {
+    if std::env::var_os(CHILD_DIR).is_some() || std::env::var_os(CHILD_HOLD).is_some() {
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let mut k = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "child_holds", "--test-threads=1", "--quiet"])
+        .env(CHILD_HOLD, d.path())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let start = std::time::Instant::now();
+    while !d.path().join("held").exists() {
+        assert!(k.try_wait().unwrap().is_none(), "the child ended");
+        assert!(start.elapsed().as_secs() < 60, "the child never held it");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let s = Store::of_library(d.path());
+    assert!(s.make("t", &key(0)).is_none(), "the child holds it");
+    let t = std::time::Instant::now();
+    assert!(!s.wait_made("t", &key(0), std::time::Duration::from_millis(200)));
+    assert!(
+        t.elapsed() >= std::time::Duration::from_millis(200),
+        "waited the limit"
+    );
+    k.kill().unwrap();
+    let t = std::time::Instant::now();
+    assert!(s.wait_made("t", &key(0), std::time::Duration::from_secs(60)));
+    k.wait().unwrap();
+    assert!(t.elapsed().as_secs() < 10, "the kill let the waiter go");
+    // The killed child's lock file stays; it holds nothing.
+    assert!(s.make("t", &key(0)).is_some());
+}

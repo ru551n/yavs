@@ -26,6 +26,8 @@ const STEPS_MAX: usize = 4 << 20;
 /// End states stored per closure at most (each is the whole package state, about 3 MB for a
 /// verification-component testbench): a sweep over many generics stores the first ones only.
 const ENDS_MAX: u32 = 32;
+/// Waits for other runs' steps per session at most.
+const WAITS: u32 = 4;
 
 static REPLAYED: AtomicU64 = AtomicU64::new(0);
 static RESTORED: AtomicU64 = AtomicU64::new(0);
@@ -96,6 +98,20 @@ pub(crate) struct Trail {
     steps: Vec<(u64, Vec<u8>)>,
     /// Why this session is not stored.
     spoilt: Option<String>,
+    /// While this run makes the steps from its first unstored one (`StageCache::make_or_wait`):
+    /// the runs that miss the same step wait for it. Dropped once stored or spoilt.
+    hold: Option<Box<dyn std::any::Any + Send>>,
+    /// How often this session waited for another run (at most [`WAITS`]: once where the
+    /// configurations part, once more where the generics of this one part from the stored).
+    waited: u32,
+}
+
+/// The stored steps and how many end states the closure holds.
+fn read_steps(cache: &dyn StageCache, extent: &[usize]) -> (Vec<(u64, Vec<u8>)>, u32) {
+    cache
+        .get(extent, STEPS, &[])
+        .and_then(|b| postcard::from_bytes(&b).ok())
+        .unwrap_or_default()
 }
 
 impl Trail {
@@ -108,10 +124,7 @@ impl Trail {
                 // A closure's first run keeps nothing of its own.
                 let cache = db.stages().filter(|c| c.closure())?.clone();
                 let extent = db.stage_extent();
-                let (rows, ends): (Vec<(u64, Vec<u8>)>, u32) = cache
-                    .get(&extent, STEPS, &[])
-                    .and_then(|b| postcard::from_bytes(&b).ok())
-                    .unwrap_or_default();
+                let (rows, ends) = read_steps(&*cache, &extent);
                 Some(Entry {
                     cache,
                     extent,
@@ -155,10 +168,40 @@ impl Trail {
         }
         let d = h.finish();
         if self.mode == Mode::Idle {
-            let found = !check() && self.entry(db).is_some_and(|e| e.results.contains_key(&d));
+            let found = !check()
+                && (self.entry(db).is_some_and(|e| e.results.contains_key(&d)) || self.wait_for(d));
             self.mode = if found { Mode::Replay } else { Mode::Run };
         }
         d
+    }
+
+    /// Step `d` is not stored: make it, or wait for the run that makes it and read the steps
+    /// again; whether `d` is stored now.
+    pub(crate) fn wait_for(&mut self, d: u64) -> bool {
+        if self.waited >= WAITS || self.hold.is_some() || check() {
+            return false;
+        }
+        let Some(Some(e)) = &mut self.entry else {
+            return false;
+        };
+        match e.cache.make_or_wait(&e.extent, STEPS, &d.to_le_bytes()) {
+            Some(h) => {
+                self.hold = Some(h);
+                false
+            }
+            None => {
+                self.waited += 1;
+                let (rows, ends) = read_steps(&*e.cache, &e.extent);
+                e.results.extend(rows);
+                e.ends = e.ends.max(ends);
+                e.results.contains_key(&d)
+            }
+        }
+    }
+
+    /// Let the runs waiting for this one's steps go on.
+    pub(crate) fn release(&mut self) {
+        self.hold = None;
     }
 
     /// The stored result of step `d`, while replaying.
@@ -196,6 +239,7 @@ impl Trail {
         if self.spoilt.is_none() {
             self.spoilt = Some(why.into());
         }
+        self.hold = None;
     }
 
     /// The calls run from here on.
@@ -244,6 +288,8 @@ impl Trail {
     /// Store the steps the entry lacks and the state after them (`image` makes it), unless
     /// something spoilt the session.
     pub(crate) fn store(&mut self, prog: u64, image: impl FnOnce() -> Result<Vec<u8>, String>) {
+        // Released when this returns, after the stores.
+        let _hold = self.hold.take();
         let Some(Some(e)) = &self.entry else { return };
         if self.mode != Mode::Run || self.steps.is_empty() {
             return;
@@ -284,7 +330,11 @@ impl Trail {
         if ends == e.ends && self.steps.iter().all(|(d, _)| e.results.contains_key(d)) {
             return;
         }
+        // Runs of the other configurations may have stored steps since this one read them.
+        let (rows, stored_ends) = read_steps(&*e.cache, &e.extent);
+        let ends = stored_ends.max(e.ends) + (ends - e.ends);
         let mut all = e.results.clone();
+        all.extend(rows);
         let size = |m: &HashMap<u64, Vec<u8>>| m.values().map(|v| v.len() + 8).sum::<usize>();
         if size(&all) > STEPS_MAX {
             all.clear();

@@ -1004,7 +1004,14 @@ impl Session {
             // are the storing run's.
             self.ensure(db, f, false)?;
             if self.trail.replaying() {
-                if let Some(v) = self.trail.stored(step) {
+                let v = self.trail.stored(step).or_else(|| {
+                    // Another configuration's run may be making the steps from here.
+                    self.trail
+                        .wait_for(step)
+                        .then(|| self.trail.stored(step))
+                        .flatten()
+                });
+                if let Some(v) = v {
                     let traced = trace.is_some() || self.trail.recording();
                     if let Some(t) = trace {
                         // Not kept by the call cache: its reports were not traced.
@@ -1097,6 +1104,11 @@ impl Session {
     /// At the end of elaboration: the state after a replayed session (from the stored end
     /// state, else by running the calls), or the session stored when nothing spoilt it.
     fn end_trail(&mut self) {
+        self.end_trail_inner();
+        self.trail.release();
+    }
+
+    fn end_trail_inner(&mut self) {
         // Every step known but not this end state (other stored copies): stored below.
         if self.trail.replaying() && (self.restore_end() || self.materialise().is_err()) {
             return;

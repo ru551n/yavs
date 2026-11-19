@@ -10,7 +10,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
   a size limit that does not churn (`MAX_BYTES`, `STALE_AFTER`, `IN_USE`), `Store::clean`. The compiled code of the compiled tier has a
   store of its own in the subdirectory `obj/` (`Store::objects_of_library`, #505). The machine code of cycle mode's regions has one in `cycle/` (`Store::cycle_of_library`).
 - Does not: know VHDL, `Db`, or when to cache (`crates/yavs/src/cache.rs` decides; `yavs-sem`
-  `image.rs` makes the bytes), lock anything, or ever fail a run: a write error is silent (`YAVS_LOG=debug`
+  `image.rs` makes the bytes), lock anything (but `Store::make`, a hold on making one entry), or ever fail a run: a write error is silent (`YAVS_LOG=debug`
   notes it), a bad read is a miss.
 - Depends on: `sha2`, `twox-hash`, `memmap2`. Called by: `yavs`.
 
@@ -36,6 +36,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Analysed units in `units/` (`Store::units_of_library`, `UNIT_MAX_ENTRIES` 16384, `UNIT_MAX_BYTES` 512 MiB); a read does not refresh the entry's time; `clean` removes them too | One entry per design unit of a library, a hundred read per call (#537) | `docs/decisions.md` "Analysed-unit cache" |
 | Compiled code in `obj/` under limits of its own (`OBJ_MAX_ENTRIES` 16384, `OBJ_MAX_BYTES` 256 MiB); `clean` of the library's store removes it too | One small object per compiled module would otherwise push the stage entries out | `docs/decisions.md` "Compiled code in the compilation cache" (#505) |
 | Cycle mode's machine code in `cycle/` under limits of its own (`CYCLE_MAX_ENTRIES` 16384, `CYCLE_MAX_BYTES` 2 GiB, `Store::with_max_bytes` from `YAVS_CYCLE_CACHE_MIB`), written as `obj/` is (`direct`); `clean` removes it too | About 2.7 MB per design and generics of a large region (`cnn_accel_top`), about 90 of them in one test bench: in `obj/` it would push the compiled tier's code out | `yavs-cycle` `codegen.rs` |
+| `Store::make` takes the making of an entry as an exclusive OS lock (`File::try_lock`) on `<kind>-<key>.lock`, held by the returned `Making` until it is dropped (the file is removed first, then closed); `Store::wait_made` polls a shared lock on it every 2 ms up to a limit. A store that cannot be written gives a hold that holds nothing. `Store::claim` (a `.making` file and a time limit) stays for the entries whose runs go on without waiting (prefix images, library stages) | A killed maker must not keep the waiting runs for a time limit: the kernel drops the lock with the process (`tests/processes.rs` `a_killed_maker_releases_its_waiters`) | `docs/decisions.md` "One maker of a closure's entries, the others wait" (branch only) |
 | An entry is mapped, validated before use, and never written in place | No read and no copy of a 7 MB image; a mapping stays valid when the name is replaced or removed (Unix) | `docs/decisions.md` "Zero-copy cache entries" |
 
 ## 4. Invariants and pitfalls

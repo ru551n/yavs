@@ -96,6 +96,46 @@ struct Stages {
     levels: Vec<Level>,
     opts: Options,
     verified: Arc<std::collections::HashSet<String>>,
+    /// The closure's analysis key, and whether this run makes the closure's entries or waits
+    /// for the run that does.
+    key: Key,
+    turn: std::sync::Mutex<Turn>,
+}
+
+/// The part a run plays in making a closure's entries ([`Stages::turn`]).
+#[derive(Debug)]
+enum Turn {
+    /// Nothing to wait for or to let go.
+    Done,
+    /// This run makes them (it made the image) until elaboration ends.
+    Making { _hold: yavs_cache::Making },
+    /// Another run may be making them: the first entry this run misses waits for it.
+    Wait,
+}
+
+/// What is left of the time this run may wait for runs that make the entries it misses
+/// (`YAVS_CACHE_WAIT_MS` in all, 0: never waits). Longer than making them would take on a busy
+/// host; a maker that dies lets go at once.
+static WAIT_LEFT: std::sync::Mutex<Option<std::time::Duration>> = std::sync::Mutex::new(None);
+
+/// Wait with what is left of the run's budget; `None` when nothing is.
+fn wait_for(wait: impl FnOnce(std::time::Duration) -> bool) -> Option<(bool, u128)> {
+    let mut left = WAIT_LEFT.lock().ok()?;
+    let budget = *left.get_or_insert_with(|| {
+        let ms = std::env::var("YAVS_CACHE_WAIT_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2000);
+        std::time::Duration::from_millis(ms)
+    });
+    if budget.is_zero() {
+        return None;
+    }
+    let start = std::time::Instant::now();
+    let done = wait(budget);
+    let took = start.elapsed();
+    *left = Some(budget.saturating_sub(took));
+    Some((done, took.as_millis()))
 }
 
 impl Stages {
@@ -135,9 +175,56 @@ fn library_made(levels: &[Level]) -> bool {
 impl StageCache for Stages {
     fn get(&self, extent: &[usize], kind: &str, part: &[u8]) -> Option<yavs_diag::Buffer> {
         let k = self.key(extent, kind, part)?;
-        let e = self.store.get(kind, &k)?;
+        let e = self.store.get(kind, &k).or_else(|| {
+            // The first miss waits for a run that is making the closure's entries, once.
+            let mut t = self.turn.lock().ok()?;
+            if !matches!(*t, Turn::Wait) {
+                return None;
+            }
+            *t = Turn::Done;
+            drop(t);
+            let (done, ms) = wait_for(|l| self.store.wait_made(KIND, &self.key, l))?;
+            debug(format!(
+                "{kind} missed; {} the run making the closure's entries for {ms} ms",
+                if done { "waited for" } else { "gave up on" },
+            ));
+            self.store.get(kind, &k)
+        })?;
         debug(format!("hit {kind} {}", k.hex()));
         Some(yavs_diag::Buffer::new(e))
+    }
+
+    fn made(&self) {
+        if let Ok(mut t) = self.turn.lock()
+            && matches!(*t, Turn::Making { .. })
+        {
+            *t = Turn::Done;
+            debug(format!("{} made", self.base));
+        }
+    }
+
+    fn make_or_wait(
+        &self,
+        extent: &[usize],
+        kind: &str,
+        part: &[u8],
+    ) -> Option<Box<dyn std::any::Any + Send>> {
+        let Some(k) = self.key(extent, kind, part) else {
+            return Some(Box::new(()));
+        };
+        if let Some(m) = self.store.make(kind, &k) {
+            return Some(Box::new(m));
+        }
+        let Some((done, ms)) = wait_for(|l| self.store.wait_made(kind, &k, l)) else {
+            // Nothing left to wait with: make it too.
+            return Some(Box::new(()));
+        };
+        debug(format!(
+            "{} the run making {kind} {} for {ms} ms",
+            if done { "waited for" } else { "gave up on" },
+            k.hex(),
+        ));
+        None
     }
 
     fn note(&self, msg: &str) {
@@ -235,6 +322,7 @@ impl StageCache for Stages {
 
 /// Let the stages after analysis keep their results next to the analysis image (`closure`) and
 /// in the caches of the closure's library prefixes.
+#[allow(clippy::too_many_arguments)]
 fn with_stages(
     mut db: Db,
     store: Store,
@@ -243,6 +331,7 @@ fn with_stages(
     levels: Vec<Level>,
     opts: &Options,
     verified: &Arc<std::collections::HashSet<String>>,
+    turn: Turn,
 ) -> Db {
     let extent = db.extent();
     db.set_stages(Arc::new(Stages {
@@ -253,6 +342,8 @@ fn with_stages(
         levels,
         opts: opts.clone(),
         verified: verified.clone(),
+        key: *k,
+        turn: std::sync::Mutex::new(turn),
     }));
     db
 }
@@ -529,7 +620,16 @@ pub fn analyze_closure(
     if let Some(db) = store.get(KIND, &k).and_then(|b| restore(b, "image")) {
         debug(format!("hit {}", k.hex()));
         return (
-            with_stages(db, store, &k, true, Vec::new(), &opts, &verified),
+            with_stages(
+                db,
+                store,
+                &k,
+                true,
+                Vec::new(),
+                &opts,
+                &verified,
+                Turn::Wait,
+            ),
             Ok(()),
         );
     }
@@ -621,7 +721,7 @@ pub fn analyze_closure(
     if library_made(&levels) {
         debug(format!("{} uses the library stages", k.hex()));
         return (
-            with_stages(db, store, &k, false, levels, &opts, &verified),
+            with_stages(db, store, &k, false, levels, &opts, &verified, Turn::Done),
             r,
         );
     }
@@ -631,38 +731,58 @@ pub fn analyze_closure(
         store.note(KIND, &k);
         debug(format!("note {}", k.hex()));
         return (
-            with_stages(db, store, &k, false, levels, &opts, &verified),
+            with_stages(db, store, &k, false, levels, &opts, &verified, Turn::Done),
             r,
         );
     }
-    // One run makes the image at a time: the tests of a suite that start together find the note
-    // together, and each made the same image (a quarter of a short test). The others, and a run
-    // that finds it stored once its claim is won, use the closure's entries as the maker does.
-    let mine = store.claim(KIND, &k, CLAIM_TTL);
-    if !mine || store.payload_len(KIND, &k).is_some() {
-        if mine {
-            store.release(KIND, &k);
+    // One run makes the closure's image and entries at a time: the tests of a suite that start
+    // together find the note together. The maker holds the making until its elaboration ends
+    // (`StageCache::made`); the others go on with the closure's entries as the maker does, and
+    // the first one they miss waits for the maker (its `Db` is the same one, replayed).
+    let m = match store.make(KIND, &k) {
+        Some(m) if store.payload_len(KIND, &k).is_none() => m,
+        making => {
+            // As the maker: a `Db` that makes no image keeps no entries.
+            if let Some(why) = db.image_blocker() {
+                debug(format!("no image: {why}"));
+                return (db, r);
+            }
+            debug(format!("{} is made by another run", k.hex()));
+            let turn = if making.is_some() {
+                Turn::Done
+            } else {
+                Turn::Wait
+            };
+            return (
+                with_stages(db, store, &k, true, levels, &opts, &verified, turn),
+                r,
+            );
         }
-        // As the maker: a `Db` that makes no image keeps no entries.
-        if let Some(why) = db.image_blocker() {
-            debug(format!("no image: {why}"));
-            return (db, r);
-        }
-        debug(format!("{} is made by another run", k.hex()));
-        return (
-            with_stages(db, store, &k, true, levels, &opts, &verified),
-            r,
-        );
-    }
+    };
     let made = db.to_image();
     if let Ok(image) = &made {
         debug(format!("store {} ({} bytes)", k.hex(), image.len()));
         store.put(KIND, &k, image);
     }
-    store.release(KIND, &k);
+    // Hidden test aid: a maker that stalls while it holds the making.
+    if let Some(s) = std::env::var("YAVS_TEST_MAKER_STALL_S")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        std::thread::sleep(std::time::Duration::from_secs(s));
+    }
     match made {
         Ok(_) => (
-            with_stages(db, store, &k, true, levels, &opts, &verified),
+            with_stages(
+                db,
+                store,
+                &k,
+                true,
+                levels,
+                &opts,
+                &verified,
+                Turn::Making { _hold: m },
+            ),
             r,
         ),
         Err(why) => {

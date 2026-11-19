@@ -157,6 +157,24 @@ pub fn build_id() -> &'static str {
     })
 }
 
+/// A run's hold on making an entry ([`Store::make`]); dropping it lets the waiting runs go on.
+#[derive(Debug)]
+pub struct Making {
+    path: PathBuf,
+    file: Option<fs::File>,
+}
+
+impl Drop for Making {
+    fn drop(&mut self) {
+        // Removed while still locked, then closed (which unlocks): a run that opens the name later
+        // finds no file and does not wait. ponytail: a run that opened the old file just before
+        // can take its lock after the close and make the entry a second time; harmless.
+        if self.file.is_some() {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
 /// The payload of an entry that was read: the file mapped into memory (or, where that is not
 /// possible, read), not copied. It can be kept for as long as the values decoded from it need it.
 #[derive(Debug)]
@@ -589,6 +607,60 @@ impl Store {
     /// End a [`Store::claim`].
     pub fn release(&self, kind: &str, key: &Key) {
         let _ = fs::remove_file(self.claim_file(kind, key));
+    }
+
+    fn lock_file(&self, kind: &str, key: &Key) -> PathBuf {
+        self.dir.join(format!("{kind}-{}.lock", key.hex()))
+    }
+
+    /// Take the making of an entry, so that runs that want it meanwhile wait for it
+    /// ([`Store::wait_made`]) instead of making it too: `None` while another run holds it. The
+    /// hold is an operating system lock on a file, so a run that ends in any way, killed too, lets
+    /// go at once. A store that cannot be written gives a hold that holds nothing.
+    pub fn make(&self, kind: &str, key: &Key) -> Option<Making> {
+        let path = self.lock_file(kind, key);
+        let open = || {
+            fs::File::options()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)
+        };
+        let file = open()
+            .or_else(|_| fs::create_dir_all(&self.dir).and_then(|()| open()))
+            .ok();
+        let Some(file) = file else {
+            return Some(Making { path, file: None });
+        };
+        match file.try_lock() {
+            Ok(()) => Some(Making {
+                path,
+                file: Some(file),
+            }),
+            Err(fs::TryLockError::WouldBlock) => None,
+            Err(fs::TryLockError::Error(_)) => Some(Making { path, file: None }),
+        }
+    }
+
+    /// Wait until no run holds the making of the entry ([`Store::make`]), at most `limit`:
+    /// `false` when one still did then.
+    pub fn wait_made(&self, kind: &str, key: &Key, limit: std::time::Duration) -> bool {
+        let path = self.lock_file(kind, key);
+        let end = std::time::Instant::now() + limit;
+        // No file: nobody holds it (the maker removes it when done). Opened once: the maker's
+        // close unlocks this file too, and each open is one more scan of a real-time antivirus.
+        let Ok(f) = fs::File::open(&path) else {
+            return true;
+        };
+        loop {
+            if !matches!(f.try_lock_shared(), Err(fs::TryLockError::WouldBlock)) {
+                return true;
+            }
+            if std::time::Instant::now() >= end {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
     }
 
     /// Whether `added` more bytes fit in the store's limits ([`MAX_ENTRIES`] and [`MAX_BYTES`] for
@@ -1349,6 +1421,30 @@ mod tests {
         assert_eq!(s.entries().len(), 0);
         s.clean().unwrap();
         assert!(!s.dir().exists());
+    }
+
+    #[test]
+    fn a_making_hold_is_exclusive_and_waited_for() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::of_library(d.path());
+        let short = std::time::Duration::from_millis(30);
+        let held = s.make("t", &key("a")).expect("nobody holds it");
+        assert!(s.make("t", &key("a")).is_none(), "someone is making it");
+        assert!(s.make("t", &key("b")).is_some(), "another entry");
+        assert!(!s.wait_made("t", &key("a"), short), "still held");
+        let t = std::thread::spawn({
+            let s = Store::of_library(d.path());
+            move || s.wait_made("t", &key("a"), std::time::Duration::from_secs(30))
+        });
+        std::thread::sleep(short);
+        drop(held);
+        assert!(t.join().unwrap(), "the wait ends when the hold does");
+        assert!(
+            s.wait_made("t", &key("a"), short),
+            "no file: nothing to wait for"
+        );
+        assert!(s.make("t", &key("a")).is_some());
+        assert_eq!(s.entries().len(), 0, "holds are not entries");
     }
 
     #[test]

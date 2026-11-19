@@ -850,7 +850,12 @@ fn elaborate(
             for d in &e.warnings {
                 out.emit(&db.sources, d);
             }
-            if let Err(ds) = e.lower_with(&mut db, lowering) {
+            let lowered = e.lower_with(&mut db, lowering);
+            // The closure's entries are stored: runs waiting for them go on.
+            if let Some(s) = db.stages() {
+                s.made();
+            }
+            if let Err(ds) = lowered {
                 for d in &ds {
                     out.emit(&db.sources, d);
                 }

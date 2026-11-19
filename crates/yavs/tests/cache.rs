@@ -94,11 +94,16 @@ impl Env {
     }
 
     fn yavs(&self, args: &[&str]) -> Out {
+        self.yavs_with(args, &[])
+    }
+
+    fn yavs_with(&self, args: &[&str], env: &[(&str, &str)]) -> Out {
         let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
             .current_dir(&self.tmp)
             .env_remove("YAVS_STDLIB")
             .env("YAVS_LOG", "debug")
             .envs(self.env.iter().copied())
+            .envs(env.iter().copied())
             .args(["--color", "never"])
             .args(args)
             .output()
@@ -415,32 +420,94 @@ fn parallel_cold_runs_agree() {
     assert_eq!(leftovers, 0);
 }
 
-/// A run that finds the closure's image being made by another run (its claim file is fresh) does
-/// not make it again: it prints what a run without the cache prints and keeps the closure's other
-/// entries. Once the claim is gone the next run makes the image, and the one after reads it.
+/// One run makes a closure's entries; a run that misses one while it is at work waits for it.
+/// A maker that stalls keeps the others waiting no longer than their limit (they then make what
+/// they miss themselves), and one that is killed lets them go at once. Every run prints what a
+/// run without the cache prints.
 #[test]
-fn a_run_does_not_make_an_image_another_run_is_making() {
-    let e = Env::new("claimed");
+fn a_stalled_or_killed_maker_does_not_hang_the_others() {
+    let e = Env::new("maker");
     let plain = visible(&e.run_top("tb2", &["--no-cache"]));
     assert!(note(&e.run_top("tb2", &[]), "note"));
-    let seen = std::fs::read_dir(e.cache_dir())
-        .expect("dir")
-        .flatten()
-        .map(|f| f.file_name().to_string_lossy().into_owned())
-        .find(|n| n.starts_with("sem-") && n.ends_with(".seen"))
-        .expect("the note of the closure");
-    let claim = e.cache_dir().join(seen.replace(".seen", ".making"));
-    std::fs::write(&claim, "").expect("claim");
-    let r = e.run_top("tb2", &[]);
+    let work = e.work();
+    // The second run makes the image, then stalls while it holds the making.
+    /// Killed when the test ends, also when it fails.
+    struct Kill(std::process::Child);
+    impl Drop for Kill {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut maker = Kill(
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .current_dir(&e.tmp)
+            .env_remove("YAVS_STDLIB")
+            .env("YAVS_TEST_MAKER_STALL_S", "120")
+            .args(["--color", "never", "run", "--work", &work, "tb2"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn"),
+    );
+    let start = std::time::Instant::now();
+    let held = || {
+        std::fs::read_dir(e.cache_dir()).is_ok_and(|d| {
+            d.flatten()
+                .any(|f| f.file_name().to_string_lossy().ends_with(".lock"))
+        }) && !e.entry_files("sem").is_empty()
+    };
+    while !held() {
+        assert!(
+            maker.0.try_wait().expect("wait").is_none(),
+            "the maker ended"
+        );
+        assert!(
+            start.elapsed().as_secs() < 120,
+            "the maker never made the image"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // A live maker: the waiting run gives up after its limit and makes what it misses.
+    let t = std::time::Instant::now();
+    let r = e.yavs_with(
+        &["run", "--work", &work, "tb2"],
+        &[("YAVS_CACHE_WAIT_MS", "300")],
+    );
     assert_eq!(plain, visible(&r));
-    assert!(note(&r, "is made by another run"), "{r:?}");
-    assert!(e.entry_files("sem").is_empty());
-    assert_eq!(e.entry_files("low").len(), 1);
-    std::fs::remove_file(&claim).expect("unclaim");
-    let r = e.run_top("tb2", &[]);
+    assert!(note(&r, "gave up on the run making"), "{r:?}");
+    assert!(t.elapsed().as_secs() < 60, "waited past its limit");
+    // A run waiting with a long limit goes on as soon as the maker is killed.
+    let (r, took) = std::thread::scope(|sc| {
+        let waiter = sc.spawn(|| {
+            let t = std::time::Instant::now();
+            let r = e.yavs_with(
+                &["run", "--work", &work, "tb2"],
+                &[("YAVS_CACHE_WAIT_MS", "600000")],
+            );
+            (r, t.elapsed())
+        });
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        maker.0.kill().expect("kill");
+        maker.0.wait().expect("reap");
+        waiter.join().expect("join")
+    });
     assert_eq!(plain, visible(&r));
-    assert_eq!(e.entry_files("sem").len(), 1, "{r:?}");
-    assert!(!claim.exists());
+    assert!(
+        took.as_secs() < 60,
+        "the kill did not let the waiter go: {took:?}"
+    );
+    // It was waiting when the maker died.
+    let waited: u64 = r
+        .stderr
+        .lines()
+        .find_map(|l| {
+            l.split("waited for the run making the closure's entries for ")
+                .nth(1)
+        })
+        .and_then(|w| w.trim_end_matches(" ms").parse().ok())
+        .unwrap_or_else(|| panic!("no wait: {r:?}"));
+    assert!(waited > 0, "{r:?}");
     let r = e.run_top("tb2", &[]);
     assert_eq!(plain, visible(&r));
     assert!(note(&r, "hit "), "{r:?}");

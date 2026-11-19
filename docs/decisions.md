@@ -6620,6 +6620,46 @@ every elaboration, and again for every instance. Decisions:
 - **Not on main:** storing package state after impure calls widens the `ecall`, `sopt` and `init` decisions, and
   taking `now` during elaboration as an input instead of a taint is a choice, so both wait for a decision.
 
+## One maker of a closure's entries, the others wait (yavs-cache, yavs `cache.rs`, yavs-elab `srep.rs`, 2026-11-20; widens "One run makes a closure's image at a time")
+
+- **Problem:** the tests of a suite that start together (`-p0`, a fresh output directory) each made the same entries of
+  their closure: "One run makes a closure's image at a time" stopped the duplicate images, but the runs that lost the
+  claim went on at once and lowered, initialised and optimised cold, each storing the same `low`, `init`, `sopt`
+  and `ir` entries; then each ran its elaboration-time session and stored the same end state (`send`, about 49 M
+  instructions and 3.2 MB each), and each rewrote `sreq` from the copy it read when its session started, so the steps
+  of the other configurations were lost and later runs of the round missed and ran their sessions again.
+- **Decision (on a branch):** the run that makes the closure's image takes the making as an operating system lock
+  (`Store::make`, an exclusive `File::try_lock` on `<kind>-<key>.lock`) and holds it until its elaboration ends
+  (`StageCache::made` after `lower_with`): the image and every stage entry of that elaboration are stored by then.
+  Every other run with the closure's entries (the claim's losers and the runs that read the image) goes on as before;
+  the first entry it misses waits for the maker (`Store::wait_made`, a shared lock polled every 2 ms, once per run) and
+  reads it again. A step of the session that is not stored is made the same way (`StageCache::make_or_wait`, keyed by
+  the step's digest, which chains the steps before it): one run makes the steps from there and stores them with the end
+  state, the runs that miss the same step wait and replay; at most four waits a session (the configurations part at
+  one step, a run's own generics may part at another), and the hold ends when the steps are stored or the session is
+  spoilt. `Trail::store` merges the steps other runs stored since it read them (and adds its end state to the count it
+  read again). All waits of a run share one budget, `YAVS_CACHE_WAIT_MS` (2000 ms; `0` never waits); once it is
+  spent the run makes what it misses itself, as before. A maker that
+  ends in any way, killed too, lets go at once: the kernel drops the lock with the process, no time limit decides.
+  `Store::claim` stays for the prefix images and the library stages, whose losers go on without waiting.
+- **Costs:** a run that waits gives up wall time to save CPU: on the 114-test suite the waits were 0 to 113 ms for the
+  closure's entries and 33 to 203 ms for a session step (one round, 65 waits, 3.3 s summed). Sequential runs do one
+  lock file more on the second run of a closure and on a session's first unstored step, and no waiting. A maker
+  slower than the budget (a closure whose elaboration takes longer than 2 s) costs every waiting run the whole budget
+  before it makes the entries itself: up to 2 s more wall per run than without the wait (reasoned, not measured).
+- **Measured** (the 114-test AXI-stream suite of the verification library through the test runner, fresh output
+  directory, all-thread instructions of `perf stat`, byte copy of the old build as A/A, interleaved trials):
+  `-p0` on 32 threads (5 trials), first round 104.7 G (A/A 103.4) to 83.5 G (-20 %; the merge of `sreq` alone 97.0 G),
+  the first 32 runs 39.0 G to 26.4 G; later rounds 68.2 G to 67.2 G. 8 threads (`-p8` on 8 logical CPUs, a laptop),
+  first round 86.4 G (A/A 86.6) to 79.2 G and 11.6 s to 10.6 s of CPU; round wall without the counting wrapper (10
+  trials) 3.33 s to 3.26 s (sd 0.04), the runner's elapsed 2.17 s to 2.08 s; 16 logical CPUs at `-p0` 2.89 s to 2.85 s
+  (sd 0.09), inside the spread. `-p1` (4 trials, 3 rounds): 73.0 / 67.0 / 67.0 G both, inside the spread. The
+  one-test-per-closure cells (4 worlds, 6 runs) within 0.1 % on every run but two (+0.5 %, A/A -0.03 %), outputs equal;
+  `tools/realbench` short tests, `auto` and `auto-cold` instructions geometric mean 1.00 and 1.00. The round wall on
+  32 threads was not measured on a quiet host.
+- **What it widens.** Runs now block on each other, which widens "One run makes a closure's image at a time" (its
+  losers went on at once): it trades a little wall time on a machine with free cores for less CPU on one without.
+
 ## The watching loop's tick is out of line (yavs-interp, #521, #544, 2026-10-22)
 
 - **`watch_tick` (name the running function for the sampler, look for compiled code) is a cold function** called every

@@ -697,6 +697,16 @@ Compiled tiers: Cranelift
      - not ``0``
      - unset
      - ``elab``, ``run``
+   * - ``YAVS_CACHE_WAIT_MS``
+     - How long a run waits, at most and all waits together, for another run that makes the cache entries of the same design it misses (the image and lowered entries of a design, the stored calls elaboration makes) instead of making them itself; a run that ends, killed too, lets the waiting runs go at once. ``0``: never waits.
+     - milliseconds
+     - ``2000``
+     - ``elab``, ``run``
+   * - ``YAVS_TEST_MAKER_STALL_S``
+     - A test aid: the run that makes the analysis image of a design sleeps this many seconds after storing it, while it still holds the making.
+     - seconds
+     - unset
+     - ``elab``, ``run``
    * - ``YAVS_SREP_NOW``
      - ``0``: a call during elaboration that reads ``now`` (always 0 fs then) is not stored.
      - ``0``

@@ -185,6 +185,22 @@ pub trait StageCache: Send + Sync + std::fmt::Debug {
     fn prefix_db(&self, _level: usize) -> Option<Db> {
         None
     }
+
+    /// Elaboration ended: a run that makes the closure's entries lets the runs that wait for
+    /// them go on.
+    fn made(&self) {}
+
+    /// Make the entry `get` would read for these arguments, or wait for the run that makes it:
+    /// `Some(hold)` when this run makes it (drop the hold once it is stored), `None` after a
+    /// wait (read it again; it may still be missing).
+    fn make_or_wait(
+        &self,
+        _extent: &[usize],
+        _kind: &str,
+        _part: &[u8],
+    ) -> Option<Box<dyn std::any::Any + Send>> {
+        Some(Box::new(()))
+    }
 }
 
 /// A leading part of the files of a closure whose analysis is stored on its own and shared by

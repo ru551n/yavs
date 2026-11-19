@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.21.0 (2026-11-19)
 
 - New sim option `yavs.cycle` (`"off"`, `"on"`, `"strict"`), experimental like cycle mode itself: runs the test with
   `yavs run --cycle` or `--cycle-strict`; a test that also has coverage, a debug session or waves fails before yavs
@@ -11,6 +11,7 @@
   `--yavs-no-jobserver` or `VUNIT_YAVS_JOBSERVER=off` turns it off; `--yavs-jobserver` is still accepted. Under the
   server the threads of `--yavs-max-threads N` past the first run only on lent tokens. Before, the opt-in server
   lent a test slot's CPU the moment its test ended, and the next test often started on a full machine.
+- Needs yavs 0.21.0 or later. All changes: the yavs 0.21.0 release notes.
 
 ## 0.20.2 (2026-11-16)
 

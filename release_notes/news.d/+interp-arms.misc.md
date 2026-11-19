@@ -1,1 +1,0 @@
-Short tests that use the verification library's queues, message passing and AXI-stream components run faster while they are interpreted: the interpreter now runs the small storage accessors behind them inline, while compiled code keeps calling them.

@@ -1,1 +1,0 @@
-A bit or slice of an element of a constant array of vectors, read during elaboration (a signal's initial value, a port actual, a constant), now uses the element subtype's index range: an element given by a bit-string literal or a function result had been read by the literal's own range, which gave a wrong bit or the error "slice direction differs from its prefix".

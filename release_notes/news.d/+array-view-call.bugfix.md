@@ -1,1 +1,0 @@
-A concurrent procedure call or `process (all)` with a signal parameter of an array mode view (`view (v) of arr_t`) now elaborates and runs; it stopped with an internal error. Its sensitivity is the whole array.

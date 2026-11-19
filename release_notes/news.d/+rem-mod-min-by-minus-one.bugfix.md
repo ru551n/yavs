@@ -1,1 +1,0 @@
-The most negative value of an integer type `rem` or `mod` -1, which is 0, no longer gives a false warning that static arithmetic overflows; a debugger breakpoint condition computes it as 0 instead of reporting an overflow.

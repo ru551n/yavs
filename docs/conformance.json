@@ -231,12 +231,12 @@
        8
       ],
       "composite": [
-       180,
-       180
+       182,
+       182
       ],
       "delta": [
-       21,
-       21
+       23,
+       23
       ],
       "env": [
        16,
@@ -255,12 +255,12 @@
        12
       ],
       "hierarchy": [
-       107,
-       107
+       112,
+       112
       ],
       "ieee": [
-       25,
-       25
+       26,
+       26
       ],
       "implicit": [
        9,
@@ -291,8 +291,8 @@
        10
       ],
       "resolution": [
-       28,
-       28
+       29,
+       29
       ],
       "rtl": [
        5,
@@ -307,8 +307,8 @@
        4
       ],
       "sigassign": [
-       49,
-       49
+       50,
+       50
       ],
       "std93": [
        6,
@@ -336,12 +336,12 @@
        8
       ],
       "composite": [
-       180,
-       180
+       182,
+       182
       ],
       "delta": [
-       21,
-       21
+       23,
+       23
       ],
       "env": [
        16,
@@ -360,12 +360,12 @@
        12
       ],
       "hierarchy": [
-       107,
-       107
+       112,
+       112
       ],
       "ieee": [
-       25,
-       25
+       26,
+       26
       ],
       "implicit": [
        9,
@@ -396,8 +396,8 @@
        10
       ],
       "resolution": [
-       28,
-       28
+       29,
+       29
       ],
       "rtl": [
        5,
@@ -412,8 +412,8 @@
        4
       ],
       "sigassign": [
-       49,
-       49
+       50,
+       50
       ],
       "std93": [
        6,
@@ -441,12 +441,12 @@
        8
       ],
       "composite": [
-       180,
-       180
+       182,
+       182
       ],
       "delta": [
-       21,
-       21
+       23,
+       23
       ],
       "env": [
        16,
@@ -465,12 +465,12 @@
        12
       ],
       "hierarchy": [
-       107,
-       107
+       112,
+       112
       ],
       "ieee": [
-       25,
-       25
+       26,
+       26
       ],
       "implicit": [
        9,
@@ -501,8 +501,8 @@
        10
       ],
       "resolution": [
-       28,
-       28
+       29,
+       29
       ],
       "rtl": [
        5,
@@ -517,8 +517,8 @@
        4
       ],
       "sigassign": [
-       49,
-       49
+       50,
+       50
       ],
       "std93": [
        6,
@@ -537,7 +537,7 @@
    }
   },
   "discrepancies": {
-   "cases": 279,
+   "cases": 283,
    "output_tail": "",
    "yavs_matches_expected": true
   },
@@ -546,9 +546,10 @@
     "classes": {
      "analysis": 23,
      "elab": 7,
-     "oracle": 26,
+     "oracle": 25,
      "pass": 1014,
-     "skip": 403
+     "skip": 403,
+     "timeout": 1
     },
     "pass_list": 995,
     "pass_list_regressions": [],
@@ -625,9 +626,9 @@
   }
  },
  "generated": {
-  "commit": "34d2cf70e4",
-  "commit_date": "2026-11-15",
-  "version": "0.20.1"
+  "commit": "739fd35fe0",
+  "commit_date": "2026-11-19",
+  "version": "0.20.2"
  },
  "local": {
   "records": {
@@ -1348,162 +1349,162 @@
   "corpus_refs": {
    "en_cl_fix-2008": {
     "pass": 149,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 149
    },
    "fletcher-2008": {
     "pass": 101,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 101
    },
    "grlib-1993": {
     "pass": 454,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-23",
     "total": 454
    },
    "grlib-2008": {
     "pass": 410,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-23",
     "total": 410
    },
    "hdl-modules-2008": {
     "pass": 86,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 86
    },
    "hdl-modules-2019": {
     "pass": 86,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 86
    },
    "json-for-vhdl-2008": {
     "pass": 149,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 149
    },
    "neorv32-2008": {
     "pass": 67,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 67
    },
    "neotrng-2008": {
     "pass": 2,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 2
    },
    "open-logic-2008": {
     "pass": 386,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 386
    },
    "osvvm-2008": {
     "pass": 174,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 174
    },
    "osvvm-2019": {
     "pass": 174,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 174
    },
    "poc-2008": {
     "pass": 417,
-    "recorded": "2026-11-15",
+    "recorded": "2026-11-02",
     "total": 417
    },
    "satcat5-2008": {
     "pass": 246,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 246
    },
    "surf-2008": {
     "pass": 310,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 318
    },
    "uvvm-2008": {
     "pass": 235,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 235
    },
    "uvvm-2019": {
     "pass": 235,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 235
    },
    "vests-1993": {
     "pass": 1939,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-23",
     "total": 1939
    },
    "vhdl-compliance-2008": {
     "pass": 171,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 171
    },
    "vhdl-compliance-2019": {
     "pass": 208,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 208
    },
    "vhdl-extras-2008": {
     "pass": 25,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 25
    },
    "vhdl-ideas-2019": {
     "pass": 18,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 19
    },
    "vhdl-interfaces-2019": {
     "pass": 34,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 34
    },
    "vhdl-tool-checks-2008": {
     "pass": 1,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 1
    },
    "vhdl-tool-checks-2019": {
     "pass": 1,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 1
    },
    "vhlib-2008": {
     "pass": 26,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 26
    },
    "vunit-2008": {
     "pass": 143,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 143
    },
    "vunit-2019": {
     "pass": 143,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 143
    },
    "vunit-tests-2008": {
     "pass": 218,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 218
    },
    "vunit-tests-2019": {
     "pass": 218,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 218
    },
    "yavs-lib-2008": {
     "pass": 27,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 27
    },
    "yavs-lib-2019": {
     "pass": 26,
-    "recorded": "2026-11-15",
+    "recorded": "2026-10-22",
     "total": 28
    }
   },
@@ -1696,6 +1697,13 @@
     "kind": "LRM clear",
     "lrm": "1993 4.3.2",
     "yavs": "REJECT (`E1360`)"
+   },
+   {
+    "case": "out-port-resolution-unresolved-actual",
+    "decided": "agent, 2026-11-16 (#293, decisions.md \"User resolution of scalar leaves\")",
+    "kind": "LRM clear",
+    "lrm": "4.6, 14.7.3.2",
+    "yavs": "OK (the function runs)"
    },
    {
     "case": "v93-out-port-read-contexts",
@@ -3312,6 +3320,27 @@
     "decided": "agent, 2026-11-15 (#1156, L187)",
     "kind": "LRM ambiguity (both are \"first evaluated\", in no order)",
     "lrm": "10.6.2.1",
+    "yavs": "OK"
+   },
+   {
+    "case": "impure-conversion-read-same-cycle",
+    "decided": "owner, 2026-11-17 (#1166)",
+    "kind": "LRM ambiguity (the LRM does not order the reads of other signals within the update)",
+    "lrm": "6.5.7.1, 14.7.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "impure-conversion-formal-read-in-port",
+    "decided": "owner, 2026-11-17 (#1166)",
+    "kind": "LRM ambiguity",
+    "lrm": "6.5.7.1, 14.7.3",
+    "yavs": "OK"
+   },
+   {
+    "case": "impure-conversion-formal-read-resolved",
+    "decided": "owner, 2026-11-17 (#1166)",
+    "kind": "LRM ambiguity",
+    "lrm": "6.5.7.1, 14.7.3",
     "yavs": "OK"
    },
    {

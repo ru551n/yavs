@@ -904,14 +904,7 @@ fn drop_declarations(prog: &Program, f: &mut crate::Func) {
 
 /// Drop the `Stmt` markers a pass left with nothing to free (`Opt::drop_statements`).
 fn drop_markers(prog: &Program, f: &mut crate::Func, layouts: &mut TypeMemo) {
-    let mut o = Opt::new(
-        prog,
-        f,
-        f.code.clone(),
-        f.operands.clone(),
-        f.nested,
-        layouts,
-    );
+    let mut o = Opt::lean(prog, f, f.code.clone(), layouts);
     o.drop_statements();
     o.gather_into();
     if !o.changed {
@@ -1566,7 +1559,29 @@ impl<'a> Opt<'a> {
         nested: bool,
         layouts: &'a mut TypeMemo,
     ) -> Self {
-        let n = f.reg_ty.len();
+        Self::sized(prog, f, code, operands, nested, layouts, f.reg_ty.len())
+    }
+
+    /// An `Opt` for the passes that read only the code and its blocks (`drop_markers`): the
+    /// tables per register stay empty, nothing that uses them may run on it.
+    fn lean(
+        prog: &'a Program,
+        f: &'a crate::Func,
+        code: Vec<Inst>,
+        layouts: &'a mut TypeMemo,
+    ) -> Self {
+        Self::sized(prog, f, code, Vec::new(), f.nested, layouts, 0)
+    }
+
+    fn sized(
+        prog: &'a Program,
+        f: &'a crate::Func,
+        code: Vec<Inst>,
+        operands: Vec<Reg>,
+        nested: bool,
+        layouts: &'a mut TypeMemo,
+        n: usize,
+    ) -> Self {
         Opt {
             prog,
             f,
@@ -1584,6 +1599,7 @@ impl<'a> Opt<'a> {
             named: f
                 .locals
                 .iter()
+                .take(if n == 0 { 0 } else { usize::MAX })
                 .filter(|l| {
                     prog.types
                         .get(l.ty)
@@ -3415,6 +3431,13 @@ impl<'a> Opt<'a> {
     /// once and moves nothing.
     fn gather_into(&mut self) {
         if std::env::var_os("YAVS_NO_GATHER_INTO").is_some() {
+            return;
+        }
+        if !self
+            .code
+            .iter()
+            .any(|i| matches!(i, Inst::SigGather { part: None, .. }))
+        {
             return;
         }
         let n = self.f.reg_ty.len();

@@ -5955,6 +5955,14 @@ Decisions:
   the integer-array cell under `--tier=auto` takes one of two policy outcomes 1.3 percent apart on every binary, so its
   geomean over 16 worlds moves by the draw; medians equal the A/A's.)
 
+## `drop_markers` builds a lean `Opt` (yavs-ir `opt.rs`, 2026-11-19)
+
+`drop_markers` (after `slots::run` and `drives::run`) runs `Opt::drop_statements` and `Opt::gather_into`, which read
+only `code`, `blocks` and the function's register types. `Opt::lean` leaves every table per register empty and takes no
+copy of the operand lists, so nothing else may run on such an `Opt` (the other methods index those tables). The gather
+fusion first looks for a whole `SigGather` and returns when there is none. The markers dropped and the code are those
+of the full `Opt`.
+
 ## Lookup tables hash with `Fx`, never with SipHash, where they are only looked up (yavs-ir `opt/memo.rs`, `opt/subcopy.rs`, yavs-lower `func.rs`, 2026-11-19)
 
 A cold short run still hashed with SipHash in the optimiser's `memo` and `subcopy` passes and in the per-function

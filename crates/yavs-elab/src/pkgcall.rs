@@ -198,7 +198,7 @@ pub(crate) fn run_traced(
     args: &[Val],
     inst: Option<InstData>,
 ) -> (Result<Val, Fail>, yavs_interp::CallTrace) {
-    run_restarting(rt, s, args, None, inst)
+    run_restarting(rt, s, args, None, inst, false)
 }
 
 /// [`run_traced`] against the package state `shared` (a call of the session).
@@ -208,8 +208,9 @@ fn run_traced_shared(
     args: &[Val],
     shared: &Arc<Mutex<SharedState>>,
     inst: Option<InstData>,
+    now_is_input: bool,
 ) -> (Result<Val, Fail>, yavs_interp::CallTrace) {
-    run_restarting(rt, s, args, Some(shared), inst)
+    run_restarting(rt, s, args, Some(shared), inst, now_is_input)
 }
 
 /// Times a call may stop to run again with the functions its loops made hot (#695): each stop
@@ -225,12 +226,16 @@ fn run_restarting(
     args: &[Val],
     shared: Option<&Arc<Mutex<SharedState>>>,
     inst: Option<InstData>,
+    now_is_input: bool,
 ) -> (Result<Val, Fail>, yavs_interp::CallTrace) {
     let mut tries = 0;
     loop {
         Runtime::promote_hot(rt);
         let _last = (tries == RESTARTS).then(yavs_ir::ElabRaw::no_restart);
-        let mut t = yavs_interp::CallTrace::default();
+        let mut t = yavs_interp::CallTrace {
+            now_is_input,
+            ..Default::default()
+        };
         match run_with(rt, s, args, shared, inst.clone(), Some(&mut t)) {
             Ok(Ran::Restart) => {
                 yavs_ir::note_restart();
@@ -281,8 +286,16 @@ fn run_with(
     let (inst, ret_ty) = (Arc::new(inst.unwrap_or_default()), composite.then_some(ret));
     let r = match trace {
         Some(t) => {
-            let (r, tr) =
-                yavs_interp::call_values_traced(rt.clone(), s.func, inst, &cvs, ret_ty, shared);
+            let now = t.now_is_input;
+            let (r, tr) = yavs_interp::call_values_traced(
+                rt.clone(),
+                s.func,
+                inst,
+                &cvs,
+                ret_ty,
+                shared,
+                now,
+            );
             *t = tr;
             r
         }
@@ -791,9 +804,9 @@ impl Copies {
         seed: u64,
         lo: usize,
         prog: &Program,
-    ) {
+    ) -> (u64, usize) {
         if (steps.is_empty() && lo > 0) || self.entry(db).is_none() {
-            return;
+            return (0, 0);
         }
         let d = {
             use std::hash::{Hash, Hasher};
@@ -820,7 +833,32 @@ impl Copies {
             && !copies_check()
         {
             prog.load_optimized(c.clone());
+            return (d, c.len());
         }
+        (d, 0)
+    }
+
+    /// Whether the calls made a copy the entry lacks (`learn` would write it): the next run's
+    /// program takes other copies.
+    fn fresh(&self, live: &Live) -> bool {
+        let Some(Some(e)) = &self.entry else {
+            return false;
+        };
+        let mut fresh = false;
+        live.rt.prog.export_made(|f| {
+            let i = live.steps.partition_point(|&(_, lo, _)| lo <= f.0);
+            if let Some(&(d, _, hi)) = i.checked_sub(1).and_then(|i| live.steps.get(i))
+                && f.0 < hi
+                && !e
+                    .steps
+                    .get(&d)
+                    .is_some_and(|v| v.iter().any(|c| c.func.0 == f.0))
+            {
+                fresh = true;
+            }
+            false
+        });
+        fresh
     }
 
     /// Store the copies the calls made that the entry lacks, with those it holds.
@@ -942,6 +980,11 @@ pub(crate) struct Session {
     pending: Vec<Create>,
     /// Optimised copies from earlier runs of the closure.
     copies: Copies,
+    /// The calls as steps of a session earlier runs may have stored (`srep`).
+    trail: crate::srep::Trail,
+    /// The logged calls taken from the stored steps and not run yet, and whether each would
+    /// have run traced.
+    replayed: Vec<(usize, bool)>,
 }
 
 impl Session {
@@ -955,21 +998,64 @@ impl Session {
         args: Vec<Val>,
         trace: Option<&mut yavs_interp::CallTrace>,
     ) -> Result<Val, Fail> {
-        let result = self.run(db, f, false, &args, None, trace)?;
-        self.log.push(Call {
-            func: f,
-            name: db.decls[f].name.to_string(),
-            args,
-            result: result.clone(),
-            fill: None,
-            expr: None,
-        });
+        let step = self.step(db, f, &args);
+        if self.trail.replaying() {
+            // Lowered in order as when it runs: the program, its ids and the copies it takes
+            // are the storing run's.
+            self.ensure(db, f, false)?;
+            if self.trail.replaying() {
+                if let Some(v) = self.trail.stored(step) {
+                    let traced = trace.is_some() || self.trail.recording();
+                    if let Some(t) = trace {
+                        // Not kept by the call cache: its reports were not traced.
+                        t.tainted = Some("its result was replayed".into());
+                    }
+                    self.trail.took(step, &v, true);
+                    self.replayed.push((self.log.len(), traced));
+                    self.push_call(db, f, args, v.clone());
+                    return Ok(v);
+                }
+                self.materialise()?;
+            }
+        }
+        let recording = self.trail.recording();
+        let mut own = yavs_interp::CallTrace {
+            now_is_input: crate::srep::now_is_input(),
+            ..Default::default()
+        };
+        let given = trace.is_some();
+        let t = trace.unwrap_or(&mut own);
+        let r = self.run(
+            db,
+            f,
+            false,
+            &args,
+            None,
+            (given || recording).then_some(&mut *t),
+        );
+        let result = match r {
+            Ok(v) => v,
+            Err(e) => {
+                self.trail.spoil("a call failed");
+                return Err(e);
+            }
+        };
+        if !(given || recording) {
+            self.trail.spoil("a call ran untraced");
+        } else if let Some(why) = &t.tainted {
+            self.trail.spoil(format!(
+                "`{}` did more than compute: {why}",
+                db.decls[f].name
+            ));
+        } else if !t.reports.is_empty() {
+            self.trail.spoil("a call reported");
+        }
+        self.trail.took(step, &result, false);
+        self.push_call(db, f, args, result.clone());
         Ok(result)
     }
 
-    /// Log a call of `f` answered from the call cache, as [`Session::call`] logged it when it
-    /// ran (`f` already lowered by [`Session::needs`]).
-    pub(crate) fn log_hit(&mut self, db: &Db, f: DeclId, args: Vec<Val>, result: Val) {
+    fn push_call(&mut self, db: &Db, f: DeclId, args: Vec<Val>, result: Val) {
         self.log.push(Call {
             func: f,
             name: db.decls[f].name.to_string(),
@@ -978,6 +1064,181 @@ impl Session {
             fill: None,
             expr: None,
         });
+    }
+
+    /// The digest of the next call, `f` with `args`, as a step of the session.
+    fn step(&mut self, db: &Db, f: DeclId, args: &[Val]) -> u64 {
+        if self.log.is_empty() && (self.dirty || !self.pending.is_empty()) {
+            // Only a session of plain calls from its first call is replayed.
+            self.trail.spoil("the session started otherwise");
+        }
+        self.trail.next(
+            db,
+            || {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::hash::DefaultHasher::new();
+                ("srep", 1u32, db.extent()).hash(&mut h);
+                h.finish()
+            },
+            f,
+            args,
+        )
+    }
+
+    /// Something other than a plain call reads or changes the package state: the logged calls
+    /// run first, and the session is not stored.
+    fn leave(&mut self, why: &'static str) -> Result<(), Fail> {
+        self.trail.spoil(why);
+        self.materialise()?;
+        self.trail.run();
+        Ok(())
+    }
+
+    /// At the end of elaboration: the state after a replayed session (from the stored end
+    /// state, else by running the calls), or the session stored when nothing spoilt it.
+    fn end_trail(&mut self) {
+        // Every step known but not this end state (other stored copies): stored below.
+        if self.trail.replaying() && (self.restore_end() || self.materialise().is_err()) {
+            return;
+        }
+        if self.dirty || !self.pending.is_empty() {
+            self.trail.spoil("a call failed");
+        }
+        let Some(live) = self.live.as_ref() else {
+            return;
+        };
+        if live.lib.is_some() {
+            self.trail.spoil("the program starts with a library prefix");
+        }
+        if !live.vars.is_empty() {
+            self.trail.spoil("a shared variable of a region");
+        }
+        if live.rt.files_touched() {
+            self.trail.spoil("a file was opened");
+        }
+        if self.copies.fresh(live) {
+            // The next run takes other copies, and so leaves another state: stored then.
+            self.trail
+                .spoil("the optimised copies of the calls are not stored yet");
+        }
+        let prog = self.requests();
+        let trail = &mut self.trail;
+        trail.store(prog, || {
+            let s = live.shared.lock().map_err(|_| "poisoned".to_string())?;
+            s.state_image(live.rt.package_data())
+        });
+    }
+
+    /// A digest of what the session's program was asked for after its packages.
+    fn requests(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::hash::DefaultHasher::new();
+        let ids = |v: &[(DeclId, bool)]| -> Vec<(usize, bool)> {
+            v.iter()
+                .map(|&(d, c)| (yavs_sem::Id::index(d), c))
+                .collect()
+        };
+        (
+            ids(&self.lowered),
+            self.inits.len(),
+            self.exprs.len(),
+            self.order
+                .iter()
+                .map(|&(u, n)| (yavs_sem::Id::index(u), n))
+                .collect::<Vec<_>>(),
+        )
+            .hash(&mut h);
+        h.finish()
+    }
+
+    /// Take the stored state after the session's calls; false when there is none or it does
+    /// not fit.
+    fn restore_end(&mut self) -> bool {
+        let Some(bytes) = self.trail.end(self.requests()) else {
+            return false;
+        };
+        let Some(live) = self.live.as_mut() else {
+            return false;
+        };
+        let Ok(mut sh) = live.shared.lock() else {
+            return false;
+        };
+        let n = live.rt.package_data().len();
+        let Some((data, mut st)) = yavs_interp::restore_state(&bytes, n, sh.vars.len()) else {
+            return false;
+        };
+        let Some(rt) = Arc::get_mut(&mut live.rt) else {
+            return false;
+        };
+        st.set_init_printed(sh.init_printed());
+        rt.set_package_data(data.into_iter().map(Arc::new).collect());
+        *sh = st;
+        drop(sh);
+        self.trail.restored();
+        true
+    }
+
+    /// Run the logged calls that were replayed, on the package state they would have changed.
+    fn materialise(&mut self) -> Result<(), Fail> {
+        if !self.trail.replaying() {
+            return Ok(());
+        }
+        self.trail.run();
+        let replayed = std::mem::take(&mut self.replayed);
+        let Some(live) = self.live.as_mut() else {
+            // The next lowering rebuilds the state and runs the log.
+            return Ok(());
+        };
+        // As `Session::run` ran them: the functions made hot before each call, traced where
+        // the call would have been, so the state and the program are the ones a run that
+        // made the calls has.
+        for (i, traced) in replayed {
+            let c = &self.log[i];
+            Runtime::promote_hot(&mut live.rt);
+            let Some(s) = live.items.sigs.get(&c.func) else {
+                self.live = None;
+                self.dirty = true;
+                return Err(Fail::Runtime(format!(
+                    "internal error: `{}` is not lowered for the replay",
+                    c.name
+                )));
+            };
+            let r = if traced {
+                let now = crate::srep::now_is_input();
+                let (r, t) = run_traced_shared(&mut live.rt, s, &c.args, &live.shared, None, now);
+                if t.tainted.is_some() || !t.reports.is_empty() {
+                    self.trail.spoil("a replayed call did more than compute");
+                }
+                r
+            } else {
+                run(&live.rt, s, &c.args, Some(&live.shared), None)
+            };
+            match r {
+                Ok(v) if v == c.result => {}
+                r => {
+                    let why = match r {
+                        Err(f) => fail_text(f),
+                        Ok(_) => format!(
+                            "internal error: `{}` returned another value than its stored result",
+                            c.name
+                        ),
+                    };
+                    self.live = None;
+                    self.dirty = true;
+                    return Err(Fail::Runtime(why));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Log a call of `f` answered from the call cache, as [`Session::call`] logged it when it
+    /// ran (`f` already lowered by [`Session::needs`]).
+    pub(crate) fn log_hit(&mut self, db: &Db, f: DeclId, args: Vec<Val>, result: Val) {
+        // A pure call changes no package state: a step like a call that ran.
+        let step = self.step(db, f, &args);
+        self.trail.took(step, &result, false);
+        self.push_call(db, f, args, result);
     }
 
     /// Call `f`, declared in a region, with `args` and the objects of the region it reads
@@ -990,6 +1251,7 @@ impl Session {
         args: Vec<Val>,
         items: Vec<(DeclId, FillItem)>,
     ) -> Result<Val, Fail> {
+        self.leave("a call read objects of its region")?;
         let result = self.run(db, f, false, &args, Some(&items), None)?;
         self.log.push(Call {
             func: f,
@@ -1038,6 +1300,7 @@ impl Session {
         e: ExprId,
         items: Vec<(DeclId, FillItem)>,
     ) -> Result<Val, Fail> {
+        self.leave("a method or foreign call")?;
         self.expr_needs(db, e)?;
         let live = self
             .live
@@ -1099,6 +1362,7 @@ impl Session {
         key: VarKey,
         items: Vec<(DeclId, FillItem)>,
     ) -> Result<u64, Fail> {
+        self.leave("a shared variable of a region")?;
         self.ensure_init(db, key.1)?;
         let live = self
             .live
@@ -1136,6 +1400,10 @@ impl Session {
     /// call failed without being undone, the lowering can go on, no file was opened.
     pub(crate) fn finish(&mut self) -> Option<Start> {
         if self.dirty || !self.pending.is_empty() {
+            return None;
+        }
+        self.end_trail();
+        if self.dirty {
             return None;
         }
         let mut live = self.live.take()?;
@@ -1205,6 +1473,9 @@ impl Session {
     /// region (they changed no package state: the live program stays, no rebuild); else
     /// [`Session::undo`].
     pub(crate) fn undo_pure(&mut self, db: &Db, mark: usize) -> Result<(), String> {
+        if mark < self.log.len() {
+            self.leave("calls were undone").map_err(fail_text)?;
+        }
         let pure = |c: &Call| {
             c.fill.is_none()
                 && c.expr.is_none()
@@ -1228,6 +1499,9 @@ impl Session {
         if self.log.len() == mark && !self.dirty && self.pending.is_empty() {
             return Ok(());
         }
+        // The rebuild below runs what the log keeps.
+        self.trail.spoil("calls were undone");
+        self.trail.run();
         self.log.truncate(mark);
         // A package initialised after an undone call is initialised after the calls kept.
         for (_, n) in &mut self.order {
@@ -1251,6 +1525,9 @@ impl Session {
 
     /// The value of package constant `d` in the package data (its initial value ran when
     /// the package was elaborated).
+    ///
+    /// Also while the session is replayed (`srep`): no call changes a constant or a bound, and
+    /// package initialisation, which sets them, has run.
     pub(crate) fn package_const(&mut self, db: &Db, d: DeclId) -> Result<Val, Fail> {
         self.run(db, d, true, &[], None, None)
     }
@@ -1329,13 +1606,14 @@ impl Session {
                             use std::hash::{Hash, Hasher};
                             let mut h = std::hash::DefaultHasher::new();
                             (last, yavs_sem::Id::index(d), c, db.extent()).hash(&mut h);
-                            self.copies.step(
+                            let (d, n) = self.copies.step(
                                 db,
                                 &mut live.steps,
                                 h.finish(),
                                 before,
                                 &live.rt.prog,
                             );
+                            self.trail.code(d, n);
                         }
                         _ => live.steps.clear(),
                     }
@@ -1399,7 +1677,8 @@ impl Session {
         };
         let r = match trace {
             Some(t) => {
-                let (r, tr) = run_traced_shared(&mut live.rt, s, args, &live.shared, inst);
+                let now = t.now_is_input;
+                let (r, tr) = run_traced_shared(&mut live.rt, s, args, &live.shared, inst, now);
                 *t = tr;
                 r
             }
@@ -1420,6 +1699,11 @@ impl Session {
     /// Lower the packages `pkgs` (`order`) and `lowered`, initialise the packages and replay the
     /// log, each call after the packages initialised before it.
     fn rebuild(&mut self, db: &Db, pkgs: Vec<UnitId>) -> Result<Live, Fail> {
+        // A rebuild runs the logged calls (`Replay`).
+        if !self.log.is_empty() {
+            self.trail.run();
+            self.replayed.clear();
+        }
         let lower = lower_fail;
         let (mut l, lib) = package_lowerer(db, &pkgs, LowerOptions::default()).map_err(lower)?;
         l.capture_free_objects(true);
@@ -1456,7 +1740,8 @@ impl Session {
                 db.extent(),
             )
                 .hash(&mut h);
-            self.copies.step(db, &mut steps, h.finish(), 0, &prog);
+            let (d, n) = self.copies.step(db, &mut steps, h.finish(), 0, &prog);
+            self.trail.code(d, n);
         }
         let lowerer = Some((l.suspend(), pkgs));
         let shared = Arc::new(Mutex::new(SharedState::new(vec![

@@ -687,6 +687,21 @@ Compiled tiers: Cranelift
      - not ``0``
      - unset
      - ``elab``, ``run``
+   * - ``YAVS_SREP``
+     - ``0``: the calls elaboration makes always run, and nothing of them is stored for the next run (by default a run whose calls and arguments are those of an earlier run of the same design takes their results and the package state they left).
+     - ``0``
+     - unset
+     - ``elab``, ``run``
+   * - ``YAVS_SREP_CHECK``
+     - Runs every call elaboration makes and fails when a result or the package state after the calls is not the one stored. A check for bugs in yavs.
+     - not ``0``
+     - unset
+     - ``elab``, ``run``
+   * - ``YAVS_SREP_NOW``
+     - ``0``: a call during elaboration that reads ``now`` (always 0 fs then) is not stored.
+     - ``0``
+     - unset
+     - ``elab``, ``run``
    * - ``YAVS_CLIFT_PERFMAP``
      - Writes ``/tmp/perf-<pid>.map`` for ``perf report``: one line per function of generated code, compiled or linked from the compilation cache, named ``f<id>_<process instance path>`` (``n`` native-frame code, ``c`` its adapter; ``+N`` when N more processes run the same code) or by subprogram. A file left by an earlier process with the same pid is emptied when the process starts, so the map names only this run's code.
      - ``1``

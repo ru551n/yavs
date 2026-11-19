@@ -6559,6 +6559,60 @@ every elaboration, and again for every instance. Decisions:
   A/A under `--tier=auto` (`sc5_timestamp`, `vai_window_gen_interlock`, `osvvm_axis_random`) do the same work to the
   instruction under `--tier=interp`.
 
+## The elaboration-time session is replayed (yavs-elab `srep.rs`, `pkgcall.rs`, yavs-interp, 2026-11-19; not on main, waits for a decision)
+
+- **Problem:** a testbench that creates its verification components in constant declarations (loggers, actors,
+  queues, bus handles of a verification library) makes the same impure constructor calls in every test. They change
+  package state (shared variables, the shared heap), so the elaboration call cache cannot keep them, and they were
+  about a fifth of a warm test of the 114-test AXI-stream suite (interpretation alone, 12 ms of about 62 ms CPU).
+- **Measured first:** a trace of every session call (callee, arguments, result, impure natives, reports, a digest of
+  the package state after the session) over three rounds at `-p1` and two at `-p0`: every test made the same 322
+  calls (202 in the session) with the same results and the same end state in every round; the 114 tests fall into
+  16 sessions, one per configuration of generics, which differ from the third call on (the generics are arguments).
+  `runner_cfg` reaches no call. The one impure input is `now`, read by every session (always 0 fs during elaboration).
+  The end state of a run whose copies of the functions differed (a closure's first runs) differed in bytes: the
+  temporaries the calls leave in the shared heap depend on the code that ran.
+- **Decision (on a branch):** each plain call of the session (a function of a package, no objects of a region) is a
+  step named by a digest of the step before it, the `Db` extent, the callee and the argument bytes. Stage entry
+  `sreq` keeps the result of every step earlier runs made (one entry per closure); `send` keeps the package state
+  after the last step (`SharedState::state_image`, the format of the `init` entry), named by the digest of the steps,
+  of the stored optimised copies the program took (`sopt`) and of everything the session's program was asked for
+  (functions, package constants, packages and their order: a state is valid for its program only). A run whose first
+  step is stored replays: each call is still lowered in order (`Session::ensure`, so the program, its ids, the `ir`
+  key and the copies it takes are a running session's), its result is the stored one, and nothing runs. At the end
+  the stored state replaces the package data and the shared heap (`Runtime::set_package_data`). A step that is not
+  stored, and anything other than a plain call (a call with objects of its region, a method or foreign call, a
+  shared variable of a region, an undo), first runs the replayed calls as the session would have run them
+  (`Session::materialise`: functions made hot before each, traced where the call would have been) and the run goes
+  on as without the replay; a rebuild of the session runs them too.
+- **What is stored, and when not:** only from a closure's second run (`StageCache::closure`); only a session whose
+  every call ran traced and did nothing but compute (any native not on `native::pure` taints it, also files,
+  `getenv`, clocks, assert state, foreign code), made no report, did not fail, opened no file, created no shared
+  variable of a region and read no library prefix; and not while the calls made optimised copies `sopt` does not
+  hold yet (the next run takes them and leaves another state). `now` without a kernel counts as an input of the
+  call, not a taint (`CallTrace::now_is_input`; `YAVS_SREP_NOW=0` makes it a taint). At most 32 end states per
+  closure. Package constants and bounds read from the package data during a replay are read from the state before
+  the calls: no call changes a constant or a bound.
+- **Switches:** `YAVS_SREP=0` neither replays nor stores; `YAVS_SREP_CHECK=1` runs every call and fails with an
+  internal error when a result or the end state differs from the stored one. Work counters `srep_steps`,
+  `srep_restored`, `srep_missed`, `srep_stored`.
+- **Costs:** a stored end state is the whole package state (3.2 MB for the AXI-stream testbench, one per
+  configuration); the run that stores it pays about 49 M instructions (packing and writing the image), once per
+  configuration and closure, usually the third run of the closure (the second writes `sopt`), so the steady
+  state starts at the fourth run; a run that replays and then misses runs the calls after all (about what it
+  cost before).
+- **Measured** (instructions, `perf stat`, fresh output directories made by each build at one fixed path, byte copy of
+  the old build as A/A): the 114-test AXI-stream suite at `-p1` 92.4 / 89.9 / 86.1 G to 76.7 / 70.5 / 71.0 G per
+  round (A/A 92.4 / 90.5 / 87.8 G), a short test 586 M to 414 M (-29 %); restored in 96 of 114 tests of the first round
+  and in all later ones. At `-p0` the later rounds 90.3 G to 72.8 G; the first round inside its trial spread (105 to
+  111 G against 106 to 120 G). The one-test-per-closure cells: the store run (the third) +49 M (+13 % and +9 %),
+  later runs -3.2 % and -1.0 %, six runs in a row +0.3 % and +0.7 %. `tools/realbench`, 38 tests, `auto` geometric
+  mean 0.996 (A/A 1.000), `auto-cold` 0.998 (A/A 0.999); the testbenches with verification components in
+  declarations 0.949 to 0.961. `YAVS_SREP_CHECK=1` clean on two suite rounds at `-p1` and at `-p0` and on the difftest
+  corpus (`yavs-auto-warm`, 1 and 4 threads, and with six earlier runs).
+- **Not on main:** storing package state after impure calls widens the `ecall`, `sopt` and `init` decisions, and
+  taking `now` during elaboration as an input instead of a taint is a choice, so both wait for a decision.
+
 ## The watching loop's tick is out of line (yavs-interp, #521, #544, 2026-10-22)
 
 - **`watch_tick` (name the running function for the sampler, look for compiled code) is a cold function** called every

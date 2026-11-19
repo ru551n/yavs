@@ -19,6 +19,7 @@ pub mod libstage;
 mod pkgcall;
 pub mod reach;
 mod sim;
+mod srep;
 mod stuck;
 mod summary;
 mod value;
@@ -36,6 +37,7 @@ pub use hier::{
     ObjId, ObjKind, PortEdge, ProcIdx, Scope, ScopeId, ScopeKind, Sel, Shape, SigObj,
 };
 pub use sim::{Built, Ir};
+pub use srep::stats as session_replay_stats;
 pub use stuck::{ProcTable, StuckWhy};
 pub use summary::{
     ActivityNames, activity_json, activity_text, assert_summary_json, assert_summary_text,

@@ -270,3 +270,13 @@ fn subtype_bounds_of_a_late_package_are_read_from_its_initialisation() {
         assert!(out.contains("late bound preserved"), "{out}");
     }
 }
+
+/// Later runs of the closure (the elaboration-time session stored and taken again, `srep`) and a
+/// run that checks the stored session give the same values.
+#[test]
+fn later_runs_give_the_same_values() {
+    let dir = design("late-pkg-srep");
+    for _ in 0..5 {
+        check(&run(&dir, &["--tier=interp"]));
+    }
+}

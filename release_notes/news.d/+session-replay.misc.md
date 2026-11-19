@@ -1,0 +1,1 @@
+A testbench that creates its verification components in constant declarations starts faster from its fourth run: the calls those declarations make, and the package state they leave, are taken from the compilation cache when their arguments are the same.

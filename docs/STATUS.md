@@ -1620,6 +1620,12 @@ round) and 105.1 G to 90.5 G (later rounds) at `-p0`; `YAVS_SOPT_CHECK=1` compar
 "The copies the calls optimised are kept with the closure"). A stored optimised copy is serialised once (`Program::opt_bytes`),
 so storing a lowering again copies bytes.
 
+The elaboration-time session itself is replayed (stage entries `sreq` and `send`, branch only, 2026-11-19): a run whose
+calls and arguments an earlier run of the closure stored takes their results and the package state they left instead of
+making the calls (`docs/decisions.md` "The elaboration-time session is replayed"). The 114-test AXI-stream suite at `-p1`:
+92.4 / 89.9 / 86.1 G to 76.7 / 70.5 / 71.0 G per round, a short test 586 M to 414 M; at `-p0` later rounds 90.3 G to
+72.8 G. `YAVS_SREP=0` turns it off, `YAVS_SREP_CHECK=1` runs the calls and compares. Not on main: waits for a decision.
+
 `Inst::visit` and `visit_mut` are generic over the closure instead of `dyn FnMut` (the optimiser, the predecoder and the verifier
 call them for every operand): `yavs run --no-cache` to 0 fs, instructions over the 42 realbench tests, geometric mean 0.973
 (`neorv32_*` 0.92 to 0.93, most others 0.97 to 0.98, `grlib_leon3mp` 1.003); the binary grows by 0.5 percent.

@@ -24,6 +24,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         return;
     }
     let (hits, runs, session_hits) = yavs_elab::call_cache_stats();
+    let srep = yavs_elab::session_replay_stats();
     let (reads, idle) = yavs_wave::var_counts();
     let (memo_hits, memo_runs) = yavs_interp::pmemo_stats();
     let (serial_execs, shared_publishes) = yavs_interp::serial_stats();
@@ -73,6 +74,10 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         ("ecall_hits", hits),
         ("ecall_runs", runs),
         ("ecall_session_hits", session_hits),
+        ("srep_steps", srep.0),
+        ("srep_restored", srep.1),
+        ("srep_missed", srep.2),
+        ("srep_stored", srep.3),
         ("elab_source_steps", yavs_elab::elab_source_steps()),
         ("lowered_funcs", yavs_elab::lowered_subprograms()),
         ("opt_funcs", yavs_ir::optimised_functions()),

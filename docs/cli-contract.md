@@ -225,6 +225,9 @@ identical to a run without it, at any `--threads`.
   file (made by the second different closure that starts with the prefix, the first only leaves a note);
   the output is the same as from source. A closure under a prefix whose library is lowered and kept
   (kinds `lib`, `libopt`, `libinit` beside the prefix entry) makes no entries of its own at any run.
+- The elaboration-time calls of a closure whose session can be replayed (kinds `sreq`, `send`) are stored by the
+  first run after the optimised copies of those calls (`sopt`) are stored, usually the third, and taken from the
+  fourth on: the third run of such a testbench is dearer, the steady state starts one run later. Output is the same.
 - The lowered form of the packages with run-time objects (signals, shared variables, constants
   that are not static) is kept beside it, `<dir>/yavs-cache/low-<key>.img`, when the design is
   elaborated without instantiating anything at elaboration time and the lowering is neither tiny

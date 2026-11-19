@@ -4899,6 +4899,50 @@ fn an_edge_run_that_would_change_nothing_is_skipped() {
     }
 }
 
+/// A region that waits on clocks and data: a wake for an event of a clock without its edge is
+/// held back in the kernel (none runs without an edge and reads nothing), the same values as the
+/// normal mode; a clock with both edges, one read as data, a record-field clock beside its data.
+#[test]
+fn a_clock_event_without_its_edge_does_not_wake_the_region() {
+    let dir = tempdir("cycle-waitfilter");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("waitfilter{w}.vhd"),
+            &with_width(include_str!("cycle/waitfilter.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_waitfilter");
+            assert!(normal.len() > 300, "{w} {t:?} {normal:?}");
+            let env = [("YAVS_CYCLE_STATS", "1")];
+            let (cycle, err) = run_vars(
+                &dir,
+                &[&t[..], &["--cycle"]].concat(),
+                "cycle_waitfilter",
+                &env,
+            );
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 10 of 17 processes run cycle-based"),
+                "{w}: {err}"
+            );
+            let n = |what: &str| -> u64 {
+                (err.lines())
+                    .find_map(|l| l.strip_prefix(&format!("cycle stats: {what}: ")))
+                    .unwrap_or_else(|| panic!("no count of {what}\n{err}"))
+                    .parse()
+                    .expect("a number")
+            };
+            assert_eq!(
+                n("runs without an edge that read nothing"),
+                0,
+                "{w} {t:?}\n{err}"
+            );
+            assert!(n("runs at an edge") > 100, "{w} {t:?}\n{err}");
+        }
+    }
+}
+
 /// Expression actuals of ports (a logic expression, a record aggregate, an integer and a vector
 /// expression) and array aggregates without a context (a range choice of a subtype, choices
 /// against the direction of the index subtype), against the normal mode.

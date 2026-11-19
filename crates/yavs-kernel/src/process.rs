@@ -917,9 +917,11 @@ pub(crate) struct Marks {
 pub(crate) struct ProcState {
     pub waveforms: Vec<Waveform>,
     pub effects: Vec<Effect>,
-    pub sens: Vec<(SignalId, Range)>,
+    /// The ranges of the coming wait, each with the edge kind its waiter is held to
+    /// (`Ctx::wait_on_edge`) or `ANY_EVENT`.
+    pub sens: Vec<(SignalId, Range, u8)>,
     /// The sensitivity the last commit registered.
-    pub sens_prev: Vec<(SignalId, Range)>,
+    pub sens_prev: Vec<(SignalId, Range, u8)>,
     /// The coming wait is exactly the one `sens_prev` holds (`Ctx::wait_on_again`): `sens`
     /// stays empty and the commit takes it from `sens_prev`.
     pub again: bool,
@@ -1029,6 +1031,9 @@ pub(crate) const ACT_ASSIGNED: u8 = 2;
 
 /// `ProcState::known` when no edge is known.
 pub(crate) const NO_EDGE: u64 = u64::MAX;
+
+/// The kind of a `ProcState::sens` range that any event resumes on (`Ctx::wait_on`).
+pub(crate) const ANY_EVENT: u8 = u8::MAX;
 
 /// One word naming an edge (signal, element, kind) for the known-edge test. An element is below
 /// 2^30 (a signal that large does not fit in memory); `Ctx::edge_known` of a larger one cannot
@@ -3509,7 +3514,23 @@ impl Ctx<'_> {
     /// Add `r` to the sensitivity of the coming wait.
     #[inline(always)]
     pub fn wait_on(&mut self, r: impl Into<SigRef>) -> Result<(), SimError> {
+        self.wait_on_kind(r.into(), ANY_EVENT)
+    }
+
+    /// `wait_on` of the one element `r` refers to, whose events resume the process only when
+    /// they make edge `kind` (as `Ctx::edge_by`) true; events of the other ranges of the wait
+    /// resume it as usual. The caller reads that edge itself (the signal keeps its history).
+    /// Any event resumes it for a range of more or fewer than one element, with
+    /// `Config::edge_triggers` off and for a process with an edge trigger of its own.
+    #[inline]
+    pub fn wait_on_edge(&mut self, r: impl Into<SigRef>, kind: u8) -> Result<(), SimError> {
         let r = r.into();
+        let one = r.range.is_some_and(|x| x.len == 1 && x.offset < 1 << 30);
+        self.wait_on_kind(r, if one { kind & 3 } else { ANY_EVENT })
+    }
+
+    #[inline(always)]
+    fn wait_on_kind(&mut self, r: SigRef, kind: u8) -> Result<(), SimError> {
         let range = self.sig(r)?.1;
         // What was named again before is in `sens` now, ahead of this range.
         if self.st.matched != 0 {
@@ -3523,7 +3544,7 @@ impl Ctx<'_> {
         if self.st.sens.capacity() == 0 {
             self.st.sens.reserve_exact(1);
         }
-        self.st.sens.push((r.signal, range));
+        self.st.sens.push((r.signal, range, kind));
         Ok(())
     }
 
@@ -3555,7 +3576,7 @@ impl Ctx<'_> {
         if st.sens.is_empty()
             && st.deadline.is_none()
             && let Some(next) = st.sens_prev.get(st.matched as usize)
-            && *next == (signal, range)
+            && *next == (signal, range, ANY_EVENT)
         {
             st.matched += 1;
             st.again = st.matched as usize == st.sens_prev.len();

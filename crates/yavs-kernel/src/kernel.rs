@@ -12,8 +12,8 @@ use smallvec::SmallVec;
 use crate::builder::{PortConv, PortMode, ProcFlags};
 use crate::error::{ErrorKind, SimError};
 use crate::process::{
-    ACT_ASSIGNED, ACT_SLOW, ACT_TIMER, Ctx, DriverInfo, Effect, LiveSink, OpMode, Out, OutB, OutV,
-    ProcId, ProcState, Process, Severity, Shared, SignalOp, check_ref, make_op,
+    ACT_ASSIGNED, ACT_SLOW, ACT_TIMER, ANY_EVENT, Ctx, DriverInfo, Effect, LiveSink, OpMode, Out,
+    OutB, OutV, ProcId, ProcState, Process, Severity, Shared, SignalOp, check_ref, make_op,
 };
 use crate::signal::{
     DelayMode, DriverId, ForceMode, GuardKind, Hits, Range, Reg, SigRef, Signal, SignalId, Waiter,
@@ -3000,8 +3000,10 @@ impl SimControl {
                                     runs += 1;
                                 }
                             }
+                            // A process may wait here under two triggers (`wait_on_edge`).
                             if runs > 1 {
                                 pids.sort();
+                                pids.dedup();
                             }
                         }
                         for &(p, tid) in &b.others {
@@ -5368,7 +5370,7 @@ impl SimControl {
             } else {
                 if self.procs[p as usize].perm != 0 {
                     // Its resident waiters are stale now: their signals' wake lists too.
-                    for (s, _) in &st.sens_prev {
+                    for (s, _, _) in &st.sens_prev {
                         self.waiters[s.0 as usize].drop_cache();
                     }
                 }
@@ -5379,16 +5381,28 @@ impl SimControl {
             }
             let list = if from_prev { &st.sens_prev } else { &st.sens };
             let mut i = 0;
-            while let Some(&(s, mut range)) = list.get(i) {
+            while let Some(&(s, mut range, kind)) = list.get(i) {
                 i += 1;
                 // Abutting ranges of one signal (the fields of a record pack in a sensitivity
                 // list) are one waiter: the same elements, one list entry instead of one per field.
-                while let Some(&(t, r)) = list.get(i)
+                while kind == ANY_EVENT
+                    && let Some(&(t, r, ANY_EVENT)) = list.get(i)
                     && t == s
                     && r.offset == range.end()
                 {
                     range.len += r.len;
                     i += 1;
+                }
+                // A range held to an edge (`Ctx::wait_on_edge`) carries that edge's trigger,
+                // unless the process has one of its own.
+                let (mut trigger, mut tid) = (trigger, tid);
+                if kind != ANY_EVENT && tid == 0 && self.cfg.edge_triggers {
+                    let t = dyn_trigger(crate::process::edge_key(s, range.offset, kind));
+                    tid = *self.trig_ids.entry(t).or_insert_with(|| {
+                        self.triggers.push(t);
+                        self.triggers.len() as u32
+                    });
+                    trigger = Some(t);
                 }
                 let sig = &mut self.signals[s.0 as usize];
                 sig.watched = true;

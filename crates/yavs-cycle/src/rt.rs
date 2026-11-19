@@ -314,8 +314,8 @@ pub(crate) struct RegionProc<const RAIL: bool> {
     pub clocks: Vec<(SigRef, u8, usize)>,
     /// Nothing but the clocks wakes the region: a wake without an edge does nothing.
     pub clocks_only: bool,
-    /// What the region waits on.
-    pub waits: Vec<SigRef>,
+    /// What the region waits on, each with the edge its waiter is held to ([`held_waits`]).
+    pub waits: Vec<(SigRef, Option<u8>)>,
     pub started: bool,
     /// The checks of the code by site: what they say, and the member process and its name.
     pub checks: Arc<Sites>,
@@ -1721,9 +1721,7 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             if R {
                 self.rail = rail;
             }
-            for &w in &self.waits {
-                ctx.wait_on(w)?;
-            }
+            self.wait_all(ctx)?;
             self.started = true;
             return Ok(());
         }
@@ -1752,9 +1750,7 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                 self.rail = rail;
             }
             if !ctx.wait_same() {
-                for &w in &self.waits {
-                    ctx.wait_on(w)?;
-                }
+                self.wait_all(ctx)?;
             }
             return Ok(());
         }
@@ -1792,9 +1788,7 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                     self.flush_ex();
                 }
                 if !ctx.wait_same() {
-                    for &w in &self.waits {
-                        ctx.wait_on(w)?;
-                    }
+                    self.wait_all(ctx)?;
                 }
                 return Ok(());
             }
@@ -1875,8 +1869,17 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             self.rail = rail;
         }
         if !ctx.wait_same() {
-            for &w in &self.waits {
-                ctx.wait_on(w)?;
+            self.wait_all(ctx)?;
+        }
+        Ok(())
+    }
+
+    /// Name the region's wait.
+    fn wait_all(&self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        for &(w, k) in &self.waits {
+            match k {
+                Some(k) => ctx.wait_on_edge(w, k)?,
+                None => ctx.wait_on(w)?,
             }
         }
         Ok(())
@@ -1900,4 +1903,28 @@ impl<const RAIL: bool> RegionProc<RAIL> {
         }
         self.export::<false>(ctx, None)
     }
+}
+
+/// The region's `waits`, each with the edge kind (`Ctx::edge_by`) its waiter is held to: a clock
+/// all of whose classes test that one kind and that no other wait overlaps (a clock read as data
+/// or a reset wakes on every event). A wake for another event of it would find no edge.
+pub(crate) fn held_waits(
+    clocks: &[(SigRef, u8, usize)],
+    waits: &[SigRef],
+) -> Vec<(SigRef, Option<u8>)> {
+    let overlap = |a: &SigRef, b: &SigRef| {
+        a.signal == b.signal
+            && match (a.range, b.range) {
+                (Some(x), Some(y)) => x.overlaps(y),
+                _ => true,
+            }
+    };
+    (waits.iter())
+        .map(|w| {
+            let mut kinds = clocks.iter().filter(|c| c.0 == *w).map(|c| c.1);
+            let k = kinds.next().filter(|&k| kinds.all(|j| j == k));
+            let k = k.filter(|_| waits.iter().filter(|v| overlap(v, w)).count() == 1);
+            (*w, k)
+        })
+        .collect()
 }

@@ -34,7 +34,8 @@ edges only the logic that a changed input reaches runs, so the part of a design 
 At a clock edge only the logic that the registers of that clock and the changed inputs reach runs, and only the
 outputs that logic writes are compared with what was last driven, so in a design with several clocks an edge of one
 clock costs what that clock's part of the design costs. A small region whose last edge changed nothing, with no
-input changed since, skips the next edge of the same clocks, as the event simulation skips an idle process.
+input changed since, skips the next edge of the same clocks, as the event simulation skips an idle process. An event of
+a clock that is not an edge the region uses does not wake it, also when the region waits on data inputs as well.
 
 Which processes join is decided by yavs, per process (:ref:`cycle-selection`). You do not mark anything in the
 VHDL.

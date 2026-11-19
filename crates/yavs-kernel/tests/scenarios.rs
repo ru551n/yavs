@@ -1676,6 +1676,170 @@ fn wait_edge_resumes_only_on_the_edge() {
     assert!(with.1 >= 6, "{with:?}");
 }
 
+/// A range of a wait held to an edge (`Ctx::wait_on_edge`) resumes the process only in a cycle
+/// with that edge; events of the other ranges of the wait, the abutting elements of the clock's
+/// own signal included, resume it as before. The runs that see an edge or an event are the same
+/// with the filter as without, and with it there is no run that sees neither.
+#[test]
+fn wait_on_edge_holds_back_only_its_range() {
+    let run = |w: u32, kind: u8, triggers: bool| {
+        let mut b = Builder::new();
+        let zero = |n: u32| LogicVec::new(n as usize, StdULogic::Zero);
+        let cv = b.signal("cv", SignalType::logic(w), &zero(w));
+        let d = b.signal("d", SignalType::logic(w), &zero(w));
+        let (dc, dd) = (b.driver(cv), b.driver(d));
+        let (mut c_now, mut d_now) = (zero(w), zero(w));
+        let script: Vec<StdULogic> = "10H0L1X1010LH1"
+            .chars()
+            .map(|ch| ch.to_string().parse::<LogicVec>().unwrap().get(0))
+            .collect();
+        let mut t = 0u32;
+        b.process(
+            "stim",
+            NONE,
+            &[dc, dd],
+            p(move |c| {
+                let (step, at) = (t / 5, t % 5);
+                let (mut cc, mut dch) = (false, false);
+                if at == 0 {
+                    c_now.set(w as usize - 1, script[step as usize % script.len()]);
+                    cc = true;
+                }
+                // Data in the cycle of a clock event and between them; the clock's neighbours.
+                if at == 0 && step % 3 == 1 || at == 2 && step % 4 == 2 {
+                    let i = (step * 7 % w) as usize;
+                    d_now.set(
+                        i,
+                        if d_now.get(i) == StdULogic::One {
+                            StdULogic::Zero
+                        } else {
+                            StdULogic::One
+                        },
+                    );
+                    dch = true;
+                }
+                if w > 1 && (at == 3 && step % 5 == 3 || at == 0 && step % 7 == 0) {
+                    let i = (step % (w - 1)) as usize;
+                    c_now.set(
+                        i,
+                        if c_now.get(i) == StdULogic::One {
+                            StdULogic::Zero
+                        } else {
+                            StdULogic::One
+                        },
+                    );
+                    cc = true;
+                }
+                if cc {
+                    c.assign(dc, None, &[(Time::ZERO, &c_now)], DelayMode::INERTIAL)?;
+                }
+                if dch {
+                    c.assign(dd, None, &[(Time::ZERO, &d_now)], DelayMode::INERTIAL)?;
+                }
+                t += 1;
+                if t < 150 { c.wait_for(ns(1)) } else { Ok(()) }
+            }),
+        );
+        let seen = Arc::new(std::sync::Mutex::new((Vec::new(), 0u32)));
+        let out = seen.clone();
+        let mut first = true;
+        let clk = cv.slice(w - 1, 1);
+        b.process(
+            "reg",
+            NONE,
+            &[],
+            p(move |c| {
+                if !std::mem::replace(&mut first, false) {
+                    let e = c.edge_by(clk, kind)? == Some(true);
+                    let ev = c.event(d)?;
+                    let nb = w > 1 && c.event(cv.slice(0, w - 1))?;
+                    let mut o = out.lock().unwrap();
+                    if e || ev || nb {
+                        o.0.push((c.now(), e, ev, nb));
+                    } else {
+                        o.1 += 1;
+                    }
+                }
+                if w > 1 {
+                    c.wait_on(cv.slice(0, w - 1))?;
+                }
+                c.wait_on_edge(clk, kind)?;
+                c.wait_on(d)
+            }),
+        );
+        let cfg = Config {
+            edge_triggers: triggers,
+            ..Config::default()
+        };
+        let (mut sim, _) = build(b, cfg);
+        sim.run_until(ns(200)).unwrap();
+        seen.lock().unwrap().clone()
+    };
+    for w in [1, 63, 64, 65, 128] {
+        for kind in [1, 0, EDGE_LEVEL | 1, EDGE_LEVEL] {
+            let (with, without) = (run(w, kind, true), run(w, kind, false));
+            assert_eq!(with.0, without.0, "width {w} kind {kind}");
+            assert_eq!(with.1, 0, "width {w} kind {kind}: runs with nothing to see");
+            assert!(
+                without.1 > 0,
+                "width {w} kind {kind}: no event without the edge"
+            );
+            assert!(with.0.iter().any(|r| r.1), "width {w} kind {kind}: no edge");
+            assert!(with.0.iter().any(|r| r.2 && !r.1), "width {w} kind {kind}");
+        }
+    }
+}
+
+/// A process that waits on a clock for any event and for one edge runs once per event, also in
+/// the batch of a clock with several triggers (one of them held back).
+#[test]
+fn a_process_under_two_triggers_of_one_signal_runs_once() {
+    let mut b = Builder::new();
+    let clk = b.signal(
+        "clk",
+        SignalType::logic(1),
+        &LogicVec::new(1, StdULogic::Zero),
+    );
+    let dc = b.driver(clk);
+    // One waveform: in the cycles of the clock nothing else runs (the batch of its wake list).
+    b.process(
+        "stim",
+        NONE,
+        &[dc],
+        p(move |c| {
+            let (l1, l0): (LogicVec, LogicVec) = ("1".parse().unwrap(), "0".parse().unwrap());
+            let w: Vec<(Time, &LogicVec)> = (1..=20)
+                .map(|k| (ns(5 * k), if k % 2 == 1 { &l1 } else { &l0 }))
+                .collect();
+            c.assign(dc, None, &w, DelayMode::Transport)
+        }),
+    );
+    let runs = Arc::new(std::sync::Mutex::new(vec![0u32; 21]));
+    for i in 0..21 {
+        let out = runs.clone();
+        b.process(
+            &format!("r{i}"),
+            NONE,
+            &[],
+            p(move |c| {
+                out.lock().unwrap()[i] += 1;
+                if i < 20 {
+                    c.wait_on(clk)?;
+                    c.wait_on_edge(clk.slice(0, 1), 1)
+                } else {
+                    c.wait_on_edge(clk.slice(0, 1), 0)
+                }
+            }),
+        );
+    }
+    let (mut sim, _) = build(b, Config::default());
+    sim.run_until(ns(102)).unwrap();
+    let r = runs.lock().unwrap();
+    // Events at 5, 10, .., 100 ns: 20, half of them falling; plus the first run.
+    assert!(r[..20].iter().all(|&n| n == 21), "{r:?}");
+    assert_eq!(r[20], 11, "{r:?}");
+}
+
 #[test]
 fn hook_names_the_reporting_process() {
     struct Names(Arc<std::sync::Mutex<Vec<String>>>);

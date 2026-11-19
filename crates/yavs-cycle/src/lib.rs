@@ -2229,7 +2229,8 @@ fn finish(
     let (sig_bytes, sig_len, ram_writes) = (b.sig_bytes, b.sig_len, b.ram_writes);
     let (member_words, chunk_members, class_members) =
         (b.member_words, b.chunk_members, b.class_members);
-    let (all, chunks, ins, clocks, waits) = (b.all, b.chunks, b.ins, b.clocks, b.waits);
+    let (all, chunks, ins, clocks) = (b.all, b.chunks, b.ins, b.clocks);
+    let waits = rt::held_waits(&clocks, &b.waits);
     let (words, init, clocks_only, err, log, uninit) =
         (b.words, b.init, b.clocks_only, b.err, b.log, b.uninit);
     let (useed, state) = (Arc::new(b.useed), Arc::new(b.state));

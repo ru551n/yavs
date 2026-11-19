@@ -460,7 +460,8 @@ fn fold_family(f: Family, v: &[ConstValue], result: &TypeKind) -> Result<ConstVa
                     "`rem` by zero"
                 }));
             }
-            let r = ovf(x.checked_rem(y))?;
+            // The most negative value rem or mod -1 is 0, no overflow (only `/` overflows).
+            let r = x.wrapping_rem(y);
             let r = if f == F::Mod && r != 0 && ((r < 0) != (y < 0)) {
                 r + y
             } else {

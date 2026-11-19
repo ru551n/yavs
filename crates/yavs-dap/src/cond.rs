@@ -752,9 +752,10 @@ fn int_op(op: BinaryOp, x: i64, y: i64) -> Option<i64> {
         BinaryOp::Sub => x.checked_sub(y),
         BinaryOp::Mul => x.checked_mul(y),
         BinaryOp::Div => x.checked_div(y),
-        BinaryOp::Rem => x.checked_rem(y),
+        // The most negative value rem or mod -1 is 0, not an overflow.
+        BinaryOp::Rem => (y != 0).then(|| x.wrapping_rem(y)),
         // VHDL `mod` takes the sign of the right operand.
-        BinaryOp::Mod => x.checked_rem(y).map(|m| {
+        BinaryOp::Mod => (y != 0).then(|| x.wrapping_rem(y)).map(|m| {
             if m != 0 && (m < 0) != (y < 0) {
                 m + y
             } else {
@@ -896,6 +897,7 @@ mod tests {
             ("t", (time.clone(), Lit::Phys(5_000_000))),
             ("r", (rec, Lit::Record(vec![Lit::Int(2)]))),
             ("tb.u1.s", (LitType::Int(Bounds::I64), Lit::Int(1))),
+            ("m", (LitType::Int(Bounds::I64), Lit::Int(i64::MIN))),
         ]));
         let ok = |s: &str| parse(s).and_then(|c| c.eval(&env));
         assert_eq!(ok("i = 6"), Ok(true));
@@ -923,6 +925,11 @@ mod tests {
         assert!(ok("v(9) = '1'").unwrap_err().contains("outside"));
         assert!(ok("i = '1'").is_err());
         assert!(ok("i / 0 = 1").unwrap_err().contains("overflow"));
+        assert_eq!(ok("m rem (-1) = 0 and m mod (-1) = 0"), Ok(true));
+        assert_eq!(ok("m rem 3 = -2 and m mod 3 = 1"), Ok(true));
+        assert!(ok("m / (-1) = 0").unwrap_err().contains("overflow"));
+        assert!(ok("i rem 0 = 0").unwrap_err().contains("overflow"));
+        assert!(ok("i mod 0 = 0").unwrap_err().contains("overflow"));
     }
 
     /// `M` with a local `loc`, whose value waits for the stop.

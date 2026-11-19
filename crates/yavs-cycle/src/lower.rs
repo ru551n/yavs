@@ -4,7 +4,7 @@
 //! literal's are counted per site, a variable's missing initial value per element. Anything else
 //! is a reason to leave the process in the event kernel, never a guess.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use yavs_diag::Span;
 use yavs_elab::{Bounds, Elaborated, LeafId, ProcInst, Shape};
@@ -30,6 +30,9 @@ pub(crate) enum Ref {
     Sig(u32),
     Loc(u32),
     Edge,
+    /// Under `--cycle-exact-meta`: two words, how far the region's image lies from this one (0
+    /// on the region's own, see [`Op::Other`]) and the bits of a `'U'` start value ([`Op::Seed`]).
+    Oth,
 }
 
 /// The `ieee` subprogram with this mangled name that has a native key, remembered per name (a
@@ -516,6 +519,22 @@ pub(crate) enum Op {
         site: u32,
         args: Vec<(Ref, u32)>,
     },
+    /// Under `--cycle-exact-meta`: `src` (`len` elements) as the region's image holds it, read
+    /// from that image by the second one (`oth`, the [`Ref::Oth`] word: the distance to it in
+    /// bytes, 0 on the region's own image, which reads its own `src`).
+    Other {
+        dst: Ref,
+        src: Ref,
+        len: u32,
+        oth: Ref,
+    },
+    /// Under `--cycle-exact-meta`: a start value `'U'`: `len` ones on the images that set `'U'`
+    /// seeds to 1, zeros on the region's (the second word of `oth`).
+    Seed {
+        dst: Ref,
+        len: u32,
+        oth: Ref,
+    },
 }
 
 impl Op {
@@ -542,7 +561,9 @@ impl Op {
             | Op::IntLit { dst, .. }
             | Op::IntCmp { dst, .. }
             | Op::Int { dst, .. }
-            | Op::IndexRead { dst, .. } => Some(dst),
+            | Op::IndexRead { dst, .. }
+            | Op::Other { dst, .. }
+            | Op::Seed { dst, .. } => Some(dst),
             // These read what they write.
             Op::Blend { .. }
             | Op::Insert { .. }
@@ -652,6 +673,15 @@ impl Op {
                 *x = site(*x);
             }
             Op::If { .. } => {}
+            Op::Other { dst, src, oth, .. } => {
+                *dst = d(*dst);
+                *src = s(*src);
+                *oth = s(*oth);
+            }
+            Op::Seed { dst, oth, .. } => {
+                *dst = d(*dst);
+                *oth = s(*oth);
+            }
             Op::Note { site: x, args } => {
                 *x = site(*x);
                 for a in args {
@@ -739,6 +769,12 @@ pub(crate) struct Body {
     /// The process variables among those (first word, elements): the second image of
     /// `--cycle-exact-meta` starts them at 1 (`rt::Rail`).
     pub useed: Vec<(u32, u32)>,
+    /// Under `--cycle-exact-meta`: a comparison or conversion of logic values the code cannot
+    /// give the normal mode's result on a metavalue (`Lx::differs`): the second image may take
+    /// another branch, so its registers keep the region's values where only it changed them
+    /// (`rt::RegionProc::rail_keep`).
+    #[serde(default)]
+    pub keep: bool,
     /// The checks of the body, numbered by `site`, each with the source place of the statement
     /// (an operation for arithmetic) it belongs to, then the statements of the calls it is inlined
     /// in, innermost first.
@@ -1081,6 +1117,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         metas: 0,
         uninit: 0,
         useed: Vec::new(),
+        sure: HashSet::new(),
         checks: Vec::new(),
         at: db.stmts[p.stmt].span,
         unrolled: 0,
@@ -1173,6 +1210,9 @@ struct Lx<'a> {
     metas: u32,
     uninit: u64,
     useed: Vec<(u32, u32)>,
+    /// Under `--cycle-exact-meta`: booleans computed from the region's values on every image
+    /// (`Lx::other`), for `Body::keep`.
+    sure: HashSet<Ref>,
     checks: Vec<(Check, Vec<Span>)>,
     /// The place new check sites report: the statement being lowered.
     at: Span,
@@ -1193,11 +1233,28 @@ struct Lx<'a> {
 }
 
 impl Lx<'_> {
-    fn body(self, kind: Kind, clock: Option<Clock>, reset: Option<(LeafId, u32, u8)>) -> Body {
+    fn body(mut self, kind: Kind, clock: Option<Clock>, reset: Option<(LeafId, u32, u8)>) -> Body {
+        // A combinational member that drives a signal it reads reads it as of its own run, which
+        // the region's image no longer holds at the end of that run: its own value there.
+        // A clocked member reads its own image: taking the region's choices there made a 'U'
+        // the normal mode does not have (Microwatt's cache, 2026-11-19, cause not found yet);
+        // so its conditions are none of `sure` and it keeps registers (`Body::keep`).
+        if kind == Kind::Clocked {
+            self.ops = all_own(std::mem::take(&mut self.ops));
+            self.sure.clear();
+        }
+        if kind == Kind::Comb && crate::region::exact_meta() {
+            let mut w = HashSet::new();
+            sig_writes(&self.ops, &mut w);
+            if !w.is_empty() {
+                self.ops = own_sigs(std::mem::take(&mut self.ops), &w);
+            }
+        }
         let reports = (self.loud.borrow().iter())
             .filter_map(|&x| self.e.region_calls.get(&(self.p.scope, x)))
             .flat_map(|c| c.reports.iter().cloned())
             .collect();
+        let keep = crate::region::exact_meta() && !conds_sure(&self.ops, &self.sure);
         Body {
             reports,
             kind,
@@ -1219,6 +1276,7 @@ impl Lx<'_> {
             meta_out: self.metas - self.lit_cmp.len() as u32,
             uninit: self.uninit,
             useed: self.useed,
+            keep,
             checks: self.checks,
         }
     }
@@ -1862,9 +1920,16 @@ impl Lx<'_> {
     /// alternative, or `others`, needs no test (the choices cover every value).
     fn case(&mut self, sel: ExprId, matching: bool, alts: &[(&ChoiceSet, Br)]) -> R<()> {
         let v = self.expr(sel)?;
-        let v = match v {
-            Val::Part(p) => Val::Part(self.materialise(p)),
-            v => v,
+        // Under `--cycle-exact-meta` a selector with a metavalue matches no choice of
+        // `std_ulogic` codes: the `others` branch, as in the normal mode.
+        let nine = self.nine_valued(self.db.base(self.db.exprs[sel].subtype));
+        let (v, follow) = match v {
+            Val::Part(p) if nine => match self.other(&p) {
+                Some(o) => (Val::Part(o), true),
+                None => (Val::Part(self.materialise(p)), false),
+            },
+            Val::Part(p) => (Val::Part(self.materialise(p)), false),
+            v => (v, false),
         };
         let mut chain: Vec<(Option<Ref>, Br)> = Vec::new();
         for (k, (cs, b)) in alts.iter().enumerate() {
@@ -1874,6 +1939,9 @@ impl Lx<'_> {
                 break;
             }
             let c = self.choices(&v, cs, matching)?;
+            if follow {
+                self.sure.insert(c);
+            }
             chain.push((Some(c), *b));
         }
         self.ref_chain(&chain)
@@ -4694,6 +4762,19 @@ impl Lx<'_> {
         Ok(span)
     }
 
+    /// `t` is `std_ulogic` or an array of it (not `BIT` or `BOOLEAN`, never a metavalue).
+    fn nine_valued(&self, t: TypeId) -> bool {
+        let db = self.db;
+        let t = match &db.types[t].kind {
+            TypeKind::Array { elem, .. } => db.base(*elem),
+            _ => t,
+        };
+        let wk = &db.well_known;
+        yavs_elab::elem_of(db, t) == yavs_kernel::Elem::Logic
+            && Some(t) != wk.bit
+            && Some(t) != wk.boolean
+    }
+
     fn logic_array(&self, st: SubtypeId) -> bool {
         let db = self.db;
         match &db.types[db.base(st)].kind {
@@ -5604,7 +5685,7 @@ impl Lx<'_> {
                                 (Val::Int(x), Val::Int(y)) => {
                                     Val::Part(part_of(self.int_cmp(Cmp::Eq, x, y), 1))
                                 }
-                                (x, y) => self.vec_eq(x, y, false, false)?,
+                                (x, y) => self.vec_eq(x, y, false, false, false)?,
                             };
                             all = Some(match all {
                                 None => e,
@@ -5624,7 +5705,10 @@ impl Lx<'_> {
                     Family::Eq | Family::Neq | Family::MEq | Family::MNeq => {
                         let (a, b) = two(self)?;
                         let ne = matches!(fam, Family::Neq | Family::MNeq);
-                        self.vec_eq(a, b, ne, matches!(fam, Family::MEq | Family::MNeq))
+                        // `?=` gives `'U'` or `'X'` on a metavalue, not false: not forced.
+                        let nine =
+                            self.nine_valued(ty) && !matches!(fam, Family::MEq | Family::MNeq);
+                        self.vec_eq(a, b, ne, matches!(fam, Family::MEq | Family::MNeq), nine)
                     }
                     // `??` of BIT: the value itself.
                     Family::Cond => one(self),
@@ -5647,6 +5731,12 @@ impl Lx<'_> {
                         match name.as_str() {
                             // A two-state value is never a metavalue.
                             "is_x" => return Ok(Val::Part(self.bool_lit(false))),
+                            // A metavalue gives '0' (the default `xmap`): so on every image of
+                            // `--cycle-exact-meta`.
+                            "to_bit" | "to_bitvector" | "to_01" if args.len() == 1 => {
+                                let v = one(self)?;
+                                return self.meta_zero(v).map(no_dims);
+                            }
                             // Identities in two-state values (their index ranges are their own).
                             "to_stdulogic" | "to_bit" | "to_bitvector" | "to_stdlogicvector"
                             | "to_stdulogicvector" | "to_x01" | "to_x01z" | "to_ux01" | "to_01" => {
@@ -5787,6 +5877,12 @@ impl Lx<'_> {
                         });
                         Ok(Val::Part(t))
                     }
+                    // `??` of a metavalue is false, `to_01` and `to_bitvector` give '0' for one
+                    // (the default `xmap`): so on every image of `--cycle-exact-meta`.
+                    I::Truthy | I::To01 | I::ToBitVector if args.len() == 1 => {
+                        let v = one(self)?;
+                        self.meta_zero(v).map(no_dims)
+                    }
                     // Identities in two-state values.
                     I::ToSulv | I::Conv(..) | I::To01 | I::ToBitVector | I::Truthy => {
                         one(self).map(no_dims)
@@ -5873,7 +5969,8 @@ impl Lx<'_> {
                     I::Match | I::MatchEq { .. } => {
                         let ne = matches!(op, I::MatchEq { ne: true, .. });
                         let (a, b) = two(self)?;
-                        self.vec_eq(a, b, ne, true)
+                        // `?=` gives `'U'` or `'X'` on a metavalue, not false: not forced.
+                        self.vec_eq(a, b, ne, true, matches!(op, I::Match))
                     }
                     I::ToInteger { signed } => {
                         let a = {
@@ -5883,6 +5980,9 @@ impl Lx<'_> {
                         if a.len > 64 {
                             return Err("`to_integer` of a vector of more than 64 elements".into());
                         }
+                        // The region's value on every image (`Lx::other`): an index of a
+                        // start value reads where the region's reads.
+                        let a = self.other(&a).unwrap_or(a);
                         let ra = self.whole(a);
                         let (lo, hi) = if signed {
                             (
@@ -6300,7 +6400,7 @@ impl Lx<'_> {
 
     /// `a = b` (`ne`: `/=`) of logic values; `matching`: `?=` and `std_match`, where a `'-'` of
     /// a literal operand matches anything.
-    fn vec_eq(&mut self, a: Val, b: Val, ne: bool, matching: bool) -> R<Val> {
+    fn vec_eq(&mut self, a: Val, b: Val, ne: bool, matching: bool, nine: bool) -> R<Val> {
         let (a, b) = (self.part(a)?, self.part(b)?);
         if a.len != b.len {
             if matching {
@@ -6314,12 +6414,24 @@ impl Lx<'_> {
             let v = if b.lit.is_some() { a } else { b };
             self.lit_cmp.insert(k);
             let codes = self.lits[k as usize].clone();
-            let r = self.match_codes(v, &codes, matching)?;
+            let ov = if nine && !ne { self.other(&v) } else { None };
+            let r = self.match_codes(ov.unwrap_or(v), &codes, matching)?;
+            if ov.is_some() {
+                self.sure.insert(r);
+            }
             if !ne {
                 return Ok(Val::Part(part_of(r, 1)));
             }
             return self.not(Val::Part(part_of(r, 1)));
         }
+        // Under `--cycle-exact-meta` every image compares the region's values: a choice on a
+        // start value is the region's on the second image too (`Lx::other`).
+        let o = if nine && !(matching && ne) {
+            self.other(&a).zip(self.other(&b))
+        } else {
+            None
+        };
+        let (a, b) = o.unwrap_or((a, b));
         let (ra, rb) = (self.whole(a), self.whole(b));
         let t = self.tmp(1);
         self.ops.push(Op::VecEq {
@@ -6329,7 +6441,101 @@ impl Lx<'_> {
             len: a.len,
             ne,
         });
+        if o.is_some() {
+            self.sure.insert(t.r);
+        }
         Ok(Val::Part(t))
+    }
+
+    /// Under `--cycle-exact-meta`: `p` as the region's image holds it, read there by every
+    /// image ([`Op::Other`]; its own value on the region's image), so a comparison or conversion
+    /// of it takes the region's choice on each, as without the second image, and never makes a
+    /// `'U'` where the normal mode has a value. A literal is itself; `None` where that image's
+    /// value at this point is not in memory (a temporary, a variable, an element chosen at run
+    /// time, an array of integers).
+    fn other(&mut self, p: &Part) -> Option<Part> {
+        if !crate::region::exact_meta() || p.int.is_some() {
+            return None;
+        }
+        match p.r {
+            Ref::Sig(_) if p.at.is_none() && p.lit.is_none() => {}
+            _ if self.literal_part(p) => return Some(*p),
+            _ => return None,
+        }
+        let o = self.loc(words(p.full));
+        self.ops.push(Op::Other {
+            dst: o,
+            src: p.r,
+            len: p.full,
+            oth: Ref::Oth,
+        });
+        Some(Part {
+            r: o,
+            fresh: true,
+            leaf: None,
+            ..*p
+        })
+    }
+
+    /// The integer `i` as the region's image holds it ([`Lx::other`]): a signal's, or a literal.
+    fn other_int(&mut self, i: IntV) -> Option<IntV> {
+        if !crate::region::exact_meta() {
+            return None;
+        }
+        match i.r {
+            Ref::Sig(_) => {}
+            Ref::Loc(_)
+                if i.fresh
+                    && (self.ops.iter().rev().take(16))
+                        .any(|o| matches!(o, Op::IntLit { dst, .. } if *dst == i.r)) =>
+            {
+                return Some(i);
+            }
+            _ => return None,
+        }
+        let o = self.loc(1);
+        self.ops.push(Op::Other {
+            dst: o,
+            src: i.r,
+            len: 64,
+            oth: Ref::Oth,
+        });
+        Some(IntV {
+            r: o,
+            fresh: true,
+            leaf: None,
+            ..i
+        })
+    }
+
+    /// `v` as the region's image holds it ([`Lx::other`]), for a conversion that gives '0' for a
+    /// metavalue (`to_01`, `to_bit`, `??`): the region reads one as 0.
+    fn meta_zero(&mut self, v: Val) -> R<Val> {
+        let Val::Part(p) = v else {
+            return Ok(v);
+        };
+        Ok(Val::Part(match self.other(&p) {
+            // A boolean (`??`) so made is `sure`.
+            Some(o) if o.len == 1 && o.r != p.r => {
+                let r = self.whole(o);
+                self.sure.insert(r);
+                Part {
+                    dims: o.dims,
+                    ..part_of(r, 1)
+                }
+            }
+            Some(o) => o,
+            None => p,
+        }))
+    }
+
+    /// `p` is a temporary a literal was just written to (its one writer).
+    fn literal_part(&self, p: &Part) -> bool {
+        matches!(p.r, Ref::Loc(_))
+            && p.fresh
+            && p.at.is_none()
+            && (self.ops.iter().rev().take(16))
+                .any(|o| matches!(o, Op::Lit { dst, .. } if *dst == p.r))
     }
 
     /// `numeric_std` `/`, `rem` (1) and `mod` (2): vectors of at most 64 elements, computed in
@@ -6418,6 +6624,9 @@ impl Lx<'_> {
         use yavs_ir::ieee::Form;
         if form == Form::Vv {
             let (a, b, n) = self.num_operands(args, form, signed)?;
+            // The region's values on every image (`Lx::other`).
+            let o = self.other(&a).zip(self.other(&b));
+            let (a, b) = o.unwrap_or((a, b));
             let (ra, rb) = (self.whole(a), self.whole(b));
             let t = self.tmp(1);
             self.ops.push(Op::VCmp {
@@ -6428,6 +6637,9 @@ impl Lx<'_> {
                 b: rb,
                 len: n,
             });
+            if o.is_some() {
+                self.sure.insert(t.r);
+            }
             return Ok(Val::Part(t));
         }
         let [a, b] = args else {
@@ -6445,6 +6657,8 @@ impl Lx<'_> {
         if !signed {
             self.natural(i);
         }
+        let o = self.other(&v).zip(self.other_int(i));
+        let (v, i) = o.unwrap_or((v, i));
         if v.len > if signed { 64 } else { 63 } {
             // Both as vectors one wider than the vector (the integer fits in 64 elements).
             let n = v.len + 1;
@@ -6461,6 +6675,9 @@ impl Lx<'_> {
                 b: rq,
                 len: n,
             });
+            if o.is_some() {
+                self.sure.insert(t.r);
+            }
             return Ok(Val::Part(t));
         }
         let rv = self.whole(v);
@@ -6472,8 +6689,115 @@ impl Lx<'_> {
             signed,
         });
         let (p, q) = if swap { (i, vi) } else { (vi, i) };
-        Ok(Val::Part(part_of(self.int_cmp(c, p, q), 1)))
+        let r = self.int_cmp(c, p, q);
+        if o.is_some() {
+            self.sure.insert(r);
+        }
+        Ok(Val::Part(part_of(r, 1)))
     }
+}
+
+/// `ops` with every `Op::Other` reading its own image.
+fn all_own(ops: Vec<Op>) -> Vec<Op> {
+    (ops.into_iter())
+        .map(|op| match op {
+            Op::Other { dst, src, len, .. } => Op::Copy { dst, src, len },
+            Op::If { cond, then, else_ } => Op::If {
+                cond,
+                then: all_own(then),
+                else_: all_own(else_),
+            },
+            op => op,
+        })
+        .collect()
+}
+
+/// The signals `ops` write.
+fn sig_writes(ops: &[Op], w: &mut HashSet<u32>) {
+    for op in ops {
+        match op {
+            Op::If { then, else_, .. } => {
+                sig_writes(then, w);
+                sig_writes(else_, w);
+            }
+            Op::Blend { dst, .. } | Op::Insert { dst, .. } | Op::IndexWrite { dst, .. } => {
+                if let Ref::Sig(k) = dst {
+                    w.insert(*k);
+                }
+            }
+            op => {
+                if let Some(Ref::Sig(k)) = op.clone().dst_mut() {
+                    w.insert(*k);
+                }
+            }
+        }
+    }
+}
+
+/// `ops` with every `Op::Other` of a signal of `w` reading its own image.
+fn own_sigs(ops: Vec<Op>, w: &HashSet<u32>) -> Vec<Op> {
+    (ops.into_iter())
+        .map(|op| match op {
+            Op::Other {
+                dst,
+                src: Ref::Sig(k),
+                len,
+                ..
+            } if w.contains(&k) => Op::Copy {
+                dst,
+                src: Ref::Sig(k),
+                len,
+            },
+            Op::If { cond, then, else_ } => Op::If {
+                cond,
+                then: own_sigs(then, w),
+                else_: own_sigs(else_, w),
+            },
+            op => op,
+        })
+        .collect()
+}
+
+/// Every condition of `ops` (an `If`'s, a boolean `Select`'s) follows the normal mode on every
+/// image of `--cycle-exact-meta`: computed only from `sure` ones (`Lx::other`), literals and
+/// the edge word, through gates and copies, at the place it is read; else the second image may
+/// take another branch on a start value (`Body::keep`).
+fn conds_sure(ops: &[Op], sure: &HashSet<Ref>) -> bool {
+    fn walk(ops: &[Op], sure: &HashSet<Ref>, st: &mut HashMap<Ref, bool>) -> bool {
+        let ok = |st: &HashMap<Ref, bool>, r: &Ref| *r == Ref::Edge || st.get(r) == Some(&true);
+        let mut all = true;
+        for op in ops {
+            let (dst, s) = match op {
+                Op::If { cond, then, else_ } => {
+                    all &= ok(st, cond);
+                    all &= walk(then, sure, st);
+                    all &= walk(else_, sure, st);
+                    continue;
+                }
+                Op::Select { dst, c, a, b, len } => {
+                    all &= ok(st, c);
+                    (*dst, *len == 1 && ok(st, a) && ok(st, b))
+                }
+                Op::Lit { dst, .. } | Op::IntLit { dst, .. } => (*dst, true),
+                Op::Copy { dst, src, .. } => (*dst, ok(st, src)),
+                Op::Not { dst, a, .. } => (*dst, ok(st, a)),
+                Op::Gate { dst, a, b, .. } => (*dst, ok(st, a) && ok(st, b)),
+                Op::Blend { dst, .. } | Op::Insert { dst, .. } | Op::IndexWrite { dst, .. } => {
+                    (*dst, false)
+                }
+                op => match op.clone().dst_mut() {
+                    Some(d) => (*d, false),
+                    None => continue,
+                },
+            };
+            let s = s || sure.contains(&dst);
+            // A place written otherwise once stays unsure.
+            let e = st.entry(dst).or_insert(s);
+            *e &= s;
+        }
+        all
+    }
+    walk(ops, sure, &mut HashMap::new())
 }
 
 /// Subprogram calls: the callee's body inlined into the caller, its formals bound to the
@@ -7021,6 +7345,15 @@ impl Lx<'_> {
                     }
                     None => {
                         self.uninit += u64::from(p.len);
+                        // `'U'`: ones on the second image of `--cycle-exact-meta`.
+                        if crate::region::exact_meta() {
+                            self.ops.push(Op::Seed {
+                                dst: p.r,
+                                len: p.full,
+                                oth: Ref::Oth,
+                            });
+                            return;
+                        }
                         0
                     }
                 };

@@ -363,6 +363,10 @@ pub(crate) struct RegionProc<const RAIL: bool> {
     pub two: BTreeMap<u32, Vec<(u32, u32)>>,
     /// The bits clocked members keep between edges: runs of words (first, count, bits).
     pub regs: Arc<Vec<(u32, u32, u64)>>,
+    /// Under `--cycle-exact-meta`: the word of `Ref::Oth` (0 in the region's image), and
+    /// whether the code seeds `'U'` start values itself (`Op::Seed`).
+    pub oth: Option<usize>,
+    pub seeds: bool,
 }
 
 /// The clock edges a [`Rail`] runs at the most (owner decision A38): it ends at that edge,
@@ -423,11 +427,20 @@ pub(crate) struct Rail {
     pub at: Vec<u32>,
     pub u: Vec<u64>,
     pub may: Vec<u64>,
+    /// Of those `'U'` bits, the ones driven `'X'` (see `more`).
+    pub x: Vec<u64>,
+    /// None, or two more images made at the first metavalue of an 'X' origin (`'X'`, `'Z'`,
+    /// `'W'`, `'-'`): one with only the `'U'` seeds at 1 (before it, every seed was one), one
+    /// with only the others. A bit that differs where the first agrees with the region's and
+    /// the second with `img` came from an 'X' alone and is driven `'X'`; one that needs a `'U'`,
+    /// alone or with an 'X', is driven `'U'` (as `std_logic` gives `'U'` for a mix).
+    pub more: Vec<Vec<u64>>,
     pub edges: u64,
     pub cap: u64,
     pub reseed: bool,
-    /// The words of `RegionProc::regs` in the region's image and the rail's before a run.
-    pub snap: Vec<(u64, u64)>,
+    /// The words of `RegionProc::regs` before a run: the region's and the rail's, then the
+    /// region's and each of `more`.
+    pub snap: Vec<[u64; 2]>,
 }
 
 /// How a rail ended.
@@ -568,13 +581,17 @@ impl Drop for Stats {
 
 impl<const RAIL: bool> RegionProc<RAIL> {
     /// `rd` from the kernel into the image: inserted at its place, metavalues as 0; returns how
-    /// many elements were metavalues. With `R` into the rail's image `rimg` too, its
-    /// metavalues as 1 with `seed`.
+    /// many elements were metavalues. With `R` into the rail's image `rimg` too (unless empty),
+    /// its metavalues as 1 with `seed`, and into `more` (none or `Rail::more`) its `'U'` ones and
+    /// its others as 1; `xs` is set when a metavalue of an 'X' origin was read.
+    #[allow(clippy::too_many_arguments)]
     fn read<const R: bool>(
         ctx: &Ctx<'_>,
         img: &mut [u64],
         rimg: &mut [u64],
         seed: bool,
+        more: &mut [Vec<u64>],
+        xs: &mut bool,
         buf: &mut Vec<u8>,
         rd: &Read,
     ) -> Result<u64, SimError> {
@@ -590,7 +607,12 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                 };
                 img[rd.slot as usize + n - 1 - j] = v;
                 if R {
-                    rimg[rd.slot as usize + n - 1 - j] = v;
+                    if let Some(r) = rimg.get_mut(rd.slot as usize + n - 1 - j) {
+                        *r = v;
+                    }
+                    for u in more.iter_mut() {
+                        u[rd.slot as usize + n - 1 - j] = v;
+                    }
                 }
             }
             return Ok(0);
@@ -611,10 +633,27 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             metas += u64::from((!p1 & m).count_ones());
             let v = p0 & p1 & m;
             let rv = if seed { v | !p1 & m } else { v };
+            // `'U'` (code 0, no plane set) alone: the third image's seeds; another metavalue
+            // (`'X'`, `'Z'`, `'W'`, `'-'`) is one of an 'X' origin.
+            let (uv, x) = if R && seed {
+                let u = !(p0 | p1 | w(2) | w(3)) & m;
+                (v | u, !p1 & !u & m)
+            } else {
+                (v, 0)
+            };
+            let xv = v | x;
+            if R {
+                *xs |= x != 0;
+            }
             if nw > 1 {
                 img[slot + j] = v;
                 if R {
-                    rimg[slot + j] = rv;
+                    if let Some(r) = rimg.get_mut(slot + j) {
+                        *r = rv;
+                    }
+                    if let [u, x] = more {
+                        (u[slot + j], x[slot + j]) = (uv, xv);
+                    }
                 }
             } else {
                 // One word (a chunk, or a leaf inside a pack of at most 64 elements): only its
@@ -622,7 +661,13 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                 let mm = m << rd.lo;
                 img[slot] = img[slot] & !mm | v << rd.lo & mm;
                 if R {
-                    rimg[slot] = rimg[slot] & !mm | rv << rd.lo & mm;
+                    if let Some(r) = rimg.get_mut(slot) {
+                        *r = *r & !mm | rv << rd.lo & mm;
+                    }
+                    if let [u, x] = more {
+                        u[slot] = u[slot] & !mm | uv << rd.lo & mm;
+                        x[slot] = x[slot] & !mm | xv << rd.lo & mm;
+                    }
                 }
             }
         }
@@ -669,19 +714,43 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                     self.seen[i] = n;
                 }
                 metas += match rail.as_deref_mut() {
-                    Some(r) if R => Self::read::<true>(
-                        ctx,
-                        &mut self.img,
-                        &mut r.img,
-                        r.reseed,
-                        &mut self.buf,
-                        &self.chunks[i],
-                    )?,
+                    Some(r) if R => {
+                        let mut xs = false;
+                        let n = Self::read::<true>(
+                            ctx,
+                            &mut self.img,
+                            &mut r.img,
+                            r.reseed,
+                            &mut r.more,
+                            &mut xs,
+                            &mut self.buf,
+                            &self.chunks[i],
+                        )?;
+                        if xs && r.more.is_empty() {
+                            // The first metavalue of an 'X' origin: from here on two more images
+                            // run, the second's and the region's but for this chunk (before it,
+                            // every seed was 'U').
+                            r.more = vec![r.img.clone(), self.img.clone()];
+                            Self::read::<true>(
+                                ctx,
+                                &mut self.img,
+                                &mut [],
+                                true,
+                                &mut r.more,
+                                &mut xs,
+                                &mut self.buf,
+                                &self.chunks[i],
+                            )?;
+                        }
+                        n
+                    }
                     _ => Self::read::<false>(
                         ctx,
                         &mut self.img,
                         &mut [],
                         false,
+                        &mut [],
+                        &mut false,
                         &mut self.buf,
                         &self.chunks[i],
                     )?,
@@ -716,7 +785,16 @@ impl<const RAIL: bool> RegionProc<RAIL> {
     fn check_import(&mut self, ctx: &Ctx<'_>) -> Result<(), SimError> {
         let mut img = self.img.clone();
         for rd in &self.chunks {
-            Self::read::<false>(ctx, &mut img, &mut [], false, &mut self.buf, rd)?;
+            Self::read::<false>(
+                ctx,
+                &mut img,
+                &mut [],
+                false,
+                &mut [],
+                &mut false,
+                &mut self.buf,
+                rd,
+            )?;
             if img != self.img {
                 return Err(ctx.error(ErrorKind::Internal(format!(
                     "cycle mode: the input {:?} changed in the kernel and was not read again",
@@ -831,7 +909,9 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                 && same(&self.img[sp.words.clone()], &self.shadow[sp.sh..sp.sh + n])
                 && (!R
                     || rail.as_deref().is_none_or(|r| {
-                        same(&r.img[sp.words.clone()], &r.shadow[sp.sh..sp.sh + n])
+                        // With a third image every touched span is compared output by output.
+                        r.more.is_empty()
+                            && same(&r.img[sp.words.clone()], &r.shadow[sp.sh..sp.sh + n])
                     }))
             {
                 continue;
@@ -871,36 +951,84 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                 continue;
             }
             let slot = o.slot as usize;
-            // The rail's memories are not exported ('0' and '1' of the region's image): their
-            // flags are cleared with the region's.
-            if R && let Some(r) = rail.as_deref_mut() {
-                o.ram.iter().for_each(|wr| r.img[wr.flag] = 0);
-            }
+            let k = first + m;
             if !o.ram.is_empty() && !all {
-                // A memory: the 64-element words its writes of this wake touched, each driven once.
+                // A memory: the 64-element words its writes of this wake touched, each driven once;
+                // with the rail those its writes there touched too, `'U'` where the images differ.
                 let mut chunks: Vec<u32> = Vec::new();
-                for wr in o.ram.iter().filter(|wr| self.img[wr.flag] != 0) {
-                    written.push(wr.flag);
-                    let e = wr.elems(&self.img);
+                let mut touch = |img: &[u64], wr: &RamWrite| {
+                    let e = wr.elems(img);
                     let (a, z) = (e.start.max(o.range.offset), e.end.min(o.range.end()));
                     chunks.extend((a / 64..z.div_ceil(64)).filter(|_| a < z));
+                };
+                for wr in o.ram.iter().filter(|wr| self.img[wr.flag] != 0) {
+                    written.push(wr.flag);
+                    touch(&self.img, wr);
+                }
+                let rl = if R && o.bytes == 0 {
+                    rail.as_deref_mut()
+                } else {
+                    None
+                };
+                if let Some(r) = &rl {
+                    for m in std::iter::once(&r.img).chain(&r.more) {
+                        for wr in o.ram.iter().filter(|wr| m[wr.flag] != 0) {
+                            touch(m, wr);
+                        }
+                    }
                 }
                 chunks.sort_unstable();
                 chunks.dedup();
+                let mut any_u = 0;
                 for c in chunks {
                     let a = (64 * c).max(o.range.offset);
                     let z = (64 * c + 64).min(o.range.end());
                     let len = z - a;
                     let v = word_at(&self.img[slot..], a, len);
+                    let u = rl
+                        .as_ref()
+                        .map_or(0, |r| word_at(&r.img[slot..], a, len) ^ v);
+                    let x = match rl.as_ref().map(|r| (&r.img, &r.more[..])) {
+                        Some((b, [mu, mx])) => {
+                            let bv = word_at(&b[slot..], a, len);
+                            u & !(word_at(&mu[slot..], a, len) ^ v)
+                                & !(word_at(&mx[slot..], a, len) ^ bv)
+                        }
+                        _ => 0,
+                    };
+                    any_u |= u;
                     let r = Range::new(a, len);
-                    if !ctx.assign_planes_now(o.driver, Some(r), [v, mask(len), 0, 0]) {
-                        let b = blocks(&[v], len);
+                    let p = [v & !u | x, mask(len) & !u, 0, 0];
+                    if !ctx.assign_planes_now(o.driver, Some(r), p) {
+                        let b = planes(&[(v, u, x)], len);
                         ctx.assign_blocks(o.driver, Some(r), Time::ZERO, &b, DelayMode::Transport)?;
+                    }
+                }
+                if let Some(r) = rl {
+                    // A `'U'` driven into it: the whole memory again when the rail ends.
+                    r.u[r.at[k] as usize] |= u64::from(any_u != 0);
+                }
+                if R && let Some(r) = rail.as_deref_mut() {
+                    for wr in &o.ram {
+                        r.img[wr.flag] = 0;
+                        r.more.iter_mut().for_each(|u| u[wr.flag] = 0);
                     }
                 }
                 continue;
             }
             written.extend(o.ram.iter().map(|wr| wr.flag));
+            if R && let Some(r) = rail.as_deref_mut() {
+                for wr in &o.ram {
+                    r.img[wr.flag] = 0;
+                    r.more.iter_mut().for_each(|u| u[wr.flag] = 0);
+                }
+            }
+            if R && o.bytes == 0
+                && let Some(r) = rail.as_deref_mut()
+            {
+                Self::export_rail(ctx, &self.img, r, k, &mut self.buf, o, all)?;
+                continue;
+            }
             Self::export_one(ctx, &self.img, &mut self.buf, o, all)?;
         }
         for f in written {
@@ -1028,19 +1156,32 @@ impl<const RAIL: bool> RegionProc<RAIL> {
     ) -> Result<(), SimError> {
         let (slot, lo, len) = (o.slot as usize, o.range.offset, o.range.len);
         let at = r.at[k] as usize;
+        let nw = words(len) as usize;
+        let (w, rw, more, may) = (&img[slot..], &r.img[slot..], &r.more[..], &r.may[at..]);
+        // Value, `'U'` or `'X'` bits (where the second image differs), `'X'` bits.
+        let word = |j: usize| {
+            let (a, left) = (lo + 64 * j as u32, len - 64 * j as u32);
+            let (v, b) = (word_at(w, a, left), word_at(rw, a, left));
+            let d = (b ^ v) & may[j];
+            let x = match more {
+                [mu, mx] => {
+                    d & !(word_at(&mu[slot..], a, left) ^ v) & !(word_at(&mx[slot..], a, left) ^ b)
+                }
+                _ => 0,
+            };
+            (v, d, x)
+        };
         if len <= 64 && lo % 64 + len <= 64 {
-            let (k, s) = (slot + lo as usize / 64, lo % 64);
-            let v = img[k] >> s & mask(len);
-            let u = ((r.img[k] >> s & mask(len)) ^ v) & r.may[at];
-            if v == o.last && u == r.u[at] && !all {
+            let (v, d, x) = word(0);
+            if v == o.last && d == r.u[at] && x == r.x[at] && !all {
                 return Ok(());
             }
-            (o.last, r.u[at]) = (v, u);
-            let p = [v & !u, mask(len) & !u, 0, 0];
+            (o.last, r.u[at], r.x[at]) = (v, d, x);
+            let p = [v & !d | x, mask(len) & !d, 0, 0];
             if !ctx.publish_planes(o.driver, p)
                 && !ctx.assign_planes_now(o.driver, Some(o.range), p)
             {
-                let b = planes(&[(v, u)], len);
+                let b = planes(&[(v, d, x)], len);
                 ctx.assign_blocks(
                     o.driver,
                     Some(o.range),
@@ -1051,20 +1192,13 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             }
             return Ok(());
         }
-        let nw = words(len) as usize;
-        let (w, rw, may) = (&img[slot..], &r.img[slot..], &r.may[at..]);
-        let word = |j: usize| {
-            let (a, left) = (lo + 64 * j as u32, len - 64 * j as u32);
-            let v = word_at(w, a, left);
-            (v, (word_at(rw, a, left) ^ v) & may[j])
-        };
-        if !all && (0..nw).all(|j| (o.wide[j], r.u[at + j]) == word(j)) {
+        if !all && (0..nw).all(|j| (o.wide[j], r.u[at + j], r.x[at + j]) == word(j)) {
             return Ok(());
         }
         o.wide.resize(nw, 0);
-        let vu: Vec<(u64, u64)> = (0..nw).map(word).collect();
-        for (j, &(v, u)) in vu.iter().enumerate() {
-            (o.wide[j], r.u[at + j]) = (v, u);
+        let vu: Vec<(u64, u64, u64)> = (0..nw).map(word).collect();
+        for (j, &(v, d, x)) in vu.iter().enumerate() {
+            (o.wide[j], r.u[at + j], r.x[at + j]) = (v, d, x);
         }
         *buf = planes(&vu, len);
         if !ctx.assign_wide_now(o.driver, Some(o.range), buf) {
@@ -1087,17 +1221,46 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             return Ok(None);
         };
         let (mut img, mut own) = (self.img.clone(), self.img.clone());
-        let mut seeded = 0;
+        let (mut seeded, mut xs) = (0, false);
         for rd in &self.leaves {
-            seeded += Self::read::<true>(ctx, &mut own, &mut img, true, &mut self.buf, rd)?;
+            seeded += Self::read::<true>(
+                ctx,
+                &mut own,
+                &mut img,
+                true,
+                &mut [],
+                &mut xs,
+                &mut self.buf,
+                rd,
+            )?;
         }
+        // With an 'X' among them, the images of the 'U' ones and the others alone (`Rail::more`).
+        let mut more = Vec::new();
+        if xs {
+            more = vec![self.img.clone(), self.img.clone()];
+            for rd in &self.leaves {
+                Self::read::<true>(
+                    ctx,
+                    &mut own,
+                    &mut [],
+                    true,
+                    &mut more,
+                    &mut xs,
+                    &mut self.buf,
+                    rd,
+                )?;
+            }
+        }
+        // Variables without an initial value start 'U'.
         for &(w, c) in self.useed.iter() {
             for j in 0..words(c) {
-                img[(w + j) as usize] |= mask((c - 64 * j).min(64));
+                for m in std::iter::once(&mut img).chain(more.first_mut()) {
+                    m[(w + j) as usize] |= mask((c - 64 * j).min(64));
+                }
             }
             seeded += u64::from(c);
         }
-        if seeded == 0 {
+        if seeded == 0 && !self.seeds {
             return Ok(None);
         }
         let (mut at, mut may) = (Vec::with_capacity(self.outs.len()), Vec::new());
@@ -1118,7 +1281,9 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             shadow: vec![0; self.shadow.len()],
             at,
             u: vec![0; may.len()],
+            x: vec![0; may.len()],
             may,
+            more,
             edges: 0,
             cap: cfg.cap,
             reseed: cfg.reseed,
@@ -1129,6 +1294,9 @@ impl<const RAIL: bool> RegionProc<RAIL> {
     /// Run `f` on the rail's image after the region's own run: a failed check ends it (`Err`
     /// with its site), the notes it logs are dropped. A run of the skip checks that saw a
     /// difference is an internal error, as on the region's image.
+    /// Of an edge, its own steps run (`edge`) before the region's run, so its clocked members read
+    /// the region's image as it was before the edge, and the settle's after it.
+    #[allow(clippy::too_many_arguments)]
     fn rail_run(
         &self,
         ctx: &Ctx<'_>,
@@ -1136,19 +1304,40 @@ impl<const RAIL: bool> RegionProc<RAIL> {
         ended: &mut Option<(RailEnd, Box<Rail>)>,
         f: Fun,
         marked: bool,
+        edge: bool,
     ) -> Result<(), SimError> {
         let Some(mut r) = rail.take() else {
             return Ok(());
         };
-        let res = self
-            .code
-            .run(&mut r.img, f, marked.then_some(&self.mark[..]));
-        if self.log.1 > 0 {
-            r.img[self.log.0] = 0;
+        let mark = (marked && !edge).then_some(&self.mark[..]);
+        // The second image and the one of `'U'` seeds alone seed `'U'` locals (`Op::Seed`).
+        let run = |img: &mut Vec<u64>, seed: bool| {
+            if let Some(o) = self.oth {
+                // The distance to the region's image, in bytes (`Op::Other`).
+                img[o] = (self.img.as_ptr() as isize).wrapping_sub(img.as_ptr() as isize) as u64;
+                img[o + 1] = if seed { !0 } else { 0 };
+            }
+            let res = self.code.run_rail(img, f, mark, edge);
+            if self.log.1 > 0 {
+                img[self.log.0] = 0;
+            }
+            res
+        };
+        let mut res = run(&mut r.img, true);
+        for (k, m) in r.more.iter_mut().enumerate() {
+            let rm = run(m, k == 0);
+            if res.is_ok() && rm.is_err() {
+                // Its failed check's operands, for the message.
+                let e = self.err;
+                r.img[e..e + 2].copy_from_slice(&m[e..e + 2]);
+                res = rm;
+            }
         }
         match res {
             Ok(()) => {
-                self.rail_keep(&mut r);
+                if !edge {
+                    self.rail_keep(&mut r);
+                }
                 *rail = Some(r);
             }
             Err(s) if s == crate::codegen::STALE || s == crate::codegen::UNSETTLED => {
@@ -1194,8 +1383,10 @@ impl<const RAIL: bool> RegionProc<RAIL> {
         r.snap.clear();
         let (a, b) = (&self.img, &r.img);
         for &(w, c, _) in self.regs.iter() {
-            let ws = w as usize..(w + c) as usize;
-            (r.snap).extend(a[ws.clone()].iter().zip(&b[ws]).map(|(&x, &y)| (x, y)));
+            for i in w as usize..(w + c) as usize {
+                r.snap.push([a[i], b[i]]);
+                r.snap.extend(r.more.iter().map(|m| [a[i], m[i]]));
+            }
         }
     }
 
@@ -1207,13 +1398,20 @@ impl<const RAIL: bool> RegionProc<RAIL> {
     /// depending on the start values the region's run happened to leave as it was is lost too
     /// (it reads as without the rail).
     fn rail_keep(&self, r: &mut Rail) {
+        let keep = |mb: u64, rb: u64, ma: u64, ra: u64, m: u64| {
+            let d = m & !(mb ^ rb) & !(ma ^ mb) & (ra ^ rb);
+            ra & !d | ma & d
+        };
         let mut k = 0;
         for &(w, c, m) in self.regs.iter() {
             for i in w as usize..(w + c) as usize {
-                let ((mb, rb), ma, ra) = (r.snap[k], self.img[i], r.img[i]);
-                let d = m & !(mb ^ rb) & !(ma ^ mb) & (ra ^ rb);
-                r.img[i] = ra & !d | ma & d;
+                let ([mb, rb], ma) = (r.snap[k], self.img[i]);
+                r.img[i] = keep(mb, rb, ma, r.img[i], m);
                 k += 1;
+                for u in r.more.iter_mut() {
+                    u[i] = keep(mb, r.snap[k][1], ma, u[i], m);
+                    k += 1;
+                }
             }
         }
     }
@@ -1222,7 +1420,8 @@ impl<const RAIL: bool> RegionProc<RAIL> {
     fn rail_agrees(&self, r: &Rail) -> bool {
         (self.state.iter()).all(|&(w, c)| {
             let a = w as usize..(w + c) as usize;
-            self.img[a.clone()] == r.img[a]
+            self.img[a.clone()] == r.img[a.clone()]
+                && r.more.iter().all(|u| self.img[a.clone()] == u[a.clone()])
         })
     }
 
@@ -1371,12 +1570,13 @@ fn word_at(w: &[u64], off: u32, left: u32) -> u64 {
     x & mask(left.min(64))
 }
 
-/// Words of values and `'U'` bits as the kernel's plane blocks: `'0'`, `'1'` and `'U'`.
-fn planes(vu: &[(u64, u64)], len: u32) -> Vec<u8> {
+/// Words of values, metavalue bits and, of those, `'X'` bits as the kernel's plane blocks:
+/// `'0'`, `'1'`, `'U'` and `'X'`.
+fn planes(vu: &[(u64, u64, u64)], len: u32) -> Vec<u8> {
     let mut b = Vec::with_capacity(32 * vu.len());
-    for (j, &(v, u)) in vu.iter().enumerate() {
+    for (j, &(v, u, x)) in vu.iter().enumerate() {
         let m = mask((len - 64 * j as u32).min(64)) & !u;
-        for p in [v & m, m, 0, 0] {
+        for p in [v & m | x, m, 0, 0] {
             b.extend_from_slice(&p.to_le_bytes());
         }
     }
@@ -1416,8 +1616,16 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             // Initialisation: every leaf from the kernel's initial values, then settle.
             let mut metas = self.uninit;
             for rd in &self.leaves {
-                metas +=
-                    Self::read::<false>(ctx, &mut self.img, &mut [], false, &mut self.buf, rd)?;
+                metas += Self::read::<false>(
+                    ctx,
+                    &mut self.img,
+                    &mut [],
+                    false,
+                    &mut [],
+                    &mut false,
+                    &mut self.buf,
+                    rd,
+                )?;
             }
             if R {
                 rail = self.rail_start(ctx)?;
@@ -1436,7 +1644,7 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             }
             self.run_code(ctx, Fun::Init)?;
             if R {
-                self.rail_run(ctx, &mut rail, &mut ended, Fun::Init, false)?;
+                self.rail_run(ctx, &mut rail, &mut ended, Fun::Init, false, false)?;
             }
             // A reset that holds at time 0 applies (its branch is in the settle), as when the
             // normal mode runs every process once.
@@ -1445,7 +1653,7 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             }
             self.run_code(ctx, Fun::Settle)?;
             if R {
-                self.rail_run(ctx, &mut rail, &mut ended, Fun::Settle, false)?;
+                self.rail_run(ctx, &mut rail, &mut ended, Fun::Settle, false, false)?;
             }
             self.export_rail_or::<R>(ctx, &mut rail, ended)?;
             if R {
@@ -1486,7 +1694,7 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             }
             self.run_marked(ctx, Fun::Settle, true)?;
             if R {
-                self.rail_run(ctx, &mut rail, &mut ended, Fun::Settle, true)?;
+                self.rail_run(ctx, &mut rail, &mut ended, Fun::Settle, true, false)?;
             }
             self.mark.fill(0);
         }
@@ -1528,10 +1736,13 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             let f = if edge { Fun::Edge } else { Fun::Settle };
             if R {
                 self.rail_snap(&mut rail);
+                if edge {
+                    self.rail_run(ctx, &mut rail, &mut ended, f, true, true)?;
+                }
             }
             self.run_marked(ctx, f, true)?;
             if R {
-                self.rail_run(ctx, &mut rail, &mut ended, f, true)?;
+                self.rail_run(ctx, &mut rail, &mut ended, f, true, false)?;
                 if edge && let Some(mut r) = rail.take() {
                     r.edges += 1;
                     self.metas.rail_edges.store(r.edges, Ordering::Relaxed);

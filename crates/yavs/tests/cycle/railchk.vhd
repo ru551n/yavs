@@ -1,7 +1,8 @@
 -- A check that fails only on the second image of --cycle-exact-meta (A38): `idx` of a register
--- still 'U' (0 in the region, all ones in the second image) is out of its range there. With
--- MID false it fails at initialisation, with MID true at the clock edge where `go` rises, after
--- 'U' of `r` and `q` was driven.
+-- still 'U' (0 in the region, all ones in the second image), copied to a variable first (a
+-- `to_integer` of a signal gives 0 there, as the normal mode, A43), is out of its range there.
+-- With MID false it fails at initialisation, with MID true at the clock edge where `go` rises,
+-- after 'U' of `r` and `q` was driven.
 library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
 entity cycle_railchk is
   generic (W : positive := 8; MID : boolean := true);
@@ -20,9 +21,12 @@ begin
       q <= r;
     end if;
   end process;
-  ix : process (go, r) begin
+  ix : process (go, r)
+    variable v : std_ulogic_vector(0 downto 0);
+  begin
+    v := r(W - 1 downto W - 1);
     if go = '1' or not MID then
-      idx <= to_integer(unsigned(r(W - 1 downto W - 1)));
+      idx <= to_integer(unsigned(v));
     else
       idx <= 0;
     end if;

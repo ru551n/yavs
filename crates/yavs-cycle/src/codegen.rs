@@ -207,6 +207,35 @@ impl Code {
         self.run_as(img, f, mark, true)
     }
 
+    /// A run on the second image of `--cycle-exact-meta` (`rt::Rail`): no guards (its members
+    /// read the region's image too, which a guard does not compare) and never on a copy (its
+    /// `Ref::Oth` word is a distance from this image). Of `Fun::Edge` the edge's own steps
+    /// (`edge`), or the settle's after them.
+    pub(crate) fn run_rail(
+        &self,
+        img: &mut [u64],
+        f: Fun,
+        mark: Option<&[u64]>,
+        edge: bool,
+    ) -> Result<(), u32> {
+        assert!(
+            img.len() >= self.words,
+            "the image is smaller than the code's words"
+        );
+        match f {
+            Fun::Edge if edge => {
+                for (ws, r) in &self.edge_parts {
+                    if ws.is_empty() || ws.iter().any(|&w| img[w as usize] != 0) {
+                        self.steps(img, &self.entries[1][r.clone()], None, false)?;
+                    }
+                }
+                Ok(())
+            }
+            Fun::Edge => self.run_as(img, Fun::Settle, mark, false),
+            f => self.run_as(img, f, mark, false),
+        }
+    }
+
     /// The edge runs its own steps, then the settle's.
     fn run_as(
         &self,
@@ -629,7 +658,7 @@ pub(crate) fn checks_on() -> bool {
 fn word(r: Ref) -> i32 {
     match r {
         Ref::Loc(s) => (s * 8) as i32,
-        Ref::Sig(_) | Ref::Edge => {
+        Ref::Sig(_) | Ref::Edge | Ref::Oth => {
             unreachable!("signal references are resolved to slots before code generation")
         }
     }
@@ -891,6 +920,11 @@ fn reads(op: &Op, f: &mut impl FnMut(i32, u32)) {
             }
         }
         Op::If { cond, .. } => r(cond, 0, 1),
+        Op::Other { src, len, oth, .. } => {
+            r(src, 0, words(*len));
+            r(oth, 0, 1);
+        }
+        Op::Seed { oth, .. } => r(oth, 1, 1),
     }
 }
 
@@ -1223,7 +1257,9 @@ fn span(op: &Op) -> u32 {
         | Op::Shift { len, .. }
         | Op::FromInt { len, .. }
         | Op::Splat { len, .. }
-        | Op::Select { len, .. } => words(*len),
+        | Op::Select { len, .. }
+        | Op::Other { len, .. }
+        | Op::Seed { len, .. } => words(*len),
         Op::Lit { val, .. } => val.len() as u32,
         Op::Blend { mask, .. } => mask.len() as u32,
         Op::Insert { lo, len, .. } => words(lo + len),
@@ -3425,6 +3461,27 @@ impl Gen<'_> {
                 let s = self.b.ins().sshr_imm_s(x, 63);
                 let mut v = vec![s; words(*len) as usize];
                 v[0] = x;
+                self.top(&mut v, *len);
+                self.sts(*dst, &v);
+            }
+            Op::Other { dst, src, len, oth } => {
+                // `src` of the image `oth` bytes away; its own (in a register) where that is 0.
+                let d = self.ld(*oth, 0);
+                let own = self.b.ins().icmp_imm_s(IntCC::Equal, d, 0);
+                let mut v = Vec::new();
+                for k in 0..words(*len) {
+                    let x = self.ld(*src, k);
+                    let (a, o) = self.at(word(*src) + k as i32 * 8);
+                    let a = self.b.ins().iadd(a, d);
+                    let y = self.b.ins().load(I64, MemFlagsData::trusted(), a, o);
+                    v.push(self.b.ins().select(own, x, y));
+                }
+                self.sts(*dst, &v);
+            }
+            Op::Seed { dst, len, oth } => {
+                // The word after the distance: all ones where `'U'` starts at 1.
+                let s = self.ld(*oth, 1);
+                let mut v = vec![s; words(*len) as usize];
                 self.top(&mut v, *len);
                 self.sts(*dst, &v);
             }

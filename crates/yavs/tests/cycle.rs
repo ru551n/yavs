@@ -7043,6 +7043,105 @@ fn the_cycle_store_size_takes_mib() {
     }
 }
 
+/// The second image follows memories, the locals of an inlined call, 'X' and choices of
+/// combinational members on 'U' (owner decision A43): a memory word never written and one
+/// written from an input that becomes 'U' show 'U', a local of a call starts 'U', `when ... else`
+/// (also on `??`) and `to_integer` as an index in combinational members take the region's
+/// choice, which is the normal mode's here (no check fails on the second image), and a
+/// comparison of a value only the second image got wrong (`xx`, chosen on a variable) still
+/// gives the normal mode's result (`zz`); an 'X' start value or input shows 'X', a mix with 'U'
+/// 'U'. Clocked members read their own image (taking the region's choices there made a 'U' in
+/// Microwatt the normal mode does not have): their choices on a 'U' give 'U' (`c`, `r`, `lt`,
+/// `r0`, `lt0`, `z` before `t` has a value) and, as they keep registers (`rail_keep`), a
+/// register taking an input's 'U' while its own value stays (`q`) or an 'X' (`qx`, 'U') loses
+/// it. `YAVS_CYCLE_RAIL=off` gives '0' for every metavalue. Widths 1 to 128.
+#[test]
+fn the_second_image_follows_memories_calls_and_choices() {
+    let dir = tempdir("cycle-rail2");
+    analyze(&dir, "rail2.vhd", include_str!("cycle/rail2.vhd"));
+    for (w, late) in [1, 63, 64, 65, 128]
+        .into_iter()
+        .flat_map(|w| [(w, false), (w, true)])
+    {
+        let g = [format!("-gW={w}"), format!("-gLATE={late}")];
+        for t in tiers() {
+            let t = [&t[..], &[&g[0][..], &g[1][..]]].concat();
+            // The notes (a library warning's process line has an `=` too).
+            let notes = |l: Vec<String>| -> Vec<String> {
+                l.into_iter().filter(|x| x.contains(" m0=")).collect()
+            };
+            let (normal, _) = run(&dir, &t, "cycle_rail2");
+            let normal = notes(normal);
+            assert_eq!(normal.len(), 3, "{normal:?}");
+            let exact = [&t[..], &["--cycle", "--cycle-exact-meta"]].concat();
+            let (cycle, err) = run(&dir, &exact, "cycle_rail2");
+            let cycle = notes(cycle);
+            assert_eq!(cycle.len(), 3, "{cycle:?}");
+            let (zero, one, u) = ("0".repeat(w), "1".repeat(w), "U".repeat(w));
+            let field = |l: &str, k: &str| -> String {
+                let at = l.find(&format!(" {k}=")).expect(k) + k.len() + 2;
+                l[at..].split(' ').next().unwrap_or_default().to_string()
+            };
+            let same = [
+                "m0", "m1", "f", "y", "y2", "w2", "rd", "qa", "qo", "k", "k2", "qxi", "zz",
+            ];
+            for (i, (n, c)) in normal.iter().zip(&cycle).enumerate() {
+                for k in same {
+                    assert_eq!(field(c, k), field(n, k), "width {w} {k}: {c}\n{n}\n{err}");
+                }
+                for k in ["c", "r", "lt", "r0", "lt0", "xx", "qx"] {
+                    assert_eq!(field(c, k), u, "{w} {k}: {c}");
+                }
+                assert_eq!(field(c, "q"), zero, "{c}");
+                assert_eq!(&field(c, "z"), if i < 2 { &u } else { &one }, "{c}");
+            }
+            // The normal mode's values of those fields.
+            let b = &normal[2];
+            let mut m1 = format!("{}U", "1".repeat(w - 1));
+            assert_eq!(field(b, "m1"), m1, "{b}");
+            assert_eq!(field(&normal[0], "m1"), u);
+            assert_eq!(field(b, "f"), format!("{}1", "U".repeat(w - 1)));
+            assert_eq!(field(b, "q"), format!("{}U", "0".repeat(w - 1)));
+            for (k, v) in [
+                ("y", &zero),
+                ("y2", &zero),
+                ("w2", &one),
+                ("rd", &one),
+                ("xx", &zero),
+                ("zz", &one),
+                ("qa", &u),
+                ("qo", &u),
+                ("k", &zero),
+                ("k2", &zero),
+                ("z", &one),
+            ] {
+                assert_eq!(&field(b, k), v, "{k}: {b}");
+            }
+            let xs = "X".repeat(w);
+            assert_eq!(field(b, "qx"), if late { &u } else { &xs }.clone());
+            assert_eq!(field(b, "qxi"), if late { &xs } else { &zero }.clone());
+            assert!(
+                err.contains("cycle mode: 10 of 12 processes run cycle-based")
+                    && err.contains("second image: still followed when the run ended"),
+                "{w}: {err}"
+            );
+            for p in ["wr", "ch", "kp", "xp", "cv"] {
+                let p = format!("    cycle_rail2.{p} ");
+                assert!(err.lines().any(|l| l.starts_with(&p)), "{p}: {err}");
+            }
+            let (off, _) = run_vars(&dir, &exact, "cycle_rail2", &[("YAVS_CYCLE_RAIL", "off")]);
+            let off = notes(off);
+            m1.pop();
+            m1.push('0');
+            let ob = &off[2];
+            assert_eq!(field(ob, "m1"), m1, "{ob}");
+            for k in ["f", "q", "qx", "qa", "qo", "qxi", "xx", "c"] {
+                assert!(!field(ob, k).contains(['U', 'X']), "{k}: {ob}");
+            }
+        }
+    }
+}
+
 /// `YAVS_CYCLE_RAIL` takes `off`, `no-reseed` and `cap=N`; another value is an error naming
 /// them, before the run.
 #[test]

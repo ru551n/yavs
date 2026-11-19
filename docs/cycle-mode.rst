@@ -374,13 +374,48 @@ A cycle-based process computes with ``0`` and ``1`` only.
   ``metavalue.vhd`` below shows it.
 
   It is not the normal mode's ``'U'``: a bit is ``'U'`` when its value depends on a start value, so ``q and not q``
-  gives ``0`` where the normal mode gives ``'U'``. A register that both sets of values agreed on and that only the
-  second set changes keeps its value, as the normal mode keeps a register whose enable is ``'U'``; so a register
-  that takes a ``'U'`` from its data while keeping its value in the region's own set reads ``0`` or ``1``, as
-  without ``--cycle-exact-meta``. A combinational process that chooses on a ``'U'`` (``y <= a when s = '1' else
-  b``) gives ``'U'`` where ``a`` and ``b`` differ, where the normal mode gives ``b``. Memories the testbench reads, integers and a ``'U'`` that a called subprogram's
-  variable starts with (fresh at every call) are not followed; an ``'X'`` start value, or one that reaches an
-  input, shows as ``'U'``.
+  gives ``0`` where the normal mode gives ``'U'``. What is followed:
+
+  - signals, registers, variables of clocked processes and the words of memories without an initial value (also
+    a memory the testbench reads: a word nothing wrote shows ``'U'``), and the variables of a called subprogram
+    without one (``'U'`` at every call);
+  - a metavalue that reaches an input while the second image runs. A bit that depends only on an ``'X'``, ``'Z'``,
+    ``'W'`` or ``'-'`` shows ``'X'``; one that needs a ``'U'``, alone or together with one of those, shows ``'U'``,
+    as ``std_logic`` gives ``'U'`` for such a mix. To tell them apart, two more sets of values run from the first
+    such metavalue on (one with only the ``'U'`` ones at 1, one with only the others);
+  - choices and conversions on such a value in a combinational process: the second set takes the branch the
+    region's own values take (``=``, ``/=``, ``if s then``, ``case``, ``std_match``, ``numeric_std``
+    comparisons, ``to_integer`` as an index, ``to_01`` and ``to_bit``). Where the region's choice is the normal mode's (``s = '1'`` is false for a
+    ``'U'``, ``to_integer`` of a ``'U'`` address is 0 and reads element 0), the result is the normal mode's; the
+    second set never shows a ``'U'`` for a choice where the normal mode has a value. This holds where the value
+    compared is a signal (a register, a port, a field or slice of one); a comparison of a variable, of a value
+    computed first, or of an element chosen at run time takes the branch its own value gives (``?=`` too, which
+    gives ``'U'`` in the normal mode).
+  - Integers have no ``'U'``: they start at ``'left`` in both sets of values, as in the normal mode.
+
+  Where it still differs from the normal mode:
+
+  - The region's own set of values reads a ``'U'`` as ``0``. Where that takes the branch the normal mode does not
+    (``y <= a when s = '0' else b`` with ``s`` ``'U'``: the normal mode gives ``b``), the result is the region's
+    (``a``), as without the second image.
+  - A clocked process makes its choices on each set's own values: a choice on a ``'U'`` gives ``'U'`` where
+    the two branches differ (``if s = '1'`` where the normal mode takes neither), and an index of a ``'U'``
+    address may fail its range check on the second set, which then ends (taking the region's choices there too
+    made a ``'U'`` in a CPU's cache the normal mode does not have; the cause is not found yet).
+  - A choice on a variable or a value computed first (not a signal) may differ between the two sets: then the
+    bits it decides show ``'U'`` even where the normal mode has a value.
+  - So a clocked process with a choice keeps a
+    register's value where both sets agreed and only the second changed it, as the normal mode keeps a register
+    whose enable is ``'U'``; a register of it that takes a ``'U'`` from its data while keeping its value in the
+    region's own set then reads ``0`` or ``1``.
+  - ``numeric_std`` arithmetic on a metavalue gives all ``'X'`` in the normal mode; here only the bits that
+    depend on it show ``'U'`` or ``'X'``.
+  - A ``'U'`` the region drives that comes back to an input through a process outside the region reads as ``0``
+    in the region's own set of values, as any metavalue there, where without the second image that process
+    would have passed on the region's ``0`` or ``1``. So the region's values may differ from a run without
+    ``--cycle-exact-meta``'s second image. No rule can avoid it: the process outside may pass the value on as it
+    is or inverted, and both give ``'U'``.
+
   The default ``--cycle`` has none of this and pays nothing for it.
 * A metavalue that reaches the region from outside (``'X'``, ``'U'``, ``'W'``, ``'-'``, ``'Z'`` and the like) is read as
   ``0``. ``'1'`` and ``'H'`` read as ``1``, ``'0'`` and ``'L'`` as ``0``. yavs counts the elements read this way and
@@ -400,8 +435,8 @@ A cycle-based process computes with ``0`` and ``1`` only.
   holds a ``'Z'``; a ``'Z'`` made in a called subprogram, given by a generic or passed on by a behavioural process is
   not seen). The price is speed: those processes, and often their neighbours, run in the event simulation.
 * An ``'X'`` or ``'U'`` that a process outside the region sets is read as ``0`` as well, also when a cycle-based
-  process copies it on to a signal the testbench reads, with ``--cycle-exact-meta`` too (there it shows as ``'U'``
-  while the second image runs, then as ``'0'``). Such a copy joins the region, so the
+  process copies it on to a signal the testbench reads, with ``--cycle-exact-meta`` too (there it shows as ``'X'``
+  or ``'U'`` while the second image runs, then as ``'0'``). Such a copy joins the region, so the
   testbench sees ``'0'`` where the normal mode gives ``'X'``. A bus model that checks the read data it is handed
   against an expected ``'X'`` (a read of a location nothing wrote, say) reports "got ``0``, expected ``X``" under
   ``--cycle``; run such tests in the normal mode.
@@ -461,8 +496,9 @@ The first block is the normal mode, the second ``--cycle``. The comparison of ``
 because the ``'X'`` on ``a`` read as ``0``, and the library's warning about it is not produced either.
 
 With ``--cycle --cycle-exact-meta`` the second image keeps ``ticks`` at ``'U'`` as the normal mode does. ``eq`` is
-``'U'``: it depends on the ``'X'`` that reached ``a`` while the second image ran, where the normal mode's ``=``
-gives ``FALSE`` and so ``0``:
+``1``, as without it: the region compares ``0000`` with ``0000`` (the ``'X'`` on ``a`` read as ``0``); the
+second set compares ``1111`` and would give ``'0'``, but the clocked process keeps the register where only the
+second set changed it (see above). The normal mode gives ``0``:
 
 .. code-block:: text
 
@@ -471,7 +507,7 @@ gives ``FALSE`` and so ``0``:
         Process tb_metavalue.main
     ** Note: 1000000fs+0: at 1 ns:  ticks=UUUU
         Process tb_metavalue.main
-    ** Note: 17000000fs+0: at 17 ns: eq=U with 'X' on a
+    ** Note: 17000000fs+0: at 17 ns: eq=1 with 'X' on a
         Process tb_metavalue.main
     cycle mode: 13 metavalue elements read as 0 (9 at initialisation, 4 at changes of the region's inputs)
     cycle mode: 'U' start values followed on a second image: still followed when the run ended, after 2 clock edges

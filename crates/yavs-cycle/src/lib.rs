@@ -1116,6 +1116,11 @@ fn built(
     // members).
     let edge_words: Vec<u32> = (0..sel.clocks.len() as u32).map(|k| n + k).collect();
     n += sel.clocks.len().max(1) as u32;
+    // Under `--cycle-exact-meta` the two words of `Ref::Oth` (`rt::Rail`).
+    let oth = n;
+    if region::exact_meta() {
+        n += 2;
+    }
     let mut state: Vec<(u32, u32)> = Vec::new();
     // Each function as pieces, a member's body each (`codegen::compile` cuts between them).
     // Each step with the member it runs (`codegen::compile`'s units; `u32::MAX`: none).
@@ -1165,7 +1170,8 @@ fn built(
     let mut uninit = 0u64;
     let mut useed: Vec<(u32, u32)> = Vec::new();
     // The bits clocked members keep between edges (word, bits): their signals' elements, their
-    // variables and their memory writes' words.
+    // variables and their memory writes' words; only of members whose comparisons the second
+    // image may decide otherwise than the normal mode (`Body::keep`).
     let mut regs: BTreeMap<u32, u64> = BTreeMap::new();
     let reg_words = |regs: &mut BTreeMap<u32, u64>, w: u32, c: u32| {
         (w..w + c).for_each(|i| *regs.entry(i).or_default() = !0);
@@ -1189,7 +1195,9 @@ fn built(
             }
             // The writes' words hold state from the body to the commit.
             state.push((base + b.locs, at - b.locs));
-            reg_words(&mut regs, base + b.locs, at - b.locs);
+            if b.keep {
+                reg_words(&mut regs, base + b.locs, at - b.locs);
+            }
             n += at - b.locs;
             ops
         } else {
@@ -1222,6 +1230,8 @@ fn built(
         // The second image's tables, only where it can run (the default keeps none).
         if clocked && region::exact_meta() {
             useed.extend(b.useed.iter().map(|&(w, c)| (base + w, c)));
+        }
+        if clocked && region::exact_meta() && b.keep {
             for &(w, c) in &b.vars {
                 reg_words(&mut regs, base + w, c);
             }
@@ -1244,6 +1254,8 @@ fn built(
             sites,
             clocked,
             edge: class.map_or(signal_words, |k| edge_words[k]),
+            oth,
+            rail: true,
             cur: &cur,
             next: &next,
             snap: &none,
@@ -1253,6 +1265,9 @@ fn built(
     // of clocked ones (written to the current words: the commit is past). A member of a loop group
     // is a body of its own, run at each pass level of what it drives: checked at its last run, on
     // settled values, and without checks before.
+    let looped: std::collections::BTreeSet<usize> = (sel.loops.iter())
+        .flat_map(|l| sel.settle[l.at.clone()].iter().copied())
+        .collect();
     let piece = |k: usize, snap: &BTreeMap<u32, u32>| -> Result<Vec<Op>, String> {
         let (_, b) = &sel.members[k];
         let mut ops: Vec<Op> = (snap.iter())
@@ -1262,9 +1277,11 @@ fn built(
                 len: klen(s),
             })
             .collect();
+        // A loop group's member reads values of earlier passes: no `Op::Other` there.
         let r = Resolve {
             clocked: false,
             snap,
+            rail: !looped.contains(&k),
             ..rs[k]
         };
         if b.kind == Kind::Clocked {
@@ -1282,9 +1299,6 @@ fn built(
     // One body per shape: members of `SHARE_MIN` operations or more, not in a loop group, whose
     // code is the same but for where their words lie; a combinational member's settle body, a
     // clocked member's edge body.
-    let looped: std::collections::BTreeSet<usize> = (sel.loops.iter())
-        .flat_map(|l| sel.settle[l.at.clone()].iter().copied())
-        .collect();
     let mut by_key: std::collections::HashMap<ShapeKey, Vec<usize>, codegen::KeyBuild> =
         Default::default();
     for (k, (_, b)) in sel.members.iter().enumerate() {
@@ -1746,6 +1760,7 @@ fn built(
                 Ref::Sig(k) => Ref::Loc(place(Block::Cur(k))),
                 Ref::Loc(s) => Ref::Loc(place(Block::Locals) + s),
                 Ref::Edge => Ref::Loc(place(Block::Edge)),
+                Ref::Oth => Ref::Loc(place(Block::Oth)),
             };
             let dst = |x: Ref| match x {
                 Ref::Sig(k) if r.clocked && next.contains_key(&k) => {
@@ -2086,6 +2101,8 @@ fn built(
         useed,
         state,
         regs: reg_runs(regs),
+        oth: region::exact_meta().then_some(oth as usize),
+        seeds: (sel.members.iter()).any(|(_, b)| has_seed(&b.ops) || has_seed(&b.init_ops)),
         chunk_cone,
         chunk_at,
         class_names: (sel.clocks.iter())
@@ -2150,6 +2167,9 @@ pub(crate) struct Built {
     state: Vec<(u32, u32)>,
     /// The bits clocked members keep between edges: runs of words (first, count, bits).
     regs: Vec<(u32, u32, u64)>,
+    /// Under `--cycle-exact-meta`: the word of `Ref::Oth`; whether the code has `Op::Seed`.
+    oth: Option<usize>,
+    seeds: bool,
     chunk_cone: Vec<u32>,
     /// Per input chunk: its leaf and elements (the names of `YAVS_CYCLE_STATS`).
     chunk_at: Vec<(LeafId, u32, u32)>,
@@ -2330,6 +2350,8 @@ fn finish(
                     state: state.clone(),
                     two: two.clone(),
                     regs: regs.clone(),
+                    oth: b.oth,
+                    seeds: b.seeds,
                 })
             };
         }
@@ -2724,6 +2746,7 @@ enum Block {
     Next(u32),
     Locals,
     Edge,
+    Oth,
 }
 
 /// Blocks with their first word and length.
@@ -2763,6 +2786,7 @@ fn blocks(ops: &[Op], b: &lower::Body, r: &Resolve, klen: impl Fn(u32) -> u32) -
             Ref::Sig(k) => Block::Cur(k),
             Ref::Loc(_) => Block::Locals,
             Ref::Edge => Block::Edge,
+            Ref::Oth => Block::Oth,
         });
         x
     };
@@ -2784,6 +2808,7 @@ fn blocks(ops: &[Op], b: &lower::Body, r: &Resolve, klen: impl Fn(u32) -> u32) -
             Block::Next(k) => (x, r.next[&k], codegen::words(klen(k))),
             Block::Locals => (x, r.base, b.locs.max(1)),
             Block::Edge => (x, r.edge, 1),
+            Block::Oth => (x, r.oth, 2),
         })
         .collect()
 }
@@ -2824,6 +2849,9 @@ struct Resolve<'a> {
     sites: u32,
     clocked: bool,
     edge: u32,
+    oth: u32,
+    /// `Op::Other` reads the other image (false: its own, in a loop group).
+    rail: bool,
     cur: &'a BTreeMap<u32, u32>,
     next: &'a BTreeMap<u32, u32>,
     /// Signals read from a copy made at the piece's start (a loop group's piece reading what it
@@ -2845,11 +2873,34 @@ impl Resolve<'_> {
             Ref::Sig(k) => Ref::Loc(self.cur[&k]),
             Ref::Loc(s) => Ref::Loc(self.base + s),
             Ref::Edge => Ref::Loc(self.edge),
+            Ref::Oth => Ref::Loc(self.oth),
         }
     }
 
     fn op(&self, op: &Op) -> Op {
-        op.map(&|r| self.src(r), &|r| self.dst(r), &|x| self.sites + x)
+        let o = op.map(&|r| self.src(r), &|r| self.dst(r), &|x| self.sites + x);
+        if self.rail { o } else { own_only(o) }
+    }
+}
+
+fn has_seed(ops: &[Op]) -> bool {
+    ops.iter().any(|op| match op {
+        Op::Seed { .. } => true,
+        Op::If { then, else_, .. } => has_seed(then) || has_seed(else_),
+        _ => false,
+    })
+}
+
+/// `op` with every `Op::Other` reading its own image.
+fn own_only(op: Op) -> Op {
+    match op {
+        Op::Other { dst, src, len, .. } => Op::Copy { dst, src, len },
+        Op::If { cond, then, else_ } => Op::If {
+            cond,
+            then: then.into_iter().map(own_only).collect(),
+            else_: else_.into_iter().map(own_only).collect(),
+        },
+        op => op,
     }
 }
 

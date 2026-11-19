@@ -22,8 +22,6 @@ use yavs_ir::{
     Width,
 };
 
-use std::collections::HashMap;
-
 use crate::exec::{CONST, FRAME, INST, PKG, R, SHARED, mk_addr};
 
 pub(crate) struct Pre {
@@ -3679,7 +3677,8 @@ fn count_back_edges(prog: &Program, f: &Func, entry: &[u32], ops: &mut Vec<Op>, 
         .windows(2)
         .position(|w| w[1] < w[0])
         .map_or(at.len(), |p| p + 1);
-    let mut tramp: HashMap<u32, u32> = HashMap::new();
+    // The trampoline of each loop head (by its op), `NONE` until made.
+    let mut tramp = vec![NONE; ops.len()];
     for (br, head) in back {
         let Some(&h) = entry.get(head as usize).filter(|&&h| h != NONE) else {
             continue;
@@ -3689,11 +3688,15 @@ fn count_back_edges(prog: &Program, f: &Func, entry: &[u32], ops: &mut Vec<Op>, 
         let mut changed = false;
         for t in jumps_mut(&mut op).into_iter().flatten() {
             if *t == h {
-                *t = *tramp.entry(h).or_insert_with(|| {
+                if tramp.len() <= h as usize {
+                    tramp.resize(h as usize + 1, NONE);
+                }
+                if tramp[h as usize] == NONE {
                     ops.push(Op::Step(br));
                     at.push(br);
-                    ops.len() as u32 - 1
-                });
+                    tramp[h as usize] = ops.len() as u32 - 1;
+                }
+                *t = tramp[h as usize];
                 changed = true;
             }
         }

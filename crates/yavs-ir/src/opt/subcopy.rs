@@ -9,7 +9,7 @@
 //! The target is rewritten last: every pass before it reads callees by id, and a copy's own slot
 //! is empty. Nothing here assumes more than bytes: the callee still gets the pointer.
 
-use std::collections::HashMap;
+use super::FxMap;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
@@ -77,12 +77,7 @@ pub(crate) fn slots(prog: &Program) -> usize {
 }
 
 /// Register `r` is read: a descriptor read counts in `out`; the frame address it holds, if any.
-fn note(
-    from: &HashMap<u32, u32>,
-    at: &HashMap<u32, i64>,
-    r: Reg,
-    out: &mut Vec<u32>,
-) -> Option<i64> {
+fn note(from: &FxMap<u32, u32>, at: &FxMap<u32, i64>, r: Reg, out: &mut Vec<u32>) -> Option<i64> {
     if let Some(&s) = from.get(&r.0) {
         out.push(s);
     }
@@ -117,7 +112,7 @@ pub(crate) fn reads(g: &Func) -> Vec<u32> {
         .collect();
     let bounds_of = |o: i64| flat.iter().copied().find(|&s| s <= o && o < s + 24);
     // The lowered code defines its addresses once, before their uses in the order of the code.
-    let (mut at, mut k, mut from) = (HashMap::new(), HashMap::new(), HashMap::new());
+    let (mut at, mut k, mut from) = (FxMap::default(), FxMap::default(), FxMap::default());
     let mut out = Vec::new();
     let mut written = Vec::new();
     for i in &raw.code {
@@ -278,8 +273,8 @@ enum At {
 /// none.
 #[derive(Clone, Default, PartialEq)]
 struct State {
-    at: HashMap<u32, At>,
-    k: HashMap<u32, i64>,
+    at: FxMap<u32, At>,
+    k: FxMap<u32, i64>,
 }
 
 impl State {
@@ -301,8 +296,8 @@ struct Walk<'a> {
     /// Registers defined once whose value holds wherever they are read, from other such registers
     /// alone (`once_at`, `once_k`, found first, wherever they are defined).
     once: Vec<bool>,
-    once_at: HashMap<u32, At>,
-    once_k: HashMap<u32, i64>,
+    once_at: FxMap<u32, At>,
+    once_k: FxMap<u32, i64>,
     /// Finding those: the order of the code is not the order it runs.
     seeding: bool,
     st: State,
@@ -514,8 +509,8 @@ pub(super) fn rewrite_calls(
         view,
         facts,
         once,
-        once_at: HashMap::new(),
-        once_k: HashMap::new(),
+        once_at: FxMap::default(),
+        once_k: FxMap::default(),
         seeding: true,
         st: State::default(),
     };

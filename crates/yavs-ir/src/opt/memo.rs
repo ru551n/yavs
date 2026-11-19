@@ -285,7 +285,7 @@ fn classify_block(
     let blk = f.blocks.values()[b];
     let insts = &f.code[blk.start as usize..blk.end as usize];
     let mut kind = vec![K::Other; insts.len()];
-    let mut pending: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    let mut pending: FxMap<u32, usize> = FxMap::default();
     for (i, ins) in insts.iter().enumerate() {
         if dopes.is_some()
             && let Inst::MakeDope { at, parts } = *ins
@@ -328,7 +328,7 @@ fn dope_sizes(f: &crate::Func, succ: &[Vec<usize>], b: usize) -> Vec<u32> {
     let insts = &f.code[blk.start as usize..blk.end as usize];
     let n = insts.len();
     let mut out = vec![0u32; n];
-    let mut konst: std::collections::HashMap<u32, i64> = std::collections::HashMap::new();
+    let mut konst: FxMap<u32, i64> = FxMap::default();
     for i in 0..n {
         if let Inst::Alloc { dst, size } = insts[i]
             && let Some(&sz) = konst.get(&size.0)
@@ -467,8 +467,8 @@ struct Flow {
     /// A block entered from the two arms of an `if` (or the head and its one arm) whose
     /// condition may be instance-constant: (first arm, second arm, head).
     join: Vec<Option<Join>>,
-    exits: std::cell::RefCell<std::collections::HashMap<usize, State>>,
-    sizes: std::cell::RefCell<std::collections::HashMap<usize, Vec<u32>>>,
+    exits: std::cell::RefCell<FxMap<usize, State>>,
+    sizes: std::cell::RefCell<FxMap<usize, Vec<u32>>>,
 }
 
 impl Flow {
@@ -1109,7 +1109,7 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func, copy: bool) {
             }
         }
         // Slow copy: the original, renamed, with the stores.
-        let mut map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        let mut map: FxMap<u32, u32> = FxMap::default();
         for &r in &p.rename {
             let t = f.reg_ty[r as usize];
             let nr = fresh(f, t);

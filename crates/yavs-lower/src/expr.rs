@@ -1,7 +1,7 @@
 //! Expressions (DESIGN.md "Expressions"): values, ranges and descriptors, calls, implicit
 //! operations, attributes, names and conversions.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use yavs_diag::Span;
 use yavs_ir::{

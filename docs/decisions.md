@@ -5955,6 +5955,16 @@ Decisions:
   the integer-array cell under `--tier=auto` takes one of two policy outcomes 1.3 percent apart on every binary, so its
   geomean over 16 worlds moves by the draw; medians equal the A/A's.)
 
+## Lookup tables hash with `Fx`, never with SipHash, where they are only looked up (yavs-ir `opt/memo.rs`, `opt/subcopy.rs`, yavs-lower `func.rs`, 2026-11-19)
+
+A cold short run still hashed with SipHash in the optimiser's `memo` and `subcopy` passes and in the per-function
+tables of lowering (one removal per lowered expression from `ahead`). Their keys are registers, expression ids and
+block numbers the program made, never hostile, and no site iterates a map, so the order is not observable: they use the
+optimiser's `Fx` (`opt::FxMap`) or `rustc_hash` as their neighbours do. A map that is iterated, or whose order reaches
+the output, a cache digest or a stored format (the unit manifest, the closure records in `yavs-lib`), keeps its order
+rules and was not touched. `pre::count_back_edges` keeps one trampoline per loop head in a vector by op. Cost left: the
+profile of a cold short run shows 0.05 percent in SipHash.
+
 ## Shared offsets must stay memoisable and fusable (yavs-ir `opt/memo.rs`, `opt/share.rs`, yavs-interp `pre.rs`, #534, 2026-10-22)
 
 - Optimiser round 11 shares the position and length of an array element across the arms of an `if`, so the offsets of

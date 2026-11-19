@@ -1,7 +1,7 @@
 //! The perf map (`/tmp/perf-<pid>.map`, one `address size name` line per function of generated
 //! code) the compiled tier writes for `perf report` (`YAVS_CLIFT_PERFMAP`). One append-only
 //! writer, so the code of several compiles shares the file. The file is named by the pid alone and
-//! pids are reused, so [`start`] empties it once per process before anything is added (#1135).
+//! pids are reused, so [`start`] empties it once per process before anything is added (#1135). The map is never removed: `perf report` reads it after the run. A failure to write it is a warning, once.
 
 use std::io::Write;
 use std::sync::Mutex;
@@ -31,7 +31,7 @@ fn path() -> String {
 
 /// Empty the map of this process, once: a file left by an earlier process with the same pid (a
 /// run that did not remove it, `perf record`) would otherwise name its code next to ours. Call it
-/// before any function is listed, also when the JIT module lists them itself.
+/// before any function is listed.
 pub fn start() {
     static START: std::sync::Once = std::sync::Once::new();
     START.call_once(|| {

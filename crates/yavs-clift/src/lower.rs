@@ -565,9 +565,15 @@ impl Drop for Jit {
 
 impl Jit {
     pub fn new() -> Result<Jit, Error> {
-        // The map starts empty also when the JIT module writes it (`PERF_BUILDID_DIR`, #1135).
-        if flag("YAVS_CLIFT_PERFMAP", "0") == "1" || std::env::var_os("PERF_BUILDID_DIR").is_some()
-        {
+        // The JIT module appends to `/tmp/perf-<pid>.map` whenever `PERF_BUILDID_DIR` is set (`perf
+        // stat` and `perf record` both set it), panics when that fails and never removes the file
+        // (#1170). Only `YAVS_CLIFT_PERFMAP=1` asks for the map, which our own writer makes.
+        static HIDE: std::sync::Once = std::sync::Once::new();
+        HIDE.call_once(|| {
+            // SAFETY: runs once, before the JIT module reads the variable; nothing here reads it.
+            unsafe { std::env::remove_var("PERF_BUILDID_DIR") };
+        });
+        if flag("YAVS_CLIFT_PERFMAP", "0") == "1" {
             yavs_rt::perfmap::start();
         }
         let opt = flag("YAVS_CLIFT_OPT", "speed");
@@ -1942,17 +1948,12 @@ impl Jit {
             crate::blockcov::register(name, key, at as usize, blocks);
         }
         if let Some(list) = self.perfmap.take() {
-            // With `PERF_BUILDID_DIR` set (`perf record` sets it) the JIT module lists every
-            // function it finalizes under its symbol, the readable one: not twice.
-            let jit_writes = std::env::var_os("PERF_BUILDID_DIR").is_some();
             // `YAVS_CLIFT_CODEDIR=<dir>`: the machine code of each function as `<name>.bin`,
             // for `objdump -D -b binary -mi386:x86-64` against `perf script` addresses.
             let dir = std::env::var_os("YAVS_CLIFT_CODEDIR");
             for (name, id, size, map) in &list {
                 let at = self.module.get_finalized_function(*id) as usize;
-                if !jit_writes {
-                    yavs_rt::perfmap::append(at, *size, name);
-                }
+                yavs_rt::perfmap::append(at, *size, name);
                 if let Some(d) = &dir {
                     // SAFETY: the finalized function owns `size` bytes of code at `at`.
                     let code = unsafe { std::slice::from_raw_parts(at as *const u8, *size) };

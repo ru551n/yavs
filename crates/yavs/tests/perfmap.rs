@@ -265,3 +265,28 @@ fn clift_lists_compiled_and_cached_code_by_name() {
 fn clift_auto_lists_cached_code_by_name() {
     auto("clift-auto", "YAVS_CLIFT_PERFMAP");
 }
+
+/// `perf stat` and `perf record` set `PERF_BUILDID_DIR`; that alone must not leave a map in `/tmp`
+/// (#1170): only `YAVS_CLIFT_PERFMAP=1` asks for one.
+#[cfg(feature = "clift")]
+#[test]
+fn clift_writes_no_map_unless_asked() {
+    let dir = setup("perfmap_unasked");
+    let child = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .args(["run", "--std=2008", "--work=work:work", "--tier=clift"])
+        .args(SHORT)
+        .arg("perfmap")
+        .env_remove("YAVS_CLIFT_PERFMAP")
+        .env("PERF_BUILDID_DIR", &*dir)
+        .current_dir(&dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run yavs");
+    let path = format!("/tmp/perf-{}.map", child.id());
+    let o = child.wait_with_output().expect("wait");
+    assert!(o.status.success(), "{o:?}");
+    let left = Path::new(&path).exists();
+    let _ = std::fs::remove_file(&path);
+    assert!(!left, "{path} was written");
+}

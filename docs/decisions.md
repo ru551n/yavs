@@ -3341,13 +3341,20 @@ Decoding the whole analysis image (serde and postcard: about 5 MB of arenas, 3 M
 symbol texts) was the largest fixed cost of a run, and a run reads only part of the design. So the restore
 decodes on demand:
 
-- **Arenas decode 64 entries at a time on first read** (`yavs-sem` `ids.rs`). The image form of an arena is
-  its entries in chunks, one postcard sequence per chunk, plus the chunk start offsets; a restored arena
-  keeps the bytes (a range of the buffer the entry was read into, not a copy) and a `OnceLock` per chunk.
-  `Index` decodes the chunk, `IndexMut` decodes it and hands out the entry, `push` appends after the lazy
-  entries, `iter` reads every entry. Ids are unchanged, so a warm run is still the same value, id for id.
-  Ceiling: an entry read decodes its 63 neighbours; a decode error cannot be returned from `Index`, so it
-  is an internal-error panic (the entry was checksummed, a chunk that does not decode is a bug).
+- **Arenas decode an entry of an image when it is first read** (`yavs-sem` `ids.rs`; until 2026-11-19 the
+  whole chunk of 64 around it). The image form of an arena is its entries in chunks of 64, the length of
+  each entry (a varint) in a second byte string, and the start of each chunk in both; a restored arena
+  keeps the bytes (ranges of the buffer the entry was read into, not copies). The first read of a chunk
+  finds the offsets of its entries from the lengths and makes one box of cells for them; a read decodes its
+  entry and, while reads follow each other directly, twice as many after it as the last run, up to the
+  chunk (as an entry replayed from the analysed-unit cache, `SlotPage`). A decoded entry costs one test of
+  its cell more than an entry of a decoded chunk did. `IndexMut` decodes the entry and hands it out,
+  `push` appends after the lazy entries, `iter` reads every entry. Ids are unchanged, so a warm run is still
+  the same value, id for id. Why: a warm run of a testbench of a verification library reads a tenth of the
+  regions, a third of the declarations and expressions and a quarter of the statements of the chunks it
+  touches (measured on the 114-test AXI-stream suite), and decoding the rest of each chunk was the largest
+  piece of its start outside the elaboration-time calls. A decode error cannot be returned from `Index`, so
+  it is an internal-error panic (the entry was checksummed, an entry that does not decode is a bug).
 - **Whole-design scans must not run on the run path**, because they decode everything. The three that did
   (`'active`/`'last_active` reads, force and release statements, package-path external names) are answered
   from `Db::facts()`, found by `Db::settle` and stored in the image; `facts()` recomputes when the

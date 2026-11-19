@@ -26,6 +26,26 @@
 | `yavs lint` | all rule classes, `--facts`, reports, configuration, waivers (#895): `crates/yavs-lint`, `crates/yavs/src/lint.rs`, `docs/lint.rst`, `--yavs-lint` in `vunit-yavs`, problem matcher `$yavs` in VS Code; pinned in `crates/yavs/tests/lint.rs`. `file_list` in the configuration reads the files to check; every unknown key, rule id and rule group in the configuration or waiver file is E0134, all listed in one run, and the four YAML files yavs reads (these two, the coverage exclusion file and `cov --config`) are checked against declared schemas by one reader, `yavs_diag::yaml`, so a configuration written for a style tool needs its style settings removed first (#895). Rule ids of analysis (lint_006, lint_782) stay nameable and report nothing. Definite findings on the corpora and the realbench designs are confirmed real (#895); known noise of the advisory rules: see the issues linked there. lint_720 follows statements (#989); the rules beyond the definite class were compared with the source project's tests (#1002, `docs/decisions.md`), with `rtl:` and `testbench:` rule blocks and a heuristic for what a testbench is. |
 | M5, M10 | M5 in progress, partial (#143; what works and what does not is in `docs/vhpi.md`): the `vhpi_*` export surface (#266), `yavs run --vhpi` (#267), the hierarchy (#269), values and types (#270), puts (#271), callbacks (#272), foreign models (#274, #330, #357) and plusargs (#298) are done, `crates/yavs-vhpi`, coverage in `docs/vhpi.md`; cocotb 2.1.0's own simulator regression passes on yavs (`tools/cocotb/run.py`, 78 of 78 jobs, 43 of them run VHDL tests, at 1 and 4 threads, run in the `conformance` CI workflow, #122); M10 (the graphical debugger) is dropped: `yavs-gui` was built (slices G1 #388 and G2 #399, 2026-10-19) and removed again with `yavs run --gui` and its release files (maintainer, 2026-10-29; #871 closed 2026-10-31; `docs/plan.md` M10); the DAP server slices made for it (#396, #397, #398) were closed 2026-10-30 and DAP clients cover debugging. Corrected 2026-11-14: this row described the GUI as in progress) |
 
+### A warm run decodes only the cached analysis entries it reads (2026-11-19)
+
+An arena restored from the analysis image decodes an entry when it is first read (and a growing run after it while reads
+follow each other), not the whole chunk of 64 around it: the image keeps each entry's length in a byte string of its own
+(`yavs-sem` `ids.rs` `LazyPage`, `docs/decisions.md` "Lazy image decode"). A warm test of the 114-test AXI-stream suite
+reads 9 percent of the regions, about a third of the declarations and expressions and a quarter of the statements of
+the chunks it touches. Exact instructions, bench builds, worlds made by each build, byte-copy A/A: the suite's median
+test 5.6 to 6.0 percent fewer at `-p1` (three trials of three rounds) and at `-p0` (two trials of two rounds), A/A within
+0.5 percent; the vunitops cells under the interpreter cold 0.9988, second run 0.9996, warm 0.9873 (geometric means of 14
+cells, A/A 1.0000), short cells 2 to 4 percent fewer warm; the 26 bench designs 0.9970 interpreted and 0.9975 under
+`auto` with nothing compiled (largest gain `ff_rtl` 4.4 percent; the same with an unrelated cold-arm edit on both sides).
+`Code::new` reuses the definition counts `Pre::new` made instead of counting them again. Realbench, 29 short tests
+under `auto`, 16 fresh worlds: run 1 0.9956, run 2 1.0039, run 3 0.9168 (A/A 0.9992, 1.0000, 1.0000). Worse cases,
+measured: `file_io` interpreted +0.15 percent in the bench run (the same design with any `--stop-time` is 0.005 percent
+lower than the base: allocator placement, not decoding); `sc5_timestamp` run 2 +6.5 percent in one series, from how
+often its first run compiles one function instead of six (a race of the `unpaid` rule's sampling with the count gate:
+in a later batch of 32 worlds base 9, A/A 7, change 14, and with an unrelated cold-arm edit on both sides 12 against 6,
+so the direction flips); `ax_chk_P8` long, cold under `auto`, 3 of 48 runs at 73 G instead of 44 G in a loaded series,
+then 0 of 80 and 0 of 32, with base 1 of 32 in the last batch.
+
 ### Processes on edges of several clocks resume only on those edges (2026-11-19)
 
 A process that tests edges of several distinct std_ulogic elements and does nothing else (`process (c1, c2)` made only of

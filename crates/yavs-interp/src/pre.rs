@@ -244,7 +244,7 @@ impl Pre {
                 *n = *t;
             }
         }
-        let mut code = Code::new(f, prog, &skip, &known, &next, &counted, budget, arms);
+        let mut code = Code::new(f, prog, &defs, &skip, &known, &next, &counted, budget, arms);
         let params: Box<[(u32, Width)]> = f.params.iter().map(|p| (p.slot, p.width)).collect();
         let pro = prologue(&mut code, &params);
         // The debug loop enters at the prologue, which reads the parameters' slots (#863).
@@ -5115,9 +5115,11 @@ fn superops(prog: &Program, ops: &mut [Op], at: &[u32], f: &Func, known: &[Known
 
 impl Code {
     #[allow(clippy::too_many_arguments)]
+    /// `defs`: the definitions of each register (saturating), as [`Pre::new`] counted them.
     fn new(
         f: &Func,
         prog: &Program,
+        defs: &[u8],
         skip: &[bool],
         known: &[Known],
         next: &[u32],
@@ -5195,16 +5197,6 @@ impl Code {
             Some(blk) if f.body != Some(b) => Some(blk.start),
             _ => None,
         };
-        let mut defs = vec![0u8; f.reg_ty.len()];
-        for inst in &f.code {
-            inst.visit(&mut |r, role, _| {
-                if role == Role::Def
-                    && let Some(d) = defs.get_mut(r.0 as usize)
-                {
-                    *d = d.saturating_add(1);
-                }
-            });
-        }
         let mut aff = Vec::new();
         let mut ops = Vec::with_capacity(n);
         let mut at = Vec::with_capacity(n);
@@ -5275,7 +5267,7 @@ impl Code {
                             skip,
                             block_start: &block_start,
                             known,
-                            defs: &defs,
+                            defs,
                             uses: &uses,
                         },
                         pc,

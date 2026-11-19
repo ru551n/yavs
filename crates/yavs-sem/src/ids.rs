@@ -405,29 +405,111 @@ enum Page<T> {
     Slots(Box<SlotPage<T>>),
 }
 
+/// A chunk of an image: its `n` entries and their lengths (varints). An entry is decoded when it
+/// is first read, with the run after it when reads follow each other (as [`SlotPage::fill`]), not
+/// the whole chunk; the offsets are found at the first read.
 struct LazyPage<T> {
     n: usize,
     data: yavs_diag::Slice,
+    lens: yavs_diag::Slice,
     ctx: PageCtx,
-    cell: std::sync::OnceLock<Vec<T>>,
-    /// Decodes `n` entries (monomorphic: made where `T: Deserialize` is known).
-    decode: fn(&[u8], usize) -> Vec<T>,
+    /// Decodes the entry at the start of the bytes (monomorphic: made where `T: Deserialize` is
+    /// known).
+    decode: fn(&[u8]) -> T,
+    cells: std::sync::OnceLock<Box<[std::sync::OnceLock<T>]>>,
+    /// Where each entry starts in `data`, and one past the end.
+    offs: std::sync::OnceLock<Box<[u32]>>,
+    /// The end of the last run of entries a read decoded, and its length.
+    last: std::sync::atomic::AtomicU32,
 }
 
 impl<T> LazyPage<T> {
-    fn get(&self) -> &Vec<T> {
-        self.cell
-            .get_or_init(|| self.ctx.run(|| (self.decode)(self.data.get(), self.n)))
+    #[inline(always)]
+    fn get(&self, j: usize) -> &T {
+        if let Some(c) = self.cells.get()
+            && let Some(v) = c[j].get()
+        {
+            return v;
+        }
+        self.fill(j)
     }
 
-    fn get_mut(&mut self) -> &mut Vec<T> {
-        self.get();
-        self.cell.get_mut().expect("page decoded just now")
+    #[cold]
+    #[inline(never)]
+    fn fill(&self, j: usize) -> &T {
+        use std::sync::atomic::Ordering::Relaxed;
+        let offs = self.offs.get_or_init(|| {
+            let mut b = self.lens.get();
+            let mut at = 0u32;
+            let mut offs = Vec::with_capacity(self.n + 1);
+            for _ in 0..self.n {
+                offs.push(at);
+                at = take_varint(&mut b)
+                    .and_then(|len| at.checked_add(len))
+                    .unwrap_or_else(|| panic!("internal error: corrupt page of entries"));
+            }
+            assert!(
+                at as usize == self.data.get().len() && b.is_empty(),
+                "internal error: corrupt page of entries"
+            );
+            offs.push(at);
+            offs.into()
+        });
+        let cells = self
+            .cells
+            .get_or_init(|| (0..self.n).map(|_| std::sync::OnceLock::new()).collect());
+        let last = self.last.load(Relaxed);
+        let (end, len) = ((last >> 16) as usize, (last & 0xffff) as usize);
+        let window = if len > 0 && j == end {
+            (2 * len).min(PAGE)
+        } else {
+            1
+        };
+        let bytes = self.data.get();
+        let mut done = 0;
+        self.ctx.run(|| {
+            for k in j..self.n.min(j + window) {
+                if k > j && cells[k].get().is_some() {
+                    break;
+                }
+                let v = (self.decode)(&bytes[offs[k] as usize..offs[k + 1] as usize]);
+                // Another thread may have decoded it meanwhile: both are the same entry.
+                let _ = cells[k].set(v);
+                done = k + 1 - j;
+            }
+        });
+        self.last.store(((j + done) << 16 | done) as u32, Relaxed);
+        cells[j].get().expect("entry decoded just now")
     }
 
-    fn take(mut self) -> Vec<T> {
-        self.get();
-        self.cell.take().expect("page decoded just now")
+    fn get_mut(&mut self, j: usize) -> &mut T {
+        self.get(j);
+        self.cells
+            .get_mut()
+            .and_then(|c| c[j].get_mut())
+            .expect("entry decoded just now")
+    }
+
+    fn take(self) -> Vec<T> {
+        for j in 0..self.n {
+            self.get(j);
+        }
+        self.cells
+            .into_inner()
+            .map(|c| {
+                c.into_vec()
+                    .into_iter()
+                    .map(|c| c.into_inner().expect("entry decoded just now"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    fn undecoded(&self) -> usize {
+        (0..self.n)
+            .filter(|&j| self.cells.get().is_none_or(|c| c[j].get().is_none()))
+            .count()
     }
 }
 
@@ -555,6 +637,13 @@ impl<T> SlotPage<T> {
         self.slots.truncate(len);
     }
 
+    #[cfg(test)]
+    fn undecoded(&self) -> usize {
+        (0..self.slots.len())
+            .filter(|&j| self.cells.get().is_none_or(|c| c[j].get().is_none()))
+            .count()
+    }
+
     /// Decode everything and hand the entries over.
     fn take(self) -> Vec<T> {
         for j in 0..self.slots.len() {
@@ -579,7 +668,7 @@ impl<T> Page<T> {
     fn at(&self, j: usize) -> &T {
         match self {
             Page::Eager(v) => &v[j],
-            Page::Lazy(l) => &l.get()[j],
+            Page::Lazy(l) => l.get(j),
             Page::Slots(s) => s.get(j),
         }
     }
@@ -588,7 +677,7 @@ impl<T> Page<T> {
     fn at_mut(&mut self, j: usize) -> &mut T {
         match self {
             Page::Eager(v) => &mut v[j],
-            Page::Lazy(l) => &mut l.get_mut()[j],
+            Page::Lazy(l) => l.get_mut(j),
             Page::Slots(s) => s.get_mut(j),
         }
     }
@@ -622,23 +711,10 @@ impl<T> Page<T> {
     fn undecoded(&self) -> usize {
         match self {
             Page::Eager(_) => 0,
-            Page::Lazy(l) => usize::from(l.cell.get().is_none()),
-            Page::Slots(s) => (0..s.slots.len())
-                .filter(|&j| s.cells.get().is_none_or(|c| c[j].get().is_none()))
-                .count(),
+            Page::Lazy(l) => l.undecoded(),
+            Page::Slots(s) => s.undecoded(),
         }
     }
-}
-
-pub(crate) fn decode_entries<T: serde::de::DeserializeOwned>(mut rest: &[u8], n: usize) -> Vec<T> {
-    (0..n)
-        .map(|_| {
-            let (t, r) = postcard::take_from_bytes::<T>(rest)
-                .unwrap_or_else(|e| panic!("internal error: corrupt page of entries: {e}"));
-            rest = r;
-            t
-        })
-        .collect()
 }
 
 fn decode_one<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> T {
@@ -855,7 +931,7 @@ impl<I, T> Arena<I, T> {
         Ok(())
     }
 
-    /// The number of pages that are still bytes (tests).
+    /// The number of entries that are still bytes (tests).
     #[cfg(test)]
     pub(crate) fn undecoded_pages(&self) -> usize {
         self.pages.iter().map(|p| p.undecoded()).sum()
@@ -949,6 +1025,8 @@ struct Image<'a> {
     track: bool,
     len: usize,
     starts: std::borrow::Cow<'a, [u32]>,
+    /// Where each chunk's entry lengths (varints) start in the length bytes, and their end.
+    lstarts: std::borrow::Cow<'a, [u32]>,
     runs: std::borrow::Cow<'a, [(u32, u32)]>,
 }
 
@@ -958,22 +1036,30 @@ impl<I, T: serde::Serialize> serde::Serialize for Arena<I, T> {
         let len = self.len();
         let mut data = Vec::new();
         let mut starts = Vec::with_capacity(len / PAGE + 2);
+        let mut lens = Vec::with_capacity(len + len / 2);
+        let mut lstarts = Vec::with_capacity(len / PAGE + 2);
         for c in 0..len.div_ceil(PAGE) {
             starts.push(data.len() as u32);
+            lstarts.push(lens.len() as u32);
             for i in c * PAGE..len.min((c + 1) * PAGE) {
+                let before = data.len();
                 data = postcard::to_extend(self.at(i), data).map_err(S::Error::custom)?;
+                put_varint(&mut lens, (data.len() - before) as u32);
             }
         }
         starts.push(data.len() as u32);
+        lstarts.push(lens.len() as u32);
         use serde::ser::SerializeTuple;
-        let mut t = s.serialize_tuple(2)?;
+        let mut t = s.serialize_tuple(3)?;
         t.serialize_element(&Image {
             track: self.track,
             len,
             starts: starts.into(),
+            lstarts: lstarts.into(),
             runs: self.runs[..].into(),
         })?;
         t.serialize_element(&BytesRef(&data))?;
+        t.serialize_element(&BytesRef(&lens))?;
         t.end()
     }
 }
@@ -989,13 +1075,16 @@ impl serde::Serialize for BytesRef<'_> {
 impl<'de, I, T: serde::de::DeserializeOwned> serde::Deserialize<'de> for Arena<I, T> {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         use serde::de::Error;
-        let (img, data) = <(Image, yavs_diag::Slice)>::deserialize(d)?;
+        let (img, data, lens) = <(Image, yavs_diag::Slice, yavs_diag::Slice)>::deserialize(d)?;
         let chunks = img.len.div_ceil(PAGE);
         let starts = img.starts.into_owned();
-        if starts.len() != chunks + 1
-            || starts.windows(2).any(|w| w[0] > w[1])
-            || starts.last().is_none_or(|&e| e as usize != data.len())
-        {
+        let lstarts = img.lstarts.into_owned();
+        let table = |t: &[u32], end: usize| {
+            t.len() == chunks + 1
+                && t.windows(2).all(|w| w[0] <= w[1])
+                && t.last().is_some_and(|&e| e as usize == end)
+        };
+        if !table(&starts, data.len()) || !table(&lstarts, lens.len()) {
             return Err(D::Error::custom("arena chunk table"));
         }
         let ctx = PageCtx {
@@ -1008,9 +1097,12 @@ impl<'de, I, T: serde::de::DeserializeOwned> serde::Deserialize<'de> for Arena<I
                 Page::Lazy(Box::new(LazyPage {
                     n: PAGE.min(img.len - c * PAGE),
                     data: data.range(starts[c] as usize, starts[c + 1] as usize),
+                    lens: lens.range(lstarts[c] as usize, lstarts[c + 1] as usize),
                     ctx: ctx.clone(),
-                    cell: std::sync::OnceLock::new(),
-                    decode: decode_entries::<T>,
+                    decode: decode_one::<T>,
+                    cells: std::sync::OnceLock::new(),
+                    offs: std::sync::OnceLock::new(),
+                    last: std::sync::atomic::AtomicU32::new(0),
                 }))
             })
             .collect();
@@ -1091,13 +1183,13 @@ mod tests {
         let mut b: Arena<DeclId, String> =
             yavs_diag::sharing(&buf, || postcard::from_bytes(&buf)).expect("deserialize");
         assert_eq!(b.len(), n);
-        // Only the page read is decoded.
-        assert_eq!(b.undecoded_pages(), 4);
+        // Only the entry read is decoded.
+        assert_eq!(b.undecoded_pages(), n);
         assert_eq!(
             b[DeclId::from_index(PAGE + 1)],
             format!("item {}", PAGE + 1)
         );
-        assert_eq!(b.undecoded_pages(), 3);
+        assert_eq!(b.undecoded_pages(), n - 1);
         // A write decodes its chunk, a push lands after the lazy entries.
         b[DeclId::from_index(n - 1)].push('!');
         let id = b.push("new".into());
@@ -1113,6 +1205,40 @@ mod tests {
         let again = postcard::to_stdvec(&b).expect("serialize again");
         let c: Arena<DeclId, String> = postcard::from_bytes(&again).expect("deserialize again");
         assert!(c.iter().map(|(_, s)| s).eq(all.iter()));
+    }
+
+    /// An entry of an image read here and there is decoded alone; entries read one after the other
+    /// are decoded ahead, within their chunk; every entry reads back as written.
+    #[test]
+    fn image_entries_decode_alone_or_ahead_in_order() {
+        let mut a: Arena<DeclId, String> = Arena::new();
+        let n = 2 * PAGE;
+        for i in 0..n {
+            a.push(format!("e{i}"));
+        }
+        let bytes = postcard::to_stdvec(&a).expect("serialize");
+        let buf = yavs_diag::Buffer::new(bytes);
+        let b: Arena<DeclId, String> =
+            yavs_diag::sharing(&buf, || postcard::from_bytes(&buf)).expect("deserialize");
+        for i in [40, 10, 25] {
+            assert_eq!(b[DeclId::from_index(i)], format!("e{i}"));
+        }
+        assert_eq!(b.undecoded_pages(), n - 3);
+        // Reads in order from 41 on decode 1, then 2, 4 and 8 entries at a time.
+        for i in 41..49 {
+            assert_eq!(b[DeclId::from_index(i)], format!("e{i}"));
+        }
+        assert_eq!(b.undecoded_pages(), n - 3 - 15);
+        // A run stops at the end of its chunk.
+        for i in 56..64 {
+            assert_eq!(b[DeclId::from_index(i)], format!("e{i}"));
+        }
+        assert_eq!(b.undecoded_pages(), n - 3 - 15 - 8);
+        assert!(
+            b.iter()
+                .map(|(_, s)| s.clone())
+                .eq((0..n).map(|i| format!("e{i}")))
+        );
     }
 
     /// Runs of bytes appended after eager entries, read one by one, written, truncated and grown

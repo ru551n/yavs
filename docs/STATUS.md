@@ -26,6 +26,17 @@
 | `yavs lint` | all rule classes, `--facts`, reports, configuration, waivers (#895): `crates/yavs-lint`, `crates/yavs/src/lint.rs`, `docs/lint.rst`, `--yavs-lint` in `vunit-yavs`, problem matcher `$yavs` in VS Code; pinned in `crates/yavs/tests/lint.rs`. `file_list` in the configuration reads the files to check; every unknown key, rule id and rule group in the configuration or waiver file is E0134, all listed in one run, and the four YAML files yavs reads (these two, the coverage exclusion file and `cov --config`) are checked against declared schemas by one reader, `yavs_diag::yaml`, so a configuration written for a style tool needs its style settings removed first (#895). Rule ids of analysis (lint_006, lint_782) stay nameable and report nothing. Definite findings on the corpora and the realbench designs are confirmed real (#895); known noise of the advisory rules: see the issues linked there. lint_720 follows statements (#989); the rules beyond the definite class were compared with the source project's tests (#1002, `docs/decisions.md`), with `rtl:` and `testbench:` rule blocks and a heuristic for what a testbench is. |
 | M5, M10 | M5 in progress, partial (#143; what works and what does not is in `docs/vhpi.md`): the `vhpi_*` export surface (#266), `yavs run --vhpi` (#267), the hierarchy (#269), values and types (#270), puts (#271), callbacks (#272), foreign models (#274, #330, #357) and plusargs (#298) are done, `crates/yavs-vhpi`, coverage in `docs/vhpi.md`; cocotb 2.1.0's own simulator regression passes on yavs (`tools/cocotb/run.py`, 78 of 78 jobs, 43 of them run VHDL tests, at 1 and 4 threads, run in the `conformance` CI workflow, #122); M10 (the graphical debugger) is dropped: `yavs-gui` was built (slices G1 #388 and G2 #399, 2026-10-19) and removed again with `yavs run --gui` and its release files (maintainer, 2026-10-29; #871 closed 2026-10-31; `docs/plan.md` M10); the DAP server slices made for it (#396, #397, #398) were closed 2026-10-30 and DAP clients cover debugging. Corrected 2026-11-14: this row described the GUI as in progress) |
 
+### Cycle mode: a clock's other edge no longer wakes the region (2026-11-19)
+
+A region that waits on clocks and on data inputs was woken by every event of a clock and found no edge at the other
+one. The kernel now registers a waiter held to an edge of its own (`Ctx::wait_on_edge`; the edge kind is part of the
+sensitivity entry), and the region names each clock of one edge kind that no other wait overlaps with it
+(`rt::held_waits`). Instructions in cycle mode, interpreter tier: SatCat5 cfgbus_host_axi_tb -2.1 %,
+cfgbus_port_stats_tb -2.9 %, the ac701 boot test, NEORV32 and Microwatt -0.1 to -0.4 %; normal mode level with an A/A
+control (`window.py`). An input read only by clocked members is read at the next wake instead, so the metavalue count
+can be smaller (it counts reads). Tests: `crates/yavs-kernel/tests/scenarios.rs` (`wait_on_edge_*`, two triggers on one
+signal), `crates/yavs/tests/cycle/waitfilter.vhd`.
+
 ### Dropping the statement markers a placement left costs less (2026-11-19)
 
 `opt::drop_markers`, run after `opt/slots.rs` moved temporaries into the frame (and after the drives pass), built a full

@@ -144,7 +144,9 @@ The files are in ``docs/examples/cycle`` of the source tree. Analyze them once, 
     ** Note: 3016000000fs+0: FINISH called with status 0
 
 The testbench's own output is the same. The two ``cycle mode`` lines are on standard error. The second one
-is the first sign of what changes: nine elements of signals that start as ``'U'`` were read as ``0``.
+is the first sign of what changes: nine elements of signals that start as ``'U'`` were read as ``0``. It counts
+reads, not signals: an element read as a metavalue at two wakes of the region counts twice, and a metavalue that comes
+and goes between two reads is not counted (an input that only clocked processes read is read at the region's wakes).
 
 .. _cycle-selection:
 

@@ -338,6 +338,8 @@ pub(crate) struct RegionProc<const RAIL: bool> {
     pub ex: [u64; EX_N],
     /// With `stats`: the chunks the last import read.
     pub read_now: Vec<usize>,
+    /// The idle rule ([`Idle`]).
+    pub idle: Idle,
     /// Per input chunk (`chunk_cone`, an index into `cones`): the steps of the settle a change of
     /// it can reach; `mark`, those of the chunks the last import read.
     pub cones: Arc<Vec<Box<[u64]>>>,
@@ -367,6 +369,22 @@ pub(crate) struct RegionProc<const RAIL: bool> {
     /// whether the code seeds `'U'` start values itself (`Op::Seed`).
     pub oth: Option<usize>,
     pub seeds: bool,
+}
+
+/// Images of at most this many words take part in the idle rule ([`Idle`]).
+pub(crate) const IDLE_WORDS: usize = 4096;
+
+/// The idle rule: an edge run of a set of classes that changed no word of the image (its start
+/// copied to `snap`, compared after the export) gives the same again until an input is read or
+/// another run changes the image: such a run is skipped. `masks`: the sets (bits by class) known
+/// idle. After 16 runs in a row that were not skipped, the rule rests for 256 edge runs.
+#[derive(Default)]
+pub(crate) struct Idle {
+    pub on: bool,
+    pub masks: Vec<u64>,
+    pub snap: Vec<u64>,
+    pub misses: u32,
+    pub rest: u32,
 }
 
 /// The clock edges a [`Rail`] runs at the most (owner decision A38): it ends at that edge,
@@ -491,8 +509,14 @@ pub(crate) const EX_NAMES: [&str; EX_N] = [
     "image groups written",
     "chunk counts compared",
     "chunks read",
+    "runs after the start",
+    "runs at an edge",
+    "runs without an edge that read nothing",
+    "runs without an edge that read only inputs left for the edge",
+    "edge runs checked that changed no word of the image",
+    "edge runs skipped as idle",
 ];
-pub(crate) const EX_N: usize = 13;
+pub(crate) const EX_N: usize = 19;
 
 impl Stats {
     /// One wake that runs code: the edges of each class, and the members the mark lets run.
@@ -868,6 +892,44 @@ impl<const RAIL: bool> RegionProc<RAIL> {
         let first = self.spans.last().map_or(0, |sp| sp.outs.end);
         for o in &self.outs[first..] {
             ex[8] += o.ram.iter().filter(|wr| self.img[wr.flag] != 0).count() as u64;
+        }
+    }
+
+    /// The idle rule after an edge run of the classes `m`: whether it changed the image; with
+    /// `known` (`YAVS_CYCLE_SKIP_CHECK=full` ran a run the rule skips) it must not have.
+    fn idle_end(&mut self, ctx: &Ctx<'_>, m: u64, known: bool) -> Result<(), SimError> {
+        let same = self.idle.snap == self.img;
+        if known && !same {
+            return Err(ctx.error(ErrorKind::Internal(
+                "cycle mode: an edge run the idle rule skips changed the image (YAVS_CYCLE_SKIP_CHECK)"
+                    .into(),
+            )));
+        }
+        if self.stats {
+            self.ex[17] += u64::from(same);
+        }
+        if same {
+            if !self.idle.masks.contains(&m) {
+                self.idle.masks.push(m);
+            }
+        } else {
+            self.idle.masks.clear();
+        }
+        // A run the rule would have skipped counts as a skip (the check mode runs them all).
+        self.idle.misses = if known { 0 } else { self.idle.misses + 1 };
+        if self.idle.misses >= 16 {
+            (self.idle.misses, self.idle.rest) = (0, 256);
+        }
+        Ok(())
+    }
+
+    /// `YAVS_CYCLE_STATS`: the counts of a wake that ran no code into the totals.
+    #[cold]
+    fn flush_ex(&mut self) {
+        if let Some(st) = self.metas.stats.lock().expect("not poisoned").as_mut() {
+            for (a, b) in st.ex.iter_mut().zip(std::mem::take(&mut self.ex)) {
+                *a += b;
+            }
         }
     }
 
@@ -1665,6 +1727,9 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             self.started = true;
             return Ok(());
         }
+        if self.stats {
+            self.ex[13] += 1;
+        }
         // The edge of every class: the clocked bodies of those that happened run.
         let mut edge = false;
         for &(r, kind, w) in &self.clocks {
@@ -1675,7 +1740,14 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             }
             edge |= x;
         }
+        if self.stats {
+            self.ex[14] += u64::from(edge);
+        }
         if !edge && self.clocks_only {
+            if self.stats {
+                self.ex[15] += 1;
+                self.flush_ex();
+            }
             if R {
                 self.rail = rail;
             }
@@ -1704,6 +1776,37 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             self.read_now.clear();
         }
         let (any, now) = self.import::<R>(ctx, rail.as_deref_mut())?;
+        if any || R {
+            self.idle.masks.clear();
+        }
+        // The idle rule, at an edge: skip, or copy the image to see whether this run changes it.
+        let mut probe = None;
+        if !R && edge && self.idle.on {
+            let m = (self.clocks.iter().enumerate())
+                .fold(0u64, |m, (k, c)| m | (self.img[c.2] & 1) << k);
+            let known = !any && self.idle.masks.contains(&m);
+            if known && self.code.full_check.is_none() {
+                self.idle.misses = 0;
+                if self.stats {
+                    self.ex[18] += 1;
+                    self.flush_ex();
+                }
+                if !ctx.wait_same() {
+                    for &w in &self.waits {
+                        ctx.wait_on(w)?;
+                    }
+                }
+                return Ok(());
+            }
+            if known || self.idle.rest == 0 {
+                self.idle.snap.clear();
+                self.idle.snap.extend_from_slice(&self.img);
+                probe = Some((m, known));
+            } else {
+                self.idle.rest -= 1;
+                self.idle.masks.clear();
+            }
+        }
         if edge || now {
             self.pending = false;
             // Without an edge only the inputs changed: the settle runs what they reach; at an edge
@@ -1733,6 +1836,7 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                 }
                 st.count(&self.img, &self.clocks, &self.mark, edge);
             }
+            // `YAVS_CYCLE_STATS`: whether this edge run changes the image at all.
             let f = if edge { Fun::Edge } else { Fun::Settle };
             if R {
                 self.rail_snap(&mut rail);
@@ -1757,8 +1861,15 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             }
             self.mark.fill(0);
             self.export_rail_or::<R>(ctx, &mut rail, ended)?;
+            if let Some((m, known)) = probe {
+                self.idle_end(ctx, m, known)?;
+            }
         } else if any {
             self.pending = true;
+        }
+        if self.stats && !edge && !now {
+            self.ex[if any { 16 } else { 15 }] += 1;
+            self.flush_ex();
         }
         if R {
             self.rail = rail;

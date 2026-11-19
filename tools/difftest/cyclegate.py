@@ -98,6 +98,7 @@ CYCLE_TESTS = {
     "shiftop.vhd": [("cycle_shiftop", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
     "qualrec.vhd": [("cycle_qualrec", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
     "elabcall.vhd": [("cycle_elabcall", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
+    "waitfilter.vhd": [("cycle_waitfilter", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
 }
 
 

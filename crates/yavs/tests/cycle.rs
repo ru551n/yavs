@@ -4923,7 +4923,7 @@ fn a_clock_event_without_its_edge_does_not_wake_the_region() {
             );
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
-                err.contains("cycle mode: 10 of 17 processes run cycle-based"),
+                err.contains("cycle mode: 12 of 21 processes run cycle-based"),
                 "{w}: {err}"
             );
             let n = |what: &str| -> u64 {

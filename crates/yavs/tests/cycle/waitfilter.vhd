@@ -2,7 +2,9 @@
 -- event of a clock without its edge: `ck` (rising, with a reset `arst` from outside), `cf`
 -- (falling), `c2` (`'event and = '1'`) and the record field `bs.clk` beside the data `bs.dat`.
 -- `cr` has a rising and a falling class and `ckd` is also read as data: they wake it at every
--- event. `din` and `bs.dat` move between edges and in the delta of a falling edge.
+-- event. `din` and `bs.dat` move between edges and in the delta of a falling edge. `arst2` holds
+-- over several falling edges of `ck3` while the reset value `rv` moves in their deltas; `sd` is read
+-- only at the edge of `ck3` and moves in the delta of its falling edge and to `'X'` between edges.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -13,10 +15,11 @@ architecture a of cycle_waitfilter is
     clk : std_ulogic;
     dat : std_ulogic_vector(W - 1 downto 0);
   end record;
-  signal ck, cf, c2, cr, ckd, arst, ckout : std_ulogic := '0';
+  signal ck, cf, c2, cr, ckd, arst, ckout, ck3, arst2 : std_ulogic := '0';
   signal bs : bus_t := (clk => '0', dat => (others => '0'));
   signal din, q, qf, q2, qb, qr, qd, qe, y, z : std_ulogic_vector(W - 1 downto 0) := (others => '0');
   signal cnt : unsigned(W - 1 downto 0) := (others => '0');
+  signal rv, sd, r8, s9 : std_ulogic_vector(W - 1 downto 0) := (others => '0');
   signal done : boolean := false;
 begin
   -- The region.
@@ -70,6 +73,22 @@ begin
   begin
     if rising_edge(ckd) then
       qe <= q2 xor qb;
+    end if;
+  end process;
+
+  p8 : process (ck3, arst2, rv)
+  begin
+    if arst2 = '1' then
+      r8 <= rv;
+    elsif rising_edge(ck3) then
+      r8 <= r8 xor din;
+    end if;
+  end process;
+
+  p9 : process (ck3)
+  begin
+    if rising_edge(ck3) then
+      s9 <= sd;
     end if;
   end process;
 
@@ -138,6 +157,39 @@ begin
     wait;
   end process;
 
+  -- Outside: `ck3` with `rv` and `sd` in the delta of its falling edge, `sd` at `'X'` between edges.
+  g_ck3 : process
+    variable sv, rr : std_ulogic_vector(W - 1 downto 0) := (others => '0');
+  begin
+    wait for 1 ns;
+    for i in 1 to 40 loop
+      ck3 <= '1';
+      wait for 2 ns;
+      sd(i mod W) <= 'X';
+      wait for 1 ns;
+      sd <= sv;
+      wait for 2 ns;
+      ck3 <= '0';
+      rr(i * 3 mod W) := not rr(i * 3 mod W);
+      rv <= rr;
+      if i mod 2 = 0 then
+        sv(i * 5 mod W) := not sv(i * 5 mod W);
+        sd <= sv;
+      end if;
+      wait for 5 ns;
+    end loop;
+    wait;
+  end process;
+
+  g_arst2 : process
+  begin
+    wait for 52 ns;
+    arst2 <= '1';
+    wait for 61 ns;
+    arst2 <= '0';
+    wait;
+  end process;
+
   -- Outside: `bs`, its clock and data together at times; `din` between edges and with them.
   stim : process
     variable k : natural := 0;
@@ -165,13 +217,14 @@ begin
     wait;
   end process;
 
-  monitor : process (ck, cf, c2, cr, ckd, bs.clk, din, bs.dat)
+  monitor : process (ck, cf, c2, cr, ckd, bs.clk, din, bs.dat, ck3, arst2, rv)
   begin
     if not done then
       report "t=" & time'image(now) & " q=" & to_hstring(q) & " qf=" & to_hstring(qf)
         & " q2=" & to_hstring(q2) & " qb=" & to_hstring(qb) & " qr=" & to_hstring(qr)
         & " qd=" & to_hstring(qd) & " qe=" & to_hstring(qe) & " y=" & to_hstring(y)
-        & " z=" & to_hstring(z) & " ckout=" & to_string(ckout) & " cnt=" & to_hstring(cnt);
+        & " z=" & to_hstring(z) & " ckout=" & to_string(ckout) & " cnt=" & to_hstring(cnt)
+        & " r8=" & to_hstring(r8) & " s9=" & to_hstring(s9);
     end if;
   end process;
 end architecture;

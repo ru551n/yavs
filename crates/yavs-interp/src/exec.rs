@@ -13617,6 +13617,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
         cells: &[u64],
         depth: Option<u64>,
         slots: &mut Option<Box<dyn crate::NativeSlots>>,
+        key: Option<(u64, &[u64])>,
     ) -> crate::MemoLook {
         use crate::MemoLook::No;
         let (m, prog, rt) = (&mut *self.m, self.prog, self.rt);
@@ -13649,6 +13650,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
             cells.len(),
             |_, i| cells[i],
             self.ctx.is_some(),
+            key,
         );
         if depth.is_some() {
             *slots = m.nwin.take();
@@ -13708,6 +13710,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
         slots: &mut Option<Box<dyn crate::NativeSlots>>,
         reports: u64,
         v: u64,
+        key: Option<(u64, &[u64])>,
     ) {
         let (m, prog) = (&mut *self.m, self.prog);
         let Some(sig) = prog.memo_sig(func) else {
@@ -13721,7 +13724,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
             m.nwin = slots.take();
             (m.nwin_from, m.nwin_to) = (top, d as usize);
         }
-        m.memo_keep(func, sig, cells.len(), |_, i| cells[i], reports, v);
+        m.memo_keep(func, sig, cells.len(), |_, i| cells[i], reports, v, key);
         if depth.is_some() {
             *slots = m.nwin.take();
         }

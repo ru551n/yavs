@@ -299,6 +299,14 @@ pub(crate) struct State {
     spare: Vec<Box<Slot>>,
 }
 
+/// The words `w` as the bytes of a key.
+fn push_words(key: &mut Vec<u8>, w: &[u64]) {
+    key.reserve(w.len() * 8);
+    for x in w {
+        key.extend_from_slice(&x.to_le_bytes());
+    }
+}
+
 /// A hash of `key`: eight bytes a step.
 fn hash(key: &[u8]) -> u64 {
     const K: u64 = 0x517c_c1b7_2722_0a95;
@@ -405,7 +413,12 @@ impl State {
     /// call, and judges the function at the end of its trial (`dear`: its body is, see
     /// `RETRIES`).
     fn look(&mut self, at: usize, dear: bool) -> Look {
-        let hash = hash(&self.key);
+        let h = hash(&self.key);
+        self.look_hashed(at, dear, h)
+    }
+
+    /// [`State::look`] for the key in `self.key` whose hash is `hash`.
+    fn look_hashed(&mut self, at: usize, dear: bool, hash: u64) -> Look {
         let key = &self.key;
         let m = &mut self.memos[at];
         if m.off {
@@ -622,6 +635,7 @@ impl Machine {
         n: usize,
         cell: impl Fn(&Machine, usize) -> u64,
         sim: bool,
+        pre: Option<(u64, &[u64])>,
     ) -> R<Probe> {
         if !sim || !enabled() || self.has_debugger() || !self.rt.cov.is_empty() {
             return Ok(Probe::No);
@@ -642,7 +656,14 @@ impl Machine {
         }
         let mut key = std::mem::take(&mut st.key);
         key.clear();
-        let made = self.memo_key(sig, n, &cell, &mut key);
+        // Compiled code that probed inline hands over the key's words and their hash.
+        let made = match pre {
+            Some((_, w)) => {
+                push_words(&mut key, w);
+                true
+            }
+            None => self.memo_key(sig, n, &cell, &mut key),
+        };
         st.key = key;
         if !made {
             // A key too big, or one that cannot be read, counts as a call that did not repeat.
@@ -657,7 +678,10 @@ impl Machine {
             }
             return Ok(Probe::No);
         }
-        let look = st.look(at, sig.dear);
+        let look = match pre {
+            Some((h, _)) => st.look_hashed(at, sig.dear, h),
+            None => st.look(at, sig.dear),
+        };
         if std::mem::take(&mut st.fresh) {
             self.memo_user(prog, func);
         }
@@ -762,6 +786,7 @@ impl Machine {
         cell: impl Fn(&Machine, usize) -> u64,
         reports: u64,
         v: u64,
+        pre: Option<(u64, &[u64])>,
     ) {
         let Some(mut st) = self.pm.take() else {
             return;
@@ -769,10 +794,15 @@ impl Machine {
         if st.reports == reports && !st.is_off(func.0) {
             let mut key = std::mem::take(&mut st.key);
             key.clear();
-            if self.memo_key(sig, n, &cell, &mut key)
-                && let Some(val) = self.memo_result(sig.ret, v)
-            {
-                st.keep(func.0, hash(&key), &key, val);
+            let (made, h) = match pre {
+                Some((h, w)) => {
+                    push_words(&mut key, w);
+                    (true, h)
+                }
+                None => (self.memo_key(sig, n, &cell, &mut key), 0),
+            };
+            if made && let Some(val) = self.memo_result(sig.ret, v) {
+                st.keep(func.0, pre.map_or_else(|| hash(&key), |_| h), &key, val);
             }
             st.key = key;
         }
@@ -857,6 +887,7 @@ impl Machine {
             regs.len(),
             |m, i| m.r(regs[i]),
             ctx.is_some(),
+            None,
         )
     }
 
@@ -871,7 +902,7 @@ impl Machine {
         v: u64,
     ) {
         if let Some(regs) = f.regs(args) {
-            self.memo_keep(func, sig, regs.len(), |m, i| m.r(regs[i]), reports, v);
+            self.memo_keep(func, sig, regs.len(), |m, i| m.r(regs[i]), reports, v, None);
         }
     }
 

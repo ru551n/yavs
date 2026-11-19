@@ -986,7 +986,9 @@ pub trait TierHost {
     /// frame `depth` (slots as for [`TierHost::native_direct`]) or, `None`, a frame-mode
     /// function. Runs no VHDL code and collects nothing; a hit allocates only temporary memory
     /// (`fr` is brought up to date). [`MemoLook::Miss`] says the call is to be made and its
-    /// result handed to [`TierHost::memo_keep`] with the number of reports it carries.
+    /// result handed to [`TierHost::memo_keep`] with the number of reports it carries. `key` is
+    /// the hash and the words of the key where compiled code made them (its inline probe): the
+    /// host then does not build them again.
     fn memo_probe(
         &mut self,
         fr: &mut TierFrame,
@@ -994,8 +996,9 @@ pub trait TierHost {
         cells: &[u64],
         depth: Option<u64>,
         slots: &mut Option<Box<dyn NativeSlots>>,
+        key: Option<(u64, &[u64])>,
     ) -> MemoLook {
-        let _ = (fr, func, cells, depth, slots);
+        let _ = (fr, func, cells, depth, slots, key);
         MemoLook::No
     }
 
@@ -1012,8 +1015,9 @@ pub trait TierHost {
         slots: &mut Option<Box<dyn NativeSlots>>,
         reports: u64,
         v: u64,
+        key: Option<(u64, &[u64])>,
     ) {
-        let _ = (fr, func, cells, depth, slots, reports, v);
+        let _ = (fr, func, cells, depth, slots, reports, v, key);
     }
 
     /// Whether `v` is what the memo holds for the call of `func` with argument `cells` (as

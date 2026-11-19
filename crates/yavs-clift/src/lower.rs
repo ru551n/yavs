@@ -2684,6 +2684,12 @@ struct MemoShape {
 }
 
 impl MemoShape {
+    /// Words of a key made inline: a scalar's cell, a flat array's three descriptor words and
+    /// its four of elements.
+    fn key_words(&self) -> usize {
+        self.flat.iter().map(|&f| if f { 7 } else { 1 }).sum()
+    }
+
     /// `None` where the host probes alone (an array with a descriptor in memory, other elements).
     fn of(sig: &yavs_ir::MemoSig) -> Option<MemoShape> {
         let flat = |a: &MemoArg| match a {
@@ -6199,21 +6205,31 @@ impl Gen<'_> {
                 ));
                 s.b.ins().stack_addr(I64, ss, 0)
             };
-            let (buf, out) = (slot(self, n as u32 * 8), slot(self, 16));
+            // After the cells: the key's hash and words, where the inline probe made them
+            // (`out[3]` counts them, 0 for none: the host then builds the key itself).
+            let nk = shape.as_ref().map_or(0, |sh| sh.key_words());
+            let (buf, out) = (slot(self, (n + 1 + nk) as u32 * 8), slot(self, 32));
             let dep = match &self.nat {
                 Some(n) => n.depth,
                 None => self.c64(NATIVE_FRAME_MODE as i64),
             };
             let merge = self.b.create_block();
             self.b.append_block_param(merge, I64);
+            let common = self.b.create_block();
+            self.b.append_block_param(common, I64);
             if let Some(sh) = shape {
-                let probe = self.b.create_block();
+                let (probe, keyed) = (self.b.create_block(), self.b.create_block());
                 // The inline probe's values do not reach the host's probe or the merge.
                 let (cache, slots) = (self.cache.clone(), self.slots);
-                self.memo_inline(callee, &rs, &sh, (buf, dep), merge, probe);
+                self.memo_inline(callee, &rs, &sh, (buf, dep), merge, (probe, keyed), common);
                 (self.cache, self.slots) = (cache, slots);
                 self.b.switch_to_block(probe);
             }
+            let none = self.c64(0);
+            self.b.ins().jump(common, &[BlockArg::Value(none)]);
+            self.b.switch_to_block(common);
+            let kw = self.b.block_params(common)[0];
+            self.b.ins().store(MemFlagsData::trusted(), kw, out, 24);
             for (k, r) in rs.iter().enumerate() {
                 let v = self.ld(*r);
                 self.b
@@ -6298,7 +6314,11 @@ impl Gen<'_> {
     /// (`TierFrame::pmemo`), the key's words hashed and compared as the host does
     /// (`pmemo::hash`), a hit's result to `merge`; anything else goes to `probe`, the host's
     /// probe, before any effect. `chk` is the argument buffer and depth `yavs_rt_memo_holds`
-    /// takes in debug builds.
+    /// takes in debug builds. A call whose key was made and whose slot did not match goes to
+    /// `keyed` instead of `probe`: it stores the hash and the key's words after the cells of the
+    /// buffer, and joins `common` with their count (0 where the key is not a plain one), so the
+    /// host does not make them again.
+    #[allow(clippy::too_many_arguments)]
     fn memo_inline(
         &mut self,
         callee: FuncId,
@@ -6306,18 +6326,20 @@ impl Gen<'_> {
         sh: &MemoShape,
         chk: (Value, Value),
         merge: Block,
-        probe: Block,
+        (probe, keyed): (Block, Block),
+        common: Block,
     ) {
         let tf = MemFlagsData::trusted();
         // Bytes of a slot: an allocation of single bytes.
         let bf = MemFlagsData::new().with_notrap();
         // Tests are joined into few branches (no `brif_split`): every block costs compile time
         // at each call site, and the probe is short.
-        let test = |s: &mut Self, c: Value| {
+        let test_to = |s: &mut Self, c: Value, to: Block| {
             let go = s.b.create_block();
-            s.b.ins().brif(c, go, &[], probe, &[]);
+            s.b.ins().brif(c, go, &[], to, &[]);
             s.b.switch_to_block(go);
         };
+        let test = |s: &mut Self, c: Value| test_to(s, c, probe);
         let dir = self.mem_ld(MEM_PMEMO);
         let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, dir, 0);
         test(self, has);
@@ -6418,7 +6440,7 @@ impl Gen<'_> {
         diff = self.b.ins().bor(diff, z);
         // (The slot's bytes are read only once their length is known.)
         let same = self.b.ins().icmp_imm_s(IntCC::Equal, diff, 0);
-        test(self, same);
+        test_to(self, same, keyed);
         let kp = self.b.ins().load(I64, tf, sp, MEMO_SLOT_AT as i32);
         let mut diff = self.c64(0);
         for (k, &w) in words.iter().enumerate() {
@@ -6430,7 +6452,7 @@ impl Gen<'_> {
         if let Some(f) = fits {
             ok = self.b.ins().band(ok, f);
         }
-        test(self, ok);
+        test_to(self, ok, keyed);
         let v = if sh.ret_flat {
             let vo = klen as i32;
             let bw: Vec<Value> = (0..7)
@@ -6465,6 +6487,23 @@ impl Gen<'_> {
             );
         }
         self.b.ins().jump(merge, &[BlockArg::Value(v)]);
+        // The slot did not match: the key's hash and words for the host.
+        self.b.switch_to_block(keyed);
+        let (buf, _) = chk;
+        let at = (rs.len() * 8) as i32;
+        self.b.ins().store(tf, h, buf, at);
+        for (k, &w) in words.iter().enumerate() {
+            self.b.ins().store(tf, w, buf, at + 8 + (k * 8) as i32);
+        }
+        let nk = self.c64(words.len() as i64);
+        let kw = match fits {
+            Some(f) => {
+                let z = self.c64(0);
+                self.b.ins().select(f, nk, z)
+            }
+            None => nk,
+        };
+        self.b.ins().jump(common, &[BlockArg::Value(kw)]);
     }
 
     /// Return `v` (an i32): a jump to the function's exit block.

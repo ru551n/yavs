@@ -1858,10 +1858,32 @@ pub unsafe extern "C" fn yavs_rt_native_light(
     }
 }
 
+/// The hash and words of the key that compiled code's inline probe made: `out[3]` words, at
+/// `cells[n + 1..]` after the hash at `cells[n]`; `None` where it made none (`out[3]` is 0).
+///
+/// # Safety
+/// `cells` points to `n` argument cells and, when `out[3]` is not 0, the hash and that many words after
+/// them; `out` is four words.
+unsafe fn memo_key_words<'a>(
+    cells: *const u64,
+    n: u32,
+    out: *const u64,
+) -> Option<(u64, &'a [u64])> {
+    // SAFETY: as documented.
+    unsafe {
+        let k = *out.add(3) as usize;
+        (k != 0).then(|| {
+            let p = cells.add(n as usize);
+            (*p, std::slice::from_raw_parts(p.add(1), k))
+        })
+    }
+}
+
 /// `TierHost::memo_probe` for a call of a memoised function from a native frame (`depth` its
 /// index) or a frame-mode function (`NATIVE_FRAME_MODE`): `cells` (`n`) are the argument cells.
 /// Returns 0 when the call is made as usual, 1 on a hit (the result is `out[0]`), 2 on a miss
-/// (the reports so far are `out[1]`: the call is made, then `yavs_rt_memo_keep`).
+/// (the reports so far are `out[1]`: the call is made, then `yavs_rt_memo_keep`). `out[3]` is
+/// the count of key words compiled code made (`memo_key_words`), 0 for none.
 pub unsafe extern "C" fn yavs_rt_memo(
     env: *mut c_void,
     mem: *mut Mem,
@@ -1872,10 +1894,11 @@ pub unsafe extern "C" fn yavs_rt_memo(
     out: *mut u64,
 ) -> u32 {
     cb(Cb::Memo);
-    // SAFETY: as in `yavs_rt_native`; `out` is two words of the caller.
+    // SAFETY: as in `yavs_rt_native`; `out` is four words of the caller.
     let envp = env as *mut Env<'_>;
     unsafe { (*mem).sync(&mut *(*envp).host) };
     let r = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let key = memo_key_words(cells, n, out);
         let cells = std::slice::from_raw_parts(cells, n as usize);
         let env = &mut *envp;
         let depth = (depth & NATIVE_FRAME_MODE == 0).then_some(depth);
@@ -1884,8 +1907,14 @@ pub unsafe extern "C" fn yavs_rt_memo(
                 .windows
                 .get_or_insert_with(|| Box::new(TabSlots((*mem).nslots)));
         }
-        env.host
-            .memo_probe(&mut (*mem).fr, FuncId(func), cells, depth, &mut env.windows)
+        env.host.memo_probe(
+            &mut (*mem).fr,
+            FuncId(func),
+            cells,
+            depth,
+            &mut env.windows,
+            key,
+        )
     }));
     // SAFETY: as above.
     let m = unsafe { &mut *mem };
@@ -1969,6 +1998,7 @@ pub unsafe extern "C" fn yavs_rt_memo_keep(
     let envp = env as *mut Env<'_>;
     unsafe { (*mem).sync(&mut *(*envp).host) };
     let r = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let key = memo_key_words(cells, n, out);
         let cells = std::slice::from_raw_parts(cells, n as usize);
         let env = &mut *envp;
         let depth = (depth & NATIVE_FRAME_MODE == 0).then_some(depth);
@@ -1986,6 +2016,7 @@ pub unsafe extern "C" fn yavs_rt_memo_keep(
             &mut env.windows,
             reports,
             v,
+            key,
         );
     }));
     // SAFETY: as above.

@@ -65,6 +65,8 @@ struct ProcDecl {
     process: Box<dyn Process>,
     drivers: Vec<DriverId>,
     trigger: Option<EdgeTrigger>,
+    /// Elements of its sensitivity held to an edge (`Builder::edge_waits`).
+    edges: Vec<(SignalId, u32, u8)>,
     /// The signal parts a clocked process reads, when an activation is a function of them alone
     /// (`Builder::idle_skip`).
     idle: Option<Vec<IdleRead>>,
@@ -505,6 +507,7 @@ impl Builder {
             process,
             drivers: drivers.to_vec(),
             trigger: None,
+            edges: Vec::new(),
             idle: None,
             guard: None,
             guard_init: false,
@@ -529,6 +532,22 @@ impl Builder {
         match self.procs.get_mut(p.0 as usize) {
             Some(d) if ok => d.trigger = Some(t),
             _ => self.usage(format!("edge trigger {t:?} on process {}", p.0)),
+        }
+    }
+
+    /// A waiter of process `p` for exactly one element `(signal, elem)` of `edges` is woken only
+    /// by that edge (`kind` as `Ctx::edge_by`), its other waiters by any event; the caller
+    /// guarantees that an activation in a cycle without one of those edges does nothing, and
+    /// that the process has one suspension point. Ignored with an edge trigger of its own.
+    pub fn edge_waits(&mut self, p: ProcId, edges: &[(SignalId, u32, u8)]) {
+        let ok = edges.iter().all(|&(s, e, k)| {
+            k <= 3
+                && (self.signals.get(s.0 as usize))
+                    .is_some_and(|s| s.ty.elem == crate::value::Elem::Logic && e < s.ty.len)
+        });
+        match self.procs.get_mut(p.0 as usize) {
+            Some(d) if ok => d.edges = edges.to_vec(),
+            _ => self.usage(format!("edge waits {edges:?} on process {}", p.0)),
         }
     }
 
@@ -842,7 +861,11 @@ impl Builder {
         let mut idles = Vec::with_capacity(self.procs.len());
         let mut guards = Vec::with_capacity(self.procs.len());
         let mut guard_inits = Vec::new();
+        let mut edge_waits = crate::kernel::EdgeWaits::new();
         for p in self.procs {
+            if !p.edges.is_empty() && p.trigger.is_none() {
+                edge_waits.insert(procs.len() as u32, p.edges.into_boxed_slice());
+            }
             if p.guard_init {
                 guard_inits.push(procs.len() as u32);
             }
@@ -901,6 +924,7 @@ impl Builder {
             idles,
             guards,
             guard_inits,
+            edge_waits,
         )
     }
 }

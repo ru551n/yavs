@@ -1364,6 +1364,8 @@ pub struct SimControl {
     triggers: Vec<crate::EdgeTrigger>,
     /// `triggers` by trigger: the elaborator's and the ones waits made (`Ctx::wait_edge`).
     trig_ids: std::collections::HashMap<crate::EdgeTrigger, u32>,
+    /// The elements whose waiters `Builder::edge_waits` holds to an edge, by process.
+    edge_waits: EdgeWaits,
     /// Named parts of signals (record packs) for hang and loop reports (`name_parts`).
     part_names: HashMap<u32, Vec<(Range, String)>>,
 }
@@ -1515,6 +1517,7 @@ impl SimControl {
         idles: Vec<Option<Vec<crate::builder::IdleRead>>>,
         guards: Vec<Option<Vec<(SignalId, Range)>>>,
         guard_inits: Vec<u32>,
+        edge_waits: EdgeWaits,
     ) -> Result<SimControl, SimError> {
         if let Some(pr) = crate::profile::installed() {
             for (s, name) in slots.iter_mut().zip(&names) {
@@ -1760,6 +1763,9 @@ impl SimControl {
         for t in procs.iter().filter_map(|m| m.trigger) {
             signals[t.signal.0 as usize].keep_history();
         }
+        for &(s, _, _) in edge_waits.values().flat_map(|e| e.iter()) {
+            signals[s.0 as usize].keep_history();
+        }
         for &(s, _) in &implicit_srcs {
             signals[s as usize].keep_history();
         }
@@ -1902,6 +1908,7 @@ impl SimControl {
             indep_buf: Vec::new(),
             triggers,
             trig_ids: ids,
+            edge_waits,
         };
         for (m, slot) in sim.procs.iter().zip(&mut sim.slots) {
             if let Some(t) = m.trigger {
@@ -5380,13 +5387,26 @@ impl SimControl {
                 from_prev = true;
             }
             let list = if from_prev { &st.sens_prev } else { &st.sens };
+            // An element of the process the elaborator holds to an edge (`edge_waits`): looked up
+            // per registered range, not per commit (most commits register nothing).
+            let edge_waits = &self.edge_waits;
+            let kind_of = |&(s, r, k): &(SignalId, Range, u8)| {
+                if k != ANY_EVENT || r.len != 1 || edge_waits.is_empty() {
+                    return k;
+                }
+                (edge_waits.get(&p).into_iter().flat_map(|e| e.iter()))
+                    .find(|h| h.0 == s && h.1 == r.offset)
+                    .map_or(k, |h| h.2)
+            };
             let mut i = 0;
-            while let Some(&(s, mut range, kind)) = list.get(i) {
+            while let Some(&e) = list.get(i) {
+                let (s, mut range, kind) = (e.0, e.1, kind_of(&e));
                 i += 1;
                 // Abutting ranges of one signal (the fields of a record pack in a sensitivity
                 // list) are one waiter: the same elements, one list entry instead of one per field.
                 while kind == ANY_EVENT
-                    && let Some(&(t, r, ANY_EVENT)) = list.get(i)
+                    && let Some(&(t, r, k)) = list.get(i)
+                    && kind_of(&(t, r, k)) == ANY_EVENT
                     && t == s
                     && r.offset == range.end()
                 {
@@ -5800,6 +5820,9 @@ fn commit_out(
     }
     outv.clear();
 }
+
+/// Per process, the elements `Builder::edge_waits` holds to an edge, with their kinds.
+pub(crate) type EdgeWaits = HashMap<u32, Box<[(SignalId, u32, u8)]>>;
 
 /// Whether the process of trigger `t` must run in this cycle: its edge, or its reset level.
 fn fires(signals: &[Signal], t: crate::EdgeTrigger, cycle: u64) -> bool {

@@ -1,0 +1,7 @@
+exit	0
+diag	note	126000000	1	:multi_clock_edges:g(0):u:rep	W=1 qa=1 qb=1 qv=0 qw=1 na=7 nc=10 nd=7 ne=23 nf=25 nm=13 nl=19 ns=907 nt=9
+diag	note	126000000	1	:multi_clock_edges:g(1):u:rep	W=63 qa=7EDDFF77FFDFEF57 qb=7EFFFEFDFBF5FFFF qv=0022018A042A10A8 qw=7FDDFE75FBD5EF57 na=7 nc=10 nd=7 ne=23 nf=25 nm=13 nl=19 ns=907 nt=9
+diag	note	126000000	1	:multi_clock_edges:g(2):u:rep	W=64 qa=7EDDFF77FFDFEF57 qb=FEFFFEFDFBF5FFFF qv=8022018A042A10A8 qw=7EDDFF75FBD5EF57 na=7 nc=10 nd=7 ne=23 nf=25 nm=13 nl=19 ns=907 nt=9
+diag	note	126000000	1	:multi_clock_edges:g(3):u:rep	W=65 qa=17EDDFF77FFDFEF57 qb=1FEFFFEFDFBF5FFFF qv=08022018A042A10A8 qw=17FDDFE75FBD5EF57 na=7 nc=10 nd=7 ne=23 nf=25 nm=13 nl=19 ns=907 nt=9
+diag	note	126000000	1	:multi_clock_edges:g(4):u:rep	W=128 qa=BD3FFDFBF7EFDFBF7EDDFF77FFDFEF57 qb=FFFFFF7FFFFFFFFFFEFFFEFDFBF5FFFF qv=42C00284081020408022018A042A10A8 qw=BD3FFDFBF7EFDFBF7EDDFF75FBD5EF57 na=7 nc=10 nd=7 ne=23 nf=25 nm=13 nl=19 ns=907 nt=9
+diag	note	126000000	1	:multi_clock_edges:j:rep	join nr=7 nf=6 ns=70

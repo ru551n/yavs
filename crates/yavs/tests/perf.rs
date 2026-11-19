@@ -1339,6 +1339,16 @@ case!(
     [("process_runs", Max(4560)), ("wakes", Max(4550)),]
 );
 
+// Processes on two clocks (a dual-port RAM model, two elements of one vector, a `wait until` of
+// two edges, one beside a plain wait on an abutting element) resume only on one of their edges
+// (4542 process runs without; 3531 when the plain wait is merged with the held one).
+case!(
+    multi_clock_edges,
+    "m=299",
+    &[],
+    [("process_runs", Max(3440)), ("wakes", Max(3430)),]
+);
+
 /// Processes of instances with their own generics switch to copies specialised to their instance
 /// data (`docs/design/specialisation.md`): the same report, fewer ops, three copies for the six
 /// processes (the iterations of a generate and the instances with equal generics share one).

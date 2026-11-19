@@ -2362,6 +2362,108 @@ fn signal_initial_value_outside_the_element_subtype() {
     );
 }
 
+/// Processes on edges of several elements (`Walker::edge_waits`): the shapes that do nothing
+/// without one of the edges, and the near shapes that may (a tail, an `else`, a level, a clock
+/// read in a branch or another condition, a list with more or fewer signals, a clock twice, an
+/// `on` list without a clock, a timeout).
+#[test]
+fn multi_clock_processes_get_edge_waits() {
+    let src = "library ieee; use ieee.std_logic_1164.all;
+      entity t is end; architecture a of t is
+        signal c1, c2, c3, d, q, r : std_logic := '0';
+        signal v : std_logic_vector(3 downto 0);
+      begin
+        p1 : process (c1, c2) begin
+          if rising_edge(c1) then q <= d; end if;
+          if falling_edge(c2) then r <= d; end if;
+        end process;
+        p2 : process (v(0), v(1), c3) begin
+          if v(0)'event and v(0) = '1' then q <= d; end if;
+          if rising_edge(v(1)) and d = '1' then r <= d; end if;
+          if falling_edge(c3) then q <= '0'; end if;
+        end process;
+        p3 : process begin wait until rising_edge(c1) or rising_edge(c2); q <= c1; end process;
+        p4 : process begin wait on c1, c2, d until rising_edge(c1) or falling_edge(c2); end process;
+        n1 : process (c1, c2) begin
+          if rising_edge(c1) then q <= d; end if;
+          if rising_edge(c2) then r <= d; end if;
+          q <= '0';
+        end process;
+        n2 : process (c1, c2) begin
+          if rising_edge(c1) then q <= d; else r <= d; end if;
+          if rising_edge(c2) then r <= d; end if;
+        end process;
+        n3 : process (c1, c2) begin
+          if rising_edge(c1) then q <= c2; end if;
+          if rising_edge(c2) then r <= d; end if;
+        end process;
+        n4 : process (c1, c2) begin
+          if rising_edge(c1) and c2 = '1' then q <= d; end if;
+          if rising_edge(c2) then r <= d; end if;
+        end process;
+        n5 : process (c1, c2, d) begin
+          if rising_edge(c1) then q <= d; end if;
+          if rising_edge(c2) then r <= d; end if;
+        end process;
+        n6 : process (c1) begin
+          if rising_edge(c1) then q <= d; end if;
+          if rising_edge(c2) then r <= d; end if;
+        end process;
+        n7 : process (c1, c2) begin
+          if rising_edge(c1) then q <= d; end if;
+          if falling_edge(c1) then r <= d; end if;
+        end process;
+        n8 : process begin wait on c1 until rising_edge(c1) or rising_edge(c2); end process;
+        n9 : process begin wait until c1 = '1' or rising_edge(c2); end process;
+        n10 : process begin wait until rising_edge(c1) or rising_edge(c2) for 5 ns; end process;
+        n11 : process (c1, c2) begin
+          if rising_edge(c1) then q <= d; elsif rising_edge(c2) then r <= d; end if;
+        end process;
+        n12 : process (all) begin
+          if rising_edge(c1) then q <= d; end if;
+          if rising_edge(c2) then r <= d; end if;
+        end process;
+        n13 : process (c1, c2) begin
+          if rising_edge(c1) then if c2 = '1' then q <= d; end if; end if;
+          if rising_edge(c2) then r <= d; end if;
+        end process;
+      end;";
+    let (_, e) = elab("multiedges", src, "t", &[]);
+    let got: Vec<_> = (e.procs.iter())
+        .map(|p| {
+            p.edges.as_ref().map(|x| {
+                (
+                    x.edges.iter().map(|e| (e.1, e.2)).collect::<Vec<_>>(),
+                    x.wait,
+                )
+            })
+        })
+        .collect();
+    let some = |e: &[(u32, u8)], w| Some((e.to_vec(), w));
+    assert_eq!(
+        got,
+        [
+            some(&[(0, 1), (0, 0)], false),
+            some(&[(0, 3), (1, 1), (0, 0)], false),
+            some(&[(0, 1), (0, 1)], true),
+            some(&[(0, 1), (0, 0)], true),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ]
+    );
+}
+
 #[test]
 fn clocked_processes_get_edge_triggers() {
     let src = "library ieee; use ieee.std_logic_1164.all;

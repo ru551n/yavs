@@ -497,6 +497,23 @@ impl Elaborated {
                     },
                 );
             }
+            if let Some(e) = p.edges.as_ref().filter(|e| !e.wait || !proc_waits) {
+                let mut edges: Vec<_> = (e.edges.iter())
+                    .map(|&(l, el, k)| {
+                        let (s, el) = nets.kelem(l, el);
+                        (s, el, k)
+                    })
+                    .collect();
+                edges.sort_unstable_by_key(|e| (e.0.0, e.1, e.2));
+                edges.dedup();
+                // Ports joined into one net: two edges of one element need every event.
+                if edges
+                    .windows(2)
+                    .all(|w| (w[0].0, w[0].1) != (w[1].0, w[1].1))
+                {
+                    b.edge_waits(pid, &edges);
+                }
+            }
             // A pure process: the kernel may skip a wake no input had an event for (a clocked one
             // only when its edge trigger stands).
             if let Some(reads) = p

@@ -3116,6 +3116,10 @@ impl Elab<'_> {
         }
         self.process_refs(s, st, name, postponed, refs)?;
         let trigger = self.edge_trigger(s, st);
+        let edges = match trigger {
+            None => self.edge_waits(s, st),
+            Some(_) => None,
+        };
         let idle = match trigger {
             Some(_) => self.idle_reads(s, st),
             None => self.idle_comb_reads(s, st),
@@ -3132,6 +3136,7 @@ impl Elab<'_> {
         if let Some(p) = self.procs.last_mut() {
             p.idle = idle;
             p.trigger = trigger;
+            p.edges = edges;
             p.copy = copy;
             p.toggle = toggle;
             p.gate = gate;
@@ -3332,6 +3337,142 @@ impl Elab<'_> {
             _ => return None,
         };
         self.trigger_of(s, cond, reset, wait, plain)
+    }
+
+    /// A process that does nothing unless an edge of one of several distinct elements happens:
+    /// `process (c1, c2, ...)` whose body is only `if E1 then ... end if;` (no `elsif`, no `else`),
+    /// one per element of the list and the list those elements alone, or a process whose one wait
+    /// is `wait [on ...] until E1 or E2 ...;` with no timeout and every clock on its `on` list.
+    /// `Ei` is an edge of `ci` as for `edge_trigger` (not a plain level). No branch and no other
+    /// condition reads a clock. A cycle without one of the edges makes every `Ei` false: the
+    /// activation does nothing, so the kernel holds back the waiter of each clock to its edge.
+    fn edge_waits(&mut self, s: ScopeId, st: StmtId) -> Option<crate::ProcEdges> {
+        let db: &Db = &*self.db;
+        let StmtKind::Process {
+            postponed: false,
+            sensitivity,
+            body,
+            ..
+        } = &db.stmts[st].kind
+        else {
+            return None;
+        };
+        let (mut conds, mut bodies) = (Vec::new(), Vec::new());
+        let (on, wait) = match sensitivity {
+            Sensitivity::List(sens) => {
+                for &x in body.iter() {
+                    let StmtKind::If {
+                        branches,
+                        else_: None,
+                    } = &db.stmts[x].kind
+                    else {
+                        return None;
+                    };
+                    let [(cond, stmts)] = &branches[..] else {
+                        return None;
+                    };
+                    conds.push(*cond);
+                    bodies.extend(stmts.iter().copied());
+                }
+                (Some(sens.to_vec()), false)
+            }
+            Sensitivity::None => {
+                let mut waits = body.iter().filter_map(|&w| match &db.stmts[w].kind {
+                    StmtKind::Wait { on, until, timeout } => Some((*until, timeout.is_some(), on)),
+                    _ => None,
+                });
+                let (Some((Some(c), false, l)), None) = (waits.next(), waits.next()) else {
+                    return None;
+                };
+                or_terms(db, c, &mut conds);
+                ((!l.is_empty()).then(|| l.to_vec()), true)
+            }
+            Sensitivity::All => return None,
+        };
+        if conds.len() < 2 {
+            return None;
+        }
+        let mut edges: Vec<(LeafId, u32, u8)> = Vec::new();
+        for &c in &conds {
+            let (rising, arg, level) = self.edge_of(c, false)?;
+            let (leaf, elem) = self.static_elem(s, arg)?;
+            if let Some(l) = level {
+                (self.static_elem(s, l)? == (leaf, elem)).then_some(())?;
+            }
+            if self.m.nets.leaf(leaf).ty.elem != Elem::Logic
+                || edges.iter().any(|e| (e.0, e.1) == (leaf, elem))
+            {
+                return None;
+            }
+            let kind = u8::from(rising)
+                | if level.is_some() {
+                    yavs_kernel::EDGE_LEVEL
+                } else {
+                    0
+                };
+            edges.push((leaf, elem, kind));
+        }
+        // The list (or the `on` list) names the clocks; the list names nothing else.
+        if let Some(on) = &on {
+            let mut named = Vec::new();
+            for l in on {
+                named.push(self.lsp_elem(s, l));
+            }
+            if edges.iter().any(|e| !named.contains(&Some((e.0, e.1)))) {
+                return None;
+            }
+            if !wait
+                && named
+                    .iter()
+                    .any(|n| n.is_none_or(|n| !edges.iter().any(|e| (e.0, e.1) == n)))
+            {
+                return None;
+            }
+        }
+        // No level read of a clock: in the branches, and in a condition but its own clock.
+        let mut stack = bodies;
+        let mut reads = Vec::new();
+        while let Some(x) = stack.pop() {
+            self.db.stmt_reads(x, &mut reads);
+            stack.extend(self.db.stmt_children(x));
+        }
+        if self.reads_any(s, &reads, &edges, None)? {
+            return None;
+        }
+        for (k, &c) in conds.iter().enumerate() {
+            let mut r = Vec::new();
+            self.db.reads(c, &mut r);
+            if self.reads_any(s, &r, &edges, Some(k))? {
+                return None;
+            }
+        }
+        Some(crate::ProcEdges { edges, wait })
+    }
+
+    /// Whether `reads` touch a clock of `edges` other than `skip`: `None` when one cannot be
+    /// resolved.
+    fn reads_any(
+        &mut self,
+        s: ScopeId,
+        reads: &[Lsp],
+        edges: &[(LeafId, u32, u8)],
+        skip: Option<usize>,
+    ) -> Option<bool> {
+        for l in reads {
+            if !matches!(l.root, ObjRoot::Decl(_)) {
+                return None;
+            }
+            let (o, sels) = self.m.lsp_ref(self.db, l, s).ok()?;
+            for (leaf, r) in self.m.nets.select(o, &sels).ok()?.0 {
+                let hit = (edges.iter().enumerate()).any(|(k, e)| {
+                    Some(k) != skip && e.0 == leaf && r.offset <= e.1 && e.1 < r.offset + r.len
+                });
+                if hit {
+                    return Some(true);
+                }
+            }
+        }
+        Some(false)
     }
 
     /// The trigger of a clocked process whose edge condition is `cond` (`wait`: the `wait until`
@@ -5020,6 +5161,7 @@ impl Elab<'_> {
             lsps: Vec::new(),
             actual: None,
             trigger: None,
+            edges: None,
             copy: None,
             toggle: None,
             gate: None,
@@ -6682,4 +6824,25 @@ pub(crate) fn pure_function(
     }
     memo.insert(f, ok);
     ok
+}
+
+/// The operands of the BOOLEAN `or`s at the top of `e` (left to right), or `e` itself.
+fn or_terms(db: &Db, e: ExprId, out: &mut Vec<ExprId>) {
+    if let ExprKind::Call {
+        callee,
+        args,
+        method_of: None,
+        implicit_cond: false,
+    } = &db.exprs[e].kind
+        && db.decls[*callee].implicit
+        && db.decls[*callee].name.key().as_str() == "\"or\""
+        && Some(db.base(db.exprs[e].subtype)) == db.well_known.boolean
+        && let [a, b] = &args[..]
+        && let (Actual::Expr(a), Actual::Expr(b)) = (&a.actual, &b.actual)
+    {
+        or_terms(db, *a, out);
+        or_terms(db, *b, out);
+        return;
+    }
+    out.push(e);
 }

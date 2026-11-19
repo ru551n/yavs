@@ -447,6 +447,10 @@ pub(crate) fn ports(
             let (l, off) = m(t.leaf);
             (t.leaf, t.elem) = (l, t.elem + off);
         }
+        for (l, e, _) in p.edges.iter_mut().flat_map(|x| x.edges.iter_mut()) {
+            let (n, off) = m(*l);
+            (*l, *e) = (n, *e + off);
+        }
         if let Some(t) = &mut p.trigger {
             let (l, off) = m(t.leaf);
             (t.leaf, t.elem) = (l, t.elem + off);

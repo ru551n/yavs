@@ -230,6 +230,8 @@ pub struct ProcInst {
     /// A clocked process on one edge of one scalar signal
     /// (`yavs_kernel::EdgeTrigger`, `Walker::edge_trigger`).
     pub trigger: Option<ProcTrigger>,
+    /// A clocked process on edges of several elements (`Walker::edge_waits`), without a `trigger`.
+    pub edges: Option<ProcEdges>,
     /// A concurrent `target <= source;` of a static signal name (`Walker::copy_source`): the
     /// source parts, one per part of `lsps[0]` (the target) and of the same length and kind.
     /// The kernel copies them itself (`yavs_kernel::CopyProcess`, #529).
@@ -403,6 +405,15 @@ pub struct IdleLit {
     pub elem: u32,
     pub code: u8,
     pub eq: bool,
+}
+
+/// The edges of a process on several clocks ([`ProcInst::edges`], `yavs_kernel::Builder::edge_waits`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcEdges {
+    /// The clock elements and their edge kinds (`yavs_kernel::Ctx::edge_by`).
+    pub edges: Vec<(LeafId, u32, u8)>,
+    /// Valid only with a single suspension point (the `wait until` form).
+    pub wait: bool,
 }
 
 /// The trigger of a clocked process ([`ProcInst::trigger`]).

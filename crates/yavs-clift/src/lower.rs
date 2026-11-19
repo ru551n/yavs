@@ -11904,11 +11904,7 @@ impl Gen<'_> {
             let x = self.b.ins().bxor(c, v);
             acc = self.b.ins().bor(acc, x);
         }
-        let mask = if sv.len == 64 {
-            self.c64(-1)
-        } else {
-            self.c64((1i64 << sv.len) - 1)
-        };
+        let mask = self.c64(low_bits(sv.len as u64) as i64);
         let mask = self.b.ins().ishl(mask, sh);
         let d = self.b.ins().band(acc, mask);
         self.b.ins().bor(d, delay)

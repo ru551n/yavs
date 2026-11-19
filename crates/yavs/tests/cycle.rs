@@ -5508,6 +5508,40 @@ fn logic_feeding_a_process_that_counts_its_runs_stays_out() {
     }
 }
 
+/// Concurrent assignments with a delay below the top (inertial, a reject limit, transport with a
+/// delay per alternative) depend on one-delta glitches of their inputs: their logic stays in the
+/// event kernel, and that of an assignment without a delay joins; against the normal mode at
+/// widths 1 to 128 (with the logic in the region the delayed outputs differed).
+#[test]
+fn logic_feeding_a_delayed_assignment_stays_out() {
+    let dir = tempdir("cycle-inertial");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("inertial{w}.vhd"),
+            &with_width(include_str!("cycle/inertial.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_inertial");
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_inertial");
+            assert_eq!(normal.len(), 22, "{w} {t:?} {normal:?}");
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 4 of 14 processes run cycle-based"),
+                "{w}: {err}"
+            );
+            for m in ["c1", "g2", "c3"] {
+                let (_, r) = row(&err, &format!("cycle_inertial.dut.{m} <= ..."));
+                assert!(r.contains("E4129"), "{m}: {r}");
+            }
+            for m in ["b4", "c4", "y4"] {
+                let label = format!("cycle_inertial.dut.{m} <= ...");
+                assert_eq!(row(&err, &label).0, "cycle-based:", "{err}");
+            }
+        }
+    }
+}
+
 /// Slices bounded by variables of known values (fields packed by `lo` and `hi`, an element
 /// written at `lo` in a loop of known iterations) and a branch chosen by a function elaboration
 /// evaluates join the region; a variable given another value on each path, or read by an

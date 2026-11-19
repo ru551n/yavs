@@ -220,8 +220,9 @@ body. A signal needs one source: one process drives each element of it.
        keeps a value of an earlier run (a combinational loop included, such as ``l <= d when en = '1' else
        l;``), or, below the top-level unit, a process that drives a signal and has an incomplete sensitivity
        list or that cycle mode could not show keeps no value (a process with a ``'Z'`` and a variable, for
-       example). A concurrent assignment with a final ``else`` that reads nothing it drives and stays out for
-       its ``'Z'`` or its ``after`` alone does not count, nor does a process that acts at clock edges alone
+       example). A concurrent assignment without a delay, with a final ``else``, that reads nothing it drives
+       and stays out for its ``'Z'`` alone does not count (one with ``after``, ``transport`` or ``reject``
+       does: a one-delta glitch in the normal mode removes or adds a transaction), nor does a process that acts at clock edges alone
        (logic between clocks whose edges come in different delta cycles is the row below). Testbench code (the top-level unit, and a monitor that drives no signal) sees the settled values
        earlier, as described below
      - E4129. The region settles such logic in one delta cycle where the normal mode takes several, so that

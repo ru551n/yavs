@@ -2981,21 +2981,29 @@ fn edge_only(db: &Db, e: &Elaborated, pi: usize) -> bool {
 /// Whether process `pi` is a concurrent signal assignment that keeps no value between runs and
 /// waits on all it reads: not guarded, no `unaffected`, a final `else`, only pure functions
 /// called, no attribute of a signal's history or events, every signal it reads (in the bodies
-/// of the functions too) in its wait set. Such a statement is a function of the values of its
-/// last run, whatever made the checker reject it (a `'Z'`, an `after`).
+/// of the functions too) in its wait set, no delay. Such a statement is a function of the values
+/// of its last run, whatever made the checker reject it (a `'Z'`). A delay keeps a value: an
+/// inertial one rejects a pending transaction on a one-delta glitch, a transport one with delays
+/// that differ by alternative keeps the glitch's transaction (`inertial.vhd`).
 fn plain_assignment(db: &Db, e: &Elaborated, pi: usize) -> bool {
     use yavs_sem::attr::PredefAttr;
     use yavs_sem::decl::SubprogramKind;
-    use yavs_sem::hir::{Rhs, Waveform};
+    use yavs_sem::hir::{Delay, Rhs, Waveform};
     let p = &e.procs[pi];
     let StmtKind::ConcSignalAssign {
         guarded: false,
+        delay: Delay::Default,
         rhs,
         ..
     } = &db.stmts[p.stmt].kind
     else {
         return false;
     };
+    let delayed =
+        |w: &Waveform| matches!(w, Waveform::Elements(x) if x.iter().any(|x| x.after.is_some()));
+    if waveforms(rhs).into_iter().any(delayed) {
+        return false;
+    }
     if p.actual.is_some() {
         return false;
     }

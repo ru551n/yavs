@@ -707,6 +707,11 @@ Compiled tiers: Cranelift
      - ``1``
      - unset
      - ``run``
+   * - ``YAVS_CLIFT_SHARE``
+     - ``0``: compiled code is looked up in the work library's cache only, not also in the caches of the libraries the run maps (:doc:`on-disk`).
+     - ``0``, ``1``
+     - ``1``
+     - ``run``
    * - ``YAVS_CLIFT_TRACE``
      - Prints a line for each materialised frame.
      - any value

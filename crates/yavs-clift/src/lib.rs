@@ -23,7 +23,9 @@ mod lower;
 #[cfg(feature = "clift")]
 pub use blockcov::{BodyCov, snapshot as blockcov_snapshot, write as blockcov_write};
 #[cfg(feature = "clift")]
-pub use cache::{cache_stats, flush_lists, key_reused, pre_unstored, set_cache, sub_copy_stats};
+pub use cache::{
+    cache_stats, flush_lists, key_reused, pre_unstored, set_cache, set_shared, sub_copy_stats,
+};
 
 #[cfg(feature = "clift")]
 pub use lower::{BREAK, Error, Jit, compile, inline_sites};

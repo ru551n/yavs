@@ -173,3 +173,74 @@ fn a_warm_clift_auto_run_links_the_hot_process_from_the_cache() {
     assert_eq!(out2, out);
     assert!(warm.contains(&true), "no hit in {TRIES} warm runs: {err}");
 }
+
+/// A package of a library both closures map, called by testbenches of two work libraries.
+const SHARED_PKG: &str = "package p is function step(x : integer) return integer; end;
+package body p is
+  function step(x : integer) return integer is
+  begin
+    return (x * 75 + 74) mod 65537;
+  end;
+end;
+";
+
+fn shared_tb(name: &str) -> String {
+    format!(
+        "library shr; use shr.p.all;
+entity {name} is end;
+architecture a of {name} is
+begin
+  process
+    variable x : integer := 1;
+  begin
+    for i in 1 to 1000 loop x := step(x); end loop;
+    report integer'image(x);
+    wait;
+  end process;
+end;
+"
+    )
+}
+
+/// The first run of a closure in another work library links what a closure of the first one
+/// compiled of the same bodies, from that library's store, and writes nothing there;
+/// `YAVS_CLIFT_SHARE=0` looks in its own store alone.
+#[test]
+fn a_closure_of_another_work_library_links_what_the_first_compiled() {
+    let dir = tempdir("clift_cache_shared");
+    std::fs::write(dir.join("p.vhd"), SHARED_PKG).expect("write");
+    std::fs::write(dir.join("a.vhd"), shared_tb("tb_a")).expect("write");
+    std::fs::write(dir.join("b.vhd"), shared_tb("tb_b")).expect("write");
+    yavs(&dir, &["analyze", "--work=shr:shr", "p.vhd"]);
+    yavs(&dir, &["analyze", "--work=wa:wa", "--map=shr:shr", "a.vhd"]);
+    yavs(&dir, &["analyze", "--work=wb:wb", "--map=shr:shr", "b.vhd"]);
+    let maps = ["--map=shr:shr", "--map=wa:wa", "--map=wb:wb"];
+    let run = |work: &str, top: &str, share: &str| {
+        let mut args = vec!["run", "--tier=clift", "--verbose", work];
+        args.extend(maps);
+        args.push(top);
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(&args)
+            .env("YAVS_CLIFT_SHARE", share)
+            .current_dir(&dir)
+            .output()
+            .expect("run yavs");
+        assert!(o.status.success(), "{o:?}");
+        o
+    };
+    let a = run("--work=wa:wa", "tb_a", "1");
+    let (hits, stored) = stats(&a);
+    assert!(hits == 0 && stored > 0, "{hits} {stored}");
+    let in_a = entries(&dir.join("wa"));
+    let alone = run("--work=wb:wb", "tb_b", "0");
+    assert_eq!(stats(&alone).0, 0, "linked with the switch off");
+    let _ = std::fs::remove_dir_all(dir.join("wb").join("yavs-cache").join("obj"));
+    let b = run("--work=wb:wb", "tb_b", "1");
+    assert!(stats(&b).0 > 0, "nothing linked from the other library");
+    assert_eq!(b.stdout, alone.stdout);
+    assert_eq!(
+        entries(&dir.join("wa")),
+        in_a,
+        "the other library's store was written"
+    );
+}

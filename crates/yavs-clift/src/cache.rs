@@ -49,6 +49,40 @@ pub fn set_cache(lib: Option<&Path>) {
     *STORE.lock().unwrap_or_else(PoisonError::into_inner) = lib.map(Store::objects_of_library);
 }
 
+/// The objects stores of the run's other libraries (`--map`, not the work library's directory),
+/// read after the work library's ([`set_shared`]).
+static SHARED: Mutex<Vec<Store>> = Mutex::new(Vec::new());
+
+/// Also look up compiled code, and the list of compiled functions, in the objects stores of the
+/// library directories `libs`, after the work library's: the first run of a closure then links
+/// what closures of other work libraries compiled of the same bodies (the key is the body's,
+/// [`Kv`]; the names in the lists only say what to look up). Nothing is written there.
+/// `YAVS_CLIFT_SHARE=0`: the work library's store alone.
+pub fn set_shared(libs: &[&Path]) {
+    let on = std::env::var("YAVS_CLIFT_SHARE").map_or(true, |v| v != "0");
+    *SHARED.lock().unwrap_or_else(PoisonError::into_inner) = libs
+        .iter()
+        .filter(|_| on)
+        .map(|d| Store::objects_of_library(d))
+        .collect();
+}
+
+/// The work library's store, then those of [`set_shared`].
+fn stores() -> Vec<Store> {
+    let Some(work) = store() else {
+        return Vec::new();
+    };
+    let shared = SHARED.lock().unwrap_or_else(PoisonError::into_inner);
+    std::iter::once(work)
+        .chain(shared.iter().cloned())
+        .collect()
+}
+
+/// The compiled code under `key` in the first store of [`stores`] that has it.
+fn find(key: &Key) -> Option<yavs_cache::Entry> {
+    stores().iter().find_map(|s| s.get(KIND, key))
+}
+
 /// Functions linked from the cache, and functions compiled and stored, so far in this process.
 pub fn cache_stats() -> (usize, usize) {
     (HITS.load(Ordering::Relaxed), STORED.load(Ordering::Relaxed))
@@ -132,9 +166,10 @@ impl Kv {
 
     /// Whether the store has the compiled code of `func`.
     pub(crate) fn has(&self, isa: &dyn TargetIsa, func: &Function) -> bool {
-        self.0
-            .payload_len(KIND, &Self::key(&clif_key(isa, func)))
-            .is_some_and(|n| n > 0)
+        let k = Self::key(&clif_key(isa, func));
+        stores()
+            .iter()
+            .any(|s| s.payload_len(KIND, &k).is_some_and(|n| n > 0))
     }
 }
 
@@ -156,9 +191,7 @@ pub(crate) fn clif_key(isa: &dyn TargetIsa, func: &Function) -> [u8; 32] {
 impl CacheKvStore for Kv {
     fn get(&self, key: &[u8]) -> Option<Cow<'_, [u8]>> {
         self.1.set(key.try_into().ok());
-        self.0
-            .get(KIND, &Self::key(key))
-            .map(|e| Cow::Owned(e.to_vec()))
+        find(&Self::key(key)).map(|e| Cow::Owned(e.to_vec()))
     }
 
     fn insert(&mut self, key: &[u8], val: Vec<u8>) {
@@ -421,7 +454,7 @@ pub(crate) fn pre_note(k: &Key, stored: Option<&Pre>, now: &Pre, name: &str, id:
 
 /// The code stored under Cranelift's key `clif`, its references named by `func`'s parameters.
 pub(crate) fn stored_code(clif: &[u8; 32], func: &Function) -> Option<CompiledCode> {
-    let e = store()?.get(KIND, &Kv::key(clif))?;
+    let e = find(&Kv::key(clif))?;
     try_finish_recompile(func, e.as_ref()).ok()
 }
 
@@ -457,17 +490,16 @@ fn list_key() -> Key {
 
 /// The functions `--tier=clift-auto` stored compiled code of, as name and number of IR
 /// instructions, most recent first: the policy looks up only these (`Worker::probe`).
+/// The lists of the stores of [`set_shared`] are read too.
 pub(crate) fn compiled_list() -> std::collections::HashSet<(String, u32)> {
-    let Some(e) = store().and_then(|s| s.get(LIST, &list_key())) else {
-        return Default::default();
-    };
-    String::from_utf8_lossy(&e)
-        .lines()
-        .filter_map(|l| {
+    let mut out = std::collections::HashSet::new();
+    for e in stores().iter().filter_map(|s| s.get(LIST, &list_key())) {
+        out.extend(String::from_utf8_lossy(&e).lines().filter_map(|l| {
             let (len, name) = l.split_once('\t')?;
             Some((name.to_string(), len.parse().ok()?))
-        })
-        .collect()
+        }));
+    }
+    out
 }
 
 /// What the compiles added to the two lists of the objects store (the compiled functions and the
@@ -640,6 +672,9 @@ impl Routes {
 mod tests {
     use super::*;
 
+    /// The store is one per process (`set_cache`): the tests that set it take turns.
+    static GLOBAL: Mutex<()> = Mutex::new(());
+
     /// A store that ends the run is not cut short by it: the call waits for one another thread has
     /// begun (the compile thread's last store) and does not return before it is whole.
     #[test]
@@ -695,6 +730,7 @@ mod tests {
     /// line for a function the entry has) writes no file; a new function or route is stored.
     #[test]
     fn a_list_with_nothing_new_is_not_written() {
+        let _one = GLOBAL.lock().unwrap_or_else(PoisonError::into_inner);
         let tmp = std::env::temp_dir().join(format!("yavs_lists_same_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
@@ -724,6 +760,40 @@ mod tests {
         assert_ne!(both[0], first[0], "the new function was not stored");
         assert_ne!(both[1], first[1], "the new route was not stored");
         assert_eq!(compiled_list().len(), 2);
+        set_cache(None);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The stores of `set_shared` are read after the work library's: a name in another library's
+    /// list is listed, its code is found, and nothing is written there.
+    #[test]
+    fn the_other_libraries_stores_are_read_and_not_written() {
+        let _one = GLOBAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let tmp = std::env::temp_dir().join(format!("yavs_shared_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let (work, other) = (tmp.join("work"), tmp.join("other"));
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let theirs = Store::objects_of_library(&other);
+        theirs.put(LIST, &list_key(), b"7\ttheirs\n");
+        let k = Kv::key(&[3; 32]);
+        theirs.put(KIND, &k, b"code");
+        set_cache(Some(&work));
+        assert!(compiled_list().is_empty());
+        assert!(find(&k).is_none());
+        set_shared(&[other.as_path()]);
+        assert!(compiled_list().contains(&("theirs".to_string(), 7)));
+        assert_eq!(find(&k).map(|e| e.to_vec()), Some(b"code".to_vec()));
+        let before = list_files(&other);
+        note_compiled("mine", 5);
+        flush_lists();
+        assert_eq!(
+            list_files(&other),
+            before,
+            "the other library's list was written"
+        );
+        set_shared(&[]);
+        assert!(!compiled_list().contains(&("theirs".to_string(), 7)));
         set_cache(None);
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -861,6 +931,8 @@ mod tests {
             "YAVS_CLIFT_HUGE",
             "YAVS_CLIFT_PREKEY_CHECK",
             "YAVS_CLIFT_PREKEY_DROP",
+            // Where compiled code is looked up, not what it is (`set_shared`).
+            "YAVS_CLIFT_SHARE",
             "YAVS_LOG",
             // The old name of `YAVS_ELOOP_HELPER`, read by `eloop_helper`.
             "YAVS_LLVM_ELOOP_HELPER",

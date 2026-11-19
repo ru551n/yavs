@@ -1701,6 +1701,13 @@ to the copy; the optimiser reads pool bytes through `ConstData::read`. Tests: `c
 (`crates/yavs/tests/cache.rs`, warm, cold and `--no-cache` identical), `ConstData::read` unit test.
 
 (Record, 2026-11-14: `objcache.rs` and `crates/yavs-llvm/tests/objcache.rs` went with the LLVM tier, and so did the tests `compiled_code_is_cached`, `parallel_runs_share_compiled_code` and `read_only_library_gets_no_compiled_code` named below; the Cranelift tier keeps its compiled code in the same store, `crates/yavs-clift/src/cache.rs`, tested in `crates/yavs/tests/clift_cache.rs`.)
+Compiled code of other libraries (2026-11-19, `docs/decisions.md` "Compiled code from the
+other libraries' stores"): a run also reads compiled code and the list of compiled functions from the objects stores of
+the libraries it maps (`yavs_clift::set_shared`), so run 1 of a testbench in one library links or compiles early what
+testbenches of another library compiled (run 1 of a com cell 0.70, an AXI-stream cell 0.87 of the base); nothing is
+written there; `YAVS_CLIFT_SHARE=0` turns it off. Tests: `clift_cache` `a_closure_of_another_work_library_links_what_the_first_compiled`,
+`cache::tests::the_other_libraries_stores_are_read_and_not_written`.
+
 Compiled code (#505, `docs/decisions.md` "Compiled code in the compilation cache"): the object file of every
 module the LLVM tier compiles is kept in `<work dir>/yavs-cache/obj/`, keyed by the module's LLVM IR, the level,
 the target and the build, and linked again by later runs (`yavs-llvm` `objcache.rs`). Measured with release builds

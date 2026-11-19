@@ -71,6 +71,11 @@ next testbench reads it instead.
 * A run that ends by Ctrl-C or SIGTERM (exit status 130) first stores the list of the functions it compiled; a run that
   crashes or is killed hard may lose that list. The compiled code itself is stored at once, so the next run links or
   compiles those functions again and the output is the same.
+* A run also reads compiled code, and the list of what was compiled, from the caches of the other libraries
+  it maps (``--map``), after its own, and stores nothing there. So the first run of a testbench in one
+  library compiles early what testbenches of another library compiled, such as the subprograms of a verification
+  library both use, and links their code where it is the same. Code is found by its content, never by its name, so
+  the result is the code a compile would make. ``YAVS_CLIFT_SHARE=0`` looks in the run's own library only.
 * ``--no-cache`` turns it off for one command.
 
 The shared store of std and ieee

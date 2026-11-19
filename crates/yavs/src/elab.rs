@@ -1246,6 +1246,17 @@ fn clift_cache(a: &RunArgs) {
     let work = a.common.work.split_once(':').map_or("", |(_, d)| d);
     if !a.common.no_cache && !work.is_empty() {
         yavs_clift::set_cache(Some(std::path::Path::new(work)));
+        // Compiled code is looked up in the other libraries' stores too (`set_shared`).
+        let canon = |p: &str| std::fs::canonicalize(p).unwrap_or_else(|_| p.into());
+        let own = canon(work);
+        let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+        for (_, d) in a.common.maps.iter().filter_map(|m| m.split_once(':')) {
+            let c = canon(d);
+            if !d.is_empty() && c != own && !dirs.contains(&c) {
+                dirs.push(c);
+            }
+        }
+        yavs_clift::set_shared(&dirs.iter().map(|d| d.as_path()).collect::<Vec<_>>());
         // The run-to-run profile of the tier-up policy is of this command line (#754).
         yavs_rt::set_run_id(Some(&run_id(&a.common.generics)));
     }

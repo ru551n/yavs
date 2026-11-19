@@ -1,1 +1,0 @@
-A warm run restores the state of the packages before the first one that declares an array signal from the compilation cache, instead of initialising them again: short tests of VUnit test benches start faster, with or without `--cycle`.

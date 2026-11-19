@@ -1,6 +1,6 @@
 # yavs conformance report
 
-Generated: yavs 0.20.2 at commit `739fd35fe0` (2026-11-19) by `tools/conformance/run.py`; do not edit by hand.
+Generated: yavs 0.21.1 at commit `24bcbb287e` (2026-11-19) by `tools/conformance/run.py`; do not edit by hand.
 
 yavs is checked by running the test suites of VHDL libraries, a VHDL language test suite and real designs on it, and by comparing its output
 with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 15177 of 15280

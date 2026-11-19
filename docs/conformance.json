@@ -546,10 +546,9 @@
     "classes": {
      "analysis": 23,
      "elab": 7,
-     "oracle": 25,
+     "oracle": 26,
      "pass": 1014,
-     "skip": 403,
-     "timeout": 1
+     "skip": 403
     },
     "pass_list": 995,
     "pass_list_regressions": [],
@@ -626,9 +625,9 @@
   }
  },
  "generated": {
-  "commit": "739fd35fe0",
+  "commit": "24bcbb287e",
   "commit_date": "2026-11-19",
-  "version": "0.20.2"
+  "version": "0.21.1"
  },
  "local": {
   "records": {

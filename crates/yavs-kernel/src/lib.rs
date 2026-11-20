@@ -22,9 +22,9 @@ pub use error::{ErrorInfo, ErrorKind, SimError, StmtId};
 pub use image::{ImageItem, ImageKind, ImageSpec, NO_IMAGE};
 pub use kernel::{
     AutoVerdict, ChangingSignal, Config, DeadClock, EndReason, Held, Hook, Interrupt, LoopCause,
-    LoopLink, Observer, Phase, PortLink, ProcWait, Report, RunStatus, SigView, SignalSources,
-    SimControl, SourceInfo, Stats, StuckProc, StuckReport, StuckSignal, Tokens, WakeId,
-    hold_simulation, pause_point, progress, simulation_held,
+    LoopLink, Observer, Phase, PortLink, ProcWait, Report, RunStatus, SigAttrs, SigView,
+    SignalSources, SimControl, SourceInfo, Stats, StuckProc, StuckReport, StuckSignal, Tokens,
+    WakeId, hold_simulation, pause_point, progress, simulation_held,
 };
 pub use process::{
     Cond, CopyProcess, Ctx, DirectRef, EDGE_LEVEL, Gate, GateProcess, Lit, LiveSink, MuxPart,

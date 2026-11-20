@@ -1164,6 +1164,16 @@ struct UpdateWork {
     ops: BTreeMap<u32, Vec<SignalOp>>,
 }
 
+/// A signal's attributes at a debugger stop between cycles (`SimControl::attributes`).
+#[derive(Clone, Debug)]
+pub struct SigAttrs {
+    pub event: bool,
+    pub active: bool,
+    pub last_event: Time,
+    pub last_active: Time,
+    pub last_value: Value,
+}
+
 /// The simulation. See DESIGN.md for the cycle and the parallel commit protocol.
 pub struct SimControl {
     cfg: Config,
@@ -2280,6 +2290,26 @@ impl SimControl {
     pub fn driving_value(&self, r: impl Into<SigRef>) -> Result<Value, SimError> {
         let (s, r) = self.check(r)?;
         Ok(s.driving_of(r).to_value())
+    }
+
+    /// The signal attributes of `r` as a debugger reads them between cycles, the cycle just run
+    /// counting as the current one: `'event`, `'active`, `'last_event`, `'last_active`,
+    /// `'last_value` (a lean signal answers the history of a part as `Ctx` does).
+    pub fn attributes(&self, r: impl Into<SigRef>) -> Result<SigAttrs, SimError> {
+        let (s, r) = self.check(r)?;
+        if !s.history_exact(r, true) || !s.history_exact(r, false) {
+            return Err(self.err(ErrorKind::Internal(format!(
+                "the history of part of signal {} is not kept",
+                s.name
+            ))));
+        }
+        Ok(SigAttrs {
+            event: s.event_in(r, self.cycle),
+            active: s.active_in(r, self.cycle),
+            last_event: s.last_event(r, self.now),
+            last_active: s.last_active(r, self.now),
+            last_value: s.last_value_of(r).to_value(),
+        })
     }
 
     // ---- control ------------------------------------------------------

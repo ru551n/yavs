@@ -78,14 +78,14 @@ pub(super) enum Prop {
     Cover(Expr),
 }
 
-type Save = (usize, usize, Option<u32>, u64);
+pub(super) type Save = (usize, usize, Option<u32>, u64);
 
 impl Parser<'_> {
-    fn psl_save(&self) -> Save {
+    pub(super) fn psl_save(&self) -> Save {
         (self.pos, self.diags.len(), self.last_error, self.fuel)
     }
 
-    fn psl_restore(&mut self, (pos, n, last, fuel): Save) {
+    pub(super) fn psl_restore(&mut self, (pos, n, last, fuel): Save) {
         self.pos = pos;
         self.fuel = fuel;
         self.diags.truncate(n);

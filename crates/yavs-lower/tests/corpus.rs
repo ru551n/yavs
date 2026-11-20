@@ -511,6 +511,7 @@ const PASS: &[&str] = &[
     "reflect/index_bases",
     "reflect/multidim",
     "reflect/physical",
+    "reflect/range_record_calls_2019",
     "reflect/records",
     "reflect/scalars",
     "reflect/scalars2",

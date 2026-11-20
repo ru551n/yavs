@@ -225,7 +225,7 @@ fn subtype_indications() {
     assert!(matches!(st(1).resolution, Some(Resolution::Function(_))));
     assert!(matches!(st(2).resolution, Some(Resolution::Element(_))));
     assert!(matches!(st(3).constraint, Some(Constraint::Range(_))));
-    assert!(matches!(&st(4).constraint, Some(Constraint::Record(v, _)) if v.len() == 2));
+    assert!(matches!(&st(4).constraint, Some(Constraint::Record(v, _, _)) if v.len() == 2));
     assert!(matches!(
         &st(5).constraint,
         Some(Constraint::Array {
@@ -251,7 +251,51 @@ fn subtype_indications() {
         Some(Constraint::Array { indexes: Some(ix), .. })
             if matches!(ix[..], [DiscreteRange::Range(Range::Name(_))])
     ));
-    assert!(matches!(&st(10).constraint, Some(Constraint::Record(v, _)) if v.len() == 2));
+    assert!(matches!(&st(10).constraint, Some(Constraint::Record(v, _, _)) if v.len() == 2));
+}
+
+/// 2019 (LCS-2016-099): `t(f(n))` is a record element constraint or an index constraint with
+/// a range record call; both readings are kept when both parse, and a range may be any
+/// expression (`(f(n))`).
+#[test]
+fn range_record_call_constraints() {
+    let src = pkg("subtype a is t(f(n));
+        subtype b is t(f(1, 2));
+        subtype c is t(f1(3 downto 0), f2(open));
+        subtype d is integer range (f(n));");
+    let d = ok19(&src);
+    let decls = pkg_decls(&d);
+    let st = |i: usize| match &decls[i] {
+        Decl::Subtype(s) => &s.subtype,
+        d => panic!("{d:?}"),
+    };
+    assert!(matches!(
+        &st(0).constraint,
+        Some(Constraint::Record(v, _, Some(a)))
+            if v.len() == 1 && matches!(&**a, Constraint::Array { indexes: Some(ix), .. }
+                if matches!(ix[..], [DiscreteRange::Range(Range::Name(_))]))
+    ));
+    // A range may be an expression in 2019, so `(1, 2)` parses as an index constraint too.
+    assert!(matches!(
+        &st(1).constraint,
+        Some(Constraint::Record(_, _, Some(a)))
+            if matches!(&**a, Constraint::Array { indexes: Some(ix), .. }
+                if matches!(ix[..], [DiscreteRange::Range(Range::Name(_))]))
+    ));
+    assert!(matches!(&st(2).constraint, Some(Constraint::Record(v, _, Some(_))) if v.len() == 2));
+    assert!(
+        matches!(&st(3).constraint, Some(Constraint::Range(r)) if matches!(**r, Range::Expr(_)))
+    );
+    // 2008 keeps the record reading alone.
+    let d = ok(&pkg("subtype a is t(f(n));"));
+    assert!(matches!(
+        &pkg_decls(&d)[0],
+        Decl::Subtype(s) if matches!(s.subtype.constraint, Some(Constraint::Record(_, _, None)))
+    ));
+    assert!(!errors_std(&pkg("subtype b is t(f(1, 2));"), Std::Vhdl2008).is_empty());
+    // Both readings fail at every level: each is parsed once, so a deep nest still returns.
+    let deep = format!("subtype s is t({}1 2{});", "a(".repeat(40), ")".repeat(40));
+    assert!(!errors_std(&pkg(&deep), Std::Vhdl2019).is_empty());
 }
 
 /// `arr(0)'subtype` is the subtype of an indexed object name: the parentheses

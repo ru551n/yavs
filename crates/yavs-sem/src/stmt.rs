@@ -2554,5 +2554,6 @@ fn drange_span(r: &ast::DiscreteRange) -> Span {
             left.span.to(right.span)
         }
         ast::DiscreteRange::Range(ast::Range::Name(n)) => n.span,
+        ast::DiscreteRange::Range(ast::Range::Expr(e)) => e.span,
     }
 }

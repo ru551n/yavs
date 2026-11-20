@@ -676,13 +676,19 @@ impl Db {
             return None;
         };
         let (indexes, elem) = (indexes.clone(), *elem);
-        // 2019: an object of a range record type slices (`v(r)`); a call `f(r)` is no slice.
+        // 2019: a value of a range record type slices (`v(r)`, `v(f(n))`); a call `f(r)` is no
+        // slice.
+        // ponytail: slices only when every interpretation is a range record; a name that may
+        // also be an index (overloads of both kinds) stays an index.
         let slice = slice
             || matches!(args, [ast::AssocElem {
                 formal: None,
-                actual: ast::Actual::Expr(ast::Expr { kind: ast::ExprKind::Name(n), .. }),
+                actual: ast::Actual::Expr(x),
                 ..
-            }] if self.range_record_object_type(scope, n).is_some());
+            }] if !self.range_records.is_empty()
+                && self.file_rev() >= yavs_syntax::Std::Vhdl2019
+                && matches!(self.cands(scope, x), CandSet::Types(is)
+                    if !is.is_empty() && is.iter().all(|i| self.record_range_type(i.ty).is_some())));
         if slice {
             return (indexes.len() == 1).then(|| Interp::new(t, Via::Slice(t)));
         }
@@ -1590,6 +1596,7 @@ impl Db {
                 kind: ast::ExprKind::Name(n),
                 ..
             }) => self.range_name(scope, n, index),
+            ast::Actual::Expr(e) => self.range_record_slice(scope, e, index),
             _ => return self.poison_expr(),
         };
         let Ok(range) = range else {

@@ -365,8 +365,10 @@ pub enum Constraint {
         element: Option<Box<Constraint>>,
         span: Span,
     },
-    /// `(a(7 downto 0), b(0 to 3))`
-    Record(Vec<(Ident, Constraint)>, Span),
+    /// `(a(7 downto 0), b(0 to 3))`. In 2019 the same tokens may also be an index constraint
+    /// whose range is a call of a range record function, `(f(n))` (LCS-2016-099): that
+    /// reading, when it parses, is kept beside it for sem to take on an array type.
+    Record(Vec<(Ident, Constraint)>, Span, Option<Box<Constraint>>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -382,8 +384,11 @@ pub enum Range {
         dir: Direction,
         right: Expr,
     },
-    /// A range attribute (`a'range`) or, in a discrete range, a type mark.
+    /// A range attribute (`a'range`) or, in a discrete range, a type mark. In 2019 also a name
+    /// of a range record value (`r`, `f(n)`).
     Name(Name),
+    /// 2019: another expression of a range record type, `ir'(...)`, `(f(n))` (LCS-2016-099).
+    Expr(Box<Expr>),
 }
 
 #[derive(Debug)]

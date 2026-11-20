@@ -796,7 +796,23 @@ impl Db {
         phys: Option<&ast::PhysicalTypeDef>,
         span: Span,
     ) -> Result<TypeId, Reported> {
+        // 5.2.1: a range is `l to r` or a range attribute, never a type mark.
+        // ponytail: a range record value (2019) is not taken here; it would need to fold.
+        let not_a_type_range = |db: &mut Db, at: Span| {
+            db.error(
+                Diagnostic::error(
+                    diag::BAD_TYPE_DECL,
+                    "the range of a type definition must be `left to right` or a range attribute",
+                )
+                .with_primary(at, "not a range")
+                .with_help("write the bounds, e.g. `range t'low to t'high`, or `range t'range`")
+                .with_note(
+                    "LRM 5.2.1: a range is a range attribute name or two bounds with a direction",
+                ),
+            )
+        };
         let (l, rr, dir, lv, rv, bounds_span) = match r {
+            ast::Range::Expr(e) => return Err(not_a_type_range(self, e.span)),
             ast::Range::Simple { left, dir, right } => {
                 let before = self.error_count();
                 let l = self.static_expr(scope, left, Expected::Any);
@@ -829,18 +845,7 @@ impl Db {
             // a scalar subtype, as locally static integers (3.1.2, 5.2.1).
             ast::Range::Name(n) => {
                 let Some(res) = self.range_attr(scope, n) else {
-                    // 5.2.1: a range is `l to r` or a range attribute, never a type mark.
-                    return Err(self.error(
-                        Diagnostic::error(
-                            diag::BAD_TYPE_DECL,
-                            "the range of a type definition must be `left to right` or a range attribute",
-                        )
-                        .with_primary(n.span, "not a range")
-                        .with_help("write the bounds, e.g. `range t'low to t'high`, or `range t'range`")
-                        .with_note(
-                            "LRM 5.2.1: a range is a range attribute name or two bounds with a direction",
-                        ),
-                    ));
+                    return Err(not_a_type_range(self, n.span));
                 };
                 let (rc, t) = res?;
                 let Some(sr) = crate::expr::aggregate::range_value(self, &rc) else {
@@ -1304,7 +1309,7 @@ impl Db {
                     }
                     return Ok((rc, t));
                 }
-                if let Some(r) = self.range_record_object(scope, n) {
+                if let Some(r) = self.range_record_object(scope, n, want) {
                     let (rc, t) = r?;
                     if let Some(w) = want {
                         self.check_range_type(w, t, n.span)?;
@@ -1325,6 +1330,13 @@ impl Db {
                     t,
                 ))
             }
+            ast::DiscreteRange::Range(ast::Range::Expr(e)) => {
+                let (rc, t) = self.range_record_expr(scope, e, want)?;
+                if let Some(w) = want {
+                    self.check_range_type(w, t, e.span)?;
+                }
+                Ok((rc, t))
+            }
             ast::DiscreteRange::Subtype(si) => {
                 let st = self.subtype_indication(scope, si)?;
                 let t = self.base(st);
@@ -1343,70 +1355,191 @@ impl Db {
         }
     }
 
-    /// 2019 (LCS-2016-099): an object of a range record type (`R'RECORD`) used as a range,
-    /// `bit_vector(r)`, `for i in r loop`. A constant that folds gives explicit bounds; any
-    /// other object is read when the range is evaluated (`RangeC::Record`). `None` when `n`
-    /// is not such an object.
-    // ponytail: objects only (L112); other expressions of a range record type (a function
-    // call) wait for a maintainer decision, as no reference simulator runs them.
+    /// 2019 (LCS-2016-099): an expression of a range record type (`R'RECORD`) used as a range:
+    /// an object, a function call, `x'range'value` (`bit_vector(f(n))`, `for i in r loop`). A
+    /// value that folds gives explicit bounds; any other is evaluated with the range
+    /// (`RangeC::Record`). `None` when `n` has no interpretation of a range record type.
     fn range_record_object(
         &mut self,
         scope: ScopeId,
         n: &ast::Name,
+        want: Option<TypeId>,
     ) -> Option<Result<(RangeC, TypeId), Reported>> {
-        let (rb, t) = self.range_record_object_type(scope, n)?;
-        let i = crate::expr::Interp::new(rb, crate::expr::Via::Object);
-        let e = self.in_context(false, |db| db.build_name(scope, n, i, n.span));
-        if self.is_poison_expr(e) {
-            return Some(Err(Reported));
+        if self.file_rev() < yavs_syntax::Std::Vhdl2019 || self.range_records.is_empty() {
+            return None;
         }
+        let built = self.in_context(false, |db| {
+            let mut is = db.range_record_interps(scope, n);
+            if is.len() > 1
+                && let Some(w) = want
+                && is.iter().any(|&(_, t)| t == w)
+            {
+                is.retain(|&mut (_, t)| t == w);
+            }
+            match *is.as_slice() {
+                // A value of another type: say that it is no range (a type mark goes on).
+                [] if db.quiet_type_mark(scope, n).is_none()
+                    && let crate::expr::CandSet::Types(vs) = db.name_cands(scope, n)
+                    && let Some(v) = vs.first()
+                    && v.ty != db.poison.ty =>
+                {
+                    Some(Err(db.not_a_range(n.span, v.ty)))
+                }
+                [] => None,
+                [(i, t)] => Some(Ok((db.build_name(scope, n, i, n.span), t))),
+                _ => Some(Err(db.error(
+                    Diagnostic::error(diag::AMBIGUOUS, "this range is ambiguous")
+                        .with_primary(n.span, "several range record interpretations fit")
+                        .with_note(
+                            "LRM 12.5: the occurrence is legal only with exactly one interpretation in its complete context",
+                        ),
+                ))),
+            }
+        })?;
+        Some(built.and_then(|(e, t)| self.record_range_of(e, t)))
+    }
+
+    /// 2019 (LCS-2016-099): an expression of a range record type that is not a name, as a
+    /// range: `ir'(...)`, `(f(n))`, an operator. `E1300` for an expression of another type.
+    fn range_record_expr(
+        &mut self,
+        scope: ScopeId,
+        e: &ast::Expr,
+        want: Option<TypeId>,
+    ) -> Result<(RangeC, TypeId), Reported> {
+        let built = self.in_context(false, |db| {
+            let mut ts: smallvec::SmallVec<[(TypeId, TypeId); 1]> = smallvec::SmallVec::new();
+            if let crate::expr::CandSet::Types(is) = db.cands(scope, e) {
+                for i in is {
+                    if let Some(t) = db.record_range_type(i.ty)
+                        && !ts.iter().any(|&(rb, _)| rb == i.ty)
+                    {
+                        ts.push((i.ty, t));
+                    }
+                }
+            }
+            if ts.len() > 1
+                && let Some(w) = want
+                && ts.iter().any(|&(_, t)| t == w)
+            {
+                ts.retain(|&mut (_, t)| t == w);
+            }
+            match *ts.as_slice() {
+                [(rb, t)] => Ok((db.resolve(scope, e, Expected::Type(rb)), t)),
+                [] => {
+                    let id = db.resolve(scope, e, Expected::Any);
+                    if db.is_poison_expr(id) {
+                        return Err(Reported);
+                    }
+                    let t = db.base(db.exprs[id].subtype);
+                    Err(db.not_a_range(e.span, t))
+                }
+                _ => Err(db.error(
+                    Diagnostic::error(diag::AMBIGUOUS, "this range is ambiguous")
+                        .with_primary(e.span, "several range record interpretations fit")
+                        .with_note(
+                            "LRM 12.5: the occurrence is legal only with exactly one interpretation in its complete context",
+                        ),
+                )),
+            }
+        })?;
+        self.record_range_of(built.0, built.1)
+    }
+
+    /// `v((f(n)))`: the range of a slice by a range record expression that is not a name.
+    pub(crate) fn range_record_slice(
+        &mut self,
+        scope: ScopeId,
+        e: &ast::Expr,
+        index: TypeId,
+    ) -> Result<RangeC, Reported> {
+        let (rc, t) = self.range_record_expr(scope, e, Some(index))?;
+        self.check_range_type(index, t, e.span)?;
+        Ok(rc)
+    }
+
+    /// `E1300`: an expression of type `t` (not a range record type) where a range is expected.
+    fn not_a_range(&mut self, at: Span, t: TypeId) -> Reported {
+        let tn = self.type_name(t);
+        self.error(
+            Diagnostic::error(
+                diag::TYPE_MISMATCH,
+                format!("expected a range, found an expression of type `{tn}`"),
+            )
+            .with_primary(at, "not a range")
+            .with_help("write `left to right`, a range attribute or a value of a range record type")
+            .with_note(
+                "LRM 5.2.1 (2019): a range is a range attribute name, two bounds with a direction, or an expression of a range record type",
+            ),
+        )
+    }
+
+    /// Range record value `e` of range type `t` as a range: explicit bounds when it folds,
+    /// else evaluated with the range (`RangeC::Record`).
+    fn record_range_of(&mut self, e: ExprId, t: TypeId) -> Result<(RangeC, TypeId), Reported> {
+        if self.is_poison_expr(e) {
+            return Err(Reported);
+        }
+        let span = self.exprs[e].span;
         let Some(ConstValue::Record(f)) = self.value(e).cloned() else {
-            return Some(Ok((RangeC::Record(e), t)));
+            return Ok((RangeC::Record(e), t));
         };
         let [l, r, ConstValue::Enum(dir)] = &*f else {
-            return Some(Err(self.ice(n.span, "malformed range record value")));
+            return Err(self.ice(span, "malformed range record value"));
         };
         let st = self.types[t].first_subtype;
         let (l, r) = (
-            self.const_expr(l.clone(), st, n.span),
-            self.const_expr(r.clone(), st, n.span),
+            self.const_expr(l.clone(), st, span),
+            self.const_expr(r.clone(), st, span),
         );
         let dir = if *dir == 0 {
             Direction::To
         } else {
             Direction::Downto
         };
-        Some(Ok((
+        Ok((
             RangeC::Explicit {
                 left: l,
                 dir,
                 right: r,
             },
             t,
-        )))
+        ))
     }
 
-    /// `(record type, range type)` when `n` names an object of a range record type (2019).
-    pub(crate) fn range_record_object_type(
+    /// The interpretations of name `n` whose type is a range record type (2019), each with
+    /// the type of its range.
+    pub(crate) fn range_record_interps(
         &mut self,
         scope: ScopeId,
         n: &ast::Name,
-    ) -> Option<(TypeId, TypeId)> {
-        if self.file_rev() < yavs_syntax::Std::Vhdl2019 || self.range_records.is_empty() {
-            return None;
+    ) -> smallvec::SmallVec<[(crate::expr::Interp, TypeId); 1]> {
+        let mut out = smallvec::SmallVec::new();
+        let crate::expr::CandSet::Types(is) = self.name_cands(scope, n) else {
+            return out;
+        };
+        for i in is {
+            if let Some(t) = self.record_range_type(i.ty)
+                && !out
+                    .iter()
+                    .any(|(o, _): &(crate::expr::Interp, _)| o.ty == i.ty && o.via == i.via)
+            {
+                out.push((i, t));
+            }
         }
-        let crate::expr::names::NameRes::One(d) = self.classify(scope, n) else {
+        out
+    }
+
+    /// The range type of range record type `rb` (`t'RECORD`); `None` for any other type.
+    pub(crate) fn record_range_type(&self, rb: TypeId) -> Option<TypeId> {
+        let TypeKind::Record { elems } = &self.types[rb].kind else {
             return None;
         };
-        let DeclKind::Object(o) = &self.decls[d].kind else {
-            return None;
-        };
-        let rb = self.base(o.subtype);
-        let (&t, _) = self
-            .range_records
-            .iter()
-            .find(|&(_, &st)| self.base(st) == rb)?;
-        Some((rb, t))
+        let t = self.base(elems.first()?.subtype);
+        self.range_records
+            .get(&t)
+            .is_some_and(|&st| self.base(st) == rb)
+            .then_some(t)
     }
 
     /// The type of `l to r` without a type mark.
@@ -1794,8 +1927,12 @@ impl Db {
                     elem: Box::new(elem_c),
                 })
             }
-            ast::Constraint::Record(items, span) => {
+            ast::Constraint::Record(items, span, alt) => {
                 let TypeKind::Record { elems } = &self.types[t].kind else {
+                    // 2019: `bit_vector(f(n))`, an index constraint with a range record call.
+                    if let Some(a) = alt {
+                        return self.merge_constraint(scope, a, t, existing);
+                    }
                     return kind_err(
                         self,
                         *span,
@@ -1949,6 +2086,11 @@ impl Db {
                 })
             }
             ast::Range::Name(n) => self.range_name(scope, n, base),
+            ast::Range::Expr(e) => {
+                let (rc, t) = self.range_record_expr(scope, e, Some(base))?;
+                self.check_range_type(base, t, e.span)?;
+                Ok(rc)
+            }
         }
     }
 
@@ -1966,7 +2108,7 @@ impl Db {
                 Ok(rc)
             }
             None => {
-                if let Some(r) = self.range_record_object(scope, n) {
+                if let Some(r) = self.range_record_object(scope, n, Some(base)) {
                     let (rc, t) = r?;
                     self.check_range_type(base, t, n.span)?;
                     return Ok(rc);
@@ -2664,6 +2806,7 @@ fn range_span(r: &ast::Range) -> Span {
     match r {
         ast::Range::Simple { left, right, .. } => left.span.to(right.span),
         ast::Range::Name(n) => n.span,
+        ast::Range::Expr(e) => e.span,
     }
 }
 

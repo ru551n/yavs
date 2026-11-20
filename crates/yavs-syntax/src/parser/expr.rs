@@ -4,7 +4,7 @@ use super::{PResult, Parser, Recover};
 use crate::ast::*;
 use crate::directive::unquote;
 use crate::token::{Kw, Tok};
-use crate::{Symbol, codes};
+use crate::{Std, Symbol, codes};
 use yavs_diag::{Diagnostic, Span};
 
 fn logical_op(t: Tok) -> Option<BinaryOp> {
@@ -538,6 +538,7 @@ impl Parser<'_> {
                 kind: ExprKind::Name(n),
                 ..
             }) => Ok(Range::Name(n)),
+            RangeOrExpr::Expr(e) if self.std >= Std::Vhdl2019 => Ok(Range::Expr(Box::new(e))),
             RangeOrExpr::Expr(_) => Err(self.expected("`to` or `downto`")),
             RangeOrExpr::Subtype(s) => {
                 self.error(
@@ -563,6 +564,9 @@ impl Parser<'_> {
                 kind: ExprKind::Name(n),
                 ..
             }) => Ok(DiscreteRange::Range(Range::Name(n))),
+            RangeOrExpr::Expr(e) if self.std >= Std::Vhdl2019 => {
+                Ok(DiscreteRange::Range(Range::Expr(Box::new(e))))
+            }
             RangeOrExpr::Expr(_) => Err(self.expected("`to` or `downto`")),
         }
     }
@@ -1013,42 +1017,84 @@ impl Parser<'_> {
     fn paren_constraint(&mut self) -> PResult<Constraint> {
         self.nested(|p| {
             let start = p.span();
-            if p.at_record_constraint() {
-                p.bump();
-                let mut v = Vec::new();
-                loop {
-                    let id = p.ident()?;
-                    let c = p.paren_constraint()?;
-                    v.push((id, c));
-                    if !p.eat(Tok::Comma) {
-                        break;
-                    }
-                }
-                p.expect(Tok::RParen)?;
-                return Ok(Constraint::Record(v, p.span_from(start)));
+            if !p.at_record_constraint() {
+                return p.array_constraint(start);
             }
-            p.expect(Tok::LParen)?;
-            let indexes = if p.at_kw(Kw::Open) && p.nth(1) == Tok::RParen {
-                p.bump();
-                None
-            } else {
-                let mut v = vec![p.discrete_range()?];
-                while p.eat(Tok::Comma) {
-                    v.push(p.discrete_range()?);
+            if p.std < Std::Vhdl2019 {
+                return p.record_constraint(start);
+            }
+            // 2019: `(f(n))` is a record element constraint or an index constraint with a
+            // range record call (LCS-2016-099); sem picks by the type. Both are tried here.
+            // Each reading is parsed once (a retry would be exponential in the nesting): the
+            // record attempt's diagnostics are kept aside until one reading is chosen.
+            let save = p.psl_save();
+            let rec = p.record_constraint(start);
+            let rec_diags: Vec<Diagnostic> = p.diags.drain(save.1..).collect();
+            let after_rec = (p.pos, save.1, p.last_error, p.fuel);
+            p.psl_restore(save);
+            let arr = p.array_constraint(start);
+            let take_rec = |p: &mut Self| {
+                p.diags.truncate(save.1);
+                p.diags.extend(rec_diags);
+                (p.pos, _, p.last_error, p.fuel) = after_rec;
+            };
+            match (rec, arr) {
+                (Ok(Constraint::Record(v, span, None)), Ok(a)) if p.pos == after_rec.0 => {
+                    Ok(Constraint::Record(v, span, Some(Box::new(a))))
                 }
-                Some(v)
-            };
-            p.expect(Tok::RParen)?;
-            let element = if p.at(Tok::LParen) {
-                Some(Box::new(p.paren_constraint()?))
-            } else {
-                None
-            };
-            Ok(Constraint::Array {
-                indexes,
-                element,
-                span: p.span_from(start),
-            })
+                (Ok(r), Ok(_)) if p.pos < after_rec.0 => {
+                    take_rec(p);
+                    Ok(r)
+                }
+                (_, Ok(a)) => Ok(a),
+                (rec, Err(_)) => {
+                    take_rec(p);
+                    rec
+                }
+            }
+        })
+    }
+
+    /// `(a(7 downto 0), b(0 to 3))` at its `(`.
+    fn record_constraint(&mut self, start: Span) -> PResult<Constraint> {
+        self.bump();
+        let mut v = Vec::new();
+        loop {
+            let id = self.ident()?;
+            let c = self.paren_constraint()?;
+            v.push((id, c));
+            if !self.eat(Tok::Comma) {
+                break;
+            }
+        }
+        self.expect(Tok::RParen)?;
+        Ok(Constraint::Record(v, self.span_from(start), None))
+    }
+
+    /// `(0 to 3)`, `(open)`, with an element constraint after it, at its `(`.
+    #[inline]
+    fn array_constraint(&mut self, start: Span) -> PResult<Constraint> {
+        self.expect(Tok::LParen)?;
+        let indexes = if self.at_kw(Kw::Open) && self.nth(1) == Tok::RParen {
+            self.bump();
+            None
+        } else {
+            let mut v = vec![self.discrete_range()?];
+            while self.eat(Tok::Comma) {
+                v.push(self.discrete_range()?);
+            }
+            Some(v)
+        };
+        self.expect(Tok::RParen)?;
+        let element = if self.at(Tok::LParen) {
+            Some(Box::new(self.paren_constraint()?))
+        } else {
+            None
+        };
+        Ok(Constraint::Array {
+            indexes,
+            element,
+            span: self.span_from(start),
         })
     }
 }

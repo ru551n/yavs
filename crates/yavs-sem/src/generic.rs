@@ -283,6 +283,7 @@ pub(crate) fn actual_span(a: &ast::Actual) -> Span {
         ast::Actual::Range(r) => match &**r {
             ast::Range::Simple { left, .. } => left.span,
             ast::Range::Name(n) => n.span,
+            ast::Range::Expr(e) => e.span,
         },
         ast::Actual::Subtype(si) => si.span,
         ast::Actual::Open(s) => *s,

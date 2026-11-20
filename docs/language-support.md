@@ -140,7 +140,7 @@ LCS set; it is not checked against every change of the published standard.
 | 082 | Empty record | supported | probed 2026-10-28 | |
 | 086 | All interface lists can be ordered | supported | analysed | later items refer to earlier ones through `'subtype` |
 | 094a | Conditional return | supported | simulated | `return x when c` in functions and procedures |
-| 099 | Extended ranges | partial | simulated | `R'RECORD` and `R'VALUE` work; an object of a range record type (a constant, generic, variable, signal or parameter) works as a range in an index constraint, a range constraint, an array type, a loop and a slice, also when its value is known only at run time; other expressions of a range record type (a function call) are not accepted as a range |
+| 099 | Extended ranges | partial | simulated | `R'RECORD` and `R'VALUE` work; any expression of a range record type (an object, a function call, a qualified expression, an operator) works as a range in an index constraint, a range constraint, an array type, a loop, a slice and a for-generate, also when its value is known only at run time |
 | I03 | Signatures in the formal part of a generic map | supported | simulated | |
 | I13 | Precedence of unary operators | supported | probed | only `-k ** 2` and `not` against `=` and `and` |
 | none | Generic subprograms and generic types (`generic (type t; function f ...)`) | supported | simulated | |
@@ -197,7 +197,7 @@ Not implemented, so the run or the analysis stops with an error that names the c
   such as `t'range'length` or any attribute of `t'reverse_range`. These are reported as not
   implemented (`E1999`), with a note that says it is a limitation of yavs.
 - `std.env` PSL state functions (see LCS-050). `SetVhdlAssertFormat` (`{s}`, `{S}`, `{r}`, `{t}`, `{i}`, with an alignment and width such as `{r: <10}` and a time unit such as `{t:.ns}`; `GetVhdlAssertFormat` returns it, and an invalid format gives `Valid => false`) changes the message text of a report only: the `** Severity: time:` line around it stays.
-- Range records as ranges (LCS-099): a function call or other expression of a range record type is not a range, only an object is; a range record object is not a choice (it is taken as a value, `E1300`), and a range record known only at run time is `E2001` in a type or subtype declaration of a design unit or package when it is not globally static (a signal or shared variable).
+- Range records as ranges (LCS-099): a range record value is not the range of a type definition (`type t is range f(1)`, `E1231`) and not a choice (it is taken as a value, `E1300`), and a range record known only at run time is `E2001` in a type or subtype declaration of a design unit or package when it is not globally static (a signal or shared variable).
 - PSL outside [the subset](psl.md).
 
 Invalid code that is accepted, or reported with a misleading message, in some cases: a variable that is not

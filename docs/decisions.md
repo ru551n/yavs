@@ -6566,7 +6566,7 @@ every elaboration, and again for every instance. Decisions:
   A/A under `--tier=auto` (`sc5_timestamp`, `vai_window_gen_interlock`, `osvvm_axis_random`) do the same work to the
   instruction under `--tier=interp`.
 
-## The elaboration-time session is replayed (yavs-elab `srep.rs`, `pkgcall.rs`, yavs-interp, 2026-11-19; not on main, waits for a decision)
+## The elaboration-time session is replayed (yavs-elab `srep.rs`, `pkgcall.rs`, yavs-interp, 2026-11-19; widens the `ecall`, `sopt` and `init` decisions)
 
 - **Problem:** a testbench that creates its verification components in constant declarations (loggers, actors,
   queues, bus handles of a verification library) makes the same impure constructor calls in every test. They change
@@ -6617,8 +6617,8 @@ every elaboration, and again for every instance. Decisions:
   mean 0.996 (A/A 1.000), `auto-cold` 0.998 (A/A 0.999); the testbenches with verification components in
   declarations 0.949 to 0.961. `YAVS_SREP_CHECK=1` clean on two suite rounds at `-p1` and at `-p0` and on the difftest
   corpus (`yavs-auto-warm`, 1 and 4 threads, and with six earlier runs).
-- **Not on main:** storing package state after impure calls widens the `ecall`, `sopt` and `init` decisions, and
-  taking `now` during elaboration as an input instead of a taint is a choice, so both wait for a decision.
+- **What it widens.** Storing package state after impure calls widens the `ecall`, `sopt` and `init` decisions.
+  `now` during elaboration is taken as an input (the constant 0 fs), not a taint; `YAVS_SREP_NOW=0` makes it a taint.
 
 ## One maker of a closure's entries, the others wait (yavs-cache, yavs `cache.rs`, yavs-elab `srep.rs`, 2026-11-20; widens "One run makes a closure's image at a time")
 

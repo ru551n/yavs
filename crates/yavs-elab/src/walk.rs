@@ -1066,6 +1066,10 @@ impl Elab<'_> {
                 "generic types, subprograms and packages",
             ));
         };
+        // Its subtype, elaborated once before its value (LRM 14.3.2, 14.4.2.1, #1177).
+        if dynamic_object(db, o) {
+            declared_ranges(&mut self.m, db, s, g)?;
+        }
         let key = decl.name.key().as_str().to_string();
         let ov = overrides
             .iter()
@@ -1472,21 +1476,7 @@ impl Elab<'_> {
             let db: &Db = self.db;
             let decl = &db.decls[d];
             if dynamic && dynamic_decl(db, d) {
-                for rc in db.declared_ranges(d) {
-                    if let Some(left) = db.dynamic_range(rc) {
-                        // A signal reads as its initial value, as in a constant (#453).
-                        self.m.sig_init = true;
-                        let b = self.m.range(db, rc, Some(s), decl.span);
-                        self.m.sig_init = false;
-                        let b = b.map_err(|x| {
-                            Box::new(x.with_note(format!(
-                                "while elaborating the declaration of `{}` (LRM 14.4.2.1)",
-                                decl.name
-                            )))
-                        })?;
-                        self.m.ranges.insert((s, left), b);
-                    }
-                }
+                declared_ranges(&mut self.m, db, s, d)?;
             }
             if let DeclKind::Type(_) | DeclKind::Subtype(_) = decl.kind
                 && !process
@@ -1892,6 +1882,10 @@ impl Elab<'_> {
         let DeclKind::Object(o) = &decl.kind else {
             return Err(Box::new(ice(span, "port is not an object")));
         };
+        // Its subtype, elaborated once before its association (LRM 14.3.2, 14.4.2.1, #1177).
+        if dynamic_object(db, o) {
+            declared_ranges(&mut self.m, db, s, p)?;
+        }
         if o.class == ObjClass::Variable {
             return self.var_port(s, p, a, ascope, at);
         }
@@ -6879,12 +6873,38 @@ fn dynamic_decl(db: &Db, d: DeclId) -> bool {
             (db.declared_ranges(d).into_iter()).any(|r| db.dynamic_range(r).is_some())
         }
         DeclKind::Object(o) => {
-            matches!(o.role, ObjRole::Plain | ObjRole::Deferred)
-                && db.subtypes[o.subtype].name.is_none()
-                && dynamic_in(db, &db.subtypes[o.subtype].constraint)
+            matches!(o.role, ObjRole::Plain | ObjRole::Deferred) && dynamic_object(db, o)
         }
         _ => false,
     }
+}
+
+/// Evaluate the ranges of declaration `d` that may differ per evaluation into `Model::ranges`
+/// of scope `s`, which every later use reads (LRM 14.4.2.1, #612).
+fn declared_ranges(m: &mut Model, db: &Db, s: ScopeId, d: DeclId) -> R<()> {
+    let decl = &db.decls[d];
+    for rc in db.declared_ranges(d) {
+        if let Some(left) = db.dynamic_range(rc) {
+            // A signal reads as its initial value, as in a constant (#453).
+            m.sig_init = true;
+            let b = m.range(db, rc, Some(s), decl.span);
+            m.sig_init = false;
+            let b = b.map_err(|x| {
+                Box::new(x.with_note(format!(
+                    "while elaborating the declaration of `{}` (LRM 14.4.2.1)",
+                    decl.name
+                )))
+            })?;
+            m.ranges.insert((s, left), b);
+        }
+    }
+    Ok(())
+}
+
+/// Whether object `o`'s anonymous subtype has a range with a bound that is not globally static.
+#[inline]
+fn dynamic_object(db: &Db, o: &yavs_sem::decl::Object) -> bool {
+    db.subtypes[o.subtype].name.is_none() && dynamic_in(db, &db.subtypes[o.subtype].constraint)
 }
 
 /// Whether constraint `c` has a range with a bound that is not globally static

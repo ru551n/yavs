@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:formal_range_once:_p0	start calls=19
+diag	note	3000000	0	:formal_range_once:_p0	b=9 c2=2 d=13 e=10 t=3 vb=00001111
+diag	note	3000000	0	:formal_range_once:_p0	end calls=19

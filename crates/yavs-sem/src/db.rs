@@ -535,9 +535,10 @@ impl Db {
     /// The ranges type or subtype declaration `d` introduces, in declaration order: index,
     /// element, field and scalar ranges, which its elaboration evaluates (LRM 14.4.2.1). Ranges
     /// merged in from a type mark (`subtype s2 is s`, `array (0 to 3) of s`) are the type
-    /// mark's declaration's. An object (not a port, generic or loop parameter) or object alias
-    /// declaration introduces the ranges of its anonymous subtype (`variable q : integer range
-    /// 0 to k`, #1174); one of a named subtype none. Empty for other kinds of declarations.
+    /// mark's declaration's. An object (not a loop parameter, nor a generic of a package or
+    /// subprogram) or object alias declaration introduces the ranges of its anonymous subtype
+    /// (`variable q : integer range 0 to k`, #1174; a port or generic of an entity, component
+    /// or block, #1177); one of a named subtype none. Empty for other kinds of declarations.
     pub fn declared_ranges(&self, d: DeclId) -> Vec<&crate::types::RangeC> {
         use crate::types::RangeC;
         let (mut all, mut inherited) = (Vec::new(), Vec::new());
@@ -562,12 +563,18 @@ impl Db {
             DeclKind::Subtype(st) => part(*st, true),
             DeclKind::Object(o)
                 if self.subtypes[o.subtype].name.is_none()
-                    && matches!(
-                        o.role,
+                    && match o.role {
                         crate::decl::ObjRole::Plain
-                            | crate::decl::ObjRole::Deferred
-                            | crate::decl::ObjRole::Param
-                    ) =>
+                        | crate::decl::ObjRole::Deferred
+                        | crate::decl::ObjRole::Param => true,
+                        crate::decl::ObjRole::Port | crate::decl::ObjRole::Generic => matches!(
+                            self.scopes[self.decls[d].scope].kind,
+                            crate::scope::ScopeKind::Entity
+                                | crate::scope::ScopeKind::Component
+                                | crate::scope::ScopeKind::Block
+                        ),
+                        _ => false,
+                    } =>
             {
                 part(o.subtype, true)
             }

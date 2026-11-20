@@ -393,6 +393,65 @@ fn design(name: &str, src: &str, flags: &[&str]) -> common::Tmp {
     d
 }
 
+/// #863: a function that hands its unconstrained parameter on, as in a test runner's setup, runs
+/// right under a debugger with no breakpoints. Without the fix this design reads a wrong value; the
+/// test runner's own setup was an internal error (`test_real_yavs.py` `test_debug_session_passes`).
+#[test]
+fn an_unconstrained_parameter_runs_under_a_debugger() {
+    let d = design(
+        "uncon",
+        "entity t is end;
+architecture a of t is
+  impure function has(constant cfg : string; constant key : string) return boolean is
+  begin
+    for i in cfg'range loop
+      if cfg(i) = key(key'left) then
+        return true;
+      end if;
+    end loop;
+    return false;
+  end function;
+  impure function active(constant cfg : string) return boolean is
+  begin
+    if has(cfg, \"b\") then
+      return true;
+    else
+      return false;
+    end if;
+  end function;
+  procedure set(variable st : inout boolean; constant v : boolean) is
+  begin
+    st := v;
+  end procedure;
+begin
+  process
+    variable st : boolean;
+  begin
+    -- Past the calls after which a function's calls may become lean (`LATE_AFTER`).
+    for i in 1 to 300 loop
+      set(st, active(\"abc\") and not has(\"abc\", \"z\"));
+      assert st report \"wrong\" severity failure;
+    end loop;
+    wait;
+  end process;
+end;
+",
+        &[],
+    );
+    let mut child = spawn(&d, "t", &["--dap=stdio"]);
+    let _w = Watchdog::new(child.id(), 60);
+    let mut c = stdio_client(&mut child);
+    c.request("initialize", json!({"adapterID": "yavs"}));
+    c.request("launch", json!({}));
+    c.request("configurationDone", json!({}));
+    let exited = c.event("exited");
+    c.event("terminated");
+    drop(c.w);
+    let status = child.wait().expect("wait");
+    assert_eq!(exited["body"]["exitCode"], 0, "{}", c.log.join("\n"));
+    assert_eq!(status.code(), Some(0));
+}
+
 /// #939: what a process says before it loops for ever reaches the client while it runs, with the
 /// text a report has always had.
 #[test]

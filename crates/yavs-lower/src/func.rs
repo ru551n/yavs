@@ -659,7 +659,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             let decl = &self.db.decls[d];
             if let DeclKind::Alias(Alias::Object { target, subtype }) = &decl.kind {
                 if subtype.is_some() {
-                    ok &= self.object_ranges(d).is_ok();
+                    ok &= self.object_ranges(d, &[]).is_ok();
                 }
                 // A signal alias has no storage: its uses lower the aliased name.
                 let signal = matches!(self.db.name_root(*target),
@@ -679,8 +679,9 @@ impl<'a, 'b> Fx<'a, 'b> {
             // The subtypes of a nested subprogram's formals are elaborated with its
             // declaration (LRM 14.4.2.1, #1174).
             if let DeclKind::Subprogram(sp) = &decl.kind {
-                for p in sp.params.iter().filter_map(|p| p.decl) {
-                    ok &= self.object_ranges(p).is_ok();
+                let formals: Vec<_> = sp.params.iter().filter_map(|p| p.decl).collect();
+                for &p in &formals {
+                    ok &= self.object_ranges(p, &formals).is_ok();
                 }
                 continue;
             }
@@ -710,7 +711,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             let r = match o.class {
                 ObjClass::Variable | ObjClass::Constant => {
                     // An anonymous subtype's ranges are fixed at the declaration too (#1174).
-                    self.object_ranges(d).and_then(|()| self.local(d))
+                    self.object_ranges(d, &[]).and_then(|()| self.local(d))
                 }
                 ObjClass::SharedVariable => Err(self.cx.unsupported(decl.span, "shared variables")),
                 ObjClass::File => {
@@ -737,12 +738,29 @@ impl<'a, 'b> Fx<'a, 'b> {
 
     /// The same for the anonymous subtype of object or alias declaration `d` (#1174), only
     /// for ranges that are not globally static: those cannot change after the declaration.
-    fn object_ranges(&mut self, d: DeclId) -> R<()> {
+    /// A formal's range that reads one of `formals` (`b : bit_vector(0 to n - 1)`) has no
+    /// value before a call and is left to each use.
+    // ponytail: such a range is evaluated at each use; once per call would need a slot of the
+    // callee's frame filled at entry.
+    fn object_ranges(&mut self, d: DeclId, formals: &[DeclId]) -> R<()> {
         let db = self.db;
+        let reads_formal = |e: yavs_sem::ExprId| {
+            let mut hit = false;
+            db.walk_expr(e, &mut |x| {
+                hit |= matches!(db.exprs[x].kind, hir::ExprKind::Obj(o) if formals.contains(&o));
+            });
+            hit
+        };
         let ranges = (db.declared_ranges(d).into_iter())
             .filter(|rc| match rc {
-                RangeC::Record(e) => db.exprs[*e].stat < yavs_sem::stat::Staticness::Globally,
-                _ => db.dynamic_range(rc).is_some(),
+                RangeC::Record(e) => {
+                    db.exprs[*e].stat < yavs_sem::stat::Staticness::Globally && !reads_formal(*e)
+                }
+                RangeC::Explicit { left, right, .. } => {
+                    db.dynamic_range(rc).is_some()
+                        && (formals.is_empty() || !(reads_formal(*left) || reads_formal(*right)))
+                }
+                RangeC::Attr { .. } => false,
             })
             .collect();
         self.frame_ranges(ranges, db.decls[d].span)

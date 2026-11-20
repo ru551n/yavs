@@ -44,6 +44,8 @@ begin
     constant cq : integer range 0 to k := 3;
     variable r : integer range f(5) to 10 := 5;
     variable m : integer := 0;
+    -- A formal's range that reads an earlier formal (2019) is the call's.
+    procedure lim (n : integer; x : inout integer range 0 to n) is begin x := n; end procedure;
   begin
     report "decl calls=" & integer'image(c.get);
     assert c.get = 5 severity failure;
@@ -60,6 +62,9 @@ begin
     end loop;
     report "loop m=" & integer'image(m);
     assert m = 11 severity failure;
+    lim(4, m);
+    lim(12, m);
+    report "lim m=" & integer'image(m);
     s <= 6;
     psig <= 3;
     report "s'subtype'high=" & integer'image(s'subtype'high) & " psig'subtype'high="

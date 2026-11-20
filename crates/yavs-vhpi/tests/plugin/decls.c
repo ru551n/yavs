@@ -1,4 +1,5 @@
-/* Test VHPI plugin for the declarations and units of #831: aliases, files, implicit signals,
+/* Test VHPI plugin for the declarations and units of #831: aliases (and, entry `aliases`, the
+ * aliases of parts of objects of #143), files, implicit signals,
  * components, configuration specifications, subprograms, libraries, use clauses and user
  * attributes of units and labels. Loaded by `yavs run --vhpi=LIB:ENTRY`.
  * SPDX-License-Identifier: MIT OR Apache-2.0 */
@@ -120,4 +121,79 @@ PLUGIN_EXPORT void start(void) {
   cb.cb_rtn = at3;
   cb.time = &t3;
   vhpi_register_cb(&cb, 0);
+}
+
+/* Aliases of parts of objects (#143): read, deposited, watched. Entry `aliases`. */
+static void show_alias(const char *name) {
+  vhpi_printf("%s=%s\n", name, bin(h(name)));
+}
+
+static void int_alias(const char *name) {
+  vhpiValueT v;
+  memset(&v, 0, sizeof v);
+  v.format = vhpiIntVal;
+  if (vhpi_get_value(h(name), &v))
+    vhpi_printf("%s=none\n", name);
+  else
+    vhpi_printf("%s=%d\n", name, (int)v.value.intg);
+}
+
+static void put_bin(const char *name, const char *s) {
+  vhpiValueT v;
+  memset(&v, 0, sizeof v);
+  v.format = vhpiBinStrVal;
+  v.value.str = (vhpiCharT *)s;
+  v.bufSize = strlen(s) + 1;
+  vhpi_printf("put %s=%s rc=%d\n", name, s, vhpi_put_value(h(name), &v, vhpiDepositPropagate));
+}
+
+static void alias_changed(const vhpiCbDataT *d) {
+  vhpi_printf("changed %s at %u: %s\n", STR(vhpiCaseNameP, d->obj), d->time->low, bin(d->obj));
+}
+
+static void alias_dump(const vhpiCbDataT *d) {
+  (void)d;
+  const char *bins[] = {"top:a2", "top:hi", "top:lo4", "top:lo4(1)", "top:hi(3)", "top:rf", "top:rf1", "top:cs", "top:p:ps", "top:v"};
+  for (unsigned i = 0; i < sizeof bins / sizeof *bins; i++)
+    show_alias(bins[i]);
+  const char *ints[] = {"top:wi", "top:rn", "top:ws(0)", "top:ws(1)"};
+  for (unsigned i = 0; i < sizeof ints / sizeof *ints; i++)
+    int_alias(ints[i]);
+}
+
+static void alias_put(const vhpiCbDataT *d) {
+  alias_dump(d);
+  put_bin("top:hi", "0011");
+  put_bin("top:lo4(0)", "1");
+  put_bin("top:p:ps", "1111");
+  put_bin("top:cs", "00");
+}
+
+static void alias_reg(int reason, unsigned ns, void (*rtn)(const vhpiCbDataT *), vhpiHandleT obj) {
+  static vhpiValueT values[4];
+  static int used;
+  vhpiCbDataT cb;
+  vhpiTimeT t = {0, ns};
+  vhpiValueT *v = &values[used++ % 4];
+  memset(&cb, 0, sizeof cb);
+  v->format = vhpiObjTypeVal;
+  cb.reason = reason;
+  cb.cb_rtn = rtn;
+  cb.time = &t;
+  cb.obj = obj;
+  cb.value = obj ? v : NULL;
+  vhpi_register_cb(&cb, 0);
+}
+
+PLUGIN_EXPORT void aliases(void) {
+  vhpiHandleT a = h("top:hi");
+  vhpi_printf("hi: kind=%s size=%d type=%s left=%d\n", STR(vhpiKindStrP, a), vhpi_get(vhpiSizeP, a),
+              STR(vhpiNameP, vhpi_handle(vhpiBaseType, a)),
+              vhpi_get(vhpiLeftBoundP, vhpi_scan(vhpi_iterator(vhpiConstraints, vhpi_handle(vhpiType, a)))));
+  vhpi_printf("lo4 left=%d\n",
+              vhpi_get(vhpiLeftBoundP, vhpi_scan(vhpi_iterator(vhpiConstraints, vhpi_handle(vhpiType, h("top:lo4"))))));
+  alias_reg(vhpiCbValueChange, 0, alias_changed, h("top:hi"));
+  alias_reg(vhpiCbValueChange, 0, alias_changed, h("top:a2"));
+  alias_reg(vhpiCbAfterDelay, 2, alias_put, NULL);
+  alias_reg(vhpiCbAfterDelay, 4, alias_dump, NULL);
 }

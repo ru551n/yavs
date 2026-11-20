@@ -282,6 +282,15 @@ pub(crate) fn vhpi_name(s: &str) -> String {
     out
 }
 
+/// An alias of a field, element or slice (#143): sub-element `path` of declaration `base`, and
+/// for a slice of a one-dimensional array of scalars the position of its first element in
+/// that array and the array's length (`(skip, full)`).
+pub(crate) struct AliasOf {
+    pub(crate) base: NodeId,
+    pub(crate) path: Box<[u64]>,
+    pub(crate) slice: Option<(u64, u64)>,
+}
+
 /// What only some nodes have: their relations and properties by the VHPI constant (#831).
 #[derive(Default)]
 pub(crate) struct Extra {
@@ -300,6 +309,8 @@ pub(crate) struct Design {
     pub(crate) protected: std::collections::HashSet<NodeId>,
     /// The variables of an access type (`vhpiPtrVal`).
     pub(crate) access: std::collections::HashSet<NodeId>,
+    /// What an alias of part of an object stands for (#143).
+    pub(crate) aliases: HashMap<NodeId, AliasOf>,
     pub(crate) nodes: Vec<Node>,
     pub(crate) packages: Vec<NodeId>,
     pub(crate) types: Types,
@@ -361,6 +372,7 @@ impl Design {
             net: Default::default(),
             protected: Default::default(),
             access: Default::default(),
+            aliases: HashMap::new(),
             nodes: Vec::new(),
             packages: Vec::new(),
             types: Types::default(),
@@ -1315,19 +1327,42 @@ impl Builder<'_> {
         x
     }
 
-    /// An alias (#831): of a whole object it reads and writes like the object; of a part it has
-    /// the object as its `vhpiAliasedName` and no value.
-    // ponytail: no value for an alias of a field, element or slice; a path into the layout when
-    // a plugin needs one.
+    /// An alias (#831): of a whole object it reads and writes like the object; of a part (a
+    /// field, an element at static indexes, a slice with static bounds of a one-dimensional
+    /// array of scalars, #143) it reads and writes that part (`Design::aliases`); of anything
+    /// else it has only the object as its `vhpiAliasedName`.
     fn alias_decl(&mut self, n: NodeId, s: Option<ScopeId>, d: DeclId, a: &yavs_sem::decl::Alias) {
         let db = self.db;
         let decl = &db.decls[d];
         let full = format!("{}:{}", self.d.node(n).full, decl.name);
         let (file, line) = self.place(decl.name_span());
+        let mut part = None;
         let (target, whole) = match a {
-            yavs_sem::decl::Alias::Object { target, .. } => match db.lsp(*target) {
+            yavs_sem::decl::Alias::Object { target: e, subtype } => match db.lsp(*e) {
                 Some(l) => match l.root {
-                    yavs_sem::hir::ObjRoot::Decl(t) => (self.find_decl(s, t), l.path.is_empty()),
+                    yavs_sem::hir::ObjRoot::Decl(t) => {
+                        let target = self.find_decl(s, t);
+                        if let Some(tn) = target.filter(|_| !l.path.is_empty())
+                            && let Some((of, mut layout)) = self.alias_part(tn, &l.path, s)
+                        {
+                            // An alias's own index range names the elements (LRM 6.6.2).
+                            if let Some(st) = *subtype
+                                && let (Layout::Array { dims, .. }, Layout::Array { dims: own, .. }) =
+                                    (&mut layout, self.layout(st, None, s))
+                                && dims.len() == own.len()
+                                && dims
+                                    .iter()
+                                    .zip(&own)
+                                    .all(|(a, b)| a.bounds.len() == b.bounds.len())
+                            {
+                                *dims = own;
+                            }
+                            let st = subtype.unwrap_or(db.exprs[*e].subtype);
+                            let ty = self.object_ty(st, &layout, s);
+                            part = Some((of, layout, ty));
+                        }
+                        (target, l.path.is_empty())
+                    }
                     _ => (None, false),
                 },
                 None => (None, false),
@@ -1338,7 +1373,11 @@ impl Builder<'_> {
             let t = self.d.node(t);
             (t.layout.clone(), t.ty, t.origin.clone())
         });
-        let (layout, ty, origin) = like.unwrap_or((None, None, Origin::Named));
+        let (layout, ty, origin) = match (&part, like) {
+            (_, Some(l)) => l,
+            (Some((_, layout, ty)), None) => (Some(layout.clone()), Some(*ty), Origin::Named),
+            (None, None) => (None, None, Origin::Named),
+        };
         let al = self.d.push(Node {
             kind: vhpiAliasDeclK,
             name: decl.name.to_string(),
@@ -1359,7 +1398,75 @@ impl Builder<'_> {
         if let Some(t) = target {
             self.d.extra.one.insert((al, vhpiAliasedName), t);
         }
+        if let Some((of, _, _)) = part {
+            self.d.aliases.insert(al, of);
+        }
         self.decl_nodes.insert((s, d), al);
+    }
+
+    /// The sub-element of declaration `tn` that the static name steps `steps` select, and its
+    /// layout; `None` for what has no path in the layout (a slice of composites or of more
+    /// dimensions, a step after a slice, a bound that does not fold).
+    fn alias_part(
+        &self,
+        tn: NodeId,
+        steps: &[yavs_sem::hir::LspStep],
+        s: Option<ScopeId>,
+    ) -> Option<(AliasOf, Layout)> {
+        use yavs_sem::hir::LspStep;
+        let mut l = self.d.node(tn).layout.clone()?;
+        let (mut path, mut slice) = (Vec::new(), None);
+        for step in steps {
+            if slice.is_some() {
+                return None;
+            }
+            l = match (step, l) {
+                // Positions are counted from the left whatever the alias's own bounds.
+                (LspStep::Rebase(_), l) => l,
+                (LspStep::Field(f), Layout::Record(mut fs)) => {
+                    path.push(u64::from(*f));
+                    fs.get_mut(*f as usize)
+                        .map(|f| std::mem::replace(&mut f.1, Layout::Open))?
+                }
+                (LspStep::Index(ix), Layout::Array { dims, elem }) if ix.len() == dims.len() => {
+                    let mut lin = 0u64;
+                    for (&e, d) in ix.iter().zip(&dims) {
+                        let v = self.fold(e, s)?.as_int()?;
+                        lin = lin * d.bounds.len() + d.bounds.pos(v)?;
+                    }
+                    path.push(lin);
+                    *elem
+                }
+                (LspStep::Slice(r), Layout::Array { dims, elem })
+                    if dims.len() == 1 && matches!(*elem, Layout::Scalar(_)) =>
+                {
+                    let b = self.range(r, s)?;
+                    let whole = dims[0].bounds;
+                    if b.dir != whole.dir || b.is_empty() {
+                        return None;
+                    }
+                    let skip = whole.pos(b.left)?;
+                    whole.pos(b.right)?;
+                    slice = Some((skip, whole.len()));
+                    Layout::Array {
+                        dims: vec![Dim {
+                            bounds: b,
+                            lits: dims[0].lits.clone(),
+                        }],
+                        elem,
+                    }
+                }
+                _ => return None,
+            };
+        }
+        Some((
+            AliasOf {
+                base: tn,
+                path: path.into(),
+                slice,
+            },
+            l,
+        ))
     }
 
     /// The net graph of `Design::net` (`connect.rs`), once every signal has its node.

@@ -1525,6 +1525,91 @@ const DECLS: &str = "library ieee; use ieee.std_logic_1164.all;\n\
     process begin wait for 2 ns; s <= '1'; wait for 2 ns; std.env.finish; end process;\n\
     end;\n";
 
+/// Design of the `aliases` entry (#143): aliases of an element, of slices (logic and integer
+/// elements, with their own bounds), of record fields and their elements, of part of a
+/// constant and of part of a process variable.
+const ALIASES: &str = "entity top is end;\n\
+    architecture a of top is\n\
+      type rec_t is record f : bit_vector(3 downto 0); n : integer; end record;\n\
+      signal v : bit_vector(7 downto 0) := x\"00\";\n\
+      signal w : integer_vector(0 to 3) := (others => 0);\n\
+      signal r : rec_t := (\"0000\", 0);\n\
+      constant c : bit_vector(0 to 3) := \"0110\";\n\
+      alias a2 : bit is v(2);\n\
+      alias hi : bit_vector(3 downto 0) is v(7 downto 4);\n\
+      alias lo4 : bit_vector(0 to 3) is v(3 downto 0);\n\
+      alias wi : integer is w(1);\n\
+      alias ws : integer_vector(0 to 1) is w(2 to 3);\n\
+      alias rf : bit_vector(3 downto 0) is r.f;\n\
+      alias rf1 : bit is r.f(1);\n\
+      alias rn : integer is r.n;\n\
+      alias cs : bit_vector(0 to 1) is c(1 to 2);\n\
+    begin\n\
+      p: process\n\
+        variable pv : bit_vector(7 downto 0) := x\"0F\";\n\
+        alias ps : bit_vector(3 downto 0) is pv(5 downto 2);\n\
+      begin\n\
+        v <= x\"A5\"; w <= (1, 2, 3, 4); r <= (\"1010\", 7);\n\
+        wait for 3 ns;\n\
+        report \"v=\" & to_string(v) & \" pv=\" & to_string(pv);\n\
+        wait;\n\
+      end process;\n\
+    end;\n";
+
+/// Aliases of parts of objects (#143): their type, reads, deposits and value-change callbacks
+/// act on the part of the object they stand for.
+#[test]
+fn vhpi_aliases_of_parts() {
+    let (lib, so) = setup_with("decls", ALIASES);
+    let spec = format!("--vhpi={}:aliases", so.display());
+    let (code, err, out) = yavs(&["run", &lib, &spec, "--resolution=ns", "top"]);
+    assert_eq!(code, 0, "{err}{out}");
+    assert!(!err.contains("W0904"), "{err}");
+    let want = [
+        "hi: kind=vhpiAliasDeclK size=4 type=BIT_VECTOR left=3",
+        "lo4 left=0",
+        "changed a2 at 0: 1",
+        "changed hi at 0: 1010",
+        "top:a2=1",
+        "top:hi=1010",
+        "top:lo4=0101",
+        "top:lo4(1)=1",
+        "top:hi(3)=1",
+        "top:rf=1010",
+        "top:rf1=1",
+        "top:cs=11",
+        "top:p:ps=0011",
+        "top:v=10100101",
+        "top:wi=2",
+        "top:rn=7",
+        "top:ws(0)=3",
+        "top:ws(1)=4",
+        "put top:hi=0011 rc=0",
+        "put top:lo4(0)=1 rc=0",
+        "put top:p:ps=1111 rc=0",
+        "put top:cs=00 rc=1",
+        "changed hi at 2: 0011",
+        "    Process top.p",
+        "top:a2=1",
+        "top:hi=0011",
+        "top:lo4=1101",
+        "top:lo4(1)=1",
+        "top:hi(3)=0",
+        "top:rf=1010",
+        "top:rf1=1",
+        "top:cs=11",
+        "top:p:ps=1111",
+        "top:v=00111101",
+        "top:wi=2",
+        "top:rn=7",
+        "top:ws(0)=3",
+        "top:ws(1)=4",
+    ];
+    assert_eq!(plugin_lines(&out), want, "{err}");
+    // The one misuse: a constant cannot be written.
+    assert_eq!(err.matches("W0903").count(), 1, "{err}");
+}
+
 /// Aliases, files, implicit signals, components, configuration specifications, subprograms,
 /// libraries, use clauses, user attributes of labels and units, end lines (#831).
 #[test]
@@ -1536,7 +1621,7 @@ fn vhpi_more_declarations_and_units() {
     assert!(!err.contains("W0904"), "{err}");
     for want in [
         "alias sa -> :top:s value 1",
-        "alias part -> :top:v value none",
+        "alias part -> :top:v value 0",
         "aliases: sa part",
         "file: vhpiFileDeclK out_f",
         "sig attr vhpiSimpAttrNameK s'stable(5000000 fs) attr 1027 prefix :top:s",

@@ -34,6 +34,10 @@ pub(crate) struct At<'a> {
     from: u32,
     /// Generics and constants: the elaborated value.
     cv: Option<ConstValue>,
+    /// The sub-element path in the declaration `node` (an alias's resolved, #143).
+    path: Vec<u64>,
+    /// A slice alias (#143): the position of its first element and the array's length.
+    run: Option<(u64, u64)>,
     /// Where the leaves are stored.
     locs: &'a [yavs_elab::LeafLoc],
 }
@@ -42,9 +46,10 @@ impl At<'_> {
     /// The kernel elements of a scalar or an array of `len` scalars of type `ty`.
     pub(crate) fn signal_ref(&self, ty: &Scalar, len: u64) -> SigRef {
         // A logic leaf stores its rightmost element at offset 0 (yavs-elab `hier`).
-        let first = self.k * len;
+        let (skip, full) = self.run.unwrap_or((0, len));
+        let first = self.k * full + skip;
         let offset = if ty.on_planes() {
-            self.reps * len - first - len
+            self.reps * full - first - len
         } else {
             first
         };
@@ -484,11 +489,29 @@ impl State {
     /// errors.
     pub(crate) fn at(&self, obj: &Object, func: &str) -> Result<At<'_>, (Fault, String)> {
         let misuse = || (Fault::Misuse, format!("{func}: the object has no value"));
-        let (base, path): (NodeId, &[u64]) = match obj {
+        let (mut base, mut path): (NodeId, &[u64]) = match obj {
             Object::Node(n) => (*n, &[]),
             Object::Elem { base, path } => (*base, path),
             _ => return Err(misuse()),
         };
+        // An alias of a part is that part of its object (#143); a slice's elements are
+        // elements of the array.
+        let owned: Vec<u64>;
+        let mut run = None;
+        let alias = base;
+        if let Some(a) = self.design.aliases.get(&base) {
+            let mut p = a.path.to_vec();
+            match (a.slice, path.split_first()) {
+                (Some((skip, _)), Some((&i, rest))) => {
+                    p.push(skip + i);
+                    p.extend_from_slice(rest);
+                }
+                (Some(sl), None) => run = Some(sl),
+                (None, _) => p.extend_from_slice(path),
+            }
+            owned = p;
+            (base, path) = (a.base, &owned);
+        }
         let node = self.design.node(base);
         let mut l = node.layout.as_ref().ok_or_else(misuse)?;
         let (mut k, mut reps) = (0u64, 1u64);
@@ -521,6 +544,10 @@ impl State {
                 _ => unreachable!("element handles follow the layout"),
             }
         }
+        if let Some((skip, _)) = run {
+            l = self.design.node(alias).layout.as_ref().ok_or_else(misuse)?;
+            cv = cv.and_then(|v| const_slice(&v, skip, l));
+        }
         // A collapsed port: where the part of this leaf starts.
         let from = match &node.origin {
             Origin::Signal { parts, .. } => {
@@ -536,6 +563,8 @@ impl State {
             reps,
             from,
             cv,
+            path: path.to_vec(),
+            run,
             locs: &self.design.locs,
         })
     }
@@ -613,7 +642,11 @@ impl State {
                     .var(at.node, None)
                     .ok_or_else(|| misuse("variable values are read in simulation callbacks"))?
                     .map_err(|m| misuse(&m))?;
-                descend(whole, Self::path(obj))
+                descend(whole, &at.path)
+                    .and_then(|v| match at.run {
+                        Some((skip, _)) => const_slice(&v, skip, at.l),
+                        None => Some(v),
+                    })
                     .and_then(|v| Read::from_const(ty.clone(), &v))
                     .ok_or_else(|| misuse("this is a bug in yavs: the variable's value"))
             }
@@ -723,14 +756,6 @@ impl State {
         Ok(())
     }
 
-    /// The sub-element path of a declaration (empty) or sub-element.
-    fn path(obj: &Object) -> &[u64] {
-        match obj {
-            Object::Elem { path, .. } => path,
-            _ => &[],
-        }
-    }
-
     /// `vhpiPtrVal` of a variable of an access type (#143): the address of the designated
     /// object's data, 0 for `null`; `None` when `obj` is no such variable.
     pub(crate) fn access_var(&self, obj: &Object) -> Option<Result<u64, (Fault, String)>> {
@@ -773,7 +798,6 @@ impl State {
     /// into the variable at once (its processes are suspended).
     fn put_var(
         &self,
-        obj: &Object,
         at: &At<'_>,
         mode: vhpiPutValueModeT,
         decode: impl FnOnce(&Scalar, Option<usize>) -> Result<Read, value::Error>,
@@ -792,10 +816,17 @@ impl State {
             value::Error::Unsupported(m) => (Fault::Unsupported, m),
             value::Error::Mismatch(m) => misuse(&m),
         })?;
-        let path = Self::path(obj);
+        let (path, run, l) = (&at.path, at.run, at.l);
         let mut update = |whole: &mut ConstValue| {
-            let new = v.to_const(&descend(whole.clone(), path)?)?;
-            replace(whole, path, new)
+            let mut sub = descend(whole.clone(), path)?;
+            match run {
+                Some((skip, _)) => {
+                    let new = v.to_const(&const_slice(&sub, skip, l)?)?;
+                    const_splice(&mut sub, skip, &new)?;
+                }
+                None => sub = v.to_const(&sub)?,
+            }
+            replace(whole, path, sub)
         };
         self.var(at.node, Some(&mut update))
             .ok_or_else(|| misuse("variables are written in simulation callbacks"))?
@@ -845,7 +876,7 @@ impl State {
                     "an access value cannot be written through VHPI".into(),
                 ));
             }
-            (Origin::Var { .. }, _) => return self.put_var(obj, &at, mode, decode),
+            (Origin::Var { .. }, _) => return self.put_var(&at, mode, decode),
             _ => {
                 let kind = self.kind(obj);
                 return Err(misuse(format!(
@@ -925,9 +956,11 @@ impl State {
                 .iter()
                 .enumerate()
                 .map(|(j, &(logic, m))| {
-                    let first = at.k * m;
+                    // A slice alias is one leaf, part of a row of `full` elements.
+                    let (skip, full) = at.run.unwrap_or((0, m));
+                    let first = at.k * full + skip;
                     let offset = if logic {
-                        at.reps * m - first - m
+                        at.reps * full - first - m
                     } else {
                         first
                     };
@@ -1501,6 +1534,34 @@ fn replace(v: &mut ConstValue, path: &[u64], new: ConstValue) -> Option<()> {
         }
         _ => None,
     }
+}
+
+/// Elements `skip..` of a one-dimensional array value, as many as layout `l` (the slice's)
+/// has, with its bounds.
+fn const_slice(v: &ConstValue, skip: u64, l: &Layout) -> Option<ConstValue> {
+    let (ConstValue::Array(a), Layout::Array { dims, .. }) = (v, l) else {
+        return None;
+    };
+    let b = dims.first()?.bounds;
+    let xs = value::elements(a);
+    let part = xs.get(skip as usize..skip as usize + b.len() as usize)?;
+    Some(ConstValue::Array(yavs_sem::stat::ArrayConst {
+        bounds: Box::new([(b.left, b.dir, b.right)]),
+        elems: Elems::Runs(part.iter().map(|x| (1, x.clone())).collect()),
+    }))
+}
+
+/// Writes the elements of array `new` into array `v` from position `skip` on.
+fn const_splice(v: &mut ConstValue, skip: u64, new: &ConstValue) -> Option<()> {
+    let (ConstValue::Array(a), ConstValue::Array(n)) = (v, new) else {
+        return None;
+    };
+    let mut xs = value::elements(a);
+    let ns = value::elements(n);
+    xs.get_mut(skip as usize..skip as usize + ns.len())?
+        .clone_from_slice(&ns);
+    a.elems = Elems::Runs(xs.into_iter().map(|x| (1, x)).collect());
+    Some(())
 }
 
 /// Row-major element `i` of an array value.

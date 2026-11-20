@@ -1200,7 +1200,13 @@ impl State {
         }
         if matches!(
             kind,
-            vhpiAliasedName | vhpiSubpBody | vhpiSubpDecl | vhpiCompDecl | vhpiLibraryDecl
+            vhpiAliasedName
+                | vhpiSubpBody
+                | vhpiSubpDecl
+                | vhpiCompDecl
+                | vhpiLibraryDecl
+                | vhpiConfigDecl
+                | vhpiBlockConfig
         ) {
             return Err(false);
         }
@@ -1315,6 +1321,7 @@ impl State {
                 | vhpiDesignUnits
                 | vhpiUseClauses
                 | vhpiConfigSpecs
+                | vhpiConfigItems
                 | vhpiSensitivities
                 | DEPRECATED_vhpiSensitivitys
                 | vhpiSeqStmts

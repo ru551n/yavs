@@ -1525,6 +1525,63 @@ const DECLS: &str = "library ieee; use ieee.std_logic_1164.all;\n\
     process begin wait for 2 ns; s <= '1'; wait for 2 ns; std.env.finish; end process;\n\
     end;\n";
 
+/// Design of the `configs` entry (#143): a configuration of the top level with a block and a
+/// component configuration, a configuration instantiated directly and named by a configuration
+/// specification.
+const CONFIGS: &str = "entity sub is end;\n\
+    architecture a of sub is begin end;\n\
+    entity mid is end;\n\
+    architecture a of mid is\n\
+      component c is end component;\n\
+    begin\n\
+      u: c;\n\
+    end;\n\
+    configuration cfg_mid of mid is\n\
+      for a\n\
+        for u : c use entity work.sub(a); end for;\n\
+      end for;\n\
+    end;\n\
+    entity top is end;\n\
+    architecture a of top is\n\
+      component mid is end component;\n\
+      component s2 is end component;\n\
+      for e : s2 use configuration work.cfg_mid;\n\
+    begin\n\
+      m: mid;\n\
+      e: s2;\n\
+      d: configuration work.cfg_mid;\n\
+      b1: block begin end block;\n\
+    end;\n\
+    configuration cfg_top of top is\n\
+      for a\n\
+        for m : mid use configuration work.cfg_mid; end for;\n\
+        for b1 end for;\n\
+      end for;\n\
+    end;\n";
+
+/// Configuration declarations (#143): `vhpiConfigDecl` of the root, of an instance and of
+/// component configurations, `vhpiBlockConfig` and `vhpiConfigItems`, `vhpiCompInstKindP`.
+#[test]
+fn vhpi_configurations() {
+    let (lib, so) = setup_with("decls", CONFIGS);
+    let spec = format!("--vhpi={}:configs", so.display());
+    let (code, err, out) = yavs(&["run", &lib, &spec, "cfg_top"]);
+    assert_eq!(code, 0, "{err}{out}");
+    let want = [
+        "top: kind=2 configdecl=cfg_top",
+        "  vhpiConfigDeclK cfg_top line=25 configdecl=none",
+        "    vhpiBlockConfigK a line=26 configdecl=none",
+        "      vhpiCompConfigK mid line=27 configdecl=cfg_mid",
+        "      vhpiBlockConfigK b1 line=28 configdecl=none",
+        // Bound through a component configuration of a configuration: not told (yet).
+        "top:m: kind=1 configdecl=none",
+        "top:d: kind=2 configdecl=cfg_mid",
+        "top:m:u: kind=1 configdecl=none",
+        "spec s2 configdecl=cfg_mid",
+    ];
+    assert_eq!(plugin_lines(&out), want, "{err}");
+}
+
 /// Design of the `aliases` entry (#143): aliases of an element, of slices (logic and integer
 /// elements, with their own bounds), of record fields and their elements, of part of a
 /// constant and of part of a process variable.

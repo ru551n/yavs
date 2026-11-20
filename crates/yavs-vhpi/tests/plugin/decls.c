@@ -197,3 +197,32 @@ PLUGIN_EXPORT void aliases(void) {
   alias_reg(vhpiCbAfterDelay, 2, alias_put, NULL);
   alias_reg(vhpiCbAfterDelay, 4, alias_dump, NULL);
 }
+
+/* Configuration declarations (#143): block and component configurations, the configuration of
+ * the top level and of instances. Entry `configs`. */
+static void config_tree(vhpiHandleT b, int depth) {
+  vhpiHandleT c = vhpi_handle(vhpiConfigDecl, b);
+  vhpi_printf("%*s%s %s line=%d configdecl=%s\n", depth, "", STR(vhpiKindStrP, b), STR(vhpiCaseNameP, b),
+              vhpi_get(vhpiLineNoP, b), OR(c, vhpiCaseNameP));
+  vhpiHandleT inner = vhpi_handle(vhpiBlockConfig, b);
+  if (inner)
+    config_tree(inner, depth + 2);
+  vhpiHandleT it = vhpi_iterator(vhpiConfigItems, b);
+  for (vhpiHandleT x; it && (x = vhpi_scan(it));)
+    config_tree(x, depth + 2);
+}
+
+PLUGIN_EXPORT void configs(void) {
+  vhpiHandleT root = vhpi_handle(vhpiRootInst, NULL);
+  const char *insts[] = {"top", "top:m", "top:d", "top:m:u"};
+  for (unsigned i = 0; i < sizeof insts / sizeof *insts; i++) {
+    vhpiHandleT x = i ? h(insts[i]) : root;
+    vhpiHandleT c = vhpi_handle(vhpiConfigDecl, x);
+    vhpi_printf("%s: kind=%d configdecl=%s\n", insts[i], vhpi_get(vhpiCompInstKindP, x), OR(c, vhpiCaseNameP));
+    if (c && i == 0)
+      config_tree(c, 2);
+  }
+  vhpiHandleT it = vhpi_iterator(vhpiConfigSpecs, h("top"));
+  for (vhpiHandleT x; it && (x = vhpi_scan(it));)
+    vhpi_printf("spec %s configdecl=%s\n", STR(vhpiCaseNameP, x), OR(vhpi_handle(vhpiConfigDecl, x), vhpiCaseNameP));
+}

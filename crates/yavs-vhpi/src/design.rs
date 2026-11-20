@@ -657,7 +657,63 @@ impl Builder<'_> {
         self.units.insert(u, n);
         self.end_line(n, unit.span);
         self.attr_specs(n, None, unit.decl);
+        let db = self.db;
+        if let UnitHir::Configuration(bc) = &db.units[u].hir {
+            let b = self.block_config(bc);
+            self.d.extra.one.insert((n, vhpiBlockConfig), b);
+        }
         n
+    }
+
+    /// A block configuration (#143): `vhpiBlockConfigK` named after the architecture, block or
+    /// generate it configures, with its block and component configurations as
+    /// `vhpiConfigItems`.
+    fn block_config(&mut self, bc: &yavs_sem::hir::BlockConfig) -> NodeId {
+        use yavs_sem::hir::{BlockTarget, ConfigItem};
+        let db = self.db;
+        let name = match &bc.target {
+            BlockTarget::Architecture(a) => db.units[*a].name.text.to_string(),
+            BlockTarget::Block(x) | BlockTarget::Generate { stmt: x, .. } => (db.stmts[*x].label)
+                .as_ref()
+                .map(|l| l.text.to_string())
+                .unwrap_or_default(),
+        };
+        let b = self.bare(vhpiBlockConfigK, name, bc.span);
+        self.end_line(b, bc.span);
+        for item in &bc.items {
+            let x = match item {
+                ConfigItem::Block(inner) => self.block_config(inner),
+                ConfigItem::Component(cc) => self.comp_config(cc),
+            };
+            self.link_many(b, vhpiConfigItems, x);
+        }
+        b
+    }
+
+    /// A component configuration of a configuration declaration: `vhpiCompConfigK` named after
+    /// its component, with the `vhpiConfigDecl` its binding uses and its `vhpiBlockConfig`.
+    fn comp_config(&mut self, cc: &yavs_sem::hir::ComponentConfig) -> NodeId {
+        let name = self.db.decls[cc.component].name.to_string();
+        let x = self.bare(vhpiCompConfigK, name, cc.span);
+        self.end_line(x, cc.span);
+        self.config_binding(x, cc);
+        if let Some(bb) = &cc.block {
+            let b = self.block_config(bb);
+            self.d.extra.one.insert((x, vhpiBlockConfig), b);
+        }
+        x
+    }
+
+    /// `vhpiConfigDecl` of component configuration `x`: the configuration its binding names.
+    fn config_binding(&mut self, x: NodeId, cc: &yavs_sem::hir::ComponentConfig) {
+        if let Some(yavs_sem::hir::Binding {
+            aspect: Some(yavs_sem::hir::EntityAspect::Configuration(c)),
+            ..
+        }) = &cc.binding
+        {
+            let c = self.unit(*c);
+            self.d.extra.one.insert((x, vhpiConfigDecl), c);
+        }
     }
 
     /// `vhpiEndLineNoP` of node `n`: the last line of `span`.
@@ -1041,7 +1097,30 @@ impl Builder<'_> {
                 ScopeKind::Component { comp } => Some(comp),
                 _ => None,
             });
-            let inst = if comp.is_some() { vhpiComp } else { vhpiDirect };
+            // A configuration instantiated, or the top level given as one (#143).
+            let config = if parent.is_none() {
+                e.top.config
+            } else {
+                self.label_of(s).and_then(|l| match db.decls[l].kind {
+                    DeclKind::Label(x) => match &db.stmts[x].kind {
+                        StmtKind::Instance {
+                            target: yavs_sem::hir::InstTarget::Configuration(c),
+                            ..
+                        } => Some(*c),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+            };
+            let inst = match (config, comp) {
+                (Some(c), _) => {
+                    let c = self.unit(c);
+                    self.d.extra.one.insert((n, vhpiConfigDecl), c);
+                    vhpiConfig
+                }
+                (None, Some(_)) => vhpiComp,
+                (None, None) => vhpiDirect,
+            };
             self.d.extra.ints.insert((n, vhpiCompInstKindP), inst);
             let label = sc.name.text.to_string();
             self.d.extra.strs.insert((n, vhpiCompInstNameP), label);
@@ -1080,6 +1159,7 @@ impl Builder<'_> {
             for c in db.config_specs.get(&r).into_iter().flatten() {
                 let name = db.decls[c.component].name.to_string();
                 let x = self.bare(vhpiCompConfigK, name, c.span);
+                self.config_binding(x, c);
                 self.link_many(n, vhpiConfigSpecs, x);
                 self.comp_links.push((x, s, c.component));
             }

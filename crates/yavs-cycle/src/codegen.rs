@@ -64,6 +64,8 @@ pub(crate) struct Code {
     signal_words: usize,
     /// With `YAVS_CYCLE_SKIP_CHECK`: per step of the settle, the words its members drive.
     pub(crate) settle_outs: Vec<Vec<(u32, u32)>>,
+    /// The word of each clocked body run only when it is 1 (`rt::Skip`).
+    pub(crate) run_words: Vec<u32>,
     /// The count word of the log of notes (`compile`'s `log`): a run of the skip check logs none.
     log_count: usize,
     /// `YAVS_CYCLE_SKIP_CHECK=1`: a run a guard would skip runs and must change nothing.
@@ -224,6 +226,7 @@ impl Code {
         );
         match f {
             Fun::Edge if edge => {
+                self.open(img);
                 for (ws, r) in &self.edge_parts {
                     if ws.is_empty() || ws.iter().any(|&w| img[w as usize] != 0) {
                         self.steps(img, &self.entries[1][r.clone()], None, false)?;
@@ -245,7 +248,7 @@ impl Code {
         guards: bool,
     ) -> Result<(), u32> {
         let mark = mark.filter(|m| m.iter().zip(&self.every[..]).any(|(m, e)| e & !m != 0));
-        if f == Fun::Edge {
+        if matches!(f, Fun::Edge | Fun::Own) {
             for (ws, r) in &self.edge_parts {
                 if ws.is_empty() || ws.iter().any(|&w| img[w as usize] != 0) {
                     self.steps(img, &self.entries[1][r.clone()], None, guards)?;
@@ -254,7 +257,16 @@ impl Code {
         }
         match f {
             Fun::Init => self.steps(img, &self.entries[2], None, guards),
+            Fun::Own => Ok(()),
             _ => self.steps(img, &self.entries[0], mark, guards),
+        }
+    }
+
+    /// Every clocked body behind a run word (`run_words`) runs: the reference of the skip check
+    /// and the second image of `--cycle-exact-meta`.
+    pub(crate) fn open(&self, img: &mut [u64]) {
+        for &w in &self.run_words {
+            img[w as usize] = 1;
         }
     }
 
@@ -269,6 +281,7 @@ impl Code {
         state: &[(u32, u32)],
     ) -> Result<(), u32> {
         let mut whole = img.to_vec();
+        self.open(&mut whole);
         let a = self.run_as(&mut whole, f, None, false);
         let b = self.run_as(img, f, mark, true);
         let differs = (state.iter()).any(|&(w, c)| {
@@ -497,6 +510,9 @@ pub(crate) enum Fun {
     Settle,
     /// The clocked bodies, the commit, the combinational bodies.
     Edge,
+    /// The edge's own steps alone: the clocked bodies and the commit (the settle after it runs
+    /// on its own, with the mark of what changed).
+    Own,
     /// Once, before the first settle: initial values of the variables.
     Init,
 }
@@ -786,7 +802,13 @@ fn parts(ops: &[Op]) -> Vec<Part<'_>> {
     if weight(ops) <= chunk() {
         return vec![(Cow::Borrowed(ops), None)];
     }
-    let ps = cut(ops, chunk());
+    let mut ps = cut(ops, chunk());
+    // Every part of a tracked member tracks its own stores (`Op::Track`).
+    if let Some(&Op::Track { flag, .. }) = ops.first() {
+        for p in &mut ps[1..] {
+            p.insert(0, Op::Track { flag, first: false });
+        }
+    }
     let mut later: Option<Arc<Words<()>>> = None;
     let mut out: Vec<Part<'_>> = Vec::new();
     for p in ps.into_iter().rev() {
@@ -920,6 +942,8 @@ fn reads(op: &Op, f: &mut impl FnMut(i32, u32)) {
             }
         }
         Op::If { cond, .. } => r(cond, 0, 1),
+        // Its flag is not a word the operations read (`Gen::track_end`).
+        Op::Track { .. } => {}
         Op::Other { src, len, oth, .. } => {
             r(src, 0, words(*len));
             r(oth, 0, 1);
@@ -1274,7 +1298,7 @@ fn span(op: &Op) -> u32 {
         | Op::Int { .. }
         | Op::Reduce { .. }
         | Op::ToInt { .. } => 1,
-        Op::Range { .. } | Op::If { .. } | Op::Note { .. } => 0,
+        Op::Range { .. } | Op::If { .. } | Op::Note { .. } | Op::Track { .. } => 0,
     }
 }
 
@@ -1664,6 +1688,7 @@ pub(crate) fn compile<'a>(
             v
         }),
         settle_outs: Vec::new(),
+        run_words: Vec::new(),
     };
     // Three passes: the cache in function order; the functions it does not have built and
     // compiled on up to `threads()` threads; the code defined in function order, so the module,
@@ -1972,6 +1997,7 @@ impl Env<'_> {
                 next: 0,
                 last: Words::default(),
                 later: None,
+                track: None,
                 #[cfg(debug_assertions)]
                 gone: Default::default(),
             };
@@ -1996,6 +2022,7 @@ impl Env<'_> {
                 } else {
                     g.write_back();
                 }
+                g.track_end();
                 // What is in memory now: state, and what the next part of the member reads; a
                 // value is handed on through at most `CARRY` pieces.
                 g.piece += 1;
@@ -2166,6 +2193,7 @@ fn finish(
         every: every.into_boxed_slice(),
         signal_words: plan.signal_words,
         settle_outs: plan.settle_outs,
+        run_words: plan.run_words,
         log_count: plan.log_count,
         skip_check: skip_check()? != SkipCheck::Off,
         full_check: plan.full_check,
@@ -2195,6 +2223,8 @@ pub(crate) struct CodePlan {
     full_check: Option<Vec<(u32, u32)>>,
     /// `YAVS_CYCLE_SKIP_CHECK`: set by the caller ([`Code::settle_outs`]).
     pub settle_outs: Vec<Vec<(u32, u32)>>,
+    /// Set by the caller ([`Code::run_words`]).
+    pub run_words: Vec<u32>,
 }
 
 impl CodePlan {
@@ -2275,6 +2305,9 @@ struct Gen<'a> {
     /// unless a later part reads it, `later`).
     last: Words<u32>,
     later: Option<Arc<Words<()>>>,
+    /// `Op::Track` in this part: its flag's byte offset, whether it is the member's first part,
+    /// and the OR of what each store of a word that holds state changed.
+    track: Option<(i32, bool, cranelift_frontend::Variable)>,
     /// Debug builds: scratch words dropped from registers unstored as dead, which no code may
     /// read from memory before writing them again.
     #[cfg(debug_assertions)]
@@ -2412,7 +2445,39 @@ impl Gen<'_> {
 
     fn store(&mut self, off: i32, v: Value) {
         let (a, o) = self.at(off);
+        if self.track.is_some() && self.kept(off) {
+            let old = self.b.ins().load(I64, MemFlagsData::trusted(), a, o);
+            self.changed(old, v);
+        }
         self.b.ins().store(MemFlagsData::trusted(), v, a, o);
+    }
+
+    /// Under `Op::Track`: a store of `new` over `old`, ORed into what the part changed.
+    fn changed(&mut self, old: Value, new: Value) {
+        let Some((_, _, var)) = self.track else {
+            return;
+        };
+        let x = self.b.ins().bxor(old, new);
+        let acc = self.b.use_var(var);
+        let acc = self.b.ins().bor(acc, x);
+        self.b.def_var(var, acc);
+    }
+
+    /// The end of a tracked part: its flag word 1 when a store changed a word (ORed into the
+    /// flag of the member's earlier parts).
+    fn track_end(&mut self) {
+        let Some((off, first, var)) = self.track.take() else {
+            return;
+        };
+        let acc = self.b.use_var(var);
+        let one = self.b.ins().icmp_imm_s(IntCC::NotEqual, acc, 0);
+        let mut f = self.b.ins().uextend(I64, one);
+        let (a, o) = self.at(off);
+        if !first {
+            let old = self.b.ins().load(I64, MemFlagsData::trusted(), a, o);
+            f = self.b.ins().bor(old, f);
+        }
+        self.b.ins().store(MemFlagsData::trusted(), f, a, o);
     }
 
     /// The words that hold state, into memory (the end of the function).
@@ -2790,10 +2855,19 @@ impl Gen<'_> {
             for (j, &x) in v.iter().enumerate() {
                 let n = (w - 64 * j as u32).min(64);
                 let o = 8 * j as i32;
-                let x = if n < 64 {
+                let tracked = self.track.is_some() && self.kept(word(r));
+                let x = if n < 64 || tracked {
                     let w0 = self.b.ins().load(I64, MemFlagsData::trusted(), a, o);
-                    let keep = self.b.ins().band_imm_s(w0, !mask(n) as i64);
-                    self.b.ins().bor(keep, x)
+                    let x = if n < 64 {
+                        let keep = self.b.ins().band_imm_s(w0, !mask(n) as i64);
+                        self.b.ins().bor(keep, x)
+                    } else {
+                        x
+                    };
+                    if tracked {
+                        self.changed(w0, x);
+                    }
+                    x
                 } else {
                     x
                 };
@@ -2810,20 +2884,27 @@ impl Gen<'_> {
             let n = (w - 64 * j as u32).min(64);
             let (a, s) = self.bit_addr(r, b);
             let m = self.konst(mask(n));
-            let w0 = self.b.ins().load(I64, MemFlagsData::trusted(), a, 0);
+            let tracked = self.track.is_some() && self.kept(word(r));
+            let old = self.b.ins().load(I64, MemFlagsData::trusted(), a, 0);
             let ms = self.b.ins().ishl(m, s);
-            let keep = self.b.ins().band_not(w0, ms);
+            let keep = self.b.ins().band_not(old, ms);
             let xs = self.b.ins().ishl(x, s);
             let w0 = self.b.ins().bor(keep, xs);
+            if tracked {
+                self.changed(old, w0);
+            }
             self.b.ins().store(MemFlagsData::trusted(), w0, a, 0);
             if !one_word {
                 // The bits that cross into the next word (none when `s` is 0); its other bits are
                 // stored back unchanged.
-                let w1 = self.b.ins().load(I64, MemFlagsData::trusted(), a, 8);
+                let old = self.b.ins().load(I64, MemFlagsData::trusted(), a, 8);
                 let mh = self.ushr_rest(m, s);
-                let keep = self.b.ins().band_not(w1, mh);
+                let keep = self.b.ins().band_not(old, mh);
                 let xh = self.ushr_rest(x, s);
                 let w1 = self.b.ins().bor(keep, xh);
+                if tracked {
+                    self.changed(old, w1);
+                }
                 self.b.ins().store(MemFlagsData::trusted(), w1, a, 8);
             }
         }
@@ -3484,6 +3565,13 @@ impl Gen<'_> {
                 let mut v = vec![s; words(*len) as usize];
                 self.top(&mut v, *len);
                 self.sts(*dst, &v);
+            }
+            Op::Track { flag, first } => {
+                self.track_end();
+                let var = self.b.declare_var(I64);
+                let zero = self.b.ins().iconst(I64, 0);
+                self.b.def_var(var, zero);
+                self.track = Some((word(*flag), *first, var));
             }
             // Only in a member's last run, which has the exits of its checks.
             Op::Note { .. } if !self.exits => {}

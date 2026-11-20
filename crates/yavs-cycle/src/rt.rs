@@ -340,6 +340,12 @@ pub(crate) struct RegionProc<const RAIL: bool> {
     pub read_now: Vec<usize>,
     /// The idle rule ([`Idle`]).
     pub idle: Idle,
+    /// The idle skip of clocked bodies ([`Skip`]): which are dirty (bits over its tracks), which
+    /// run at this edge, and the scratch bits of that.
+    pub skip: Arc<Skip>,
+    pub dirty: Vec<u64>,
+    pub ran: Vec<u32>,
+    pub go: Vec<u64>,
     /// Per input chunk (`chunk_cone`, an index into `cones`): the steps of the settle a change of
     /// it can reach; `mark`, those of the chunks the last import read.
     pub cones: Arc<Vec<Box<[u64]>>>,
@@ -385,6 +391,43 @@ pub(crate) struct Idle {
     pub snap: Vec<u64>,
     pub misses: u32,
     pub rest: u32,
+}
+
+/// The idle skip of clocked bodies, and the mark of what they changed. Each clocked member's
+/// body sets its flag when a store changed a word that holds state (`Op::Track`); after an edge
+/// the settle runs only the cones of members whose flag is set (not every cone of the classes).
+/// A member is dirty when its last run changed something, or a source whose reach holds it
+/// changed since (an input chunk read, a clocked member's run); at its class's edge only a dirty
+/// one runs, the others are behind their run word (0). While the rail of `--cycle-exact-meta`
+/// runs, every body runs and every cone is marked.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Skip {
+    /// Per clocked member: its run word (`u32::MAX`: it always runs), its flag word, its cone
+    /// (in `cones`) and its reach (in `reach`).
+    pub tracks: Vec<(u32, u32, u32, u32)>,
+    /// Per edge class: its clocked members, as bits over `tracks` (a member without a class in
+    /// all); those that always run.
+    pub classes: Vec<Box<[u64]>>,
+    pub always: Box<[u64]>,
+    /// Steps of the settle; members of `tracks` (bits) a change makes dirty.
+    pub cones: Vec<Sparse>,
+    pub reach: Vec<Sparse>,
+    /// Per input cone (`RegionProc::cones`): its reach.
+    pub chunk: Vec<u32>,
+}
+
+/// `YAVS_CYCLE_BLOCKSKIP` (developers): unset the idle skip of clocked bodies and the mark of
+/// what they changed ([`Skip`]), `off` the class cones and every body as before.
+pub(crate) fn skip_knob() -> Result<bool, String> {
+    let v = std::env::var_os("YAVS_CYCLE_BLOCKSKIP").unwrap_or_default();
+    match &*v.to_string_lossy() {
+        "" => Ok(true),
+        "off" => Ok(false),
+        v => Err(format!(
+            "YAVS_CYCLE_BLOCKSKIP takes `off`, not `{v}`{}",
+            yavs_diag::suggest::tail(v, "value", ["off"].into_iter())
+        )),
+    }
 }
 
 /// The clock edges a [`Rail`] runs at the most (owner decision A38): it ends at that edge,
@@ -515,8 +558,11 @@ pub(crate) const EX_NAMES: [&str; EX_N] = [
     "runs without an edge that read only inputs left for the edge",
     "edge runs checked that changed no word of the image",
     "edge runs skipped as idle",
+    "clocked bodies run",
+    "clocked bodies skipped as idle",
+    "clocked bodies that changed a word",
 ];
-pub(crate) const EX_N: usize = 19;
+pub(crate) const EX_N: usize = 22;
 
 impl Stats {
     /// One wake that runs code: the edges of each class, and the members the mark lets run.
@@ -784,6 +830,9 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                 let c = self.chunk_cone[i] as usize;
                 for (m, c) in (self.mark.iter_mut()).zip(&self.cones[c][..]) {
                     *m |= c;
+                }
+                if let Some(&h) = self.skip.chunk.get(c) {
+                    or_into(&mut self.dirty, &self.skip.reach[h as usize]);
                 }
                 or_into(&mut self.touched, &self.chunk_spans[c]);
                 if self.stats {
@@ -1805,15 +1854,23 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             self.pending = false;
             // Without an edge only the inputs changed: the settle runs what they reach; at an edge
             // also what the clocked members of the classes that had one may have changed.
+            // While the rail runs, every clocked body runs and the classes' cones are marked;
+            // else only dirty bodies run and the cones of those that changed something (`Skip`).
+            let dynamic = !R && edge;
             if edge {
                 for (k, &(_, _, w)) in self.clocks.iter().enumerate() {
                     if self.img[w] != 0 {
-                        (self.mark.iter_mut())
-                            .zip(&self.class_cones[k][..])
-                            .for_each(|(m, c)| *m |= c);
+                        if !dynamic {
+                            (self.mark.iter_mut())
+                                .zip(&self.class_cones[k][..])
+                                .for_each(|(m, c)| *m |= c);
+                        }
                         or_into(&mut self.touched, &self.class_spans[k]);
                     }
                 }
+            }
+            if dynamic {
+                self.skip_go();
             }
             if self.stats
                 && let Some(st) = self.metas.stats.lock().expect("not poisoned").as_mut()
@@ -1828,7 +1885,9 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                 for (a, b) in st.ex.iter_mut().zip(std::mem::take(&mut self.ex)) {
                     *a += b;
                 }
-                st.count(&self.img, &self.clocks, &self.mark, edge);
+                if !dynamic {
+                    st.count(&self.img, &self.clocks, &self.mark, edge);
+                }
             }
             // `YAVS_CYCLE_STATS`: whether this edge run changes the image at all.
             let f = if edge { Fun::Edge } else { Fun::Settle };
@@ -1838,7 +1897,25 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                     self.rail_run(ctx, &mut rail, &mut ended, f, true, true)?;
                 }
             }
-            self.run_marked(ctx, f, true)?;
+            if dynamic {
+                self.run_marked(ctx, Fun::Own, false)?;
+                self.skip_end();
+                if self.stats
+                    && let Some(st) = self.metas.stats.lock().expect("not poisoned").as_mut()
+                {
+                    st.count(&self.img, &self.clocks, &self.mark, edge);
+                }
+                self.run_marked(ctx, Fun::Settle, true)?;
+            } else if R && edge {
+                self.code.open(&mut self.img);
+                self.run_marked(ctx, f, true)?;
+                for &w in &self.code.run_words {
+                    self.img[w as usize] = 0;
+                }
+                self.dirty.fill(!0);
+            } else {
+                self.run_marked(ctx, f, true)?;
+            }
             if R {
                 self.rail_run(ctx, &mut rail, &mut ended, f, true, false)?;
                 if edge && let Some(mut r) = rail.take() {
@@ -1872,6 +1949,61 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             self.wait_all(ctx)?;
         }
         Ok(())
+    }
+
+    /// The clocked members that run at this edge ([`Skip`]): of the classes that had one, those
+    /// dirty and those that always run; their run words set.
+    fn skip_go(&mut self) {
+        let s = &*self.skip;
+        self.go.fill(0);
+        for (k, &(_, _, w)) in self.clocks.iter().enumerate() {
+            if self.img[w] != 0
+                && let Some(c) = s.classes.get(k)
+            {
+                self.go.iter_mut().zip(&c[..]).for_each(|(g, c)| *g |= c);
+            }
+        }
+        let mut idle = 0;
+        self.ran.clear();
+        for (j, g) in self.go.iter_mut().enumerate() {
+            let all = *g;
+            *g &= self.dirty[j] | s.always[j];
+            self.dirty[j] &= !*g;
+            idle += (all & !*g).count_ones();
+            let mut m = *g;
+            while m != 0 {
+                let t = 64 * j + m.trailing_zeros() as usize;
+                m &= m - 1;
+                self.ran.push(t as u32);
+                let r = s.tracks[t].0;
+                if r != u32::MAX {
+                    self.img[r as usize] = 1;
+                }
+            }
+        }
+        if self.stats {
+            self.ex[19] += self.ran.len() as u64;
+            self.ex[20] += u64::from(idle);
+        }
+    }
+
+    /// After the edge's own steps: run words back to 0; the cones of the members that changed a
+    /// word marked, what they reach dirty.
+    fn skip_end(&mut self) {
+        let s = &*self.skip;
+        for &t in &self.ran {
+            let (r, f, c, h) = s.tracks[t as usize];
+            if r != u32::MAX {
+                self.img[r as usize] = 0;
+            }
+            if self.img[f as usize] != 0 {
+                or_into(&mut self.mark, &s.cones[c as usize]);
+                or_into(&mut self.dirty, &s.reach[h as usize]);
+                if self.stats {
+                    self.ex[21] += 1;
+                }
+            }
+        }
     }
 
     /// Name the region's wait.

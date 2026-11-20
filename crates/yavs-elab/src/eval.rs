@@ -2177,6 +2177,78 @@ fn lower_one(
     })
 }
 
+/// A function lowered into a program of its own and called with values only, as elaboration-time
+/// calls run: no kernel, no signals, no shared state, its own heap and coverage counters. A
+/// debugger's breakpoint conditions call functions so (#364): nothing of the running simulation
+/// executes, so a call cannot change it.
+pub struct Isolated(Lowered1);
+
+impl Isolated {
+    /// Lower function `f` alone; the error says why it cannot be.
+    pub fn new(db: &Db, f: DeclId) -> Result<Isolated, String> {
+        lower_one(db, f, true, false)
+            .map(Isolated)
+            .map_err(|e| match e {
+                crate::pkgcall::Fail::Lower(m) | crate::pkgcall::Fail::Runtime(m) => m,
+                crate::pkgcall::Fail::Unsupported(w) => w.to_string(),
+            })
+    }
+
+    /// What the lowered function and what it calls may do besides computing.
+    pub fn flags(&self) -> yavs_ir::FuncFlags {
+        let prog = &self.0.rt.prog;
+        prog.funcs
+            .get(self.0.sig.func)
+            .map_or_else(Default::default, |f| f.flags)
+    }
+
+    /// The constants and generics of the regions around the function that it reads.
+    pub fn reads(&self) -> impl Iterator<Item = DeclId> + '_ {
+        self.0.free.iter().map(|f| f.decl)
+    }
+
+    /// Call it with `args`, `read` giving the value of each object of [`Isolated::reads`].
+    /// Reports the call makes are neither printed nor counted; a failure ends it with an error.
+    pub fn call(&self, args: &[Val], read: &dyn Fn(DeclId) -> Option<Val>) -> Result<Val, String> {
+        let l = &self.0;
+        if args.len() != l.sig.params.len() {
+            return Err("a call with a named return value".into());
+        }
+        let inst = if l.free.is_empty() {
+            None
+        } else {
+            let mut inst = yavs_interp::InstData {
+                data: vec![0; l.inst_size as usize],
+                ..Default::default()
+            };
+            for f in &l.free {
+                let v = read(f.decl).ok_or("an object of its region has no value here")?;
+                match crate::value::encode(&l.rt.prog, f.ty, &v) {
+                    Some(yavs_interp::CallVal::Cell(c)) => {
+                        let n = (l.rt.prog.types.get(f.ty))
+                            .and_then(|t| t.scalar_size())
+                            .unwrap_or(8) as usize;
+                        let off = f.off as usize;
+                        inst.data[off..off + n].copy_from_slice(&c.to_le_bytes()[..n]);
+                    }
+                    Some(yavs_interp::CallVal::Composite { data, desc }) => {
+                        yavs_lower::UnitIr::write_composite(f.off, &data, &desc, &mut inst.data);
+                    }
+                    None => return Err("it reads an object of a type not passed yet".into()),
+                }
+            }
+            Some(inst)
+        };
+        let (r, _) = yavs_interp::capture_elab_reports(|| {
+            crate::pkgcall::run(&l.rt, &l.sig, args, None, inst)
+        });
+        r.map_err(|e| match e {
+            crate::pkgcall::Fail::Lower(m) | crate::pkgcall::Fail::Runtime(m) => m,
+            crate::pkgcall::Fail::Unsupported(w) => format!("not supported yet: {w}"),
+        })
+    }
+}
+
 /// Apply an element resolution indication (LRM 6.3) to the element shape `s`:
 /// `(f) t` resolves each element with `f` (a composite element as a whole), `((f)) t` the
 /// elements of nested arrays, `(a f, b g) r` per record element. `false` when it does not fit.

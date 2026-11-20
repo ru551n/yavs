@@ -1831,6 +1831,15 @@ impl Model {
             for u in crate::sim::run_time_packages(db) {
                 for s in db.package_regions(u).unwrap_or_default() {
                     for d in db.decls_with_instances(s) {
+                        // A package constant's reader is its value (`Session::package_const`)
+                        // and an alias has none: the ranges of their subtypes are evaluated here
+                        // again.
+                        // ponytail: a reader of their own would read the package's bounds.
+                        match &db.decls[d].kind {
+                            DeclKind::Type(_) | DeclKind::Subtype(_) => {}
+                            DeclKind::Object(o) if o.class != ObjClass::Constant => {}
+                            _ => continue,
+                        }
                         let rs = db.declared_ranges(d).into_iter();
                         for (k, r) in rs.filter(|r| db.dynamic_range(r).is_some()).enumerate() {
                             if let RangeC::Explicit { left, dir, .. } = *r {

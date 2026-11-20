@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:object_range_once_2019:_p0	decl calls=5
+diag	note	0	0	:object_range_once_2019:_p0	q'subtype'high=9 q2'subtype'high=9 cq'subtype'high=9 r'subtype'low=5
+diag	note	0	0	:object_range_once_2019:_p0	loop m=11
+diag	note	0	0	:object_range_once_2019:_p0	s'subtype'high=7 psig'subtype'high=4 ac'subtype'high=9 pc'subtype'high=8
+diag	note	1000000	0	:object_range_once_2019:_p0	s=6 psig=3 calls=5

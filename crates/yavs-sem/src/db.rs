@@ -535,7 +535,9 @@ impl Db {
     /// The ranges type or subtype declaration `d` introduces, in declaration order: index,
     /// element, field and scalar ranges, which its elaboration evaluates (LRM 14.4.2.1). Ranges
     /// merged in from a type mark (`subtype s2 is s`, `array (0 to 3) of s`) are the type
-    /// mark's declaration's. Empty for other kinds of declarations.
+    /// mark's declaration's. An object (not a port, generic or loop parameter) or object alias
+    /// declaration introduces the ranges of its anonymous subtype (`variable q : integer range
+    /// 0 to k`, #1174); one of a named subtype none. Empty for other kinds of declarations.
     pub fn declared_ranges(&self, d: DeclId) -> Vec<&crate::types::RangeC> {
         use crate::types::RangeC;
         let (mut all, mut inherited) = (Vec::new(), Vec::new());
@@ -558,6 +560,20 @@ impl Db {
         };
         match &self.decls[d].kind {
             DeclKind::Subtype(st) => part(*st, true),
+            DeclKind::Object(o)
+                if self.subtypes[o.subtype].name.is_none()
+                    && matches!(
+                        o.role,
+                        crate::decl::ObjRole::Plain
+                            | crate::decl::ObjRole::Deferred
+                            | crate::decl::ObjRole::Param
+                    ) =>
+            {
+                part(o.subtype, true)
+            }
+            DeclKind::Alias(crate::decl::Alias::Object {
+                subtype: Some(st), ..
+            }) if self.subtypes[*st].name.is_none() => part(*st, true),
             DeclKind::Type(t) => {
                 part(self.types[*t].first_subtype, true);
                 match &self.types[*t].kind {

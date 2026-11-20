@@ -179,6 +179,10 @@ pub(crate) struct Elab<'d> {
     units_seen: usize,
     /// While `prog_source` runs: `static_signal_parts` of each expression seen so far (one scope).
     parts_memo: Option<HashMap<ExprId, SigParts>>,
+    /// Whether a declarative region, by index, has a declaration with ranges `decls`
+    /// evaluates (`dynamic_decl`; 0 not asked yet, 1 no, 2 yes): asked once per region, not
+    /// per instance.
+    dynamic_regions: Vec<u8>,
 }
 
 type SigParts = Option<(Vec<(LeafId, Range)>, Shape)>;
@@ -560,6 +564,7 @@ pub(crate) fn elaborate(
         pkg_uses,
         units_seen: 0,
         parts_memo: None,
+        dynamic_regions: Vec::new(),
     };
     e.units_seen = e.db.units.len();
     let name = e.db.units[top.entity].name;
@@ -1406,9 +1411,21 @@ impl Elab<'_> {
 
     /// Signal declarations of a declarative region (constants are evaluated on demand).
     fn decls(&mut self, s: ScopeId, region: yavs_sem::ScopeId) -> R<()> {
-        if self.db.scopes[region].kind != yavs_sem::scope::ScopeKind::Process {
+        let process = self.db.scopes[region].kind == yavs_sem::scope::ScopeKind::Process;
+        if !process {
             self.m.regions.entry(s).or_default().push(region);
         }
+        let ri = yavs_sem::ids::Id::index(region);
+        if self.dynamic_regions.len() <= ri {
+            self.dynamic_regions
+                .resize(self.db.scopes.len().max(ri + 1), 0);
+        }
+        if self.dynamic_regions[ri] == 0 {
+            let db: &Db = self.db;
+            let any = (db.decls_with_instances(region).into_iter()).any(|d| dynamic_decl(db, d));
+            self.dynamic_regions[ri] = 1 + u8::from(any);
+        }
+        let dynamic = !process && self.dynamic_regions[ri] == 2;
         for d in self.db.decls_with_instances(region) {
             // External names in its subprograms bind once the hierarchy is elaborated, as
             // those of its statements (#255).
@@ -1449,14 +1466,12 @@ impl Elab<'_> {
                 }
                 continue;
             }
+            // The ranges of a type or subtype, or of an object's anonymous subtype (#1174),
+            // that may differ per evaluation are evaluated here, once and in declaration order;
+            // every use reads them (LRM 14.4.2.1, #612). A process's are its lowered code's.
             let db: &Db = self.db;
             let decl = &db.decls[d];
-            // The ranges of a type or subtype that may differ per evaluation are evaluated
-            // here, once and in declaration order; every use reads them (LRM 14.4.2.1, #612).
-            // A process's are its lowered code's.
-            if let DeclKind::Type(_) | DeclKind::Subtype(_) = decl.kind
-                && db.scopes[region].kind != yavs_sem::scope::ScopeKind::Process
-            {
+            if dynamic && dynamic_decl(db, d) {
                 for rc in db.declared_ranges(d) {
                     if let Some(left) = db.dynamic_range(rc) {
                         // A signal reads as its initial value, as in a constant (#453).
@@ -1472,6 +1487,10 @@ impl Elab<'_> {
                         self.m.ranges.insert((s, left), b);
                     }
                 }
+            }
+            if let DeclKind::Type(_) | DeclKind::Subtype(_) = decl.kind
+                && !process
+            {
                 // A subtype nothing uses is checked as a constant is below (#847).
                 if let DeclKind::Subtype(st) = decl.kind {
                     self.m.check_constraint(db, st, Some(s), decl.span)?;
@@ -6849,4 +6868,38 @@ fn or_terms(db: &Db, e: ExprId, out: &mut Vec<ExprId>) {
         return;
     }
     out.push(e);
+}
+
+/// Whether declaration `d` has ranges for `decls` to evaluate (`Db::declared_ranges` with a
+/// bound that is not globally static): of a type or subtype, or of an object's anonymous
+/// subtype.
+fn dynamic_decl(db: &Db, d: DeclId) -> bool {
+    match &db.decls[d].kind {
+        DeclKind::Type(_) | DeclKind::Subtype(_) => {
+            (db.declared_ranges(d).into_iter()).any(|r| db.dynamic_range(r).is_some())
+        }
+        DeclKind::Object(o) => {
+            matches!(o.role, ObjRole::Plain | ObjRole::Deferred)
+                && db.subtypes[o.subtype].name.is_none()
+                && dynamic_in(db, &db.subtypes[o.subtype].constraint)
+        }
+        _ => false,
+    }
+}
+
+/// Whether constraint `c` has a range with a bound that is not globally static
+/// (`Db::dynamic_range`), without building the list of its ranges.
+fn dynamic_in(db: &Db, c: &yavs_sem::types::Constraint) -> bool {
+    use yavs_sem::types::Constraint;
+    match c {
+        Constraint::Range(rc) => db.dynamic_range(rc).is_some(),
+        Constraint::Array { dims, elem } => {
+            dims.iter()
+                .flatten()
+                .any(|rc| db.dynamic_range(rc).is_some())
+                || dynamic_in(db, elem)
+        }
+        Constraint::Record { elems } => elems.iter().any(|(_, c)| dynamic_in(db, c)),
+        Constraint::None | Constraint::FromObject { .. } => false,
+    }
 }

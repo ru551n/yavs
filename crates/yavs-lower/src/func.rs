@@ -658,6 +658,9 @@ impl<'a, 'b> Fx<'a, 'b> {
         for d in self.db.decls_with_instances(scope) {
             let decl = &self.db.decls[d];
             if let DeclKind::Alias(Alias::Object { target, subtype }) = &decl.kind {
+                if subtype.is_some() {
+                    ok &= self.object_ranges(d).is_ok();
+                }
                 // A signal alias has no storage: its uses lower the aliased name.
                 let signal = matches!(self.db.name_root(*target),
                     Some(yavs_sem::lsp::NameRoot::Obj(r)) if self.db.is_signal(r));
@@ -671,6 +674,14 @@ impl<'a, 'b> Fx<'a, 'b> {
             }
             if let DeclKind::Type(_) | DeclKind::Subtype(_) = decl.kind {
                 ok &= self.declared_ranges(d).is_ok();
+                continue;
+            }
+            // The subtypes of a nested subprogram's formals are elaborated with its
+            // declaration (LRM 14.4.2.1, #1174).
+            if let DeclKind::Subprogram(sp) = &decl.kind {
+                for p in sp.params.iter().filter_map(|p| p.decl) {
+                    ok &= self.object_ranges(p).is_ok();
+                }
                 continue;
             }
             let DeclKind::Object(o) = &decl.kind else {
@@ -697,7 +708,10 @@ impl<'a, 'b> Fx<'a, 'b> {
                 continue;
             }
             let r = match o.class {
-                ObjClass::Variable | ObjClass::Constant => self.local(d),
+                ObjClass::Variable | ObjClass::Constant => {
+                    // An anonymous subtype's ranges are fixed at the declaration too (#1174).
+                    self.object_ranges(d).and_then(|()| self.local(d))
+                }
                 ObjClass::SharedVariable => Err(self.cx.unsupported(decl.span, "shared variables")),
                 ObjClass::File => {
                     self.stmt_start(StmtKind::Decl, decl.span);
@@ -718,9 +732,25 @@ impl<'a, 'b> Fx<'a, 'b> {
     /// frame slots that every later use reads (`Fx::range`): a bound that reads a variable or
     /// calls an impure function keeps its value at the declaration (LRM 14.4.2.1, #612).
     fn declared_ranges(&mut self, d: DeclId) -> R<()> {
+        self.frame_ranges(self.db.declared_ranges(d), self.db.decls[d].span)
+    }
+
+    /// The same for the anonymous subtype of object or alias declaration `d` (#1174), only
+    /// for ranges that are not globally static: those cannot change after the declaration.
+    fn object_ranges(&mut self, d: DeclId) -> R<()> {
         let db = self.db;
-        let ranges = db.declared_ranges(d);
-        let span = db.decls[d].span;
+        let ranges = (db.declared_ranges(d).into_iter())
+            .filter(|rc| match rc {
+                RangeC::Record(e) => db.exprs[*e].stat < yavs_sem::stat::Staticness::Globally,
+                _ => db.dynamic_range(rc).is_some(),
+            })
+            .collect();
+        self.frame_ranges(ranges, db.decls[d].span)
+    }
+
+    /// Evaluate the non-static ranges among `ranges` once into frame slots (`declared_ranges`).
+    fn frame_ranges(&mut self, ranges: Vec<&RangeC>, span: Span) -> R<()> {
+        let db = self.db;
         for rc in ranges {
             // A range record (2019) also stores its direction.
             let (key, words) = match rc {
@@ -1963,9 +1993,15 @@ fn inst_object_of(
     d: DeclId,
 ) -> R<()> {
     let decl = &db.decls[d];
-    if let DeclKind::Type(_) | DeclKind::Subtype(_) = decl.kind {
+    // Of an object, only the ranges of its anonymous subtype (#1174); a range record there
+    // that is not globally static, and an alias's range (the elaborator has no slot for it),
+    // are evaluated at every use.
+    // ponytail: a direction word, as for types, would cover range records too.
+    if !matches!(decl.kind, DeclKind::Alias(_)) {
         let ranges = db.declared_ranges(d);
-        dynamic_range_records(db, cx, &ranges)?;
+        if let DeclKind::Type(_) | DeclKind::Subtype(_) = decl.kind {
+            dynamic_range_records(db, cx, &ranges)?;
+        }
         for left in ranges.into_iter().filter_map(|r| db.dynamic_range(r)) {
             let off = cx.inst_alloc(16);
             cx.decl_ranges.insert(left, (Space::Inst, off));
@@ -2675,6 +2711,8 @@ impl Fx<'_, '_> {
         if self.cx.objs.contains_key(&d) {
             return Ok(()); // a deferred constant seen again in the body
         }
+        // The ranges of its anonymous subtype (#1174).
+        self.pkg_ranges(d, p, size)?;
         let span = decl.span;
         let t = db.base(o.subtype);
         let mut alloc = |n: u32| {
@@ -2868,7 +2906,9 @@ impl Fx<'_, '_> {
         let db = self.db;
         let span = db.decls[d].span;
         let ranges = db.declared_ranges(d);
-        dynamic_range_records(db, self.cx, &ranges)?;
+        if let DeclKind::Type(_) | DeclKind::Subtype(_) = db.decls[d].kind {
+            dynamic_range_records(db, self.cx, &ranges)?;
+        }
         let ranges: Vec<_> = ranges
             .into_iter()
             .filter(|r| db.dynamic_range(r).is_some())

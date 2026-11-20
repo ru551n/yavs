@@ -1,14 +1,14 @@
 exit	0
-diag	note	0	0	:range_record_calls_2019:_p0	decl 2
-diag	note	0	0	:range_record_calls_2019:_p0	uses 2 7
+diag	note	0	0	:range_record_calls_2019:_p0	decl 3
+diag	note	0	0	:range_record_calls_2019:_p0	uses 3 12
 diag	note	0	0	:range_record_calls_2019:_p0	x 5 0 false
 diag	note	0	0	:range_record_calls_2019:_p0	y 5 0
 diag	note	0	0	:range_record_calls_2019:_p0	gs 2 5
 diag	note	0	0	:range_record_calls_2019:_p0	v 1 4 true
 diag	note	0	0	:range_record_calls_2019:_p0	m 3210123
-diag	note	0	0	:range_record_calls_2019:_p0	counted 123 3
+diag	note	0	0	:range_record_calls_2019:_p0	counted 123 4
 diag	note	0	0	:range_record_calls_2019:_p0	ps 3 9
-diag	note	0	0	:range_record_calls_2019:_p0	cslice 00 4
+diag	note	0	0	:range_record_calls_2019:_p0	cslice 00 5
 diag	note	0	0	:range_record_calls_2019:_p0	slice 0010 010 110010
 diag	note	0	0	:range_record_calls_2019:_p0	ones 111 pat 10
 diag	note	0	0	:range_record_calls_2019:_p0	expr 231065 10

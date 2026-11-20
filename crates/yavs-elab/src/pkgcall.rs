@@ -1891,10 +1891,12 @@ pub(crate) fn needs_of(l: &Lowerer, f: yavs_ir::FuncId) -> Needs {
 /// Lower function `d`, or the reader of package constant `d` or of the bounds of package type
 /// or subtype `d` (`constant`), with `l`: its signature and the objects of regions it reads.
 fn item(l: &mut Lowerer, db: &Db, d: DeclId, constant: bool) -> Result<(Sig, Needs), Fail> {
-    let ranges = matches!(
-        db.decls[d].kind,
-        yavs_sem::decl::DeclKind::Type(_) | yavs_sem::decl::DeclKind::Subtype(_)
-    );
+    // A package signal or shared variable has no value reader: only its ranges (#1174).
+    let ranges = match &db.decls[d].kind {
+        yavs_sem::decl::DeclKind::Type(_) | yavs_sem::decl::DeclKind::Subtype(_) => true,
+        yavs_sem::decl::DeclKind::Object(o) => o.class != yavs_sem::decl::ObjClass::Constant,
+        _ => false,
+    };
     let sig = if !constant {
         sig(l, db, d).map_err(lower_fail)?
     } else if ranges {

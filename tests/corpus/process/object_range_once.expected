@@ -1,0 +1,9 @@
+exit	0
+diag	note	0	0	:object_range_once:_p0	decl calls=1
+diag	note	0	0	:object_range_once:_p0	q=5 cq=3
+diag	note	0	0	:object_range_once:_p0	copy back q=8
+diag	note	0	0	:object_range_once:_p0	formal q=7
+diag	note	0	0	:object_range_once:_p0	bv'length=10 iv'high=9
+diag	note	0	0	:object_range_once:_p0	uses calls=1
+diag	note	0	0	:object_range_once:_p0	sub r=13 calls=2
+diag	note	0	0	:object_range_once:_p0	sub r=7 calls=3

@@ -3,9 +3,8 @@
 -- too (index constraint, range constraint, loop, slice, generate), a qualified expression, a
 -- parenthesised call and a user operator. sim1 and sim2 reject the form (L112); the
 -- expected output was checked by hand against the LRM: the range is
--- evaluated once where it is elaborated (a declaration, LRM 14.4.2.1; a loop, 10.10).
--- A variable of an anonymous scalar subtype (`integer range counted(5)`) is left out: its
--- range is evaluated at every check (#1174).
+-- evaluated once where it is elaborated (a declaration, LRM 14.4.2.1; a loop, 10.10), also
+-- the range of a variable's anonymous subtype (`integer range counted(5)`, #1174).
 entity range_record_calls_2019 is
   generic (n : integer := 5);
 end entity;
@@ -85,12 +84,16 @@ begin
     -- Each declaration calls once, at its elaboration; uses and checks do not call again.
     subtype cs is integer range counted(4);
     variable cv : bit_vector(counted(2));
+    variable rq : integer range counted(5) := 0;
   begin
     report "decl " & integer'image(calls);
     m := cv'length + cs'high;
     cv := "101";
+    rq := 5;
+    rq := rq - 1;
+    m := m + rq'subtype'high;
     report "uses " & integer'image(calls) & " " & integer'image(m);
-    assert calls = 2 severity failure;
+    assert calls = 3 severity failure;
     m := 0;
     report "x " & integer'image(x'left) & " " & integer'image(x'right) & " " & boolean'image(x'ascending);
     report "y " & integer'image(y'left) & " " & integer'image(y'right);
@@ -109,12 +112,12 @@ begin
       k := 0;
     end loop;
     report "counted " & integer'image(m) & " " & integer'image(calls);
-    assert m = 123 and calls = 3 severity failure;
+    assert m = 123 and calls = 4 severity failure;
     -- `ps` keeps the bounds of its elaboration (k was 3), now that k is 0.
     report "ps " & integer'image(ps'low) & " " & integer'image(ps'high);
     k := 3;
     report "cslice " & to_string(sg(counted(1))) & " " & integer'image(calls);
-    assert calls = 4 severity failure;
+    assert calls = 5 severity failure;
     report "slice " & to_string(w(dn(k))) & " " & to_string(w(tbl(1))) & " " & to_string(w(x'range'value));
     report "ones " & to_string(ones(dn(2))) & " pat " & to_string(pat(up(1, 2)));
     m := 0;

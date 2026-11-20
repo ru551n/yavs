@@ -3264,6 +3264,22 @@ impl Fx<'_, '_> {
                 r
             }
             LoopScheme::For { param, range } => {
+                // A range that is not static is kept for the parameter's subtype
+                // (`i'subtype`): left, right and, for a range record, the direction, read by
+                // `Fx::range` as a declared range's (LRM 10.10, #1174).
+                let key = match range {
+                    RangeC::Explicit { left, right, .. }
+                        if db.value(*left).is_none() || db.value(*right).is_none() =>
+                    {
+                        Some(*left)
+                    }
+                    RangeC::Record(e) => Some(*e),
+                    _ => None,
+                };
+                if let Some(k) = key {
+                    // A slot of an earlier lowering of this function is stale.
+                    self.cx.decl_ranges.remove(&k);
+                }
                 let r = self.range(range, span)?;
                 let pst = match &db.decls[*param].kind {
                     yavs_sem::decl::DeclKind::Object(o) => o.subtype,
@@ -3281,15 +3297,33 @@ impl Fx<'_, '_> {
                 let tid = self.ty(db.base(pst), span)?;
                 let name = db.decls[*param].name.to_string();
                 let off = self.fb.local(&name, tid, 8, 8);
-                let roff = self.fb.slot(8, 8);
+                let dyn_dir = matches!(r.dir, Dr::Dyn(_));
+                let words = if key.is_none() {
+                    1
+                } else if dyn_dir {
+                    3
+                } else {
+                    2
+                };
+                let kept = self.fb.slot(8 * words, 8);
+                let roff = if key.is_some() { kept + 8 } else { kept };
                 let p = self.addr(Space::Frame(self.depth), off);
                 self.store(p, r.left, Width::B8);
+                if let Some(k) = key {
+                    let la = self.addr(Space::Frame(self.depth), kept);
+                    self.store(la, r.left, Width::B8);
+                    (self.cx.decl_ranges).insert(k, (Space::Frame(self.depth), kept));
+                }
                 let ra = self.addr(Space::Frame(self.depth), roff);
                 self.store(ra, r.right, Width::B8);
                 // The direction is kept in a slot only when it is known at run time; `1 to n`
                 // steps by a constant.
-                let doff = if matches!(r.dir, Dr::Dyn(_)) {
-                    let doff = self.fb.slot(8, 8);
+                let doff = if dyn_dir {
+                    let doff = if key.is_some() {
+                        kept + 16
+                    } else {
+                        self.fb.slot(8, 8)
+                    };
                     let dir = self.dir_reg(r.dir);
                     let da = self.addr(Space::Frame(self.depth), doff);
                     self.store(da, dir, Width::B8);

@@ -4923,6 +4923,66 @@ fn an_edge_run_that_would_change_nothing_is_skipped() {
     }
 }
 
+/// Clocked bodies skipped while idle, and the settle at an edge only where a body changed a word
+/// (`rt::Skip`): registers that stop, hold or load an input that does not move, a register read
+/// by its writer and another body, a reset from outside and one from a register of the other
+/// clock pulsed between two edges, a clocked variable, a vector written at a run-time index, a
+/// memory, registers read across clocks; inputs moved between edges and in the delta of an edge.
+/// The normal mode's values with the skip check, without it, with every member cut into parts and
+/// under the exact contract (its rail on, and ended early); bodies skipped and changes seen.
+#[test]
+fn a_clocked_body_whose_inputs_did_not_change_is_skipped() {
+    let dir = tempdir("cycle-blockskip");
+    let envs: [&[(&str, &str)]; 3] = [
+        &[],
+        &[("YAVS_CYCLE_SKIP_CHECK", "")],
+        &[("YAVS_CYCLE_CHUNK", "7")],
+    ];
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("blockskip{w}.vhd"),
+            &with_width(include_str!("cycle/blockskip.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_blockskip");
+            assert_eq!(normal.len(), 0, "{w} {t:?} {normal:?}");
+            let modes: [&[&str]; 3] = [
+                &["--cycle"],
+                &["--cycle-exact-meta"],
+                &["--cycle-exact-meta"],
+            ];
+            for (m, flags) in modes.iter().enumerate() {
+                for env in envs {
+                    let mut env = env.to_vec();
+                    env.push(("YAVS_CYCLE_STATS", "1"));
+                    if m == 2 {
+                        env.push(("YAVS_CYCLE_RAIL", "cap=8"));
+                    }
+                    let (cycle, err) =
+                        run_vars(&dir, &[&t[..], flags].concat(), "cycle_blockskip", &env);
+                    assert_eq!(cycle, normal, "width {w} {t:?} {flags:?} {env:?}\n{err}");
+                    assert!(
+                        err.contains("cycle mode: 0 of 0 processes run cycle-based"),
+                        "{w}: {err}"
+                    );
+                    let n = |what: &str| -> u64 {
+                        (err.lines())
+                            .find_map(|l| l.strip_prefix(&format!("cycle stats: {what}: ")))
+                            .unwrap_or_else(|| panic!("no count of {what}\n{err}"))
+                            .parse()
+                            .expect("a number")
+                    };
+                    assert!(n("clocked bodies that changed a word") > 0, "{err}");
+                    if m != 1 {
+                        assert!(n("clocked bodies skipped as idle") > 0, "{err}");
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// A region that waits on clocks and data: a wake for an event of a clock without its edge is
 /// held back in the kernel (none runs without an edge and reads nothing), the same values as the
 /// normal mode; a clock with both edges, one read as data, a record-field clock beside its data.

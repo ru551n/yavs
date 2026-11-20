@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:state_range_once:_p0	calls=3
+diag	note	0	0	:state_range_once:_p0	a q=5 high=9 d=9 w=5
+diag	note	0	0	:state_range_once:_p0	b q=4 high=7 d=7
+diag	note	0	0	:state_range_once:_p0	l q=3 high=5 d=5
+diag	note	0	0	:state_range_once:_p0	calls=3
+diag	note	0	0	:state_range_once:_p0	fresh q=9 calls=4

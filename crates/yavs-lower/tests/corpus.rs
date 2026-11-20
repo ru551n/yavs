@@ -507,6 +507,8 @@ const PASS: &[&str] = &[
     "composite/aggregate_scalar_impure",
     "protected/protected_method_elab",
     "protected/protected_var_path_name",
+    "protected/state_range_once",
+    "protected/state_range_once_error",
     "reflect/access_file_prot",
     "reflect/arrays",
     "reflect/arrays2",

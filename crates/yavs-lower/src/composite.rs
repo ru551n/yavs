@@ -82,6 +82,19 @@ pub(crate) fn lower_ty(
                     span,
                 )?);
             }
+            // The bounds each object keeps (`state_ranges`, #1176).
+            let vars = crate::protected::state_vars(db, t);
+            for (n, _) in crate::protected::state_ranges(db, t) {
+                let (name, ty) = (db.decls[vars[n]].name.to_string(), fields[n].ty);
+                for b in ["left", "right"] {
+                    let name = format!("{name}'{b}");
+                    fields.push(Field {
+                        name,
+                        ty,
+                        desc: None,
+                    });
+                }
+            }
             pb.set_ty(state, Ty::Record { fields });
             Ok(id)
         }

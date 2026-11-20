@@ -7,7 +7,7 @@ use yavs_diag::Span;
 use yavs_ir::{Dir, Inst, Mode, ParamClass, Reg, RegTy, RootKind, Ty, TyId, Width};
 use yavs_sem::decl::{Body, DeclKind, ObjClass, ObjRole};
 use yavs_sem::hir::Arg;
-use yavs_sem::types::TypeKind;
+use yavs_sem::types::{RangeC, TypeKind};
 use yavs_sem::{Db, DeclId, ExprId, ScopeId, SubtypeId, TypeId};
 
 use crate::composite::scalar_w;
@@ -55,6 +55,29 @@ pub(crate) fn state_vars(db: &Db, t: TypeId) -> Vec<DeclId> {
             {
                 out.push(d);
             }
+        }
+    }
+    out
+}
+
+/// The ranges of scalar state variables of protected type `t` that may differ per object (a
+/// bound reading another state variable or calling an impure function): the variable's index
+/// in `state_vars` and its range. Each object keeps their bounds, left and right, in two state
+/// fields after the variables (`bind_range`), evaluated once in declaration order when the
+/// object is created (LRM 14.4.2.1, #1176).
+// ponytail: a range record (2019) is evaluated at each use; a direction field would keep it.
+pub(crate) fn state_ranges(db: &Db, t: TypeId) -> Vec<(usize, &RangeC)> {
+    let mut out = Vec::new();
+    for (n, v) in state_vars(db, t).into_iter().enumerate() {
+        if let DeclKind::Object(o) = &db.decls[v].kind
+            && db.types[db.base(o.subtype)].kind.is_scalar()
+        {
+            let dynamic = db.declared_ranges(v).into_iter();
+            out.extend(
+                dynamic
+                    .filter(|r| db.dynamic_range(r).is_some())
+                    .map(|r| (n, r)),
+            );
         }
     }
     out
@@ -154,6 +177,39 @@ impl Fx<'_, '_> {
             };
             self.cx.objs.insert(v, obj);
         }
+        let first = fields.len() - 2 * state_ranges(db, t).len();
+        for (k, (_, rc)) in state_ranges(db, t).into_iter().enumerate() {
+            self.bind_range(state, base, p, (first + 2 * k) as u32, rc, depth, span)?;
+        }
+        Ok(())
+    }
+
+    /// A frame copy of the bounds of range `rc` the object at `p` keeps in state fields `n`
+    /// and `n + 1` (`state_ranges`), which `Fx::range` reads.
+    #[allow(clippy::too_many_arguments)]
+    fn bind_range(
+        &mut self,
+        state: TyId,
+        base: Reg,
+        p: Reg,
+        n: u32,
+        rc: &RangeC,
+        depth: u8,
+        span: Span,
+    ) -> R<()> {
+        let db = self.db;
+        let Some(left) = db.dynamic_range(rc) else {
+            return Err(self.cx.ice(span, "a kept protected range that is static"));
+        };
+        let rt = self.rt_of(db.base(db.exprs[left].subtype));
+        let o = self.fb.slot(16, 8);
+        for w in 0..2 {
+            let (a, _) = self.field_addr(state, base, p, n + w, span)?;
+            let x = self.load(a, Width::B8, rt);
+            let sa = self.addr(Space::Frame(depth), o + 8 * w);
+            self.store(sa, x, Width::B8);
+        }
+        self.cx.decl_ranges.insert(left, (Space::Frame(depth), o));
         Ok(())
     }
 
@@ -288,6 +344,13 @@ impl Fx<'_, '_> {
             return Err(self.cx.ice(span, "protected state is not a record"));
         };
         let vars = state_vars(db, t);
+        // The kept ranges are evaluated by `prot_init_late`; a slot of another function is
+        // stale, and a method creating an object of its own type keeps its `self`'s.
+        let ranged = state_ranges(db, t);
+        let outer_ranges: Vec<_> = (ranged.iter())
+            .filter_map(|(_, rc)| db.dynamic_range(rc))
+            .map(|l| (l, self.cx.decl_ranges.remove(&l)))
+            .collect();
         // The state's descriptor: the constraints of its variables (rule 1). A variable whose
         // constraint comes from its initial value is initialised before the object exists.
         let outer_self = self.prot_self.take();
@@ -345,6 +408,8 @@ impl Fx<'_, '_> {
             late.push(init.is_none());
             match init {
                 Some(val) => self.store_init(v, fields[n].ty, a, val, span)?,
+                // Its default needs its bounds: `prot_init_late` writes it.
+                None if ranged.iter().any(|&(m, _)| m == n) => {}
                 None => {
                     let DeclKind::Object(o) = &db.decls[v].kind else {
                         return Err(self
@@ -383,6 +448,12 @@ impl Fx<'_, '_> {
                 None => self.cx.objs.remove(v),
             };
         }
+        for (l, at) in outer_ranges {
+            match at {
+                Some(at) => self.cx.decl_ranges.insert(l, at),
+                None => self.cx.decl_ranges.remove(&l),
+            };
+        }
         self.prot_self = outer_self;
         r?;
         Ok(h)
@@ -407,9 +478,26 @@ impl Fx<'_, '_> {
         self.bind_state(t, state, p, self.depth, span)?;
         let ds = self.desc_size(state);
         let base = self.offset(p, ds);
+        let ranged = state_ranges(db, t);
+        let first = fields.len() - 2 * ranged.len();
         for (n, v) in state_vars(db, t).into_iter().enumerate() {
             if !late[n] {
                 continue;
+            }
+            // Its range, once and before its initial value (LRM 14.4.2.1, #1176).
+            let mut kept = false;
+            for (k, &(_, rc)) in ranged.iter().enumerate().filter(|(_, r)| r.0 == n) {
+                if let Some(l) = db.dynamic_range(rc) {
+                    self.cx.decl_ranges.remove(&l);
+                }
+                let r = self.range(rc, span)?;
+                let f = (first + 2 * k) as u32;
+                for (w, x) in [r.left, r.right].into_iter().enumerate() {
+                    let (a, _) = self.field_addr(state, base, p, f + w as u32, span)?;
+                    self.store(a, x, Width::B8);
+                }
+                self.bind_range(state, base, p, f, rc, self.depth, span)?;
+                kept = true;
             }
             let DeclKind::Object(o) = &db.decls[v].kind else {
                 return Err(self
@@ -432,6 +520,12 @@ impl Fx<'_, '_> {
                 }
                 // 2019 composites of protected types (LCS-2016-014): new objects now.
                 None if db.type_contains_protected(ft) => {
+                    let (a, fd) = self.field_addr(state, base, p, n as u32, span)?;
+                    let c = db.subtypes[o.subtype].constraint.clone();
+                    self.default_into(o.subtype, &c, a, fd, span)?;
+                    continue;
+                }
+                None if kept => {
                     let (a, fd) = self.field_addr(state, base, p, n as u32, span)?;
                     let c = db.subtypes[o.subtype].constraint.clone();
                     self.default_into(o.subtype, &c, a, fd, span)?;

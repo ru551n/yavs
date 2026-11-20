@@ -435,7 +435,6 @@ pub fn undefined_uses(prog: &Program, f: &crate::Func) -> Vec<(u32, u32)> {
         return Vec::new();
     }
     input[0] = Some(pre.clone());
-    let mut work = vec![0usize];
     let mut bad = Vec::new();
     let is_proc = f.kind == FuncKind::Process;
     let forever = is_proc
@@ -446,39 +445,9 @@ pub fn undefined_uses(prog: &Program, f: &crate::Func) -> Vec<(u32, u32)> {
             )
         });
     let blocks: Vec<_> = f.blocks.iter().map(|(_, b)| *b).collect();
-    'work: while let Some(b) = work.pop() {
-        let mut cur = input[b].clone().unwrap_or_else(|| vec![!0; w]);
+    let succs = |b: usize| -> Vec<usize> {
         let blk = blocks[b];
-        for pc in blk.start as usize..blk.end as usize {
-            let inst = &f.code[pc];
-            let mut uses = Vec::new();
-            inst.visit(&mut |r, role, _| uses.push((r, role)));
-            if let Some(l) = inst.list()
-                && let Some(rs) = f.regs(l)
-            {
-                uses.extend(rs.iter().map(|&r| (r, Role::Use)));
-            }
-            for (r, role) in uses {
-                let (i, m) = (r.0 as usize / 64, 1u64 << (r.0 % 64));
-                if i >= w {
-                    continue;
-                }
-                match role {
-                    Role::Use if cur[i] & m == 0 => {
-                        bad.push((pc as u32, r.0));
-                    }
-                    Role::Use => {}
-                    Role::Def => cur[i] |= m,
-                }
-            }
-            if is_proc && matches!(inst, Inst::Suspend { .. }) {
-                cur.clone_from(&pre);
-                if forever {
-                    continue 'work;
-                }
-            }
-        }
-        let succ: Vec<crate::BlockId> = match f.code[blk.end as usize - 1] {
+        let v: Vec<crate::BlockId> = match f.code[blk.end as usize - 1] {
             Inst::Case { table, .. } => prog.cases.get(table).map_or_else(Vec::new, |t| {
                 t.arms
                     .iter()
@@ -488,22 +457,120 @@ pub fn undefined_uses(prog: &Program, f: &crate::Func) -> Vec<(u32, u32)> {
             }),
             ref i => i.targets(),
         };
-        for s in succ {
-            let s = s.0 as usize;
-            if s >= nb {
-                continue;
+        v.into_iter()
+            .map(|s| s.0 as usize)
+            .filter(|&s| s < nb)
+            .collect()
+    };
+    // Strongly connected components in topological order: a component's inputs are final once
+    // it starts, and are freed when it is done, so memory follows the frontier, not blocks times
+    // registers (#1168).
+    let (comp, comps) = sccs(nb, &succs);
+    for c in (0..comps.len()).rev() {
+        let mut work: Vec<usize> = comps[c]
+            .iter()
+            .copied()
+            .filter(|&b| input[b].is_some())
+            .collect();
+        'work: while let Some(b) = work.pop() {
+            let mut cur = input[b].clone().unwrap_or_else(|| vec![!0; w]);
+            let blk = blocks[b];
+            for pc in blk.start as usize..blk.end as usize {
+                let inst = &f.code[pc];
+                let mut uses = Vec::new();
+                inst.visit(&mut |r, role, _| uses.push((r, role)));
+                if let Some(l) = inst.list()
+                    && let Some(rs) = f.regs(l)
+                {
+                    uses.extend(rs.iter().map(|&r| (r, Role::Use)));
+                }
+                for (r, role) in uses {
+                    let (i, m) = (r.0 as usize / 64, 1u64 << (r.0 % 64));
+                    if i >= w {
+                        continue;
+                    }
+                    match role {
+                        Role::Use if cur[i] & m == 0 => {
+                            bad.push((pc as u32, r.0));
+                        }
+                        Role::Use => {}
+                        Role::Def => cur[i] |= m,
+                    }
+                }
+                if is_proc && matches!(inst, Inst::Suspend { .. }) {
+                    cur.clone_from(&pre);
+                    if forever {
+                        continue 'work;
+                    }
+                }
             }
-            let new = match &input[s] {
-                None => cur.clone(),
-                Some(old) => old.iter().zip(&cur).map(|(a, b)| a & b).collect(),
-            };
-            if input[s].as_ref() != Some(&new) {
-                input[s] = Some(new);
-                work.push(s);
+            for s in succs(b) {
+                let new = match &input[s] {
+                    None => cur.clone(),
+                    Some(old) => old.iter().zip(&cur).map(|(a, b)| a & b).collect(),
+                };
+                if input[s].as_ref() != Some(&new) {
+                    input[s] = Some(new);
+                    if comp[s] == c {
+                        work.push(s);
+                    }
+                }
             }
+        }
+        for &b in &comps[c] {
+            input[b] = None;
         }
     }
     bad.sort_unstable();
     bad.dedup();
     bad
+}
+
+/// Strongly connected components of the blocks reachable from block 0 (iterative Tarjan):
+/// `(component of each block, members of each component)`, components in reverse topological
+/// order.
+fn sccs(nb: usize, succs: &impl Fn(usize) -> Vec<usize>) -> (Vec<usize>, Vec<Vec<usize>>) {
+    const NONE: usize = usize::MAX;
+    let (mut index, mut low) = (vec![NONE; nb], vec![0usize; nb]);
+    let mut comp = vec![NONE; nb];
+    let mut comps: Vec<Vec<usize>> = Vec::new();
+    let (mut stack, mut next) = (Vec::new(), 0);
+    let mut call: Vec<(usize, Vec<usize>, usize)> = Vec::new();
+    index[0] = 0;
+    low[0] = 0;
+    next += 1;
+    stack.push(0);
+    call.push((0, succs(0), 0));
+    while let Some((v, ss, i)) = call.last_mut() {
+        let v = *v;
+        if let Some(&s) = ss.get(*i) {
+            *i += 1;
+            if index[s] == NONE {
+                (index[s], low[s]) = (next, next);
+                next += 1;
+                stack.push(s);
+                call.push((s, succs(s), 0));
+            } else if comp[s] == NONE {
+                low[v] = low[v].min(index[s]);
+            }
+            continue;
+        }
+        call.pop();
+        if let Some((p, _, _)) = call.last() {
+            low[*p] = low[*p].min(low[v]);
+        }
+        if low[v] == index[v] {
+            let id = comps.len();
+            let mut members = Vec::new();
+            while let Some(m) = stack.pop() {
+                comp[m] = id;
+                members.push(m);
+                if m == v {
+                    break;
+                }
+            }
+            comps.push(members);
+        }
+    }
+    (comp, comps)
 }

@@ -340,11 +340,10 @@ pub(crate) struct RegionProc<const RAIL: bool> {
     pub read_now: Vec<usize>,
     /// The idle rule ([`Idle`]).
     pub idle: Idle,
-    /// The idle skip of clocked bodies ([`Skip`]): which are dirty (bits over its tracks), which
-    /// run at this edge, and the scratch bits of that.
+    /// The idle skip of clocked bodies ([`Skip`]): which are dirty and which run at this edge (bits
+    /// over its tracks).
     pub skip: Arc<Skip>,
     pub dirty: Vec<u64>,
-    pub ran: Vec<u32>,
     pub go: Vec<u64>,
     /// Per input chunk (`chunk_cone`, an index into `cones`): the steps of the settle a change of
     /// it can reach; `mark`, those of the chunks the last import read.
@@ -1909,10 +1908,10 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             } else if R && edge {
                 self.code.open(&mut self.img);
                 self.run_marked(ctx, f, true)?;
+                // Every member stays dirty while the rail runs (from the start, none is cleared).
                 for &w in &self.code.run_words {
                     self.img[w as usize] = 0;
                 }
-                self.dirty.fill(!0);
             } else {
                 self.run_marked(ctx, f, true)?;
             }
@@ -1963,26 +1962,24 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                 self.go.iter_mut().zip(&c[..]).for_each(|(g, c)| *g |= c);
             }
         }
-        let mut idle = 0;
-        self.ran.clear();
+        let (mut ran, mut idle) = (0, 0);
         for (j, g) in self.go.iter_mut().enumerate() {
             let all = *g;
             *g &= self.dirty[j] | s.always[j];
             self.dirty[j] &= !*g;
+            ran += g.count_ones();
             idle += (all & !*g).count_ones();
             let mut m = *g;
             while m != 0 {
-                let t = 64 * j + m.trailing_zeros() as usize;
+                let r = s.tracks[64 * j + m.trailing_zeros() as usize].0;
                 m &= m - 1;
-                self.ran.push(t as u32);
-                let r = s.tracks[t].0;
                 if r != u32::MAX {
                     self.img[r as usize] = 1;
                 }
             }
         }
         if self.stats {
-            self.ex[19] += self.ran.len() as u64;
+            self.ex[19] += u64::from(ran);
             self.ex[20] += u64::from(idle);
         }
     }
@@ -1991,16 +1988,20 @@ impl<const RAIL: bool> RegionProc<RAIL> {
     /// word marked, what they reach dirty.
     fn skip_end(&mut self) {
         let s = &*self.skip;
-        for &t in &self.ran {
-            let (r, f, c, h) = s.tracks[t as usize];
-            if r != u32::MAX {
-                self.img[r as usize] = 0;
-            }
-            if self.img[f as usize] != 0 {
-                or_into(&mut self.mark, &s.cones[c as usize]);
-                or_into(&mut self.dirty, &s.reach[h as usize]);
-                if self.stats {
-                    self.ex[21] += 1;
+        for j in 0..self.go.len() {
+            let mut m = self.go[j];
+            while m != 0 {
+                let (r, f, c, h) = s.tracks[64 * j + m.trailing_zeros() as usize];
+                m &= m - 1;
+                if r != u32::MAX {
+                    self.img[r as usize] = 0;
+                }
+                if self.img[f as usize] != 0 {
+                    or_into(&mut self.mark, &s.cones[c as usize]);
+                    or_into(&mut self.dirty, &s.reach[h as usize]);
+                    if self.stats {
+                        self.ex[21] += 1;
+                    }
                 }
             }
         }

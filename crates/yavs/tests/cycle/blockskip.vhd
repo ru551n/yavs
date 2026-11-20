@@ -1,11 +1,12 @@
 -- Cycle mode: clocked bodies skipped while idle, and the settle only where a body changed a word.
 -- On `ca`: `sat` counts to 5 and keeps it; `cnt` counts while `en` holds and `w2` copies it (a
--- register read by its writer and another body: next-state words); `q` loads `din xor dd`; `rr` counts
--- to 3 with an asynchronous reset `arst` from outside; `x` counts to 3, cleared by `rq`, a register
--- of `cb`; `acc` is a clocked variable adding `din` while `go` holds (`seen`, one starting at 'U',
--- runs the second image of the exact contract until then); `v(idx) <= din(0)` writes a
--- vector at a run-time index; `mem` is a memory written at `wa` while `we` holds. On `cb`: `rq`
--- loads `trig`, `z` loads `q xor sat` (registers of the other clock), `mq` reads `mem` at `ra`.
+-- register read by its writer and another body: next-state words); `q` loads `din xor dd`; `rr`
+-- counts to 3 with an asynchronous reset `arst` from outside; `x` counts to 3, cleared by `rq`, a
+-- register of `cb`; `acc` is a clocked variable adding `din` while `go` holds (`seen`, one starting
+-- at 'U', runs the second image of the exact contract until then); `v(idx) <= din(0)` writes a
+-- vector at a run-time index, `mv(idx) := din(0)` a variable at one (`vq` sees it an edge later);
+-- `mem` is a memory written at `wa` while `we` holds. On `cb`: `rq` loads `trig`, `z` loads
+-- `q xor sat` (registers of the other clock), `mq` reads `mem` at `ra`.
 -- The settle: `y` from `q` and `x`, `mo` from `mem`.
 -- The stimulus holds everything for stretches, then moves each input once or twice: between
 -- edges, in the delta of an edge of `ca` (`en`, `dd`), `arst` and `trig` as pulses between two
@@ -19,7 +20,7 @@ architecture a of cycle_blockskip is
   type mem_t is array (0 to 15) of std_ulogic_vector(W - 1 downto 0);
   signal ca, cb, en, dd, go, arst, trig, rq, we : std_ulogic := '0';
   signal din, q, w2, z, y, mo, mq, accq : std_ulogic_vector(W - 1 downto 0) := (others => '0');
-  signal v : std_ulogic_vector(W - 1 downto 0) := (others => '0');
+  signal v, vq : std_ulogic_vector(W - 1 downto 0) := (others => '0');
   signal cnt, sat : unsigned(W - 1 downto 0) := (others => '0');
   signal rr, x : unsigned(1 downto 0) := "00";
   signal wa, ra : natural range 0 to 15 := 0;
@@ -82,6 +83,17 @@ begin
       accq <= std_ulogic_vector(acc) xor (seen and (W - 1 downto 0 => '0'));
       if (idx mod W) = idx then
         v(idx) <= din(0);
+      end if;
+    end if;
+  end process;
+
+  pz : process (ca)
+    variable mv : std_ulogic_vector(W - 1 downto 0) := (others => '1');
+  begin
+    if rising_edge(ca) then
+      vq <= mv;
+      if we = '1' and (idx mod W) = idx then
+        mv(idx) := din(0);
       end if;
     end if;
   end process;
@@ -171,7 +183,7 @@ begin
       report "t=" & time'image(now) & " cnt=" & to_hstring(cnt) & " sat=" & to_hstring(sat)
         & " q=" & to_hstring(q) & " w2=" & to_hstring(w2) & " rr=" & to_string(rr)
         & " x=" & to_string(x) & " acc=" & to_hstring(accq) & " v=" & to_hstring(v)
-        & " z=" & to_hstring(z) & " y=" & to_hstring(y) & " mo=" & to_hstring(mo)
+        & " vq=" & to_hstring(vq) & " z=" & to_hstring(z) & " y=" & to_hstring(y) & " mo=" & to_hstring(mo)
         & " mq=" & to_hstring(mq);
     end if;
   end process;

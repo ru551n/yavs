@@ -547,6 +547,7 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
     region::exact_clocks().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
     rt::rail_knob().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
     store::store_bytes().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
+    rt::skip_knob().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
     let sel = match store::select(db, e)? {
         store::Got::Sel(sel) => *sel,
         // `--cycle` on a hit: the region as it was built, its code as it was compiled.
@@ -1954,6 +1955,15 @@ fn built(
         let h = intern(sparse(&reach_of(own, ms)), &mut seen_reach, &mut skip.reach);
         skip.tracks.push((run, base + t, c, h));
     }
+    if stats {
+        eprintln!(
+            "cycle stats: {} clocked bodies tracked, {} always run; {} cones, {} reaches",
+            skip.tracks.len(),
+            skip.always.iter().map(|w| w.count_ones()).sum::<u32>(),
+            skip.cones.len(),
+            skip.reach.len()
+        );
+    }
     plan.run_words = (skip.tracks.iter())
         .map(|t| t.0)
         .filter(|&w| w != u32::MAX)
@@ -2490,7 +2500,6 @@ fn finish(
                     },
                     dirty: vec![!0; skip.always.len()],
                     go: vec![0; skip.always.len()],
-                    ran: Vec::new(),
                     skip: skip.clone(),
                     cones: cones.clone(),
                     chunk_cone: chunk_cone.clone(),

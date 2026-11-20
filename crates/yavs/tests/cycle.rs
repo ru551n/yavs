@@ -4946,7 +4946,7 @@ fn a_clocked_body_whose_inputs_did_not_change_is_skipped() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_blockskip");
-            assert_eq!(normal.len(), 0, "{w} {t:?} {normal:?}");
+            assert_eq!(normal.len(), 320, "{w} {t:?} {normal:?}");
             let modes: [&[&str]; 3] = [
                 &["--cycle"],
                 &["--cycle-exact-meta"],
@@ -4963,7 +4963,7 @@ fn a_clocked_body_whose_inputs_did_not_change_is_skipped() {
                         run_vars(&dir, &[&t[..], flags].concat(), "cycle_blockskip", &env);
                     assert_eq!(cycle, normal, "width {w} {t:?} {flags:?} {env:?}\n{err}");
                     assert!(
-                        err.contains("cycle mode: 0 of 0 processes run cycle-based"),
+                        err.contains("cycle mode: 9 of 13 processes run cycle-based"),
                         "{w}: {err}"
                     );
                     let n = |what: &str| -> u64 {
@@ -4979,8 +4979,22 @@ fn a_clocked_body_whose_inputs_did_not_change_is_skipped() {
                     }
                 }
             }
+            // Off: every body at each edge, the same values.
+            let env = [("YAVS_CYCLE_BLOCKSKIP", "off"), ("YAVS_CYCLE_STATS", "1")];
+            let (cycle, err) =
+                run_vars(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_blockskip", &env);
+            assert_eq!(cycle, normal, "width {w} {t:?} off\n{err}");
+            assert!(err.contains("clocked bodies skipped as idle: 0\n"), "{err}");
         }
     }
+    let args = ["run", "--work=work:lib", "--no-cache", "--cycle", "cycle_blockskip"];
+    let o = yavs_env(&dir, &args, &[("YAVS_CYCLE_BLOCKSKIP", "of")]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success() && o.stdout.is_empty(), "{err}");
+    assert!(
+        err.contains("error[E4104]: YAVS_CYCLE_BLOCKSKIP takes `off`, not `of`"),
+        "{err}"
+    );
 }
 
 /// A region that waits on clocks and data: a wake for an event of a clock without its edge is

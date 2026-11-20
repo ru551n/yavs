@@ -170,10 +170,28 @@ the names the stop sees. ``if`` ends the place of a ``break`` and starts the con
 * Literals as in `Values`_, names as in `Names`_ with fields, elements, slices and access
   values. A bare literal is read in the type of the other operand (``cnt = "0010"``,
   ``q = '1'``).
-* ``unsigned`` and ``signed`` signals compare with numbers and with each other (``cnt > 3``),
-  and ``to_integer(cnt)`` gives the number. A time is compared and added with times, and scaled
-  by an integer.
-* No other function calls, no attributes, no overloaded operators.
+* ``unsigned`` and ``signed`` signals compare with numbers and with each other (``cnt > 3``). A
+  time is compared and added with times, and scaled by an integer.
+* Calls of pure functions visible from the process: those of the design and of packages such as
+  ``numeric_std`` and ``std_logic_1164`` (``to_integer(unsigned(d)) > 40``, ``resize(cnt, 8) + 1``,
+  ``f(n) = 3``), with positional arguments; the overload is chosen by the types of the arguments.
+  Type conversions (``unsigned(d)``, ``integer(x)``). An operator that a type declares calls that
+  function: ``cnt + 1 = 4`` on an ``unsigned``, ``(clk and en) = '1'`` on ``std_logic``.
+* A called function runs apart from the simulation: it cannot change a signal or a variable, and a
+  report it makes is neither printed nor counted. Refused, with the reason: impure functions,
+  functions with a signal parameter (write ``clk'event and clk = '1'`` for ``rising_edge(clk)``),
+  foreign functions, functions that use shared variables or files, functions declared in a
+  process or a subprogram, and functions that read a constant whose value is computed only when
+  the simulation starts (one of a package, or one of the design that elaboration did not need). A
+  function without parameters is written as its bare name, which reads as a literal: it is not
+  called. A function that never returns holds the stop.
+* The type of a field of a record and of a variable of a subprogram is not known at a stop: an
+  operator of ``numeric_std`` on one needs a conversion (``unsigned(y) + 1``); comparisons with
+  numbers still work.
+* Attributes of a signal or part of one: ``'event``, ``'active``, ``'last_value``,
+  ``'last_event``, ``'last_active`` (between cycles, of the cycle just run); of an array:
+  ``'length``, ``'left``, ``'right``, ``'high``, ``'low``, ``'ascending`` (integer indices). Other
+  attributes, attributes of types and attributes with an argument are refused, naming them.
 
 The condition is checked when the command is made, with the text and the help it would have
 at a stop. A syntax error or an unsupported operator is refused, and so are an unknown name, a
@@ -210,6 +228,12 @@ type.
     breakpoint at 25 ns, delta 0, /work/tb.vhd:43
     yavs> examine total
     3
+    yavs> examine to_integer(cnt + 1) * cnt'length
+    12
+    yavs> examine clk'event and clk'last_value = '0'
+    TRUE
+    yavs> break tb.vhd:43 if rising_edge(clk)
+    error: condition `rising_edge(clk)`: `rising_edge` takes a signal parameter, which a condition cannot pass (it reads values only): write the test with attributes, as in clk'event and clk = '1'
     yavs> examine total * 2 > 3
     TRUE
 

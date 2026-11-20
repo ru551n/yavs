@@ -625,7 +625,13 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   `condition` on line and data breakpoints (`supportsConditionalBreakpoints`) is a VHDL boolean
   expression over the stopped frame's locals and the signals visible from the process (or the
   watched signal's region) or by path, with predefined operators, numeric comparisons of `unsigned`
-  and `signed` and `to_integer`; one that does not parse, uses something unsupported or compares a
+  and `signed`, calls of pure functions visible from the process and type conversions (operators a
+  type declares call that function), each run apart from the simulation (no signal, variable or
+  shared state; its reports neither printed nor counted), and the attributes `'event`, `'active`,
+  `'last_value`, `'last_event`, `'last_active` of signals and `'length`, `'left`, `'right`, `'high`,
+  `'low`, `'ascending` of arrays (#364); an impure function, a signal parameter, a foreign function,
+  one that uses shared variables or files, one declared in a process or subprogram, and any other
+  attribute are refused naming the reason. One that does not parse, uses something unsupported or compares a
   signal with a literal that is no value of its type, names nothing visible, mixes operand types or is
   not boolean is `verified: false` with a `message` (the check runs when the breakpoint is set; a
   variable of a process is known by name only, so a verified breakpoint names such variables in its

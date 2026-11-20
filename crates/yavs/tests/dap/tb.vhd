@@ -109,3 +109,107 @@ begin
     wait;
   end process;
 end architecture;
+
+-- Conditions that call functions, convert types, use the operators of numeric_std and
+-- std_logic_1164 and read attributes (#364).
+package calls_pkg is
+  type int_arr is array (0 to 3) of integer;
+  function make return int_arr;
+  constant TABLE : int_arr;
+  function lookup(i : natural) return integer;
+end package;
+
+package body calls_pkg is
+  function make return int_arr is
+  begin
+    return (10, 20, 30, 40);
+  end function;
+
+  constant TABLE : int_arr := make;
+
+  function lookup(i : natural) return integer is
+  begin
+    return TABLE(i);
+  end function;
+end package body;
+
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+use work.calls_pkg.all;
+
+entity calls is
+  generic (W : natural := 4);
+end entity;
+
+architecture a of calls is
+  signal clk : std_logic := '0';
+  signal en : std_logic := '1';
+  signal d : std_logic_vector(7 downto 0) := x"00";
+  signal u : unsigned(3 downto 0) := "0000";
+  signal seen : natural := 0;
+  constant K : integer := 3;
+  constant K2 : integer := W + 1;
+  type rec_t is record
+    b : std_logic_vector(3 downto 0);
+    n : unsigned(3 downto 0);
+  end record;
+  signal r : rec_t := ("0101", "0011");
+
+  function plus_k(x : integer) return integer is
+  begin
+    return x + K;
+  end function;
+
+  function times_w(x : integer) return integer is
+  begin
+    return x * W;
+  end function;
+
+  function plus_k2(x : integer) return integer is
+  begin
+    return x + K2;
+  end function;
+
+  procedure check(x : unsigned) is
+    variable y : unsigned(3 downto 0);
+  begin
+    y := x;
+    assert y /= 15;
+  end procedure;
+
+  function noisy(x : integer) return integer is
+  begin
+    report "noisy called" severity error;
+    return x;
+  end function;
+
+  impure function bump(x : integer) return natural is
+  begin
+    return x + seen;
+  end function;
+begin
+  p : process
+    variable v : unsigned(3 downto 0) := "0000";
+  begin
+    for k in 1 to 6 loop
+      clk <= not clk;
+      d <= std_logic_vector(to_unsigned(k * 16 + k, 8));
+      u <= u + 1;
+      v := v + 2;
+      check(u);
+      wait for 5 ns;
+    end loop;
+    report "u=" & to_hstring(u) & " v=" & to_hstring(v) & " seen=" & integer'image(seen);
+    wait;
+  end process;
+
+  q : process (clk)
+    function twice(x : integer) return integer is
+    begin
+      return 2 * x;
+    end function;
+  begin
+    seen <= seen + 1;
+  end process;
+end architecture;

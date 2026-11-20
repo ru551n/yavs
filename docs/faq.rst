@@ -87,7 +87,8 @@ Tools
 ~~~~~
 
 * A debugger session runs the interpreter on one thread, and it cannot be combined with ``--cov`` or ``--profile``.
-* Breakpoint conditions cannot use attributes or call functions other than ``to_integer`` (:doc:`debugging`).
+* Breakpoint conditions call pure functions only and take the attributes of signals and arrays, not others such as
+  ``'image`` (:doc:`debugging`).
 * VHPI has gaps: :doc:`vhpi` has the table.
 * There is no graphical interface of its own: debug at the console or in VS Code (:doc:`interactive`, :doc:`debugging`) and
   look at FST files in a waveform viewer (:doc:`waveforms`).

@@ -1309,3 +1309,175 @@ pub(crate) fn to_const(v: &Lit, like: &ConstValue) -> Option<ConstValue> {
         _ => return None,
     })
 }
+
+/// Whether a value of `t` fits sem base type `ty`: the same kind of type, the same enumeration
+/// literals, element types and fields (a call's parameter, #364).
+pub(crate) fn fits(db: &Db, ty: yavs_sem::TypeId, t: &LitType) -> bool {
+    match (&db.types[ty].kind, t) {
+        (TypeKind::Integer | TypeKind::UniversalInteger, LitType::Int(_)) => true,
+        (TypeKind::Floating | TypeKind::UniversalReal, LitType::Real(_)) => true,
+        (TypeKind::Enum { .. }, LitType::Enum(e)) => {
+            matches!(scalar_type(db, ty, StdBounds::I64), LitType::Enum(f) if f.lits == e.lits)
+        }
+        (TypeKind::Physical { .. }, LitType::Phys(p, _)) => {
+            matches!(scalar_type(db, ty, StdBounds::I64), LitType::Phys(q, _) if q.units == p.units)
+        }
+        (TypeKind::Array { indexes, elem }, t) => {
+            let mut t = t;
+            for _ in 0..indexes.len() {
+                let LitType::Array { elem, .. } = t else {
+                    return false;
+                };
+                t = elem;
+            }
+            fits(db, db.base(*elem), t)
+        }
+        (TypeKind::Record { elems }, LitType::Record(fs)) => {
+            elems.len() == fs.len()
+                && elems.iter().zip(fs).all(|(e, (n, t))| {
+                    e.name.text.to_string().eq_ignore_ascii_case(n)
+                        && fits(db, db.base(e.subtype), t)
+                })
+        }
+        _ => false,
+    }
+}
+
+/// The type a literal of sem base type `ty` is read in; an array of `len` elements from 0 up
+/// (one dimension).
+pub(crate) fn literal_type(db: &Db, ty: yavs_sem::TypeId, len: u64) -> Option<LitType> {
+    match &db.types[ty].kind {
+        TypeKind::Array { indexes, elem } if indexes.len() == 1 => Some(LitType::Array {
+            left: 0,
+            ascending: true,
+            len,
+            elem: Box::new(literal_type(db, db.base(*elem), 0)?),
+        }),
+        TypeKind::Array { .. } | TypeKind::Record { .. } => None,
+        TypeKind::Access { .. } | TypeKind::File { .. } | TypeKind::Protected { .. } => None,
+        _ => Some(scalar_type(db, ty, StdBounds::I64)),
+    }
+}
+
+/// `v` (of `t`) as an elaboration-time value of sem base type `ty`, for a call; `None` for what a
+/// call cannot take (access values).
+pub(crate) fn to_val(db: &Db, ty: yavs_sem::TypeId, t: &LitType, v: &Lit) -> Option<ConstValue> {
+    Some(match (&db.types[ty].kind, v) {
+        (_, Lit::Int(i)) => ConstValue::Int(*i),
+        (_, Lit::Real(x)) => ConstValue::Real(*x),
+        (_, Lit::Phys(x)) => ConstValue::Phys(*x),
+        (_, Lit::Enum(p)) => ConstValue::Enum(u32::try_from(*p).ok()?),
+        (TypeKind::Array { indexes, elem }, Lit::Array(_)) => {
+            let (mut bounds, mut flat, mut t) = (Vec::new(), vec![v], t);
+            for _ in 0..indexes.len() {
+                let LitType::Array {
+                    left,
+                    ascending,
+                    len,
+                    elem,
+                } = t
+                else {
+                    return None;
+                };
+                let last = i64::try_from(*len).ok()? - 1;
+                let (dir, right) = match ascending {
+                    true => (Direction::To, left.checked_add(last)?),
+                    false => (Direction::Downto, left.checked_sub(last)?),
+                };
+                bounds.push((*left, dir, right));
+                let mut next = Vec::new();
+                for x in flat {
+                    let Lit::Array(xs) = x else {
+                        return None;
+                    };
+                    next.extend(xs);
+                }
+                (flat, t) = (next, elem);
+            }
+            let et = db.base(*elem);
+            let bytes = (indexes.len() == 1 && matches!(db.types[et].kind, TypeKind::Enum { .. }))
+                .then(|| {
+                    flat.iter()
+                        .map(|x| match x {
+                            Lit::Enum(p) => u8::try_from(*p).ok(),
+                            _ => None,
+                        })
+                        .collect::<Option<Box<[u8]>>>()
+                })
+                .flatten();
+            let elems = match bytes {
+                Some(b) => Elems::Bytes(b),
+                None => Elems::Runs(
+                    flat.iter()
+                        .map(|x| Some((1, to_val(db, et, t, x)?)))
+                        .collect::<Option<_>>()?,
+                ),
+            };
+            ConstValue::Array(yavs_sem::stat::ArrayConst {
+                bounds: bounds.into(),
+                elems,
+            })
+        }
+        (TypeKind::Record { elems }, Lit::Record(xs)) => {
+            let LitType::Record(fs) = t else {
+                return None;
+            };
+            ConstValue::Record(
+                elems
+                    .iter()
+                    .zip(fs.iter().zip(xs))
+                    .map(|(e, ((_, t), x))| to_val(db, db.base(e.subtype), t, x))
+                    .collect::<Option<_>>()?,
+            )
+        }
+        _ => return None,
+    })
+}
+
+/// An elaboration-time value of sem base type `ty` as the debugger reads it (a call's result).
+pub(crate) fn from_val(db: &Db, ty: yavs_sem::TypeId, v: &ConstValue) -> Option<(LitType, Lit)> {
+    Some(match (&db.types[ty].kind, v) {
+        (TypeKind::Array { elem, .. }, ConstValue::Array(a)) => {
+            let et = db.base(*elem);
+            let n: u64 = a.bounds.iter().map(|b| span(*b)).product();
+            let mut xs = Vec::with_capacity(n as usize);
+            let mut t = None;
+            for k in 0..n {
+                let (lt, x) = from_val(db, et, &elem_at(a, k)?)?;
+                t.get_or_insert(lt);
+                xs.push(x);
+            }
+            let mut t = match t {
+                Some(t) => t,
+                None => literal_type(db, et, 0)?,
+            };
+            for (d, &(left, dir, right)) in a.bounds.iter().enumerate().rev() {
+                let len = span((left, dir, right));
+                t = LitType::Array {
+                    left,
+                    ascending: dir == Direction::To,
+                    len,
+                    elem: Box::new(t),
+                };
+                if d > 0 {
+                    xs = xs
+                        .chunks(len.max(1) as usize)
+                        .map(|c| Lit::Array(c.to_vec()))
+                        .collect();
+                }
+            }
+            (t, Lit::Array(xs))
+        }
+        (TypeKind::Record { elems }, ConstValue::Record(vs)) if vs.len() == elems.len() => {
+            let (mut ts, mut xs) = (Vec::new(), Vec::new());
+            for (e, v) in elems.iter().zip(vs.iter()) {
+                let (t, x) = from_val(db, db.base(e.subtype), v)?;
+                ts.push((e.name.text.to_string(), t));
+                xs.push(x);
+            }
+            (LitType::Record(ts), Lit::Record(xs))
+        }
+        (TypeKind::Array { .. } | TypeKind::Record { .. }, _) => return None,
+        _ => generic_lit(db, ty, v)?,
+    })
+}

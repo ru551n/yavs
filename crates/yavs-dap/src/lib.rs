@@ -10,6 +10,7 @@
 //! Frame ids are `threadId << 16 | frame` (outermost frame 0); variable references are
 //! `frameId << 2 | scope` with scopes locals (1), signals (2) and generics (3).
 
+mod calls;
 mod cond;
 mod console;
 mod design;
@@ -205,6 +206,8 @@ struct Shared {
     activity: OnceLock<Arc<yavs_kernel::profile::Activity>>,
     /// When each signal (by path) was last deposited.
     deposits: Mutex<HashMap<String, Time>>,
+    /// The functions conditions have called (`calls`).
+    calls: calls::Lowered,
 }
 
 /// Work at the end of the run, before `exited` (the caller's `--wave` recorder finishing its
@@ -537,6 +540,24 @@ impl At<'_, '_> {
                 Some((s.now?.as_fs(), self))
             }
             At::Kernel(sim) => Some((sim.now().as_fs(), self)),
+        }
+    }
+
+    /// The signal attributes of `r` at this stop.
+    fn attrs(&self, r: SigRef) -> Result<yavs_kernel::SigAttrs, String> {
+        let e = |e: yavs_kernel::SimError| e.to_string();
+        match self {
+            At::Process(s) => {
+                let c = s.ctx.ok_or("no signal can be read here")?;
+                Ok(yavs_kernel::SigAttrs {
+                    event: c.event(r).map_err(e)?,
+                    active: c.active(r).map_err(e)?,
+                    last_event: c.last_event(r).map_err(e)?,
+                    last_active: c.last_active(r).map_err(e)?,
+                    last_value: c.last_value(r).map_err(e)?,
+                })
+            }
+            At::Kernel(sim) => sim.attributes(r).map_err(e),
         }
     }
 
@@ -1500,9 +1521,143 @@ impl cond::Env for Names<'_, '_, '_> {
             Err(design::Named::Shared(k)) => {
                 design::declared_type(&self.sh.db, self.sh.design.shared[k].decl)
             }
+            // A variable of the process (frame 0), declared in its region.
+            Ok((0, n)) => local_type(self.sh, &site(self.sh, self.tid), &n),
             Ok(_) => None,
         }
     }
+
+    fn call(&self, name: &str, args: &[cond::Arg<'_>]) -> Option<Result<cond::Called, String>> {
+        calls::call(self.sh, &site(self.sh, self.tid), name, args, true)
+    }
+
+    fn signal_attr(&self, name: &str, attr: &str) -> Option<Result<cond::Called, String>> {
+        // The longest prefix that names a signal; a local of that name hides it.
+        for i in part_ends(name) {
+            match self.find(&name[..i]) {
+                Some(Ok(_)) => return None,
+                Some(Err(design::Named::Signal(k))) => {
+                    return Some(signal_attr(self.sh, self.at, k, &name[i..], attr));
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+}
+
+/// The ends of the prefixes of `name` that may name an object (before a `.` or `(`), longest
+/// first.
+fn part_ends(name: &str) -> Vec<usize> {
+    let mut ends: Vec<usize> = (name.char_indices())
+        .filter(|&(_, c)| c == '.' || c == '(')
+        .map(|(i, _)| i)
+        .chain([name.len()])
+        .collect();
+    ends.reverse();
+    ends
+}
+
+/// Attribute `attr` of signal `k`, or of its part `suffix`: `'event` and `'active` of any element,
+/// the latest `'last_event` and `'last_active` of them, `'last_value` element by element.
+fn signal_attr(
+    sh: &Shared,
+    at: &At<'_, '_>,
+    k: usize,
+    suffix: &str,
+    attr: &str,
+) -> Result<cond::Called, String> {
+    let s = &sh.design.sigs[k];
+    let time = |t: Time| {
+        let fs = i64::try_from(t.as_fs()).unwrap_or(i64::MAX);
+        let ty = LitType::Phys(yavs_std::types::time_type(), yavs_std::types::Bounds::I64);
+        Some((ty, Lit::Phys(fs), None))
+    };
+    let boolean = |b: bool| {
+        let ty = LitType::Enum(yavs_std::types::boolean_type());
+        Some((ty, Lit::Enum(usize::from(b)), None))
+    };
+    if attr == "last_value" {
+        let read = |r: SigRef| at.attrs(r).ok().map(|a| a.last_value);
+        let v = s
+            .value(&read)
+            .ok_or("the last value of this signal cannot be read here")?;
+        if suffix.is_empty() {
+            return Ok(Some((s.lit.clone(), v, Some(s.ty.clone()))));
+        }
+        let (t, x) = part_of(&s.lit, &v, suffix)?;
+        return Ok(Some((t, x, None)));
+    }
+    let refs: Vec<SigRef> = if suffix.is_empty() {
+        let leaves = s.leaf_parts().map(|(signal, r)| SigRef {
+            signal,
+            range: Some(r),
+        });
+        leaves.collect()
+    } else {
+        let (paths, _) = select(&s.lit, suffix)?;
+        let part = s
+            .part(&paths, None)
+            .ok_or("this part of the signal cannot be read here")?;
+        part.into_iter().map(|(r, _)| r).collect()
+    };
+    let all = refs
+        .into_iter()
+        .map(|r| at.attrs(r))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(match attr {
+        "event" => boolean(all.iter().any(|a| a.event)),
+        "active" => boolean(all.iter().any(|a| a.active)),
+        "last_event" => time(all.iter().map(|a| a.last_event).min().unwrap_or(Time::MAX)),
+        _ => time(all.iter().map(|a| a.last_active).min().unwrap_or(Time::MAX)),
+    })
+}
+
+/// Where a call seen from thread `tid` resolves its names: the process's region, or between
+/// cycles the top level's.
+fn site(sh: &Shared, tid: i64) -> calls::Site {
+    let e = &sh.elab;
+    site_of(
+        sh,
+        proc_name(sh, tid).and_then(|n| e.procs.iter().position(|p| e.proc_name(p) == n)),
+    )
+}
+
+/// [`site`] of process instance `k` of the elaboration.
+fn site_of(sh: &Shared, k: Option<usize>) -> calls::Site {
+    let e = &sh.elab;
+    let (inst, own) = match k {
+        Some(k) => {
+            let p = &e.procs[k];
+            let own = match &sh.db.stmts[p.stmt].kind {
+                yavs_sem::hir::StmtKind::Process { scope, .. } => Some(*scope),
+                _ => None,
+            };
+            (
+                e.hier.scopes.get(p.scope.index()).and_then(|s| s.parent),
+                own,
+            )
+        }
+        None => (Some(yavs_elab::ScopeId(0)), None),
+    };
+    let region = || {
+        inst.and_then(|i| e.regions.get(&i))
+            .and_then(|r| r.last().copied())
+    };
+    calls::Site {
+        scope: own.or_else(region),
+        inst,
+    }
+}
+
+/// The name of the base type of variable `name` declared in the process region of `site`.
+fn local_type(sh: &Shared, site: &calls::Site, name: &str) -> Option<String> {
+    let key = yavs_syntax::Symbol::intern(&name.to_ascii_lowercase());
+    let d = sh.db.scopes[site.scope?].names.get(&key)?.first()?;
+    let yavs_sem::decl::DeclKind::Object(o) = &sh.db.decls[*d].kind else {
+        return None;
+    };
+    Some(sh.db.types[sh.db.base(o.subtype)].name.text.to_string())
 }
 
 /// What a condition will see when it is read: the locals and the signals of the process (or
@@ -1512,12 +1667,15 @@ struct Seen {
     sigs: Option<Vec<usize>>,
     /// The generics of the instances, with their values.
     generics: Vec<(String, LitType, Lit)>,
+    /// Where calls resolve their names.
+    site: calls::Site,
 }
 
 /// What a condition can know when it is made: the types of the signals, by a name that means one
 /// signal (or several of one type) of the design or by path, and the names of the locals it may
 /// read.
 struct Typed<'a> {
+    sh: &'a Shared,
     design: &'a Design,
     seen: Seen,
     /// The names met that wait for the stop to be checked.
@@ -1562,6 +1720,34 @@ impl cond::Env for Typed<'_> {
         Some(self.signal(name)?.ty.clone())
     }
 
+    fn call(&self, name: &str, args: &[cond::Arg<'_>]) -> Option<Result<cond::Called, String>> {
+        calls::call(self.sh, &self.seen.site, name, args, false)
+    }
+
+    fn signal_attr(&self, name: &str, attr: &str) -> Option<Result<cond::Called, String>> {
+        let k = part_ends(name)
+            .into_iter()
+            .find(|&i| self.signal(&name[..i]).is_some())?;
+        let sig = self.signal(&name[..k])?;
+        let v = match attr {
+            "event" | "active" => Some((
+                LitType::Enum(yavs_std::types::boolean_type()),
+                Lit::Enum(0),
+                None,
+            )),
+            "last_value" if k == name.len() => {
+                Some((sig.lit.clone(), cond::zero(&sig.lit), Some(sig.ty.clone())))
+            }
+            "last_value" => None,
+            _ => Some((
+                LitType::Phys(yavs_std::types::time_type(), yavs_std::types::Bounds::I64),
+                Lit::Phys(0),
+                None,
+            )),
+        };
+        Some(Ok(v))
+    }
+
     fn local(&self, name: &str) -> bool {
         let simple = !name.contains(['.', '(', ':']);
         let named = |l: &String| l.eq_ignore_ascii_case(name);
@@ -1599,6 +1785,7 @@ fn thread_seen(sh: &Shared, tid: i64) -> Seen {
             locals: Some(Vec::new()),
             sigs: None,
             generics: sh.design.generics_at(None).to_vec(),
+            site: site_of(sh, None),
         };
     };
     let t = sh.elab.proc_table();
@@ -1611,6 +1798,7 @@ fn thread_seen(sh: &Shared, tid: i64) -> Seen {
         ),
         sigs: sh.design.proc(&name).map(|p| p.signals.clone()),
         generics: sh.design.generics_at(Some(&name)).to_vec(),
+        site: site_of(sh, k),
     }
 }
 
@@ -1642,6 +1830,7 @@ fn line_seen(sh: &Shared, stmts: &[yavs_ir::StmtId]) -> Seen {
         locals: Some(Vec::new()),
         sigs: Some(Vec::new()),
         generics: Vec::new(),
+        site: calls::Site::default(),
     };
     for &s in stmts {
         let Some(f) = sh.prog.stmts.get(s).map(|st| st.func) else {
@@ -1653,12 +1842,16 @@ fn line_seen(sh: &Shared, stmts: &[yavs_ir::StmtId]) -> Seen {
                 locals: None,
                 sigs: None,
                 generics: Vec::new(),
+                site: calls::Site::default(),
             };
         }
         seen.locals.iter_mut().for_each(|l| {
             l.extend(sh.prog.func(f).map(locals_of).unwrap_or_default());
         });
         for (k, _) in own {
+            if seen.site.scope.is_none() {
+                seen.site = site_of(sh, Some(*k));
+            }
             let name = sh.elab.proc_name(&sh.elab.procs[*k]);
             let sigs = sh.design.proc(&name).map(|p| p.signals.clone());
             seen.sigs
@@ -1677,6 +1870,7 @@ fn line_seen(sh: &Shared, stmts: &[yavs_ir::StmtId]) -> Seen {
 fn make_cond(sh: &Shared, text: &str, seen: Seen) -> Result<(cond::Cond, Vec<String>), String> {
     let c = cond::parse(text)?;
     let env = Typed {
+        sh,
         design: &sh.design,
         seen,
         unchecked: Default::default(),
@@ -1759,8 +1953,12 @@ fn eval_var(sh: &Shared, at: &At<'_, '_>, tid: i64, i: usize, expr: &str) -> Res
                 let help = help.map_or(String::new(), |h| format!(": {h}"));
                 format!("no variable or signal `{expr}` here{help}")
             };
+            // A text that parses but uses what conditions do not support says so.
             let (t, v) = cond::parse(expr)
-                .map_err(|_| unknown())?
+                .map_err(|e| match e.contains("does not parse") {
+                    true => unknown(),
+                    false => e,
+                })?
                 .evaluate(&names)
                 .map_err(|e| e.map_or_else(unknown, |e| console::explain(sh, at, tid, i, e)))?;
             value_var(sh, at, expr, &t, &v, &|| Node::Value(t.clone(), v.clone()))
@@ -3112,6 +3310,7 @@ fn one_run(
         signal_names: OnceLock::new(),
         activity: OnceLock::new(),
         deposits: Mutex::new(HashMap::new()),
+        calls: Default::default(),
     });
     let session = DebugSession::new(&program, Box::new(Front(sh.clone())));
     let _ = sh.session.set(session.clone());

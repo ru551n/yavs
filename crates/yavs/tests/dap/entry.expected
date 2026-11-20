@@ -3,8 +3,8 @@
 > launch {"stopOnEntry":true}
 < {"body":{},"event":"initialized","type":"event"}
 < {"body":{},"command":"launch","request_seq":2,"success":true,"type":"response"}
-> setBreakpoints {"breakpoints":[{"hitCondition":">= 2","line":12},{"line":4},{"line":99},{"hitCondition":"x","line":22}],"source":{"path":"$TMP/tb.vhd"}}
-< {"body":{"breakpoints":[{"line":12,"source":{"name":"tb.vhd","path":"$TMP/tb.vhd"},"verified":true},{"line":6,"source":{"name":"tb.vhd","path":"$TMP/tb.vhd"},"verified":true},{"line":99,"message":"no statement on or after this line","verified":false},{"line":22,"message":"hit condition `x`: expected N, = N, >= N or % N","verified":false}]},"command":"setBreakpoints","request_seq":3,"success":true,"type":"response"}
+> setBreakpoints {"breakpoints":[{"hitCondition":">= 2","line":12},{"line":4},{"line":999},{"hitCondition":"x","line":22}],"source":{"path":"$TMP/tb.vhd"}}
+< {"body":{"breakpoints":[{"line":12,"source":{"name":"tb.vhd","path":"$TMP/tb.vhd"},"verified":true},{"line":6,"source":{"name":"tb.vhd","path":"$TMP/tb.vhd"},"verified":true},{"line":999,"message":"no statement on or after this line","verified":false},{"line":22,"message":"hit condition `x`: expected N, = N, >= N or % N","verified":false}]},"command":"setBreakpoints","request_seq":3,"success":true,"type":"response"}
 > configurationDone {}
 < {"body":{},"command":"configurationDone","request_seq":4,"success":true,"type":"response"}
 < {"body":{"allThreadsStopped":true,"description":"entry at 0 fs, delta 0","reason":"entry","threadId":1},"event":"stopped","type":"event"}

@@ -323,6 +323,17 @@ fn conditions() {
     script_case("conditions", &["--threads=4"]);
 }
 
+/// Conditions and evaluations that call functions (of the design, numeric_std, with constants
+/// and generics of their region), convert types, use the operators of numeric_std and
+/// std_logic_1164 and read attributes of signals and arrays; impure functions, functions with a
+/// signal parameter and unsupported attributes are refused with their reason, and a report of a
+/// called function is neither printed nor counted (#364).
+#[test]
+fn calls() {
+    script_case("calls", &[]);
+    script_case("calls", &["--threads=4"]);
+}
+
 /// Composite variables (records by field, arrays by index, paged), setting a field or an
 /// element of a local and of a signal, the Hierarchy scope and `yavs/hierarchy`.
 #[test]

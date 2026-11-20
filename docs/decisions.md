@@ -2612,10 +2612,32 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
 - **Breakpoint conditions are evaluated by the DAP server, not lowered to IR** (#326): the
   condition is parsed as a VHDL expression and evaluated over the locals and signals the
   debugger shows, with the predefined operators (relations, logic on boolean and bit, integer,
-  real and physical arithmetic, `??`); function calls, attributes and overloaded operators are
-  rejected when the breakpoint is set. Why: ir.md 3.4 plans a condition function nested in the
+  real and physical arithmetic, `??`). Why: ir.md 3.4 plans a condition function nested in the
   statement's function, but the program is fixed once the simulation runs; this covers the
   conditions users write (`count = 3 and state = IDLE`), and lowering stays possible later.
+- **Functions in a debugger's expressions run apart from the simulation** (agent, #364, 2026-11-20):
+  a call, a type conversion or an operator a type declares (`numeric_std."+"`, `"and"` of
+  `std_logic_1164`) is resolved by `crates/yavs-dap/src/calls.rs`: the declarations of the name
+  visible from the process's sem region (read only: `Db::lookup` takes the database mutably), the
+  explicit functions of the arity, chosen by base type name where the argument's is known
+  (signals, process variables, results of calls and conversions) and else by the shape of the
+  value. The function is lowered on its own and run by `yavs_elab::Isolated`, as elaboration-time
+  calls are: no kernel, no signals, no shared state, its own heap and counters, reports captured
+  (`capture_elab_reports`: neither printed nor counted); the constants and generics of its regions
+  come from the elaborated values of the process's instance. So a condition cannot change the
+  simulation's state, output or exit status. Why: the running program cannot take a new function,
+  and a separate program needs no change to it. Refused with the reason: functions declared in a
+  process or subprogram (no static link apart from the simulation), signal parameters
+  (`rising_edge`), foreign functions, functions whose lowering touches shared variables or files.
+  Impure functions are not supported yet: whether and how a condition may call one is open for the
+  maintainer (#364). Signal attributes come from `Ctx` at a stop in a process and from
+  `SimControl::attributes` between cycles (the cycle just run is the current one); array attributes
+  from the value. Not done: a time limit on a function that never returns, attributes of types,
+  conversions checked against a subtype's range (`natural(-1)` gives -1), functions that read a
+  constant elaboration did not evaluate (a package constant without a folded value, a constant of
+  the design nothing read during elaboration: its value is only in the running design's instance
+  data), a type name for record fields and subprogram variables (an operator of a type needs a
+  conversion there; several candidates of equal fit keep the predefined meaning).
 - **Live waves are a second sink of the `--wave` recorder** (#325): `yavs/waveSubscribe` builds a
   `yavs_wave::Recorder` (`record_to`, a `Sink` beside the FST `WaveWriter`) for the client's
   selection, so the stream has the hierarchy, selection rules, final value per time step and

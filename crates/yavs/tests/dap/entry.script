@@ -1,6 +1,6 @@
 request initialize {"adapterID": "yavs"}
 request launch {"stopOnEntry": true}
-request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": [{"line": 12, "hitCondition": ">= 2"}, {"line": 4}, {"line": 99}, {"line": 22, "hitCondition": "x"}]}
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": [{"line": 12, "hitCondition": ">= 2"}, {"line": 4}, {"line": 999}, {"line": 22, "hitCondition": "x"}]}
 request configurationDone {}
 event stopped
 request stackTrace {"threadId": 1}

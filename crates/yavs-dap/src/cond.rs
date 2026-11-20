@@ -2,18 +2,18 @@
 //! of a part or a computed value. A VHDL expression over the locals and signals a stop sees, parsed
 //! by `yavs-syntax` and evaluated over the values the debugger shows (`Lit`).
 //!
-//! ponytail: predefined operators on scalars (and `=`, `/=` and ordering on arrays), comparing an
-//! `unsigned` or `signed` with a number or with another, and `to_integer`; no other function calls,
-//! attributes or overloaded operators (`numeric_std."+"`). Lowering the expression to an IR
-//! function nested in the statement's (ir.md 3.4) would allow them, once a running program can
-//! take new functions.
+//! Predefined operators on scalars (and `=`, `/=` and ordering on arrays) are computed here; a
+//! call of a function, a type conversion and an operator on a type that declares its own
+//! (`numeric_std."+"`, `std_logic_1164."and"`) go to the environment (`Env::call`, #364), and so
+//! do the attributes of signals (`Env::signal_attr`). The array attributes `'length`, `'left`,
+//! `'right`, `'high`, `'low` and `'ascending` are read from the value.
 
 use std::cmp::Ordering;
 
 use yavs_std::types::{Bounds, EnumLit, EnumType, boolean_type};
 use yavs_std::value::{Lit, LitType, literal};
 use yavs_syntax::ast::{
-    Actual, BinaryOp, Decl, Expr, ExprKind, LibraryUnit, Name, NameKind, Suffix, UnaryOp,
+    Actual, BinaryOp, Decl, Expr, ExprKind, Ident, LibraryUnit, Name, NameKind, Suffix, UnaryOp,
 };
 
 /// A parsed condition.
@@ -40,7 +40,29 @@ pub(crate) trait Env {
     fn local(&self, _name: &str) -> bool {
         false
     }
+    /// A call of the function, or the conversion to the type, `name` as written (an operator as
+    /// `"+"`) with `args`. `None` when nothing of that name takes them here, so an operator keeps
+    /// its predefined meaning.
+    fn call(&self, _name: &str, _args: &[Arg<'_>]) -> Option<Result<Called, String>> {
+        None
+    }
+    /// Attribute `attr` (lower case: `event`, `active`, `last_value`, `last_event`,
+    /// `last_active`) of signal `name` or a part of one; `None` when `name` is no signal here.
+    fn signal_attr(&self, _name: &str, _attr: &str) -> Option<Result<Called, String>> {
+        None
+    }
 }
+
+/// An argument of [`Env::call`]: a value with the name of its type where it is known, a literal
+/// to read in the type of the parameter, or a value not known before the stop.
+pub(crate) enum Arg<'a> {
+    Value(&'a LitType, &'a Lit, Option<&'a str>),
+    Literal(&'a str),
+    Unknown,
+}
+
+/// What [`Env::call`] gives: a value and the name of its type; `None` before the stop.
+pub(crate) type Called = Option<(LitType, Lit, Option<String>)>;
 
 /// A value of type `t` to check types with.
 pub(crate) fn zero(t: &LitType) -> Lit {
@@ -135,6 +157,35 @@ enum V {
 }
 
 impl V {
+    fn arg(&self) -> Arg<'_> {
+        match self {
+            V::Typed(t, x) => Arg::Value(t, x, None),
+            V::Bits(t, x, n) => Arg::Value(t, x, n.as_deref()),
+            V::Text(s) => Arg::Literal(s),
+            V::Unknown => Arg::Unknown,
+        }
+    }
+
+    fn called(c: Called) -> V {
+        match c {
+            None => V::Unknown,
+            Some((t, x, n)) if is_bits(&t) => V::Bits(t, x, n),
+            Some((t, x, _)) => V::Typed(t, x),
+        }
+    }
+
+    /// A value of a type that may declare its own operators: not a number, a boolean or a bit.
+    fn own_ops(&self) -> bool {
+        match self {
+            V::Bits(..) => true,
+            V::Typed(t @ LitType::Enum(e), _) => {
+                !is_boolean(t) && !(e.lits.len() == 2 && is_bit(e))
+            }
+            V::Typed(LitType::Record(_) | LitType::Array { .. }, _) => true,
+            _ => false,
+        }
+    }
+
     /// As any other typed value.
     fn plain(self) -> V {
         match self {
@@ -265,8 +316,9 @@ fn numeric_op(op: BinaryOp, l: &V, r: &V) -> Option<Result<V, String>> {
     };
     if !is_compare(op) {
         return Some(Err(format!(
-            "`{}` on `unsigned` or `signed` is not supported in conditions: write \
-             to_integer(name) {} ...",
+            "`{}` on an array whose type is not known here (a field, or a variable of a \
+             subprogram): convert it, as in unsigned(x) {} 1, or write to_integer(x) {} ...",
+            op_text(op),
             op_text(op),
             op_text(op)
         )));
@@ -316,6 +368,10 @@ fn is_identifier(s: &str) -> bool {
         && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+fn is_bit(e: &EnumType) -> bool {
+    char_pos(e, b'0') == Some(0) && char_pos(e, b'1') == Some(1)
+}
+
 /// The bit-like types: enumerations whose literals include `'0'` and `'1'`.
 fn char_pos(t: &EnumType, c: u8) -> Option<usize> {
     t.lits.iter().position(|l| *l == EnumLit::Char(c))
@@ -326,12 +382,15 @@ impl Cond {
     pub(crate) fn names(&self) -> Vec<String> {
         fn expr(c: &Cond, e: &Expr, out: &mut Vec<String>) {
             match &e.kind {
-                ExprKind::Name(n) => out.push(
-                    c.src
-                        .get(n.span.start as usize..n.span.end as usize)
-                        .unwrap_or_default()
-                        .to_string(),
-                ),
+                ExprKind::Name(n) => {
+                    out.push(
+                        c.src
+                            .get(n.span.start as usize..n.span.end as usize)
+                            .unwrap_or_default()
+                            .to_string(),
+                    );
+                    name(c, n, out);
+                }
                 ExprKind::Paren(x) => expr(c, x, out),
                 ExprKind::Unary { operand, .. } => expr(c, operand, out),
                 ExprKind::Binary { left, right, .. } => {
@@ -341,9 +400,32 @@ impl Cond {
                 _ => {}
             }
         }
+        // The names inside a name: arguments of a call, prefixes of attributes.
+        fn name(c: &Cond, n: &Name, out: &mut Vec<String>) {
+            match &n.kind {
+                NameKind::Apply { prefix, args } => {
+                    name(c, prefix, out);
+                    for a in args {
+                        if let Actual::Expr(x) = &a.actual {
+                            expr(c, x, out);
+                        }
+                    }
+                }
+                NameKind::Attribute { prefix, .. } => {
+                    out.push(c.text_of(prefix));
+                    name(c, prefix, out);
+                }
+                _ => {}
+            }
+        }
         let mut out = Vec::new();
         expr(self, &self.expr, &mut out);
         out
+    }
+
+    fn text_of(&self, n: &Name) -> String {
+        let (a, b) = (n.span.start as usize, n.span.end as usize);
+        self.src.get(a..b).unwrap_or_default().to_string()
     }
 
     fn text(&self, e: &Expr) -> String {
@@ -389,7 +471,23 @@ impl Cond {
 
     fn check_name(&self, n: &Name) -> Result<(), String> {
         match &n.kind {
-            NameKind::Simple(_) | NameKind::Character(_) => Ok(()),
+            NameKind::Simple(_) | NameKind::Character(_) | NameKind::Operator(_) => Ok(()),
+            NameKind::Attribute { prefix, attr } => {
+                let a = attr.text.to_string().to_ascii_lowercase();
+                if !SIGNAL_ATTRS.contains(&a.as_str()) && !ARRAY_ATTRS.contains(&a.as_str()) {
+                    return Err(format!(
+                        "attribute `'{}` is not supported in conditions (only {})",
+                        attr.text,
+                        SIGNAL_ATTRS
+                            .iter()
+                            .chain(&ARRAY_ATTRS)
+                            .map(|a| format!("'{a}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                self.check_name(prefix)
+            }
             NameKind::Selected {
                 prefix,
                 suffix: Suffix::Ident(_),
@@ -398,14 +496,24 @@ impl Cond {
                 prefix,
                 suffix: Suffix::All(_),
             } => self.check_name(prefix),
-            NameKind::Apply { prefix, args } if args.len() == 1 => match &args[0].actual {
-                Actual::Expr(x) if args[0].formal.is_none() => {
+            NameKind::Apply { prefix, args } => {
+                if matches!(&prefix.kind, NameKind::Attribute { .. }) {
                     self.check_name(prefix)?;
-                    self.check(x)
+                    return Err(format!(
+                        "`{}`: attributes with an argument are not supported in conditions",
+                        self.text_of(n)
+                    ));
                 }
-                Actual::Range(_) if args[0].formal.is_none() => self.check_name(prefix),
-                _ => Err("named arguments are not supported in conditions".into()),
-            },
+                self.check_name(prefix)?;
+                for a in args {
+                    match &a.actual {
+                        Actual::Expr(x) if a.formal.is_none() => self.check(x)?,
+                        Actual::Range(_) if a.formal.is_none() && args.len() == 1 => {}
+                        _ => return Err("named arguments are not supported in conditions".into()),
+                    }
+                }
+                Ok(())
+            }
             _ => Err(format!(
                 "`{}` is not supported in conditions (a local, a signal, a field or an element)",
                 self.src
@@ -461,10 +569,27 @@ impl Cond {
             ExprKind::Name(n) => self.name(n, env),
             ExprKind::Unary { op, operand } => {
                 let v = self.value(operand, env)?;
+                let sym = match op {
+                    UnaryOp::Not => Some("not"),
+                    UnaryOp::Minus => Some("-"),
+                    UnaryOp::Plus => Some("+"),
+                    UnaryOp::Abs => Some("abs"),
+                    _ => None,
+                };
+                if let Some(sym) = sym.filter(|_| v.own_ops())
+                    && let Some(c) = env.call(&format!("\"{sym}\""), &[v.arg()])
+                {
+                    return c.map(V::called);
+                }
                 unary(*op, v.plain())
             }
             ExprKind::Binary { op, left, right } => {
                 let (l, r) = (self.value(left, env)?, self.value(right, env)?);
+                if (l.own_ops() || r.own_ops())
+                    && let Some(c) = env.call(&format!("\"{}\"", op_text(*op)), &[l.arg(), r.arg()])
+                {
+                    return c.map(V::called);
+                }
                 binary(*op, l, r)
             }
             _ => Err(format!("`{}` is not supported in conditions", self.text(e))),
@@ -534,9 +659,16 @@ impl Cond {
                 V::Unknown => Ok(V::Unknown),
                 _ => Err(format!("`{text}`: not a record")),
             },
+            NameKind::Attribute { prefix, attr } => self.attribute(&text, prefix, attr, env),
             NameKind::Apply { prefix, args } => {
                 if matches!(&args[0].actual, Actual::Range(_)) {
-                    let inner = through(self.name(prefix, env)?)?;
+                    // A slice has the type of its prefix.
+                    let whole = self.name(prefix, env)?;
+                    let ty = match &whole {
+                        V::Bits(_, _, n) => n.clone(),
+                        _ => None,
+                    };
+                    let inner = through(whole)?;
                     if let V::Unknown = inner {
                         return Ok(V::Unknown);
                     }
@@ -548,12 +680,32 @@ impl Cond {
                         .get(prefix.span.start as usize..prefix.span.end as usize);
                     let suffix = text[p.unwrap_or_default().len()..].to_string();
                     let (t, x) = crate::part_of(&t, &x, &suffix)?;
-                    return Ok(V::Typed(t, x));
+                    return Ok(match is_bits(&t) {
+                        true => V::Bits(t, x, ty),
+                        false => V::Typed(t, x),
+                    });
+                }
+                let prefix_value = self.name(prefix, env)?;
+                // A name that is no object here: a function or a type conversion.
+                if let V::Text(f) = &prefix_value {
+                    let mut vals = Vec::new();
+                    for a in args {
+                        let Actual::Expr(x) = &a.actual else {
+                            return Err(format!("`{text}` is not supported in conditions"));
+                        };
+                        vals.push(self.value(x, env)?);
+                    }
+                    let call: Vec<Arg<'_>> = vals.iter().map(V::arg).collect();
+                    if let Some(c) = env.call(f, &call) {
+                        return c.map(V::called);
+                    }
+                    if args.len() > 1 {
+                        return Err(format!("no function `{f}` here"));
+                    }
                 }
                 let Actual::Expr(x) = &args[0].actual else {
                     return Err(format!("`{text}` is not supported in conditions"));
                 };
-                let prefix_value = self.name(prefix, env)?;
                 if let V::Text(f) = &prefix_value
                     && f.eq_ignore_ascii_case("to_integer")
                 {
@@ -606,6 +758,80 @@ impl Cond {
             }
             _ => Ok(V::Text(text)),
         }
+    }
+}
+
+/// The attributes of signals, read by the environment.
+const SIGNAL_ATTRS: [&str; 5] = ["event", "active", "last_value", "last_event", "last_active"];
+/// The attributes of arrays, read from the value.
+const ARRAY_ATTRS: [&str; 6] = ["length", "left", "right", "high", "low", "ascending"];
+
+impl Cond {
+    /// `prefix'attr`, with `text` the whole name.
+    fn attribute(
+        &self,
+        text: &str,
+        prefix: &Name,
+        attr: &Ident,
+        env: &dyn Env,
+    ) -> Result<V, String> {
+        let a = attr.text.to_string().to_ascii_lowercase();
+        let p = self.text_of(prefix);
+        if SIGNAL_ATTRS.contains(&a.as_str()) {
+            return match env.signal_attr(&p, &a) {
+                Some(r) => r.map(V::called),
+                None if env.local(&p) => Ok(V::Unknown),
+                None => Err(format!("`{text}`: `{p}` is not a signal here")),
+            };
+        }
+        let LitType::Array {
+            left,
+            ascending,
+            len,
+            ..
+        } = (match self.name(prefix, env)?.plain() {
+            V::Unknown => return Ok(V::Unknown),
+            V::Typed(LitType::Handle { .. }, _) => {
+                return Err(format!("`{text}`: write `{p}.all'{a}`"));
+            }
+            V::Typed(t, _) => t,
+            V::Text(_) => {
+                return Err(format!(
+                    "`{text}`: no local or signal `{p}` here (attributes of types are not \
+                     supported in conditions)"
+                ));
+            }
+            _ => return Err("this is a bug in yavs: bits after `plain`".into()),
+        })
+        else {
+            return Err(format!("`{text}`: `{p}` is not an array"));
+        };
+        let ov = || "overflow in the condition".to_string();
+        // ponytail: integer indices only; an enumeration index reads as its position.
+        let last = i64::try_from(len)
+            .map_err(|_| ov())?
+            .checked_sub(1)
+            .ok_or_else(ov)?;
+        let right = if ascending {
+            left.checked_add(last)
+        } else {
+            left.checked_sub(last)
+        }
+        .ok_or_else(ov)?;
+        let (low, high) = if ascending {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        let int = |i: i64| V::Typed(LitType::Int(Bounds::I64), Lit::Int(i));
+        Ok(match a.as_str() {
+            "length" => int(i64::try_from(len).map_err(|_| ov())?),
+            "left" => int(left),
+            "right" => int(right),
+            "high" => int(high),
+            "low" => int(low),
+            _ => boolean(ascending),
+        })
     }
 }
 
@@ -916,7 +1142,7 @@ mod tests {
         assert_eq!(ok("-i < abs (-7)"), Ok(true));
         assert!(ok("i =").unwrap_err().contains("does not parse"));
         assert!(ok("i ** 2 = 36").unwrap_err().contains("not supported"));
-        assert!(ok("f(i, 2)").unwrap_err().contains("not supported"));
+        assert_eq!(ok("f(i, 2)"), Err("no function `f` here".into()));
         assert_eq!(
             ok("1 = nosuch"),
             Err("no local or signal `nosuch` here".into())
@@ -930,6 +1156,24 @@ mod tests {
         assert!(ok("m / (-1) = 0").unwrap_err().contains("overflow"));
         assert!(ok("i rem 0 = 0").unwrap_err().contains("overflow"));
         assert!(ok("i mod 0 = 0").unwrap_err().contains("overflow"));
+        // Array attributes (#364).
+        assert_eq!(
+            ok("v'length = 4 and v'left = 3 and v'right = 0 and v'high = 3 and v'low = 0"),
+            Ok(true)
+        );
+        assert_eq!(ok("not v'ascending and v'length * 2 = 8"), Ok(true));
+        assert!(ok("i'length = 1").unwrap_err().contains("not an array"));
+        assert!(
+            ok("v'image = 1")
+                .unwrap_err()
+                .contains("'image` is not supported")
+        );
+        assert!(
+            ok("v'length(1) = 4")
+                .unwrap_err()
+                .contains("with an argument")
+        );
+        assert!(ok("clk'event").unwrap_err().contains("not a signal here"));
     }
 
     /// `M` with a local `loc`, whose value waits for the stop.

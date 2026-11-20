@@ -43,7 +43,7 @@ To build it from the source tree instead (``editors/vscode``):
 What you can do:
 
 * **Breakpoints** on lines, with a hit count (``3``, ``>= 3``) and a VHDL condition such as
-  ``count = 3 and state = IDLE`` or ``data(7) = '1'``.
+  ``count = 3 and state = IDLE``, ``data(7) = '1'``, ``to_integer(unsigned(d)) > 40`` or ``clk'event and clk = '1'``.
 * **Signal breakpoints**: "Break on Value Change" on a signal in the Variables view, or
   "yavs: Break when a signal equals..." to stop when it takes a value.
 * **Step** over, into and out of subprograms; step to the next delta or the next time step; run
@@ -162,11 +162,14 @@ Limits
 * One driver per run: ``--dap`` cannot be combined with ``--interactive`` or ``--do``, and ``--yavs-debug`` not with
   ``--yavs-interactive``. ``--surfer`` and ``--yavs-surfer`` combine with either.
 * ``--cov`` and ``--profile`` cannot be combined with ``--dap``.
-* Breakpoint conditions, and expressions in a Watch or ``examine``, cannot call functions other than ``to_integer`` or use
-  attributes. An ``unsigned`` or ``signed`` compares with a number (``cnt = 3``, ``cnt > n``) or with another as
-  ``numeric_std`` does, but its other operators are out of reach: write ``to_integer(cnt) + 1 = 4``. A variable of those
-  types whose leftmost bit is 1 needs a bit string, as its type is not known at a stop. A literal that cannot be a value of
-  a signal is refused when the breakpoint is set.
+* Breakpoint conditions, and expressions in a Watch or ``examine``, call pure functions only (of the design and of
+  packages such as ``numeric_std``), and run them apart from the simulation, so a condition cannot change it; impure
+  functions, functions with a signal parameter such as ``rising_edge`` (write ``clk'event and clk = '1'``) and functions
+  declared in a process are refused with the reason. Attributes are those of signals (``'event``, ``'active``,
+  ``'last_value``, ``'last_event``, ``'last_active``) and of arrays (``'length``, ``'left``, ``'right``, ``'high``,
+  ``'low``, ``'ascending``). A variable of a subprogram has no known type at a stop, so an ``unsigned`` or ``signed`` one
+  whose leftmost bit is 1 needs a bit string. A literal that cannot be a value of a signal is refused when the breakpoint
+  is set. The full list is in :doc:`console-reference` ("Conditions").
 * A value behind an access value and a variable of a protected object are shown, not written, from the Variables view. A
   shared variable of a protected type is seen in the frames of its methods, not from outside.
 

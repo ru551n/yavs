@@ -504,6 +504,9 @@ fn examine_computes_as_a_condition_does() {
             ("sg = -2", "TRUE"),
             ("sg < 0", "TRUE"),
             ("to_integer(cnt) + 1", "4"),
+            // Operators and functions of numeric_std and attributes (#364).
+            ("cnt + 1 = 4 and resize(cnt, 8) = 3", "TRUE"),
+            ("cnt'length + cnt'high", "15"),
             ("to_integer(sg)", "-2"),
             ("v(1) + 1", "3"),
             ("nul = null", "TRUE"),
@@ -522,7 +525,12 @@ fn examine_errors_say_what_is_wrong() {
         ("nul.x", "the access value is null"),
         ("p.all", "not an access value"),
         ("slv = 3", "`std_ulogic_vector`, which has no numbers"),
-        ("cnt + 1", "to_integer(name)"),
+        (
+            "to_integer(slv)",
+            "no `to_integer` here takes (std_ulogic_vector)",
+        ),
+        ("rising_edge(cnt(0))", "takes a signal parameter"),
+        ("cnt'image", "attribute `'image` is not supported"),
     ] {
         let o = script(&d, "t", &format!("break t.vhd:39; run; examine {e}"));
         assert!(stderr(&o).contains(want), "{e}: {}", stderr(&o));

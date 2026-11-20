@@ -1453,11 +1453,27 @@ impl Builder<'_> {
             let t = self.d.node(t);
             (t.layout.clone(), t.ty, t.origin.clone())
         });
-        let (layout, ty, origin) = match (&part, like) {
+        let (mut layout, mut ty, origin) = match (&part, like) {
             (_, Some(l)) => l,
             (Some((_, layout, ty)), None) => (Some(layout.clone()), Some(*ty), Origin::Named),
             (None, None) => (None, None, Origin::Named),
         };
+        // A whole array under its own index range: the same elements by other names.
+        if whole
+            && let yavs_sem::decl::Alias::Object {
+                subtype: Some(st), ..
+            } = a
+            && let Some(Layout::Array { dims, .. }) = layout.as_mut()
+            && let Layout::Array { dims: own, .. } = self.layout(*st, None, s)
+            && dims.len() == own.len()
+            && dims
+                .iter()
+                .zip(&own)
+                .all(|(a, b)| a.bounds.len() == b.bounds.len())
+        {
+            *dims = own;
+            ty = layout.as_ref().map(|l| self.object_ty(*st, l, s));
+        }
         let al = self.d.push(Node {
             kind: vhpiAliasDeclK,
             name: decl.name.to_string(),
@@ -1501,7 +1517,24 @@ impl Builder<'_> {
                 return None;
             }
             l = match (step, l) {
-                // Positions are counted from the left whatever the alias's own bounds.
+                // The steps after it index in the alias's index range (LRM 6.6.2); positions
+                // are counted from the left either way.
+                (LspStep::Rebase(st), Layout::Array { mut dims, elem }) => {
+                    match self.layout(*st, None, s) {
+                        Layout::Array { dims: own, .. }
+                            if own.len() == dims.len()
+                                && own
+                                    .iter()
+                                    .zip(&dims)
+                                    .all(|(a, b)| a.bounds.len() == b.bounds.len()) =>
+                        {
+                            dims = own;
+                        }
+                        Layout::Open => {}
+                        _ => return None,
+                    }
+                    Layout::Array { dims, elem }
+                }
                 (LspStep::Rebase(_), l) => l,
                 (LspStep::Field(f), Layout::Record(mut fs)) => {
                     path.push(u64::from(*f));

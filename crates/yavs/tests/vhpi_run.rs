@@ -1625,6 +1625,9 @@ const ALIASES: &str = "entity top is end;\n\
       alias rf1 : bit is r.f(1);\n\
       alias rn : integer is r.n;\n\
       alias cs : bit_vector(0 to 1) is c(1 to 2);\n\
+      alias a1 : bit_vector(0 to 7) is v;\n\
+      alias b1 : bit is a1(0);\n\
+      alias s1 : bit_vector(0 to 1) is a1(0 to 1);\n\
     begin\n\
       p: process\n\
         variable pv : bit_vector(7 downto 0) := x\"0F\";\n\
@@ -1661,6 +1664,11 @@ fn vhpi_aliases_of_parts() {
         "top:cs=11",
         "top:p:ps=0011",
         "top:v=10100101",
+        "top:a1=10100101",
+        "top:b1=1",
+        "top:s1=10",
+        "top:a1(7)=1",
+        "top:a1(0)=1",
         "top:wi=2",
         "top:rn=7",
         "top:ws(0)=3",
@@ -1669,18 +1677,24 @@ fn vhpi_aliases_of_parts() {
         "put top:lo4(0)=1 rc=0",
         "put top:p:ps=1111 rc=0",
         "put top:cs=00 rc=1",
+        "put top:a1(7)=0 rc=0",
         "changed hi at 2: 0011",
         "    Process top.p",
         "top:a2=1",
         "top:hi=0011",
-        "top:lo4=1101",
+        "top:lo4=1100",
         "top:lo4(1)=1",
         "top:hi(3)=0",
         "top:rf=1010",
         "top:rf1=1",
         "top:cs=11",
         "top:p:ps=1111",
-        "top:v=00111101",
+        "top:v=00111100",
+        "top:a1=00111100",
+        "top:b1=0",
+        "top:s1=00",
+        "top:a1(7)=0",
+        "top:a1(0)=0",
         "top:wi=2",
         "top:rn=7",
         "top:ws(0)=3",

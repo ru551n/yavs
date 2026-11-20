@@ -88,7 +88,7 @@ static void dump(const char *when) {
 }
 
 /* The access variables (#143): what `ap` designates, `np` is null, misuse. */
-static void access(void) {
+static void access_vars(void) {
   vhpiValueT v;
   memset(&v, 0, sizeof v);
   v.format = vhpiPtrVal;
@@ -142,7 +142,7 @@ static void at12(const vhpiCbDataT *cb) {
   vhpiValueT v;
   (void)cb;
   dump("t=12");
-  access();
+  access_vars();
   put_int("p:n", vhpiIntVal, 100, vhpiDepositPropagate);
   put_str("p:v", vhpiBinStrVal, "10100101");
   put_int("p:r.a", vhpiIntVal, 42, vhpiDeposit);
@@ -174,7 +174,7 @@ static void at12(const vhpiCbDataT *cb) {
 static void end_of_init(const vhpiCbDataT *cb) {
   (void)cb;
   dump("end of initialization");
-  access();
+  access_vars();
 }
 
 static void finish(const vhpiCbDataT *cb) {

@@ -153,7 +153,7 @@ static void alias_changed(const vhpiCbDataT *d) {
 
 static void alias_dump(const vhpiCbDataT *d) {
   (void)d;
-  const char *bins[] = {"top:a2", "top:hi", "top:lo4", "top:lo4(1)", "top:hi(3)", "top:rf", "top:rf1", "top:cs", "top:p:ps", "top:v"};
+  const char *bins[] = {"top:a2", "top:hi", "top:lo4", "top:lo4(1)", "top:hi(3)", "top:rf", "top:rf1", "top:cs", "top:p:ps", "top:v", "top:a1", "top:b1", "top:s1", "top:a1(7)", "top:a1(0)"};
   for (unsigned i = 0; i < sizeof bins / sizeof *bins; i++)
     show_alias(bins[i]);
   const char *ints[] = {"top:wi", "top:rn", "top:ws(0)", "top:ws(1)"};
@@ -167,6 +167,7 @@ static void alias_put(const vhpiCbDataT *d) {
   put_bin("top:lo4(0)", "1");
   put_bin("top:p:ps", "1111");
   put_bin("top:cs", "00");
+  put_bin("top:a1(7)", "0");
 }
 
 static void alias_reg(int reason, unsigned ns, void (*rtn)(const vhpiCbDataT *), vhpiHandleT obj) {

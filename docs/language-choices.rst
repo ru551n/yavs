@@ -50,6 +50,14 @@ yavs, with what to do about each.
        never truncated.
      - Make both sides the same length. A design that passed on another simulator may have
        relied on the truncation: the error names the statement and both lengths.
+   * - A procedure that leaves an ``out`` or ``inout`` scalar parameter with a value outside the
+       subtype of the variable passed to it: 10 into a variable of ``integer range 0 to 9``
+     - Error ``E3009`` at the call, as the standard says: the value copied back must belong to
+       the subtype of the actual. The message ends ``for actual of parameter`` and the formal's
+       name.
+     - Give the variable a subtype that holds every value the procedure can return, or check the
+       value in the procedure. A design that passed on another simulator may have kept the
+       value outside its subtype.
    * - A named aggregate as an operand of a predefined operator, ``c = (3 => a, 2 => b, ...)``, with
        ``c`` of a constrained array type declared ``downto``
      - The aggregate runs in the direction of the index subtype, so its leftmost element is its

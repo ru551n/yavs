@@ -123,7 +123,7 @@ impl Fx<'_, '_> {
         let Some(f) = p.decl else {
             return Err(self.cx.ice(span, "parameter without a declaration"));
         };
-        let what = format!("parameter {}", p.name.text.as_str().to_ascii_uppercase());
+        let what = crate::expr::param_what(p);
         let obj = match shape(db, self.cx, p, span)? {
             Shape::Ref => {
                 let (_, _, w) = self.scalar(p.subtype, span)?;
@@ -493,8 +493,10 @@ impl Fx<'_, '_> {
                 };
                 let v = self.expr(from)?;
                 let p = self.place(to)?;
+                // A value copied back is checked against the actual's subtype (#1175).
                 let what = format!(
-                    "parameter {}",
+                    "{}parameter {}",
+                    if into { "" } else { "actual of " },
                     db.decls[f].name.to_string().to_ascii_uppercase()
                 );
                 self.store_place(p, v, db.exprs[from].subtype, &what, span)?;

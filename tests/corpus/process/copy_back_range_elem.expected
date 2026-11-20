@@ -1,0 +1,3 @@
+exit	1
+diag	note	0	0	:copy_back_range_elem:_p0	u(2) set
+diag	fatal	0	0	-	value 2 outside of UNIT range 0 to 1 for actual of parameter O

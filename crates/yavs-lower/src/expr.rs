@@ -82,6 +82,36 @@ pub(crate) enum Place {
     },
 }
 
+/// The place of an `out`/`inout` actual passed through a temporary, kept in frame slots at
+/// the call (`Fx::keep`): the write-back stores through it and does not evaluate the name
+/// again, so an index the call changes or an impure index names the element of the call
+/// (LRM 4.2.2.2, #1175).
+pub(crate) enum Kept {
+    /// A static name, lowered again: it denotes the same object after the call.
+    Name(ExprId),
+    Scalar {
+        slot: u32,
+        w: Width,
+        st: SubtypeId,
+    },
+    /// The data, then the element index.
+    Logic {
+        slot: u32,
+        st: SubtypeId,
+    },
+    /// A logic slice: the data, the descriptor, then the offset.
+    Slice {
+        slot: u32,
+        tid: TyId,
+        dims: u8,
+    },
+}
+
+/// How a check's message names formal `p`.
+pub(crate) fn param_what(p: &Param) -> String {
+    format!("parameter {}", p.name.text.as_str().to_ascii_uppercase())
+}
+
 /// An element value of an aggregate with pieces: a scalar, or an array's data and length.
 type Piece = (Reg, Option<Reg>);
 
@@ -1052,34 +1082,100 @@ impl<'a> Fx<'a, '_> {
         self.driver_slot_of(d, self.db.exprs[e].span)
     }
 
-    /// Write `out`/`inout` temporaries back to their actuals after a procedure call. The
-    /// actual's place is computed again: no register lives across a call that may suspend.
+    /// Write `out`/`inout` temporaries back to their actuals after a procedure call, through
+    /// the places kept in frame slots at the call (`keep`): no register lives across a call
+    /// that may suspend.
     pub fn copy_out(&mut self, span: Span) -> R<()> {
         for (obj, f, parts) in std::mem::take(&mut self.writeback_parts) {
             self.through_formal(f, obj, &parts, false, span)?;
         }
-        for (off, e, st) in std::mem::take(&mut self.writeback) {
-            let Some(e) = e else { continue };
+        for (off, kept, st, what) in std::mem::take(&mut self.writeback) {
+            let p = self.kept(&kept)?;
             if self.is_comp(self.db.base(st)) {
                 // A logic slice actual: the temporary's elements go back into it.
                 let t = self.addr(Space::Frame(self.depth), off);
                 let tmp = self.load(t, Width::B8, RegTy::Ptr);
-                let p = self.place(e)?;
                 let Place::Array { dope, .. } = p else {
                     return Err(self.cx.ice(span, "array write-back to a scalar"));
                 };
-                let what = format!("parameter of {}", self.name);
                 self.store_place(p, V::A(tmp, dope), st, &what, span)?;
                 continue;
             }
             let (_, rt, w) = self.scalar(st, span)?;
             let t = self.addr(Space::Frame(self.depth), off);
             let v = self.load(t, w, rt);
-            let p = self.place(e)?;
-            let what = format!("parameter of {}", self.name);
             self.store_place(p, V::S(v), st, &what, span)?;
         }
         Ok(())
+    }
+
+    /// Keep place `p` of actual `e` in frame slots until the write-back after the call
+    /// (`Kept`); the addresses among them are roots. A static name needs no slots.
+    fn keep(&mut self, e: ExprId, p: Place) -> Kept {
+        if self.db.static_lsp(e).is_some() {
+            return Kept::Name(e);
+        }
+        let (words, kept) = match p {
+            Place::Scalar { addr, w, st } => (vec![(addr, true)], Kept::Scalar { slot: 0, w, st }),
+            Place::Logic { data, idx, st } => (
+                vec![(data, true), (idx, false)],
+                Kept::Logic { slot: 0, st },
+            ),
+            Place::Array {
+                data,
+                dope,
+                off,
+                tid,
+                dims,
+            } => {
+                let o = off.unwrap_or_else(|| self.int(0));
+                let words = vec![(data, true), (dope, true), (o, false)];
+                (words, Kept::Slice { slot: 0, tid, dims })
+            }
+        };
+        let slot = self.fb.slot(8 * words.len() as u32, 8);
+        for (k, (r, root)) in words.into_iter().enumerate() {
+            let off = slot + 8 * k as u32;
+            if root {
+                self.fb.root(off, yavs_ir::RootKind::Addr);
+            }
+            let a = self.addr(Space::Frame(self.depth), off);
+            self.store(a, r, Width::B8);
+        }
+        match kept {
+            Kept::Name(e) => Kept::Name(e),
+            Kept::Scalar { w, st, .. } => Kept::Scalar { slot, w, st },
+            Kept::Logic { st, .. } => Kept::Logic { slot, st },
+            Kept::Slice { tid, dims, .. } => Kept::Slice { slot, tid, dims },
+        }
+    }
+
+    /// The place `keep` kept.
+    fn kept(&mut self, k: &Kept) -> R<Place> {
+        let word = |this: &mut Self, slot: u32, k: u32, t: RegTy| {
+            let a = this.addr(Space::Frame(this.depth), slot + 8 * k);
+            this.load(a, Width::B8, t)
+        };
+        Ok(match *k {
+            Kept::Name(e) => self.place(e)?,
+            Kept::Scalar { slot, w, st } => Place::Scalar {
+                addr: word(self, slot, 0, RegTy::Ptr),
+                w,
+                st,
+            },
+            Kept::Logic { slot, st } => Place::Logic {
+                data: word(self, slot, 0, RegTy::Ptr),
+                idx: word(self, slot, 1, RegTy::I64),
+                st,
+            },
+            Kept::Slice { slot, tid, dims } => Place::Array {
+                data: word(self, slot, 0, RegTy::Ptr),
+                dope: word(self, slot, 1, RegTy::Ptr),
+                off: Some(word(self, slot, 2, RegTy::I64)),
+                tid,
+                dims,
+            },
+        })
     }
 
     /// The driver slot through which this process drives the first leaf of `part`, the part
@@ -3241,21 +3337,30 @@ impl<'a> Fx<'a, '_> {
         what: &str,
         span: Span,
     ) -> R<()> {
-        let db = self.db;
-        let t = db.base(to);
-        if from == Some(to) {
+        if self.scalar_within(from, to) {
             return Ok(());
         }
+        let r = self.scalar_bounds(to, span)?;
+        self.check_in(v, r, to, what);
+        Ok(())
+    }
+
+    /// Every value of subtype `from` (if known) is known to belong to `to` (or `to` is not a
+    /// scalar subtype with a range), so a conversion to `to` needs no check.
+    pub(crate) fn scalar_within(&self, from: Option<SubtypeId>, to: SubtypeId) -> bool {
+        let db = self.db;
         if !matches!(
-            db.types[t].kind,
+            db.types[db.base(to)].kind,
             TypeKind::Enum { .. }
                 | TypeKind::Integer
                 | TypeKind::Physical { .. }
                 | TypeKind::Floating
         ) {
-            return Ok(());
+            return true;
         }
-        // A value already known to lie within `to` needs no check.
+        if from == Some(to) {
+            return true;
+        }
         if let (Some(f), Some((tl, td, tr))) = (from, db.static_bounds(to))
             && let Some((fl, fd, fr)) = db.static_bounds(f)
             && let (Some(fl), Some(fr), Some(tl), Some(tr)) =
@@ -3271,13 +3376,9 @@ impl<'a> Fx<'a, '_> {
             } else {
                 (tr, tl)
             };
-            if flo > fhi || (tlo <= flo && fhi <= thi) {
-                return Ok(());
-            }
+            return flo > fhi || (tlo <= flo && fhi <= thi);
         }
-        let r = self.scalar_bounds(to, span)?;
-        self.check_in(v, r, to, what);
-        Ok(())
+        false
     }
 
     /// Check scalar `v` against range `r` of subtype `to` (named in the message).
@@ -3738,7 +3839,12 @@ impl<'a> Fx<'a, '_> {
     ) -> R<Vec<Reg>> {
         let db = self.db;
         let mut cells = Vec::new();
+        // The write-backs of this call, kept apart while each argument is lowered: a call in
+        // an argument copies its own out right after it, and must not take this call's (#1179).
+        let (mut held, mut held_parts) = (Vec::new(), Vec::new());
         for a in args {
+            held.append(&mut self.writeback);
+            held_parts.append(&mut self.writeback_parts);
             let Some(p) = sp.params.get(a.formal as usize) else {
                 return Err(self.cx.ice(span, "argument for a missing formal"));
             };
@@ -3761,28 +3867,44 @@ impl<'a> Fx<'a, '_> {
             match shape(db, self.cx, p, span)? {
                 Shape::Val => {
                     let v = self.scalar_expr(e)?;
-                    self.check_scalar(
-                        v,
-                        Some(db.exprs[e].subtype),
-                        p.subtype,
-                        &format!("parameter {}", p.name.text.as_str().to_ascii_uppercase()),
-                        es,
-                    )?;
+                    self.check_scalar(v, Some(db.exprs[e].subtype), p.subtype, &param_what(p), es)?;
                     cells.push(v);
                 }
                 Shape::Ref => match self.place(e)? {
-                    Place::Scalar { addr, w, .. } if w != self.scalar(p.subtype, es)?.2 => {
-                        // A narrow array element (4 bytes): copy-in/copy-out through a frame
-                        // temporary of the formal's width, as for a logic element below.
+                    // A narrow array element (4 bytes), or an actual whose subtype may not
+                    // hold every value of the formal's: copy-in/copy-out through a frame
+                    // temporary of the formal's width, as for a logic element below; the
+                    // write-back checks the value against the actual's subtype (LRM 4.2.2.2,
+                    // #1175).
+                    Place::Scalar { addr, w, st }
+                        if w != self.scalar(p.subtype, es)?.2
+                            || !self.object_within(p.subtype, st) =>
+                    {
                         let (_, rt, fw) = self.scalar(p.subtype, es)?;
                         let off = self.fb.slot(8, 8);
                         let t = self.addr(Space::Frame(self.depth), off);
                         let v = self.load(addr, w, rt);
+                        self.check_inout(v, st, p, sp, es)?;
                         self.store(t, v, fw);
                         cells.push(t);
-                        self.writeback.push((off, Some(e), p.subtype));
+                        let kept = self.keep(e, Place::Scalar { addr, w, st });
+                        self.writeback.push((
+                            off,
+                            kept,
+                            p.subtype,
+                            format!("actual of {}", param_what(p)),
+                        ));
                     }
-                    Place::Scalar { addr, .. } => cells.push(addr),
+                    Place::Scalar { addr, w, st } => {
+                        if p.mode == yavs_sem::hir::Mode::Inout
+                            && !self.object_within(st, p.subtype)
+                        {
+                            let (_, rt, _) = self.scalar(p.subtype, es)?;
+                            let v = self.load(addr, w, rt);
+                            self.check_inout(v, st, p, sp, es)?;
+                        }
+                        cells.push(addr);
+                    }
                     Place::Logic { data, idx, st } => {
                         // Copy-in/copy-out through a frame temporary (LRM 6.5.6.2 allows it
                         // for scalars); the actual is written back after the call.
@@ -3797,10 +3919,17 @@ impl<'a> Fx<'a, '_> {
                         let tid = self.ty(db.base(st), es)?;
                         let bias = self.code_bias(tid);
                         let v = self.dec(code, bias);
+                        self.check_inout(v, st, p, sp, es)?;
                         let (_, _, w) = self.scalar(p.subtype, es)?;
                         self.store(t, v, w);
                         cells.push(t);
-                        self.writeback.push((off, Some(e), p.subtype));
+                        let kept = self.keep(e, Place::Logic { data, idx, st });
+                        self.writeback.push((
+                            off,
+                            kept,
+                            p.subtype,
+                            format!("actual of {}", param_what(p)),
+                        ));
                     }
                     _ => return Err(self.cx.ice(es, "array place for a scalar parameter")),
                 },
@@ -3859,7 +3988,7 @@ impl<'a> Fx<'a, '_> {
                                 dope,
                                 off: Some(o),
                                 tid,
-                                ..
+                                dims,
                             } => {
                                 // A logic slice is not addressable: copy in to a temporary,
                                 // write it back after the call (copy-out).
@@ -3876,7 +4005,22 @@ impl<'a> Fx<'a, '_> {
                                 let slot = self.fb.slot(8, 8);
                                 let a = self.addr(Space::Frame(self.depth), slot);
                                 self.store(a, tmp, Width::B8);
-                                self.writeback.push((slot, Some(e), p.subtype));
+                                let kept = self.keep(
+                                    e,
+                                    Place::Array {
+                                        data,
+                                        dope,
+                                        off: Some(o),
+                                        tid,
+                                        dims,
+                                    },
+                                );
+                                self.writeback.push((
+                                    slot,
+                                    kept,
+                                    p.subtype,
+                                    format!("actual of {}", param_what(p)),
+                                ));
                                 (tmp, dope)
                             }
                             _ => {
@@ -3889,7 +4033,62 @@ impl<'a> Fx<'a, '_> {
                 }
             }
         }
+        held.append(&mut self.writeback);
+        held_parts.append(&mut self.writeback_parts);
+        self.writeback = held;
+        self.writeback_parts = held_parts;
         Ok(cells)
+    }
+
+    /// Every value of the subtype of object or formal `from` belongs to `to`, known without a
+    /// run-time check: `scalar_within`, or `to` is a type mark `from` is derived from
+    /// (`integer range 0 to n` of `integer`; LRM 5.2.1, the range was checked against it
+    /// where `from` was declared). Only for subtypes of declarations: a loop parameter's
+    /// range, for one, is not checked against its type's first subtype.
+    fn object_within(&self, from: SubtypeId, to: SubtypeId) -> bool {
+        let mut up = Some(from);
+        while let Some(f) = up {
+            if f == to {
+                return true;
+            }
+            up = self.db.subtypes[f].parent;
+        }
+        self.scalar_within(Some(from), to)
+    }
+
+    /// The value `v` of the actual (of subtype `st`) of an `inout` scalar formal `p` of `sp`
+    /// belongs to the formal's subtype (LRM 4.2.2.2, #1175); an `out` formal takes no value in.
+    // ponytail: a 2019 formal range that reads another formal of `sp` has no value in the
+    // caller and is not checked; a check at the callee's entry would cover it.
+    fn check_inout(
+        &mut self,
+        v: Reg,
+        st: SubtypeId,
+        p: &Param,
+        sp: &Subprogram,
+        span: Span,
+    ) -> R<()> {
+        if p.mode != yavs_sem::hir::Mode::Inout || self.object_within(st, p.subtype) {
+            return Ok(());
+        }
+        let db = self.db;
+        let reads_formal = |e: ExprId| {
+            let mut hit = false;
+            db.walk_expr(e, &mut |x| {
+                hit |= matches!(db.exprs[x].kind, ExprKind::Obj(o)
+                    if sp.params.iter().any(|q| q.decl == Some(o)));
+            });
+            hit
+        };
+        let own = match db.scalar_range(p.subtype) {
+            Some(RangeC::Explicit { left, right, .. }) => reads_formal(left) || reads_formal(right),
+            Some(RangeC::Record(e)) => reads_formal(e),
+            _ => false,
+        };
+        if own {
+            return Ok(());
+        }
+        self.check_scalar(v, Some(st), p.subtype, &param_what(p), span)
     }
 
     /// The descriptor of an array signal actual as the formal `p` sees it.

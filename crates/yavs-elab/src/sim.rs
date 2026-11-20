@@ -257,6 +257,8 @@ fn language_rule(kind: &ErrorKind) -> Option<&'static str> {
     let outside = m.contains(" outside of ");
     Some(if m.starts_with("index ") && outside {
         "LRM 8.4, 8.5: an index value, or a bound of a non-null slice, belongs to the index range of the array"
+    } else if m.starts_with("value ") && outside && m.contains(" for actual of parameter ") {
+        "LRM 4.2.2.2: the value of an out or inout formal copied back belongs to the subtype of the actual"
     } else if m.starts_with("value ") && outside && m.contains(" for parameter ") {
         "LRM 4.2.2.2: the value of an actual belongs to the subtype of the formal"
     } else if m.starts_with("value ") && outside && m.ends_with(" for target") {

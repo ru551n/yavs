@@ -1,0 +1,3 @@
+exit	1
+diag	note	0	0	:copy_back_range_logic_entry:_p0	v=11Z0
+diag	fatal	0	0	-	value 4 outside of X01 range 1 to 3 for parameter O

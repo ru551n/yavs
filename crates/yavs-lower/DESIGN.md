@@ -213,8 +213,11 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
 - Parameters by class and mode:
   - constant / in variable scalar: value copied into the callee slot; composite in: by reference
     (fat pointer `{data, dope}`), copied only when it is an unaligned logic slice (ir.md 1.3).
-  - out / inout variable scalar: caller passes the address; callee works on a local copy that is
-    written back at return (copy-in/copy-out), so a range check failure leaves the actual intact.
+  - out / inout variable scalar: caller passes the address of the actual, or of a frame
+    temporary copied in and written back after the call (copy-in/copy-out) when the actual is a
+    narrow or logic element or its subtype may not hold every value of the formal's; the
+    write-back checks the value against the actual's subtype, and an `inout` actual's value is
+    checked against the formal's before the call (LRM 4.2.2.2, #1175). The actual's place is kept in frame slots at the call and the write-back stores through it (#1182).
   - signal parameters: a `SigVal` reference; `out`/`inout` signal parameters carry the caller's
     driver slot.
   - unconstrained parameters take the actual's dope; partially constrained ones merge the

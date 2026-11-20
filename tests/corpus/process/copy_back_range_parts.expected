@@ -1,0 +1,3 @@
+exit	1
+diag	note	0	0	:copy_back_range_parts:_p0	t=5000000 fs f=9
+diag	fatal	0	0	-	value 20000000 outside of SHORT range 0 to 10000000 for actual of parameter O

@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:copy_back_nested_calls:_p0	a(1)=10
+diag	note	0	0	:copy_back_nested_calls:_p0	q=11
+diag	note	0	0	:copy_back_nested_calls:_p0	q=12
+diag	note	0	0	:copy_back_nested_calls:_p0	a(2)=11

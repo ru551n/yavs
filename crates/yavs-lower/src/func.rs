@@ -268,9 +268,10 @@ pub(crate) struct Fx<'a, 'b> {
     pub prot_defaults: bool,
     /// The `GUARD` signal of the enclosing guarded block (guarded assignments).
     pub guard: Option<DeclId>,
-    /// Copy-out after the call being lowered: (frame slot of the temporary, actual,
-    /// subtype of the formal) for `out`/`inout` actuals passed through a temporary.
-    pub writeback: Vec<(u32, Option<yavs_sem::ExprId>, SubtypeId)>,
+    /// Copy-out after the call being lowered: (frame slot of the temporary, the actual's
+    /// place kept at the call, subtype of the formal, the formal's name for a check's
+    /// message) for `out`/`inout` actuals passed through a temporary.
+    pub writeback: Vec<(u32, crate::expr::Kept, SubtypeId, String)>,
     /// Copy-out of individually associated or converted `out`/`inout` formals: (the
     /// temporary formal, the formal, its parts; a converted formal is one part whose
     /// formal part is the conversion).

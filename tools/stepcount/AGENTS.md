@@ -53,8 +53,10 @@ python3 -I tools/stepcount/stepcount.py --from '<yavs_kernel::kernel::SimControl
   position (`pc N` of the function's code). It runs the program with `YAVS_CLIFT_PERFMAP=1` and a temporary `YAVS_CLIFT_CODEDIR`
   (`--codedir DIR` keeps it), reads the run's `/tmp/perf-<pid>.map` and removes it (`--perfmap FILE` reads and keeps a given one).
   `step.c` writes pcs outside the program file in anonymous memory as absolute addresses with bit 63 set (re-reading
-  `/proc/PID/maps` when a pc is in no known mapping, since code is mapped after the window opens). Not verified on a real
-  Cranelift run yet; the self-test uses a hand-made generated function.
+  `/proc/PID/maps` when a pc is in no known mapping, since code is mapped after the window opens). Checked on a real
+  Cranelift run (`rtl_ff`, `--tier=clift`, 2026-11-20): names are the perf map's (`f3_<process>+63` is code shared by 64
+  processes), code without an IR position (prologue, stubs) shows as "(no IR position)"; the self-test uses a hand-made
+  generated function.
 - A build without line tables (a plain release build) gives functions only; with `tools/build-bench.sh` the same
   code and the same addresses as the timed binary, which is the point (root rule 19, bench builds).
 - A function that is always inlined has no row of its own; its instructions are in its caller, its lines are not.

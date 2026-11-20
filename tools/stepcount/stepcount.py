@@ -133,7 +133,7 @@ def srcmap_file(codedir, name):
     p = os.path.join(codedir, safe + ".srcmap")
     if not os.path.exists(p):
         return []
-    return [(int(a), int(b), int(c) - 1) for a, b, c in (ln.split() for ln in open(p))]
+    return [(int(a), int(b), int(c) - 1 if int(c) else None) for a, b, c in (ln.split() for ln in open(p))]
 
 
 def print_compiled(anon, pmap, codedir, per, top, nlines):

@@ -1328,6 +1328,7 @@ const CONNECT: &str = "library ieee; use ieee.std_logic_1164.all;\n\
       wait;\n\
     end process;\n\
     p2: process begin bus_s <= '1' after 3 ns; wait; end process;\n\
+    rd: process begin wait on clk; assert clk /= 'X'; end process;\n\
     pf: process begin\n\
       wait for 6 ns; f <= force '1';\n\
       wait for 2 ns; f <= release;\n\
@@ -1344,8 +1345,9 @@ fn connect(entry: &str) -> String {
     out
 }
 
-/// Drivers, contributors, loads, the net and the transactions of signals, through ports that
-/// are collapsed, kept and hidden behind a component (#830).
+/// Drivers, contributors, loads (port associations and the processes that read, #143), the net
+/// and the transactions of signals, through ports that are collapsed, kept and hidden behind a
+/// component (#830).
 #[test]
 fn vhpi_connectivity_of_signals() {
     let out = connect("graph");
@@ -1358,7 +1360,9 @@ fn vhpi_connectivity_of_signals() {
         "top:u1:i: resolved=1 kind=1003 basic=1 forced=0",
         "  net: :top:v",
         "  net: :top:clk",
-        "  local loads: vhpiInPortK(:top:u1:i<-:top:clk) vhpiInPortK(:top:u2:i<-:top:clk)",
+        "  local loads: vhpiInPortK(:top:u1:i<-:top:clk) vhpiInPortK(:top:u2:i<-:top:clk) :top:rd\n",
+        "  optimized loads: :top:u1:i :top:u2:i :top:u2:w:i :top:u1:drv :top:u2:w:drv :top:rd\n",
+        "  local loads: :top:u1:drv\n",
         "  resolution: vhpiFuncDeclK resolved",
         "  basic signals of r: :top:r.a :top:r.b(1) :top:r.b(0)",
         "  signals p1 drives: :top:clk :top:bus_s :top:same",

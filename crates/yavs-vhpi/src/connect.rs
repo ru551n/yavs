@@ -58,6 +58,9 @@ pub(crate) struct Net {
     /// The region node of a kernel process, and back.
     pub(crate) proc_node: HashMap<u32, NodeId>,
     pub(crate) node_proc: HashMap<NodeId, u32>,
+    /// The processes and equivalent processes that read each signal or port declaration
+    /// (#143), in elaboration order.
+    pub(crate) readers: HashMap<NodeId, Vec<NodeId>>,
 }
 
 /// A transaction of a driver, as `vhpiTransactions` found it.
@@ -184,6 +187,7 @@ impl State {
     pub(crate) fn net_iter(&self, rel: vhpiOneToManyT, o: &Object) -> Option<Vec<Object>> {
         let net = &self.design.net;
         let drivers = |ds: Vec<u32>| ds.into_iter().map(Object::NetDriver);
+        let readers = |n: NodeId| net.readers.get(&n).into_iter().flatten().copied();
         let conn = |c: u32, up: bool| Object::Conn {
             conn: c,
             inward: up,
@@ -213,23 +217,35 @@ impl State {
             }
             vhpiLocalLoads => {
                 let (obj, elems) = self.net_of(o)?;
-                (self.feeds(obj, &elems, false).into_iter())
+                let mut v: Vec<Object> = (self.feeds(obj, &elems, false).into_iter())
                     .map(|c| {
                         let inward = net.conns[c as usize].actual.0 == obj;
                         conn(c, inward)
                     })
-                    .collect()
+                    .collect();
+                if let Object::Node(n) | Object::Elem { base: n, .. } = o {
+                    v.extend(readers(*n).map(Object::Node));
+                }
+                v
             }
             vhpiOptimizedLoads => {
                 let start = self.net_of(o)?;
                 let first = start.0;
-                let mut nodes: Vec<NodeId> = (self.reach(start, false).iter())
+                let reached = self.reach(start, false);
+                let mut nodes: Vec<NodeId> = (reached.iter())
                     .filter(|(x, _)| *x != first)
                     .filter_map(|(x, _)| net.obj_nodes.get(x).copied())
                     .collect();
                 nodes.sort_unstable_by_key(|n| n.0);
                 nodes.dedup();
-                nodes.into_iter().map(Object::Node).collect()
+                // Then the processes that read any object of the chain, the start included.
+                let mut procs: Vec<NodeId> = (reached.iter())
+                    .filter_map(|(x, _)| net.obj_nodes.get(x).copied())
+                    .flat_map(readers)
+                    .collect();
+                procs.sort_unstable_by_key(|n| n.0);
+                procs.dedup();
+                nodes.into_iter().chain(procs).map(Object::Node).collect()
             }
             vhpiDrivenSigs => {
                 let &Object::Node(n) = o else {

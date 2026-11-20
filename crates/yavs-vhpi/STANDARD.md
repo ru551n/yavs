@@ -58,13 +58,13 @@ flag), enumeration literals, record elements, physical units and dimensions.
 
 From the signal, port or sub-element: `vhpiDrivers`, `vhpiLocalContributors` (its drivers and the
 port associations feeding it), `vhpiOptimizedContributors` (every driver reaching it through
-ports), `vhpiLocalLoads` (the associations it feeds), `vhpiOptimizedLoads` (the ports it reaches),
+ports), `vhpiLocalLoads` (the associations it feeds, then the processes that read it), `vhpiOptimizedLoads` (the ports it reaches, then the processes that read any of them or it),
 `vhpiSimNet` (the outermost actual), `vhpiBasicSignals`, `vhpiResolFunc`, `vhpiIsResolvedP`,
 `vhpiSigKindP`, `vhpiIsBasicP`, `vhpiIsForcedP`. From a process: `vhpiDrivenSigs`. A driver
 (`vhpiDriverK`) has `vhpiSignal`, `vhpiEqProcessStmt`, `vhpiSizeP`, its value and
 `vhpiTransactions`; a transaction (`vhpiTransactionK`) has `vhpiTimeP`, `vhpiIsNullP` and its
 value, as pending when the iterator was made. A port association (`vhpiInPortK`, `vhpiOutPortK`)
-has `vhpiFormal` and `vhpiActual`. Processes that read a signal are not listed as loads.
+has `vhpiFormal` and `vhpiActual`. A process reads a signal when its sensitivity list, a `wait on` or an expression of one of its statements names the signal or a part of it (a sub-element handle lists the readers of its whole declaration); what a subprogram it calls reads without a parameter is not seen.
 
 ### Values
 

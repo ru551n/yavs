@@ -213,6 +213,25 @@ impl Dim {
     }
 }
 
+/// The statements directly inside a compound sequential statement, branches flattened.
+fn inner_stmts(st: &yavs_sem::hir::Stmt) -> Vec<yavs_sem::StmtId> {
+    let mut inner = Vec::new();
+    match &st.kind {
+        StmtKind::If { branches, else_ } => {
+            inner.extend(branches.iter().flat_map(|(_, b)| b.iter().copied()));
+            inner.extend(else_.iter().flat_map(|b| b.iter().copied()));
+        }
+        StmtKind::Case { alts, .. } => {
+            inner.extend(alts.iter().flat_map(|(_, b)| b.iter().copied()));
+        }
+        StmtKind::Loop { body, .. } | StmtKind::SeqBlock { body, .. } => {
+            inner.extend(body.iter().copied());
+        }
+        _ => {}
+    }
+    inner
+}
+
 fn range_kind(sc: &Scalar) -> vhpiClassKindT {
     match sc {
         Scalar::Enum { .. } => vhpiEnumRangeK,
@@ -366,6 +385,8 @@ impl Design {
             subps: HashMap::new(),
             decl_nodes: HashMap::new(),
             sens_links: Vec::new(),
+            load_links: Vec::new(),
+            read_roots: HashMap::new(),
             procs_at: (e.procs.iter().enumerate())
                 .map(|(i, p)| (p.scope, i))
                 .rev()
@@ -562,6 +583,10 @@ struct Builder<'a> {
     comp_links: Vec<(NodeId, ScopeId, DeclId)>,
     /// The signals a statement region is sensitive to: filled in as `comp_links` are.
     sens_links: Vec<(NodeId, ScopeId, Vec<DeclId>)>,
+    /// The declarations a process or equivalent process reads (its loads, #143).
+    load_links: Vec<(NodeId, ScopeId, std::rc::Rc<[DeclId]>)>,
+    /// Those of each process statement of the source, found once for all its instances.
+    read_roots: HashMap<yavs_sem::StmtId, std::rc::Rc<[DeclId]>>,
     /// The first kernel process of each process scope.
     procs_at: HashMap<ScopeId, usize>,
     /// The statement labels of each declarative region, by lower-case name (made once).
@@ -751,9 +776,42 @@ impl Builder<'_> {
         let mut seen = std::collections::HashSet::new();
         roots.retain(|d| seen.insert(*d));
         self.sens_links.push((n, s, roots));
+        let loads = match self.read_roots.get(&stmt) {
+            Some(r) => r.clone(),
+            None => {
+                // Everything the statement reads: its sensitivity, then its body's statements.
+                let mut all = reads;
+                self.body_reads(body, &mut all);
+                let mut seen = std::collections::HashSet::new();
+                let r: std::rc::Rc<[DeclId]> = (all.iter())
+                    .filter_map(|l| match l.root {
+                        yavs_sem::hir::ObjRoot::Decl(d) => Some(d),
+                        _ => None,
+                    })
+                    .filter(|d| seen.insert(*d))
+                    .collect();
+                self.read_roots.insert(stmt, r.clone());
+                r
+            }
+        };
+        self.load_links.push((n, s, loads));
         for &x in body {
             let c = self.seq_stmt(x);
             self.link_many(n, vhpiSeqStmts, c);
+        }
+    }
+
+    /// The signals the statements `body` and those inside them read, `wait on` lists included.
+    // ponytail: signals a called subprogram reads directly are not seen; the subprogram's body
+    // would need the same walk once per call site.
+    fn body_reads(&self, body: &[yavs_sem::StmtId], out: &mut Vec<yavs_sem::hir::Lsp>) {
+        for &x in body {
+            self.db.stmt_reads(x, out);
+            let st = &self.db.stmts[x];
+            if let StmtKind::Wait { on, .. } = &st.kind {
+                out.extend(on.iter().cloned());
+            }
+            self.body_reads(&inner_stmts(st), out);
         }
     }
 
@@ -793,21 +851,7 @@ impl Builder<'_> {
         if let Some(l) = label {
             self.d.extra.strs.insert((n, vhpiLabelNameP), l);
         }
-        let mut inner: Vec<yavs_sem::StmtId> = Vec::new();
-        match &st.kind {
-            StmtKind::If { branches, else_ } => {
-                inner.extend(branches.iter().flat_map(|(_, b)| b.iter().copied()));
-                inner.extend(else_.iter().flat_map(|b| b.iter().copied()));
-            }
-            StmtKind::Case { alts, .. } => {
-                inner.extend(alts.iter().flat_map(|(_, b)| b.iter().copied()));
-            }
-            StmtKind::Loop { body, .. } | StmtKind::SeqBlock { body, .. } => {
-                inner.extend(body.iter().copied());
-            }
-            _ => {}
-        }
-        for i in inner {
+        for i in inner_stmts(st) {
             let c = self.seq_stmt(i);
             self.link_many(n, vhpiSeqStmts, c);
             self.d.extra.one.insert((c, vhpiParent), n);
@@ -817,6 +861,13 @@ impl Builder<'_> {
 
     /// Fills in the relations that need every declaration's node.
     fn links(&mut self) {
+        for (n, s, roots) in std::mem::take(&mut self.load_links) {
+            for &d in roots.iter() {
+                if let Some(x) = self.find_decl(Some(s), d) {
+                    self.d.net.readers.entry(x).or_default().push(n);
+                }
+            }
+        }
         for (n, s, roots) in std::mem::take(&mut self.sens_links) {
             for d in roots {
                 if let Some(x) = self.find_decl(Some(s), d) {

@@ -1,1 +1,0 @@
-Tests of one design that start together (a parallel test runner's first round) no longer each make the same cache entries: one run makes them while the others wait for it, and a run that is killed lets the others go at once. `YAVS_CACHE_WAIT_MS` limits the wait.

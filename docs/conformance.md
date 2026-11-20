@@ -1,14 +1,14 @@
 # yavs conformance report
 
-Generated: yavs 0.21.1 at commit `24bcbb287e` (2026-11-19) by `tools/conformance/run.py`; do not edit by hand.
+Generated: yavs 0.21.2 at commit `07eb051451` (2026-11-20) by `tools/conformance/run.py`; do not edit by hand.
 
 yavs is checked by running the test suites of VHDL libraries, a VHDL language test suite and real designs on it, and by comparing its output
-with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 15177 of 15280
+with two established open-source VHDL simulators, called sim1 and sim2 here. Each suite judges its own tests. Over the suites below, 15182 of 15285
 tests pass; every failure is tracked as an issue. This is evidence, not a proof of correctness.
 
 | Project or suite | What it is | Passed / total |
 | --- | --- | ---: |
-| Differential testbenches | small testbenches of this repository; output must equal sim1's, at 1 and 4 threads | 759/759 |
+| Differential testbenches | small testbenches of this repository; output must equal sim1's, at 1 and 4 threads | 764/764 |
 | Known simulator differences | one reproducer per case where simulators disagree | 283/283 |
 | sim1's regression tests | a reference simulator's own self-checking tests (runnable ones) | 1014/1070 |
 | sim2's regression tests | a reference simulator's own self-checking tests (runnable ones) | 463/504 |
@@ -41,10 +41,10 @@ Every testbench of `tests/corpus` runs on yavs and its normalised output is comp
 | access | 8/8 | 8/8 | 8/8 |
 | arith | 8/8 | 8/8 | 8/8 |
 | composite | 182/182 | 182/182 | 182/182 |
-| delta | 23/23 | 23/23 | 23/23 |
+| delta | 24/24 | 24/24 | 24/24 |
 | env | 16/16 | 16/16 | 16/16 |
 | force | 12/12 | 12/12 | 12/12 |
-| generics | 59/59 | 59/59 | 59/59 |
+| generics | 60/60 | 60/60 | 60/60 |
 | held | 12/12 | 12/12 | 12/12 |
 | hierarchy | 112/112 | 112/112 | 112/112 |
 | ieee | 26/26 | 26/26 | 26/26 |
@@ -53,7 +53,7 @@ Every testbench of `tests/corpus` runs on yavs and its normalised output is comp
 | process | 63/63 | 63/63 | 63/63 |
 | protected | 29/29 | 29/29 | 29/29 |
 | psl | 16/16 | 16/16 | 16/16 |
-| reflect | 14/14 | 14/14 | 14/14 |
+| reflect | 17/17 | 17/17 | 17/17 |
 | report | 10/10 | 10/10 | 10/10 |
 | resolution | 29/29 | 29/29 | 29/29 |
 | rtl | 5/5 | 5/5 | 5/5 |
@@ -63,7 +63,7 @@ Every testbench of `tests/corpus` runs on yavs and its normalised output is comp
 | std93 | 6/6 | 6/6 | 6/6 |
 | synopsys | 20/20 | 20/20 | 20/20 |
 | textio | 20/20 | 20/20 | 20/20 |
-| total | 759/759 | 759/759 | 759/759 |
+| total | 764/764 | 764/764 | 764/764 |
 
 Failing: none.
 

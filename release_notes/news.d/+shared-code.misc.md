@@ -1,1 +1,0 @@
-The first run of a testbench also uses what testbenches of the other libraries it maps compiled: it compiles those subprograms early, and links their code where it is the same, instead of interpreting them for most of the run.

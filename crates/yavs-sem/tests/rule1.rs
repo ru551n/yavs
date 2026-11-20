@@ -80,6 +80,7 @@ fn range(db: &Db, r: &RangeC) -> String {
             let a = if *reverse { "reverse_range" } else { "range" };
             format!("{{{p}'{a}({dim})}}")
         }
+        RangeC::Record(e) => format!("{{{}}}", src(db, *e)),
     }
 }
 

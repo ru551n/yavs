@@ -135,6 +135,9 @@ pub enum RangeC {
         reverse: bool,
         dim: u32,
     },
+    /// 2019 (LCS-2016-099): an expression of a range record type whose value is known only at
+    /// run time (`bit_vector(f(n))`); its fields give left, right and direction.
+    Record(ExprId),
 }
 
 /// Resolution indication (6.3).
@@ -1340,41 +1343,25 @@ impl Db {
         }
     }
 
-    /// 2019 (LCS-2016-099): a constant of a range record type (`R'RECORD`) used as a range,
-    /// `bit_vector(r)`. `None` when `n` is not such an object.
-    // ponytail: only a constant whose value folds at analysis; a run-time range record needs
-    // a range with a dynamic direction (a new `RangeC` form in lowering and elaboration)
+    /// 2019 (LCS-2016-099): an object of a range record type (`R'RECORD`) used as a range,
+    /// `bit_vector(r)`, `for i in r loop`. A constant that folds gives explicit bounds; any
+    /// other object is read when the range is evaluated (`RangeC::Record`). `None` when `n`
+    /// is not such an object.
+    // ponytail: objects only (L112); other expressions of a range record type (a function
+    // call) wait for a maintainer decision, as no reference simulator runs them.
     fn range_record_object(
         &mut self,
         scope: ScopeId,
         n: &ast::Name,
     ) -> Option<Result<(RangeC, TypeId), Reported>> {
-        if self.file_rev() < yavs_syntax::Std::Vhdl2019 {
-            return None;
+        let (rb, t) = self.range_record_object_type(scope, n)?;
+        let i = crate::expr::Interp::new(rb, crate::expr::Via::Object);
+        let e = self.in_context(false, |db| db.build_name(scope, n, i, n.span));
+        if self.is_poison_expr(e) {
+            return Some(Err(Reported));
         }
-        let crate::expr::names::NameRes::One(d) = self.classify(scope, n) else {
-            return None;
-        };
-        let DeclKind::Object(o) = &self.decls[d].kind else {
-            return None;
-        };
-        let (class, default) = (o.class, o.default);
-        let rb = self.base(o.subtype);
-        let (&t, _) = self
-            .range_records
-            .iter()
-            .find(|&(_, &st)| self.base(st) == rb)?;
-        let value = default.and_then(|e| self.value(e).cloned());
-        let Some(ConstValue::Record(f)) =
-            value.filter(|_| class == crate::decl::ObjClass::Constant)
-        else {
-            return Some(Err(self.error(
-                Diagnostic::error(
-                    diag::NOT_STATIC,
-                    "a range given by an object of a range record type needs a constant with a static value",
-                )
-                .with_primary(n.span, "not a constant whose value is known at analysis"),
-            )));
+        let Some(ConstValue::Record(f)) = self.value(e).cloned() else {
+            return Some(Ok((RangeC::Record(e), t)));
         };
         let [l, r, ConstValue::Enum(dir)] = &*f else {
             return Some(Err(self.ice(n.span, "malformed range record value")));
@@ -1397,6 +1384,29 @@ impl Db {
             },
             t,
         )))
+    }
+
+    /// `(record type, range type)` when `n` names an object of a range record type (2019).
+    pub(crate) fn range_record_object_type(
+        &mut self,
+        scope: ScopeId,
+        n: &ast::Name,
+    ) -> Option<(TypeId, TypeId)> {
+        if self.file_rev() < yavs_syntax::Std::Vhdl2019 || self.range_records.is_empty() {
+            return None;
+        }
+        let crate::expr::names::NameRes::One(d) = self.classify(scope, n) else {
+            return None;
+        };
+        let DeclKind::Object(o) = &self.decls[d].kind else {
+            return None;
+        };
+        let rb = self.base(o.subtype);
+        let (&t, _) = self
+            .range_records
+            .iter()
+            .find(|&(_, &st)| self.base(st) == rb)?;
+        Some((rb, t))
     }
 
     /// The type of `l to r` without a type mark.
@@ -2359,7 +2369,7 @@ impl Db {
             Some(RangeC::Explicit { left, dir, right }) => {
                 Some((self.value(left)?.clone(), dir, self.value(right)?.clone()))
             }
-            Some(RangeC::Attr { .. }) => None,
+            Some(RangeC::Attr { .. } | RangeC::Record(_)) => None,
             None => match &self.types[self.base(st)].kind {
                 TypeKind::Enum { lits } => Some((
                     ConstValue::Enum(0),

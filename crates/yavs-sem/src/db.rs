@@ -569,7 +569,7 @@ impl Db {
             _ => {}
         }
         let key = |r: &RangeC| match *r {
-            RangeC::Explicit { left, .. } => Some(left),
+            RangeC::Explicit { left, .. } | RangeC::Record(left) => Some(left),
             RangeC::Attr { .. } => None,
         };
         let mut seen: HashSet<ExprId> = inherited.iter().filter_map(|r| key(r)).collect();

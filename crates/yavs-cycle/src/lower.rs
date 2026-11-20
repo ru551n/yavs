@@ -4127,7 +4127,7 @@ impl Lx<'_> {
             } => self
                 .subtype_fold(*st)
                 .map(|b| if *reverse { reversed(b) } else { b }),
-            RangeC::Attr { .. } => None,
+            RangeC::Attr { .. } | RangeC::Record(_) => None,
         }
     }
 

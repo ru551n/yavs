@@ -81,7 +81,7 @@ For comparison, over the rows that have a probe, the references run the probe (`
 | 082 | Empty record | supported | ok | reject | ok | ok |  |
 | 086 | All interface lists can be ordered | supported | ok | reject | reject | ok | later items refer to earlier ones through `'subtype` |
 | 094a | Conditional return | supported | ok | reject | reject | ok | `return x when c` in functions and procedures |
-| 099 | Extended ranges | partly supported | ok | reject | reject | ok | `R'RECORD` and `R'VALUE` were there; a constant of a range record type now works as a range (index constraint, range constraint, array type, loop) when its value is known at analysis (`E1410` otherwise); the sole accepting reference answers `'ascending` wrongly for one case (#445) |
+| 099 | Extended ranges | partly supported | ok | reject | reject | ok | `R'RECORD` and `R'VALUE` were there; an object of a range record type works as a range (index constraint, range constraint, array type, loop, slice), also when its value is known only at run time; a function call of a range record type is not a range (L112); the sole accepting reference answers `'ascending` wrongly for one case (#445) |
 | I03 | Signatures in the formal part of a generic map | supported | ok | reject | reject | ok | subprogram, package and entity instances; overloaded formals; the signature may name the list's generic types (#363, L104) |
 | I13 | Precedence of unary operators | supported | ok | ok | ok | ok | only `-k ** 2` and `not` against `=` and `and` probed; weak test |
 
@@ -132,8 +132,10 @@ The matrix above is the 2026-10-19 audit and is kept as written. These rows were
 - **055a, 071a, 082, 059a, 061**: the probes (`end;` of a component, a trailing semicolon in port, generic and parameter lists, an empty
   record, `<` on a `real_vector` (an error at `--std=2008`), `` `if `` on `TOOL_NAME`) analyse and run as the matrix says.
 - **026c**: `integer'high` is 9223372036854775807 at `--std=2019` and 2147483647 at `--std=2008` and `--std=93`.
-- **099 Extended ranges**: a range record constant whose value depends on a generic is `E1410` ("needs a constant with a static
-  value"), as the row says.
+- **099 Extended ranges**: an object of a range record type known only at run time (a constant of a generic, a variable, a
+  signal, a parameter) works as a range since 2026-11-20 (`tests/corpus/reflect/range_record_runtime_2019`, interp and Cranelift,
+  1 and 4 threads). Left: a function call or other expression of a range record type as a range (not accepted; L112), a range
+  record object as a choice (`E1300`, taken as a value), and one that is not globally static in a type or subtype of a design unit or package (`E2001`).
 - **Rows that now have regression testbenches** (the matrix says "probes were not added"): 011, 012, 014, 016, 034, 036a, 045, 047, 049, 072b, 075,
   094a and I03 run in `tests/corpus` (`*_2019*`, `hierarchy/mode_view_*`, `protected/`, `generics/`, `process/`). All 544 corpus testbenches pass
   at 1 and 4 threads with the interpreter on this commit.

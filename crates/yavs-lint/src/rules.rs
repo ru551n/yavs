@@ -882,7 +882,7 @@ impl Walk<'_> {
             RangeC::Explicit { left, dir, right } => {
                 Some((self.pos(*left)?, *dir, self.pos(*right)?))
             }
-            RangeC::Attr { .. } => None,
+            RangeC::Attr { .. } | RangeC::Record(_) => None,
         }
     }
 

@@ -1494,12 +1494,15 @@ impl Cx<'_> {
                 let Some(mut n) = self.name(*prefix, st)? else {
                     return Ok(None);
                 };
-                if let RangeC::Explicit { left, right, .. } = range {
-                    for x in [*left, *right] {
-                        let d = self.expr(x, st)?;
-                        let d = self.flat(&d);
-                        n.idx.union(&d);
-                    }
+                let xs = match range {
+                    RangeC::Explicit { left, right, .. } => vec![*left, *right],
+                    RangeC::Record(e) => vec![*e],
+                    RangeC::Attr { .. } => Vec::new(),
+                };
+                for x in xs {
+                    let d = self.expr(x, st)?;
+                    let d = self.flat(&d);
+                    n.idx.union(&d);
                 }
                 match self.range_bounds(range) {
                     Some(b) if !n.stopped => n.sels.push(Sel::Slice(b)),
@@ -1588,7 +1591,7 @@ impl Cx<'_> {
             return bounded(db, v, db.exprs[x].subtype, &mut |r| {
                 self.range_bounds(r).or_else(|| match r {
                     RangeC::Explicit { left, .. } => e.range(scope, *left),
-                    RangeC::Attr { .. } => None,
+                    RangeC::Attr { .. } | RangeC::Record(_) => None,
                 })
             });
         }
@@ -2071,6 +2074,7 @@ impl Cx<'_> {
                     b
                 })
             }
+            RangeC::Record(_) => None,
         }
     }
 
@@ -2081,7 +2085,7 @@ impl Cx<'_> {
             // Bounds elaboration evaluated (a function of generics, say) come from it.
             Constraint::Range(r) if dim == 0 => self.range_bounds(r).or_else(|| match r {
                 RangeC::Explicit { left, .. } => self.e.range(self.p.scope, *left),
-                RangeC::Attr { .. } => None,
+                RangeC::Attr { .. } | RangeC::Record(_) => None,
             }),
             Constraint::None if dim == 0 => match &db.types[db.base(st)].kind {
                 TypeKind::Enum { lits } => Some(yavs_elab::Bounds {
@@ -2552,8 +2556,10 @@ impl Cx<'_> {
             }
             ExprKind::Slice { prefix, range } => {
                 xs.push(*prefix);
-                if let RangeC::Explicit { left, right, .. } = range {
-                    xs.extend([*left, *right]);
+                match range {
+                    RangeC::Explicit { left, right, .. } => xs.extend([*left, *right]),
+                    RangeC::Record(e) => xs.push(*e),
+                    RangeC::Attr { .. } => {}
                 }
             }
             ExprKind::Field { prefix, .. } => xs.push(*prefix),
@@ -3266,11 +3272,14 @@ impl Cx<'_> {
                 cond = self.flat(&d);
             }
             LoopScheme::For { range, .. } => {
-                if let RangeC::Explicit { left, right, .. } = range {
-                    for x in [*left, *right] {
-                        let d = self.expr(x, &st)?;
-                        cond.union(&self.flat(&d));
-                    }
+                let xs = match range {
+                    RangeC::Explicit { left, right, .. } => vec![*left, *right],
+                    RangeC::Record(e) => vec![*e],
+                    RangeC::Attr { .. } => Vec::new(),
+                };
+                for x in xs {
+                    let d = self.expr(x, &st)?;
+                    cond.union(&self.flat(&d));
                 }
             }
             LoopScheme::Forever => {}

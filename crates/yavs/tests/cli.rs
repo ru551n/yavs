@@ -3307,6 +3307,57 @@ fn composite_value_attribute() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }
 
+/// 2019 (LCS-2016-099): a range record object known only at run time as a range. An index
+/// constraint outside the index subtype fails where the object is declared; a subtype of a
+/// design unit with a range record that is not globally static (a signal) is E2001.
+#[test]
+fn range_record_runtime_errors() {
+    let dir = tempdir("range_record_runtime");
+    let lib = format!("--work=work:{}/lib", dir.display());
+    let src = dir.join("top.vhd");
+    std::fs::write(
+        &src,
+        "entity top is end entity;\n\
+         architecture a of top is\n\
+           subtype ir is integer'range'record;\n\
+         begin\n\
+           process\n\
+             variable rv : ir := (left => -1, right => 2, direction => ascending);\n\
+             variable v : bit_vector(rv);\n\
+           begin\n\
+             wait;\n\
+           end process;\n\
+         end architecture;\n\
+         entity top2 is end entity;\n\
+         architecture a of top2 is\n\
+           subtype ir is integer'range'record;\n\
+           signal sr : ir := (left => 0, right => 2, direction => ascending);\n\
+           subtype bad is integer range sr;\n\
+         begin\n\
+           process begin report integer'image(bad'high); wait; end process;\n\
+         end architecture;\n",
+    )
+    .expect("write");
+    let o = yavs_cmd(&["analyze", "--std=2019", &lib, &src.display().to_string()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = yavs_cmd(&["run", "--std=2019", &lib, "top"]);
+    let err = String::from_utf8_lossy(&o.stderr).into_owned();
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains("value -1 outside of NATURAL range") && err.contains("top.vhd:7:"),
+        "{err}"
+    );
+    let o = yavs_cmd(&["run", "--std=2019", &lib, "top2"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    let err = String::from_utf8_lossy(&o.stderr).into_owned();
+    assert_eq!(o.status.code(), Some(2), "{err}");
+    assert!(
+        err.contains("error[E2001]: a range record that is not globally static")
+            && err.contains("top.vhd:16:"),
+        "{err}"
+    );
+}
+
 /// An aggregate target made of fields of a signal parameter elaborates (case `issue3030`,
 /// #610).
 #[test]

@@ -2525,7 +2525,50 @@ impl<'a> Fx<'a, '_> {
                     dir,
                 })
             }
+            RangeC::Record(e) => self.record_range(*e, span),
         }
+    }
+
+    /// 2019: the bounds of range record value `e`: the three words its declared type or
+    /// subtype stored (`declared_ranges`), else its fields, read once (`DIRECTION` is
+    /// `ascending`, `descending`: the cell encoding of `to`, `downto`).
+    #[inline(never)]
+    fn record_range(&mut self, e: ExprId, span: Span) -> R<Rng> {
+        let (t, tid) = self.record_of(e, span)?;
+        if let Some(&(space, off)) = self.cx.decl_ranges.get(&e) {
+            let fst = self.field_subtype(t, 0)?;
+            let rt = self.rt_of(self.db.base(fst));
+            let a = self.addr(space, off);
+            let l = self.load(a, Width::B8, rt);
+            let b = self.offset(a, 8);
+            let r = self.load(b, Width::B8, rt);
+            let c = self.offset(a, 16);
+            let d = self.load(c, Width::B8, RegTy::I64);
+            return Ok(Rng {
+                left: l,
+                right: r,
+                dir: Dr::Dyn(d),
+            });
+        }
+        let v = self.expr(e)?;
+        let (base, desc) = self.arr(v, span)?;
+        let mut f = [None; 3];
+        for (n, slot) in f.iter_mut().enumerate() {
+            let (a, d) = self.field_addr(tid, base, desc, n as u32, span)?;
+            let st = self.field_subtype(t, n as u32)?;
+            let V::S(r) = self.value_at(st, a, d, span)? else {
+                return Err(self.cx.ice(span, "a range record field that is not scalar"));
+            };
+            *slot = Some(r);
+        }
+        let [Some(left), Some(right), Some(d)] = f else {
+            return Err(self.cx.ice(span, "a range record without three fields"));
+        };
+        Ok(Rng {
+            left,
+            right,
+            dir: Dr::Dyn(d),
+        })
     }
 
     /// Bounds `dim` of descriptor `dope`, as registers of type `t`.
@@ -3354,7 +3397,7 @@ impl<'a> Fx<'a, '_> {
         while let Some(s) = cur {
             let sub = &db.subtypes[s];
             match &sub.constraint {
-                Constraint::Range(rc @ RangeC::Explicit { .. })
+                Constraint::Range(rc @ (RangeC::Explicit { .. } | RangeC::Record(_)))
                     if let Some(p) = sub.parent
                         && !ty::is_real(db, db.base(s))
                         && db.types[db.base(s)].kind.is_scalar()

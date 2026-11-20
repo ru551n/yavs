@@ -1,0 +1,9 @@
+exit	0
+diag	note	0	0	-	all 1 01 4
+diag	note	0	0	-	p 1 2 true
+diag	note	0	0	-	p 2 1 false
+diag	note	1000000	0	-	g 1 '0'
+diag	note	1000000	0	-	g 1 '1'
+diag	note	1000000	0	-	g 2 '0'
+diag	note	1000000	0	-	g 2 '1'
+diag	note	2000000	1	-	all 123 110 4

@@ -189,6 +189,7 @@ impl Db {
                 ..
             } if self.bounds_known_at_run_time_only(*p) => Staticness::None,
             RangeC::Attr { .. } => Staticness::Globally,
+            RangeC::Record(e) => self.exprs[*e].stat,
         }
     }
 
@@ -290,7 +291,8 @@ impl Db {
             RangeC::Attr {
                 prefix: AttrPrefix::Expr(p),
                 ..
-            } => out.push(*p),
+            }
+            | RangeC::Record(p) => out.push(*p),
             RangeC::Attr { .. } => {}
         };
         match &self.exprs[e].kind {
@@ -371,7 +373,8 @@ impl Db {
             RangeC::Attr {
                 prefix: AttrPrefix::Expr(p),
                 ..
-            } => self.walk_expr(*p, f),
+            }
+            | RangeC::Record(p) => self.walk_expr(*p, f),
             RangeC::Attr { .. } => {}
         }
     }
@@ -575,6 +578,7 @@ impl Db {
                 prefix: AttrPrefix::Expr(p),
                 ..
             } => f(*p, Use::Target),
+            RangeC::Record(e) => f(*e, Use::Value),
             RangeC::Attr { .. } => {}
         }
     }
@@ -766,9 +770,13 @@ impl Db {
                 next.push(Read::Name(*prefix));
             }
             ExprKind::Slice { prefix, range } => {
-                if let RangeC::Explicit { left, right, .. } = range {
-                    next.push(Read::Value(*left));
-                    next.push(Read::Value(*right));
+                match range {
+                    RangeC::Explicit { left, right, .. } => {
+                        next.push(Read::Value(*left));
+                        next.push(Read::Value(*right));
+                    }
+                    RangeC::Record(e) => next.push(Read::Value(*e)),
+                    RangeC::Attr { .. } => {}
                 }
                 next.push(Read::Name(*prefix));
             }
@@ -921,6 +929,7 @@ impl Db {
                 dynamic(*left) || dynamic(*right)
             }
             LspStep::Slice(RangeC::Attr { .. }) => false,
+            LspStep::Slice(RangeC::Record(e)) => dynamic(*e),
         });
         if let Some(mut k) = k {
             // A rebase only applies to the steps after it.
@@ -1734,7 +1743,7 @@ impl Db {
                     crate::types::Direction::Downto => (r, l),
                 })
             }
-            RangeC::Attr { .. } => None,
+            RangeC::Attr { .. } | RangeC::Record(_) => None,
         }
     }
 

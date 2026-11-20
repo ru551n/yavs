@@ -533,6 +533,7 @@ impl Db {
                             crate::hir::AttrPrefix::Expr(x) => self.is_static_object_name(*x),
                             _ => true,
                         },
+                        RangeC::Record(e) => stat(*e),
                     }
             }
             _ => false,

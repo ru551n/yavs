@@ -115,10 +115,10 @@ pub fn deep(db: &Db, body: &[StmtId], out: &mut Vec<StmtId>) {
 /// The bound expressions of a constraint.
 pub fn constraint_exprs(c: &yavs_sem::types::Constraint, out: &mut Vec<ExprId>) {
     use yavs_sem::types::{Constraint as C, RangeC};
-    let mut range = |r: &RangeC| {
-        if let RangeC::Explicit { left, right, .. } = r {
-            out.extend([*left, *right]);
-        }
+    let mut range = |r: &RangeC| match r {
+        RangeC::Explicit { left, right, .. } => out.extend([*left, *right]),
+        RangeC::Record(e) => out.push(*e),
+        RangeC::Attr { .. } => {}
     };
     match c {
         C::Range(r) => range(r),

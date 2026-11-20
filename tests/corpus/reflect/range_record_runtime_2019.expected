@@ -1,0 +1,11 @@
+exit	0
+diag	note	0	0	:range_record_runtime_2019:_p0	x 5 0 false
+diag	note	0	0	:range_record_runtime_2019:_p0	gs 0 5
+diag	note	0	0	:range_record_runtime_2019:_p0	v 1 4 true
+diag	note	0	0	:range_record_runtime_2019:_p0	m 12344321
+diag	note	0	0	:range_record_runtime_2019:_p0	vs 1 4 true
+diag	note	0	0	:range_record_runtime_2019:_p0	va 1 4
+diag	note	0	0	:range_record_runtime_2019:_p0	slice 0110
+diag	note	0	0	:range_record_runtime_2019:_p0	sum 10543 3012
+diag	note	0	0	:range_record_runtime_2019:_p0	sr 210
+diag	note	1000000	0	:range_record_runtime_2019:_p0	sr 345

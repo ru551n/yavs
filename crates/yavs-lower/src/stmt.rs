@@ -73,10 +73,13 @@ impl Fx<'_, '_> {
         let spans = set.choices.iter().flat_map(|c| match c {
             Choice::Expr(e) => vec![at(e)],
             Choice::Range(RangeC::Explicit { left, right, .. }) => vec![at(left), at(right)],
-            Choice::Range(RangeC::Attr {
-                prefix: AttrPrefix::Expr(e),
-                ..
-            }) => vec![at(e)],
+            Choice::Range(
+                RangeC::Attr {
+                    prefix: AttrPrefix::Expr(e),
+                    ..
+                }
+                | RangeC::Record(e),
+            ) => vec![at(e)],
             _ => vec![],
         });
         CovArm::Choice(spans.reduce(|a, b| Span {

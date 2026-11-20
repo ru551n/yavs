@@ -5637,10 +5637,14 @@ impl Model {
             // A slice whose bounds are not globally static (they read a signal) is no static
             // name: its bounds are not elaboration's to pick (LRM 8.1; as for an index).
             ExprKind::Slice { prefix, range } => {
-                if let yavs_sem::types::RangeC::Explicit { left, right, .. } = range
-                    && (db.exprs[*left].stat < Staticness::Globally
-                        || db.exprs[*right].stat < Staticness::Globally)
-                {
+                let not_static = |e: &ExprId| db.exprs[*e].stat < Staticness::Globally;
+                if match range {
+                    yavs_sem::types::RangeC::Explicit { left, right, .. } => {
+                        not_static(left) || not_static(right)
+                    }
+                    yavs_sem::types::RangeC::Record(e) => not_static(e),
+                    yavs_sem::types::RangeC::Attr { .. } => false,
+                } {
                     return Err(crate::eval::err(
                         codes::NOT_EVALUATED,
                         ex.span,

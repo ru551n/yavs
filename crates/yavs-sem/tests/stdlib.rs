@@ -284,6 +284,7 @@ fn numeric_std_body_rule_1() {
                             }
                         }
                         RangeC::Attr { .. } => "attr",
+                        RangeC::Record(_) => "record",
                     });
                 }
                 format!("array({})", kinds.join(","))

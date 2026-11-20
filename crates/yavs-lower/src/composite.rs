@@ -592,7 +592,7 @@ impl Fx<'_, '_> {
     }
 
     /// Record type facts of the record subtype of expression `e`.
-    fn record_of(&mut self, e: ExprId, span: Span) -> R<(TypeId, TyId)> {
+    pub(crate) fn record_of(&mut self, e: ExprId, span: Span) -> R<(TypeId, TyId)> {
         let t = self.db.base(self.db.exprs[e].subtype);
         let tid = self.ty(t, span)?;
         Ok((t, tid))

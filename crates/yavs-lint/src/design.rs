@@ -1214,7 +1214,8 @@ fn range_exprs(r: &RangeC) -> Vec<ExprId> {
         RangeC::Attr {
             prefix: yavs_sem::hir::AttrPrefix::Expr(e),
             ..
-        } => vec![*e],
+        }
+        | RangeC::Record(e) => vec![*e],
         RangeC::Attr { .. } => Vec::new(),
     }
 }

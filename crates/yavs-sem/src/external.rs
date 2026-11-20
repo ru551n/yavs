@@ -562,7 +562,8 @@ impl Db {
                     RangeC::Attr {
                         prefix: crate::hir::AttrPrefix::Expr(p),
                         ..
-                    } => f(*p),
+                    }
+                    | RangeC::Record(p) => f(*p),
                     RangeC::Attr { .. } => {}
                 }
             }

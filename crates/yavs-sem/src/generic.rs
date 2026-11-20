@@ -3817,6 +3817,7 @@ impl Db {
                 reverse: *reverse,
                 dim: *dim,
             },
+            RangeC::Record(e) => RangeC::Record(self.r_expr(r, *e)),
         }
     }
 

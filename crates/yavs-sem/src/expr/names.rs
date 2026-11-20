@@ -676,6 +676,13 @@ impl Db {
             return None;
         };
         let (indexes, elem) = (indexes.clone(), *elem);
+        // 2019: an object of a range record type slices (`v(r)`); a call `f(r)` is no slice.
+        let slice = slice
+            || matches!(args, [ast::AssocElem {
+                formal: None,
+                actual: ast::Actual::Expr(ast::Expr { kind: ast::ExprKind::Name(n), .. }),
+                ..
+            }] if self.range_record_object_type(scope, n).is_some());
         if slice {
             return (indexes.len() == 1).then(|| Interp::new(t, Via::Slice(t)));
         }
@@ -3230,6 +3237,7 @@ impl Db {
                 self.exprs[left].stat.min(self.exprs[right].stat)
             }
             Some(crate::types::RangeC::Attr { .. }) => Staticness::Globally,
+            Some(crate::types::RangeC::Record(e)) => self.exprs[e].stat,
             None => Staticness::Locally,
         }
     }
@@ -3260,7 +3268,7 @@ impl Db {
             crate::types::RangeC::Explicit { left, right, .. } => {
                 self.exprs[*left].stat.min(self.exprs[*right].stat) == Staticness::Locally
             }
-            crate::types::RangeC::Attr { .. } => false,
+            crate::types::RangeC::Attr { .. } | crate::types::RangeC::Record(_) => false,
         })
     }
 

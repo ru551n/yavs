@@ -722,24 +722,33 @@ impl<'a, 'b> Fx<'a, 'b> {
         let ranges = db.declared_ranges(d);
         let span = db.decls[d].span;
         for rc in ranges {
-            let RangeC::Explicit { left, right, .. } = rc else {
-                continue;
+            // A range record (2019) also stores its direction.
+            let (key, words) = match rc {
+                RangeC::Explicit { left, right, .. }
+                    if db.value(*left).is_none() || db.value(*right).is_none() =>
+                {
+                    (*left, 2)
+                }
+                RangeC::Record(e) => (*e, 3),
+                _ => continue,
             };
-            if db.value(*left).is_some() && db.value(*right).is_some() {
-                continue;
-            }
             self.stmt_start(StmtKind::Decl, span);
             // A slot of an earlier lowering of this function is stale.
-            self.cx.decl_ranges.remove(left);
+            self.cx.decl_ranges.remove(&key);
             let r = self.range(rc, span)?;
-            let off = self.fb.slot(16, 8);
+            let off = self.fb.slot(8 * words, 8);
             let a = self.addr(Space::Frame(self.depth), off);
             self.store(a, r.left, Width::B8);
             let b = self.offset(a, 8);
             self.store(b, r.right, Width::B8);
+            if words == 3 {
+                let d = self.dir_reg(r.dir);
+                let c = self.offset(a, 16);
+                self.store(c, d, Width::B8);
+            }
             self.cx
                 .decl_ranges
-                .insert(*left, (Space::Frame(self.depth), off));
+                .insert(key, (Space::Frame(self.depth), off));
         }
         Ok(())
     }
@@ -1929,6 +1938,23 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
     Ok(())
 }
 
+/// A type or subtype of a design unit or package whose range is a range record that is not
+/// globally static (a shared variable) is not lowered: it would have to be evaluated once.
+// ponytail: give `inst_object_of` and `pkg_ranges` a direction word, as `declared_ranges` has.
+fn dynamic_range_records(db: &Db, cx: &mut Cx, ranges: &[&RangeC]) -> R<()> {
+    for rc in ranges {
+        if let RangeC::Record(e) = rc
+            && db.exprs[*e].stat < yavs_sem::stat::Staticness::Globally
+        {
+            return Err(cx.unsupported(
+                db.exprs[*e].span,
+                "a range record that is not globally static in a type or subtype declaration outside a process or subprogram",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn inst_object_of(
     db: &Db,
     pb: &mut ProgramBuilder,
@@ -1938,11 +1964,9 @@ fn inst_object_of(
 ) -> R<()> {
     let decl = &db.decls[d];
     if let DeclKind::Type(_) | DeclKind::Subtype(_) = decl.kind {
-        for left in db
-            .declared_ranges(d)
-            .into_iter()
-            .filter_map(|r| db.dynamic_range(r))
-        {
+        let ranges = db.declared_ranges(d);
+        dynamic_range_records(db, cx, &ranges)?;
+        for left in ranges.into_iter().filter_map(|r| db.dynamic_range(r)) {
             let off = cx.inst_alloc(16);
             cx.decl_ranges.insert(left, (Space::Inst, off));
             ir.ranges.push(crate::InstRange {
@@ -2843,8 +2867,9 @@ impl Fx<'_, '_> {
     fn pkg_ranges(&mut self, d: DeclId, p: u32, size: &mut u32) -> R<()> {
         let db = self.db;
         let span = db.decls[d].span;
-        let ranges: Vec<_> = db
-            .declared_ranges(d)
+        let ranges = db.declared_ranges(d);
+        dynamic_range_records(db, self.cx, &ranges)?;
+        let ranges: Vec<_> = ranges
             .into_iter()
             .filter(|r| db.dynamic_range(r).is_some())
             .collect();

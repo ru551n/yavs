@@ -120,6 +120,7 @@ pub fn range_value(db: &Db, r: &RangeC) -> Option<StaticRange> {
             let r = subtype_range(db, st, dim.saturating_sub(1) as usize)?;
             Some(if *reverse { r.reversed() } else { r })
         }
+        RangeC::Record(_) => None,
     }
 }
 
@@ -475,6 +476,7 @@ fn choice_span(db: &Db, c: &Choice, fallback: Span) -> Span {
             }
             _ => fallback,
         },
+        Choice::Range(RangeC::Record(e)) => db.exprs[*e].span,
         Choice::Element(_) | Choice::Others => fallback,
     }
 }
@@ -489,6 +491,7 @@ pub(crate) fn range_stat(db: &Db, r: &RangeC) -> Staticness {
                 Staticness::Globally
             }
         }
+        RangeC::Record(e) => db.exprs[*e].stat,
     }
 }
 
@@ -509,7 +512,14 @@ pub fn resolve_choices(
     for c in choices {
         let res = match c {
             ast::Choice::Others(_) => Ok(Choice::Others),
-            ast::Choice::Range(dr) => r.discrete_range(db, dr, ty).map(Choice::Range),
+            ast::Choice::Range(dr) => match r.discrete_range(db, dr, ty) {
+                // ponytail: a choice range needs its bounds as expressions (`choice_low_high`).
+                Ok(RangeC::Record(e)) => Err(db.unsupported(
+                    db.exprs[e].span,
+                    "a range record value known only at run time as a choice",
+                )),
+                r => r.map(Choice::Range),
+            },
             ast::Choice::Expr(e) => match r.type_mark(db, e) {
                 Some(st) => {
                     let base = db.base(st);
@@ -632,7 +642,9 @@ fn fold_items(
                                 _ => None,
                             }
                         }
-                        RangeC::Attr { .. } => range_value(db, r).map(|s| (s.low(), s.high())),
+                        RangeC::Attr { .. } | RangeC::Record(_) => {
+                            range_value(db, r).map(|s| (s.low(), s.high()))
+                        }
                     };
                     (v, range_stat(db, r))
                 }
@@ -2263,8 +2275,8 @@ fn choice_low_high(db: &mut Db, c: &Choice, index_st: SubtypeId, span: Span) -> 
             let high = attr(db, crate::attr::PredefAttr::High);
             (low, high)
         }
-        Choice::Others | Choice::Element(_) => {
-            unreachable!("a single named choice is a value or a range")
+        Choice::Range(RangeC::Record(_)) | Choice::Others | Choice::Element(_) => {
+            unreachable!("a single named choice is a value or a static range")
         }
     }
 }

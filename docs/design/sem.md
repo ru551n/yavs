@@ -363,6 +363,7 @@ pub enum Constraint {
 pub enum RangeC {
     Explicit { left: ExprId, dir: Direction, right: ExprId },
     Attr { prefix: AttrPrefix, reverse: bool, dim: u32 },   // `a'range`, `t'reverse_range(2)`
+    Record(ExprId),   // 2019: a range record value known only at run time, `bit_vector(f(n))`
 }
 ```
 

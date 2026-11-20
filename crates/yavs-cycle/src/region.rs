@@ -3708,8 +3708,12 @@ fn exprs_calls(db: &Db, xs: &[ExprId], out: &mut Vec<LocalCall>) -> bool {
             }
             ExprKind::Slice { prefix, range } => {
                 stack.push(*prefix);
-                if let yavs_sem::types::RangeC::Explicit { left, right, .. } = range {
-                    stack.extend([*left, *right]);
+                match range {
+                    yavs_sem::types::RangeC::Explicit { left, right, .. } => {
+                        stack.extend([*left, *right])
+                    }
+                    yavs_sem::types::RangeC::Record(e) => stack.push(*e),
+                    yavs_sem::types::RangeC::Attr { .. } => {}
                 }
             }
             ExprKind::Field { prefix, .. } | ExprKind::Deref { prefix } => stack.push(*prefix),

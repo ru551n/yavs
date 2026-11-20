@@ -478,21 +478,30 @@ impl Db {
         exp: Expected,
         required: bool,
     ) -> ExprId {
+        self.in_context(required, |db| {
+            let saved_top = db.top_context.take();
+            let mut top = e;
+            while let ast::ExprKind::Paren(inner) = &top.kind {
+                top = inner;
+            }
+            db.top_context = db
+                .context_subtype
+                .take()
+                .map(|st| (top as *const ast::Expr as usize, st));
+            let id = db.resolve(scope, e, exp);
+            db.top_context = saved_top;
+            id
+        })
+    }
+
+    /// Runs `f` as one complete context (9.3.1): fresh memo tables, its static overflows
+    /// reported at the end (errors when `required`).
+    pub(crate) fn in_context<T>(&mut self, required: bool, f: impl FnOnce(&mut Self) -> T) -> T {
         let (fresh, fresh_names) = self.memo_pool.pop().unwrap_or_default();
         let saved = std::mem::replace(&mut self.memo, fresh);
         let saved_names = std::mem::replace(&mut self.name_memo, fresh_names);
         let saved_overflow = std::mem::take(&mut self.overflow);
-        let saved_top = self.top_context.take();
-        let mut top = e;
-        while let ast::ExprKind::Paren(inner) = &top.kind {
-            top = inner;
-        }
-        self.top_context = self
-            .context_subtype
-            .take()
-            .map(|st| (top as *const ast::Expr as usize, st));
-        let id = self.resolve(scope, e, exp);
-        self.top_context = saved_top;
+        let id = f(self);
         for (o, why, _) in std::mem::replace(&mut self.overflow, saved_overflow) {
             let span = self.exprs[o].span;
             let arith = why.is_none();

@@ -984,6 +984,9 @@ impl Model {
         if let Some(v) = self.attr_text(db, e, scope)? {
             return Ok(v);
         }
+        if let ExprKind::Conditional { alts } = &ex.kind {
+            return self.conditional(db, alts, scope, ex.span);
+        }
         let mut inner: Option<Box<Diagnostic>> = None;
         let r = db.fold_with(e, &mut |c| match self.eval(db, c, scope) {
             Ok(v) => Some(v),
@@ -1504,6 +1507,7 @@ impl Model {
         let unfolded = rs.iter().any(|r| {
             matches!(r, yavs_sem::hir::RangeC::Explicit { left, right, .. }
                 if db.value(*left).is_none() || db.value(*right).is_none())
+                || matches!(r, yavs_sem::hir::RangeC::Record(_))
         });
         if unfolded && rs.iter().all(|r| db.dynamic_range(r).is_none()) {
             match self.shape(db, st, scope, span) {
@@ -1713,6 +1717,30 @@ impl Model {
         }
     }
 
+    /// `a when c else b` (2019, also the direction of `x'range'value`): the first alternative
+    /// whose condition is true (LRM 9.3.8).
+    #[inline(never)]
+    fn conditional(
+        &mut self,
+        db: &Db,
+        alts: &[(ExprId, Option<ExprId>)],
+        scope: Option<ScopeId>,
+        span: Span,
+    ) -> R<Val> {
+        for &(v, c) in alts {
+            match c {
+                Some(c) if self.eval(db, c, scope)? != Val::Enum(1) => {}
+                _ => return self.eval(db, v, scope),
+            }
+        }
+        Err(err(
+            codes::EVAL_FAILED,
+            span,
+            "evaluation fails during elaboration: no condition of this conditional expression is true",
+            "no alternative applies",
+        ))
+    }
+
     /// Evaluate a range constraint.
     pub fn range(&mut self, db: &Db, r: &RangeC, scope: Option<ScopeId>, span: Span) -> R<Bounds> {
         if let Some(left) = db.dynamic_range(r) {
@@ -1752,7 +1780,39 @@ impl Model {
                     b
                 })
             }
+            RangeC::Record(e) => self.record_range(db, *e, scope),
         }
+    }
+
+    /// 2019: the bounds a range record value gives (`DIRECTION` 0 is `ascending`).
+    #[inline(never)]
+    fn record_range(&mut self, db: &Db, e: ExprId, scope: Option<ScopeId>) -> R<Bounds> {
+        let span = db.exprs[e].span;
+        let Val::Record(f) = self.eval(db, e, scope)? else {
+            return Err(err(
+                codes::INTERNAL,
+                span,
+                "internal error: a range record value that is not a record",
+                "this is a bug in yavs",
+            ));
+        };
+        let [l, r, d] = &*f else {
+            return Err(err(
+                codes::INTERNAL,
+                span,
+                "internal error: a range record without three fields",
+                "this is a bug in yavs",
+            ));
+        };
+        Ok(Bounds {
+            left: int(l, span)?,
+            dir: if int(d, span)? == 0 {
+                Direction::To
+            } else {
+                Direction::Downto
+            },
+            right: int(r, span)?,
+        })
     }
 
     /// The bounds of range `left` of a type or subtype of a run-time package, as its package
@@ -2761,7 +2821,8 @@ pub(crate) fn may_call_impure(db: &Db, e: ExprId) -> bool {
             RangeC::Attr {
                 prefix: AttrPrefix::Expr(p),
                 ..
-            } => expr(db, *p, seen),
+            }
+            | RangeC::Record(p) => expr(db, *p, seen),
             _ => false,
         })
     }

@@ -60,6 +60,9 @@ pub(crate) struct Code {
     pub(crate) settle_units: Vec<Vec<u32>>,
     /// The steps with units, as a mark: a mark that holds them all runs the settle unmarked.
     pub(crate) every: Box<[u64]>,
+    /// The steps without units, which run under any mark; none when one lies behind a guard
+    /// (then `steps` looks at every step).
+    fixed: Option<Box<[u64]>>,
     /// The words of the region's signals, the first ones of the image (`YAVS_CYCLE_SKIP_CHECK`).
     signal_words: usize,
     /// With `YAVS_CYCLE_SKIP_CHECK`: per step of the settle, the words its members drive.
@@ -301,6 +304,31 @@ impl Code {
         mark: Option<&[u64]>,
         guards: bool,
     ) -> Result<(), u32> {
+        // The settle with a mark: only the steps it holds and those without units, found by
+        // their bits (a wake reaching few steps walks few).
+        if let (Some(m), Some(fx)) = (mark, &self.fixed)
+            && !self.skip_check
+            && rs.len() == self.settle_units.len()
+        {
+            let mut i = 0;
+            while i < rs.len() {
+                let mut w = i / 64;
+                let mut bits = (m[w] | fx[w]) & (!0u64 << (i % 64));
+                while bits == 0 {
+                    w += 1;
+                    if w >= fx.len() {
+                        return Ok(());
+                    }
+                    bits = m[w] | fx[w];
+                }
+                i = 64 * w + bits.trailing_zeros() as usize;
+                if i >= rs.len() {
+                    break;
+                }
+                i = self.one(img, rs, i, guards)?;
+            }
+            return Ok(());
+        }
         let mut i = 0;
         while i < rs.len() {
             if let Some(m) = mark
@@ -317,58 +345,64 @@ impl Code {
                 i += n;
                 continue;
             }
-            match rs[i] {
-                // SAFETY: the code reads and writes only words below `words`, checked in `run`.
-                Run::Fn(e) => match unsafe { e(img.as_mut_ptr()) } {
-                    0 => {}
-                    s => return Err(s - 1),
-                },
-                Run::Save(g) => {
-                    let (ws, mut at) = (&self.groups[g].0, self.groups[g].1 as usize);
-                    for &(w, c) in ws {
-                        img.copy_within(w as usize..(w + c) as usize, at);
-                        at += c as usize;
-                    }
-                }
-                Run::Shared(e, t, sites) => {
-                    // SAFETY: every block of every table lies below `words` (checked in `compile`).
-                    match unsafe { e(img.as_mut_ptr(), self.tables[t as usize].as_ptr()) } {
-                        0 => {}
-                        s => return Err(sites + s - 1),
-                    }
-                }
-                Run::Copy(c) => {
-                    for &(d, s, n) in &self.copies[c] {
-                        img.copy_within(s as usize..(s + n) as usize, d as usize);
-                    }
-                }
-                Run::Same(g) => {
-                    let (ws, mut at) = (&self.groups[g].0, self.groups[g].1 as usize);
-                    for &(w, c) in ws {
-                        let (w, c) = (w as usize, c as usize);
-                        if img[w..w + c] != img[at..at + c] {
-                            return Err(UNSETTLED);
-                        }
-                        at += c;
-                    }
-                }
-                Run::Guard(g, n, checked) if guards => {
-                    let skip = self.guard(img, g, checked);
-                    if let Some(c) = &self.counts {
-                        c[g][usize::from(skip)].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    if skip {
-                        if self.skip_check {
-                            self.recheck(img, g, &rs[i + 1..i + 1 + n])?;
-                        }
-                        i += n;
-                    }
-                }
-                Run::Guard(..) => {}
-            }
-            i += 1;
+            i = self.one(img, rs, i, guards)?;
         }
         Ok(())
+    }
+
+    /// Step `i` of `rs`; the next step to look at.
+    #[inline(always)]
+    fn one(&self, img: &mut [u64], rs: &[Run], i: usize, guards: bool) -> Result<usize, u32> {
+        match rs[i] {
+            // SAFETY: the code reads and writes only words below `words`, checked in `run`.
+            Run::Fn(e) => match unsafe { e(img.as_mut_ptr()) } {
+                0 => {}
+                s => return Err(s - 1),
+            },
+            Run::Save(g) => {
+                let (ws, mut at) = (&self.groups[g].0, self.groups[g].1 as usize);
+                for &(w, c) in ws {
+                    img.copy_within(w as usize..(w + c) as usize, at);
+                    at += c as usize;
+                }
+            }
+            Run::Shared(e, t, sites) => {
+                // SAFETY: every block of every table lies below `words` (checked in `compile`).
+                match unsafe { e(img.as_mut_ptr(), self.tables[t as usize].as_ptr()) } {
+                    0 => {}
+                    s => return Err(sites + s - 1),
+                }
+            }
+            Run::Copy(c) => {
+                for &(d, s, n) in &self.copies[c] {
+                    img.copy_within(s as usize..(s + n) as usize, d as usize);
+                }
+            }
+            Run::Same(g) => {
+                let (ws, mut at) = (&self.groups[g].0, self.groups[g].1 as usize);
+                for &(w, c) in ws {
+                    let (w, c) = (w as usize, c as usize);
+                    if img[w..w + c] != img[at..at + c] {
+                        return Err(UNSETTLED);
+                    }
+                    at += c;
+                }
+            }
+            Run::Guard(g, n, checked) if guards => {
+                let skip = self.guard(img, g, checked);
+                if let Some(c) = &self.counts {
+                    c[g][usize::from(skip)].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                if skip {
+                    if self.skip_check {
+                        self.recheck(img, g, &rs[i + 1..i + 1 + n])?;
+                    }
+                    return Ok(i + n + 1);
+                }
+            }
+            Run::Guard(..) => {}
+        }
+        Ok(i + 1)
     }
 
     /// Whether guard `g`'s member may be skipped; if not, the inputs that changed are copied for
@@ -2180,8 +2214,23 @@ fn finish(
     if (plan.edge_parts.iter()).any(|(ws, _)| ws.iter().any(|&w| w as usize >= words)) {
         return Err("an edge gate's word does not fit the image".into());
     }
+    // A step without units behind a guard runs only after it: `steps` walks every step then.
+    let mut fixed = vec![0u64; settle_units.len().div_ceil(64)];
+    let mut covered = 0usize;
+    let mut fixed_ok = true;
+    for (i, us) in settle_units.iter().enumerate() {
+        if us.is_empty() {
+            fixed[i / 64] |= 1 << (i % 64);
+            fixed_ok &= covered == 0;
+        }
+        covered = match entries[0][i] {
+            Run::Guard(_, n, _) => n.max(covered.saturating_sub(1)),
+            _ => covered.saturating_sub(1),
+        };
+    }
     Ok(Code {
         _module: module,
+        fixed: fixed_ok.then(|| fixed.into_boxed_slice()),
         entries,
         edge_parts: plan.edge_parts,
         groups: plan.groups,

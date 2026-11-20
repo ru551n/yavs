@@ -323,7 +323,8 @@ a small design with a testbench and four things cycle mode does not take:
   them nothing outside waits on, which makes them cheap. ``inputs`` are the signals the region reads from the
   kernel, and ``wake the region`` lists those whose change makes the region run between clock edges. When there
   are any, a ``wakes:`` line says how many of them have a combinational path to a signal that something outside
-  reads (those are settled at once) and how many wait for the next clock edge.
+  reads, to a check, or to the asynchronous reset of a register (those are settled at once) and how many wait for
+  the next clock edge.
 * The last block lists the cycle-based processes, each as ``clocked`` or ``combinational``.
 
 One process that stays out can make others expensive, because every signal between the region and the kernel is

@@ -975,6 +975,10 @@ fn report(
                 "a check in {}",
                 e.hier.proc_label(&e.procs[p], yavs_elab::Case::Lrm)
             ),
+            region::Reach::Reset(p) => format!(
+                "the reset branch of {}",
+                e.hier.proc_label(&e.procs[p], yavs_elab::Case::Lrm)
+            ),
         };
         let at_once: Vec<String> = (sel.at_once.iter())
             .map(|(l, r)| format!("{} to {}", name(l), why(r)))

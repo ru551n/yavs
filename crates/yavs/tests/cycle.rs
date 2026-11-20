@@ -457,6 +457,30 @@ fn inputs_settled_at_the_next_edge_give_the_same_result() {
     assert!(out.contains("q=0 q2=0 tq=4 handshakes=0"), "{out}");
 }
 
+/// An input that reaches a register only through an asynchronous reset made inside the region,
+/// the register read only by another register: a pulse between edges resets it, so it is settled
+/// at once (it was left for the next edge, which saw the pulse over).
+#[test]
+fn a_reset_pulse_between_edges_through_combinational_code_resets_the_register() {
+    let dir = tempdir("cycle-lazyrst");
+    analyze(&dir, "lazyrst.vhd", include_str!("cycle/lazyrst.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_lazyrst");
+        assert_eq!(normal.len(), 6, "{normal:?}");
+        assert!(normal[2].ends_with("21000000fs+0: s=0"), "{normal:?}");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_lazyrst");
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 3 of 5 processes run cycle-based")
+                && err.contains(
+                    "wakes: 1 settled at once, through combinational code to what outside sees \
+                     (cycle_lazyrst.ext to the reset branch of cycle_lazyrst.areg)"
+                ),
+            "{err}"
+        );
+    }
+}
+
 /// A sensitivity list naming part of a signal is not complete for cycle mode even when it names
 /// the object the body reads: the process stays out, and the result is the normal mode's.
 const PART_LIST: &str = "\

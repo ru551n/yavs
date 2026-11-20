@@ -1,0 +1,1 @@
+Cycle mode: a pulse of an asynchronous reset that the region makes with combinational logic between two clock edges now resets its registers also when only other registers read them; the register used to keep its value.

@@ -65,12 +65,14 @@ pub(crate) struct Selection {
 }
 
 /// Why a change of an input is settled at once: the exported output (and a process outside that
-/// reads it, if one is known) or the member process (its index) with a check its combinational
-/// path reaches.
+/// reads it, if one is known), the member process (its index) with a check its combinational
+/// path reaches, or the clocked member whose reset branch it reaches (a pulse between edges loads
+/// its registers).
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Reach {
     Output(LeafId, Option<usize>),
     Check(usize),
+    Reset(usize),
 }
 
 /// A loop group of the settle: its steps, each member run at the pass levels of what it drives
@@ -2447,8 +2449,9 @@ fn boundary(
 }
 
 /// The wakes with a combinational path (combinational members, reset branches and the resets
-/// themselves; leaf by leaf, a read reaching every leaf the code writes) to an exported output or
-/// to combinational code with a check: a change of such an input is visible before the next edge.
+/// themselves; leaf by leaf, a read reaching every leaf the code writes) to an exported output, to
+/// combinational code with a check, or to a reset branch: a change of such an input is visible
+/// before the next edge, or loads registers between edges.
 fn at_once(
     members: &[(usize, Body)],
     reset_reads: &BTreeSet<LeafId>,
@@ -2458,6 +2461,7 @@ fn at_once(
 ) -> BTreeMap<LeafId, Reach> {
     let mut succ: BTreeMap<LeafId, BTreeSet<LeafId>> = BTreeMap::new();
     let mut checked: BTreeMap<LeafId, usize> = BTreeMap::new();
+    let mut resets: BTreeMap<LeafId, usize> = BTreeMap::new();
     for (pi, b) in members {
         let reads: Vec<LeafId> = match b.kind {
             Kind::Comb => b.reads.iter().copied().collect(),
@@ -2469,6 +2473,9 @@ fn at_once(
             Kind::Clocked => continue,
         };
         for r in reads {
+            if b.kind == Kind::Clocked {
+                resets.entry(r).or_insert(*pi);
+            }
             succ.entry(r).or_default().extend(b.writes.iter().copied());
             if !b.checks.is_empty() {
                 checked.entry(r).or_insert(*pi);
@@ -2492,6 +2499,11 @@ fn at_once(
                     todo.push(n);
                 }
             }
+        }
+        if !out.contains_key(&w)
+            && let Some(&pi) = seen.iter().find_map(|l| resets.get(l))
+        {
+            out.insert(w, Reach::Reset(pi));
         }
     }
     out

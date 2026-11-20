@@ -1,15 +1,16 @@
 # The VS Code debugger extension (editors/vscode): the DAP client test, the test in a real
 # headless VS Code, and `vsce package`; the .vsix is uploaded as the artifact `vsix`. On its own it
-# tests against this commit's yavs (a debug build); release.yml calls it with `yavs_artifact`, the
+# tests against this commit's yavs (a debug build), so a change in any crate that builds into that
+# binary runs it too (about 1.4 min); release.yml calls it with `yavs_artifact`, the
 # Linux x86_64 archive built in the same run, and publishes the .vsix (RELEASING.md).
 name: VS Code extension
 
 on:
   push:
     branches: [main]
-    paths: ["editors/vscode/**", "crates/yavs-dap/**", ".github/workflows/vscode.yml"]
+    paths: ["editors/vscode/**", "crates/**", "Cargo.toml", "Cargo.lock", ".github/workflows/vscode.yml"]
   pull_request:
-    paths: ["editors/vscode/**", "crates/yavs-dap/**", ".github/workflows/vscode.yml"]
+    paths: ["editors/vscode/**", "crates/**", "Cargo.toml", "Cargo.lock", ".github/workflows/vscode.yml"]
   workflow_call:
     inputs:
       yavs_artifact:

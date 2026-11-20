@@ -1,6 +1,8 @@
 # cocotb's own regression on Windows (#849), the part that needs no make (tools/cocotb/run.py): a
 # pinned cocotb from PyPI, its VHPI library built here with MSVC, yavs.exe from this commit. Its own
-# workflow, not a job of `conformance`, whose runs a newer push cancels.
+# workflow, not a job of `conformance`, whose runs a newer push cancels. A push runs it only for the
+# cocotb paths (5.6 min of Windows per commit is too much for every crate change); nightly.yml calls it
+# every night, which catches a change in any other crate that breaks the binary.
 name: cocotb-windows
 
 on:
@@ -11,12 +13,13 @@ on:
       - "tools/cocotb/**"
       - ".github/workflows/cocotb-windows.yml"
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: cocotb-windows-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:

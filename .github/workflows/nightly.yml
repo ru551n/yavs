@@ -1,7 +1,8 @@
 # The full CI matrix on main every night (docs/decisions.md "CI matrix", #888): ci.yml with every
 # platform (Linux x86_64, Linux aarch64, Windows x86_64; ci.yml's plan job sees a schedule or
 # manual run and turns them all on). A red run opens one issue labelled `nightly` or, while one is
-# open, adds a comment to it. Pushes and pull requests run Linux x86_64 only (ci.yml).
+# open, adds a comment to it. cocotb-windows.yml (5.6 min of Windows, not run per commit for
+# crate changes) runs here too and is reported the same way. Pushes and pull requests run Linux x86_64 only (ci.yml).
 name: nightly
 
 on:
@@ -16,9 +17,12 @@ jobs:
   ci:
     uses: ./.github/workflows/ci.yml
 
+  cocotb-windows:
+    uses: ./.github/workflows/cocotb-windows.yml
+
   report:
-    needs: ci
-    if: ${{ always() && needs.ci.result != 'success' }}
+    needs: [ci, cocotb-windows]
+    if: ${{ always() && (needs.ci.result != 'success' || needs.cocotb-windows.result != 'success') }}
     runs-on: ubuntu-24.04
     permissions:
       issues: write
@@ -31,8 +35,8 @@ jobs:
         run: |
           failed=$(gh api "repos/$GH_REPO/actions/runs/${{ github.run_id }}/jobs" --paginate \
             --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out") | "- " + .name + " (" + .conclusion + ")"')
-          body=$(printf 'Nightly run %s on `%s` (%s): result `%s`.\n\nJobs that did not pass:\n\n%s\n' \
-            "$RUN_URL" "$GITHUB_REF_NAME" "$GITHUB_SHA" "${{ needs.ci.result }}" "${failed:-none found, see the run}")
+          body=$(printf 'Nightly run %s on `%s` (%s): result `%s` (cocotb-windows `%s`).\n\nJobs that did not pass:\n\n%s\n' \
+            "$RUN_URL" "$GITHUB_REF_NAME" "$GITHUB_SHA" "${{ needs.ci.result }}" "${{ needs.cocotb-windows.result }}" "${failed:-none found, see the run}")
           gh label create nightly --color B60205 --description "Red nightly CI run on main" 2>/dev/null || true
           n=$(gh issue list --label nightly --state open --json number -q '.[0].number')
           if [ -n "$n" ]; then

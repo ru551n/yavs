@@ -13,6 +13,8 @@ tools/stepcount/AGENTS.md section 2 for the method and its limits.
 import argparse
 import bisect
 import collections
+import contextlib
+import io
 import os
 import re
 import subprocess
@@ -111,7 +113,63 @@ def lines_of(binary, pcs, inner=False):
     return res
 
 
-def run(binary, args, frm, to, mx, per, top, nlines, within, inner, ops=None, ops_fn=None, ops_detail=None, ops_lines=None, ops_pcs=None):
+ANON = 1 << 63  # step.c tags an absolute address of anonymous memory (generated code) with this bit
+
+
+def perf_map(path):
+    """Sorted [(address, size, name)] of a perf map (`address size name` in hex, one line per function)."""
+    out = []
+    for ln in open(path):
+        f = ln.split(None, 2)
+        if len(f) == 3:
+            out.append((int(f[0], 16), int(f[1], 16), f[2].strip()))
+    return sorted(out)
+
+
+def srcmap_file(codedir, name):
+    """The `<name>.srcmap` of a function in CODEDIR (the name as `YAVS_CLIFT_CODEDIR` writes it), as
+    [(start, end, ir pc)] with offsets in the function's code; the file stores pc + 1, 0 = no position."""
+    safe = "".join(c if c.isascii() and c.isalnum() else "_" for c in name[:100])
+    p = os.path.join(codedir, safe + ".srcmap")
+    if not os.path.exists(p):
+        return []
+    return [(int(a), int(b), int(c) - 1) for a, b, c in (ln.split() for ln in open(p))]
+
+
+def print_compiled(anon, pmap, codedir, per, top, nlines):
+    """Instructions of generated code per function and per IR position. `anon`: [(address, count)]."""
+    div, total = per or 1, sum(n for _, n in anon)
+    starts = [m[0] for m in pmap]
+    byfunc, bypos, srcmaps = collections.Counter(), collections.Counter(), {}
+    for pc, n in anon:
+        i = bisect.bisect_right(starts, pc) - 1
+        if i < 0 or pc >= pmap[i][0] + pmap[i][1]:
+            byfunc["(not in the perf map)"] += n
+            continue
+        a, _, name = pmap[i]
+        byfunc[name] += n
+        if codedir:
+            if name not in srcmaps:
+                srcmaps[name] = srcmap_file(codedir, name)
+            for lo, hi, ir in srcmaps[name]:
+                if lo <= pc - a < hi:
+                    bypos[(name, ir)] += n
+                    break
+            else:
+                bypos[(name, None)] += n
+    unit = f" per {per}" if per else ""
+    print(f"\ncompiled code (self instructions{unit}), {total / div:.1f} in generated code:")
+    for name, n in byfunc.most_common(top):
+        print(f"{n / div:12.1f} {100 * n / total:5.1f}%  {name}")
+    if codedir and nlines:
+        print(f"\nIR positions of compiled code (instructions{unit}):")
+        for (name, ir), n in bypos.most_common(nlines):
+            print(f"{n / div:12.1f} {100 * n / total:5.1f}%  {name}  " + ("pc %d" % ir if ir is not None else "(no IR position)"))
+
+
+def run(binary, args, frm, to, mx, per, top, nlines, within, inner, ops=None, ops_fn=None, ops_detail=None, ops_lines=None, ops_pcs=None, compiled=None):
+    """`compiled`: (perf map path or None for /tmp/perf-<pid>.map of the run, code directory or None) asks for
+    generated code to be counted per function (and per IR position with a code directory)."""
     binary = os.path.realpath(binary)
     BINARY[0] = binary
     syms = symbols(binary)
@@ -140,10 +198,37 @@ def run(binary, args, frm, to, mx, per, top, nlines, within, inner, ops=None, op
                     die(f"--ops-lines {ops_lines!r}: no op of that name")
                 watch = next((a for a, nm in hits if nm == [ops_lines]), hits[0][0])
                 cmd += ["-w", f"{watch:x}"]
-        r = subprocess.run(cmd + ["-o", pcfile, "--", binary, *args], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        env = dict(os.environ)
+        codedir = None
+        if compiled:
+            env["YAVS_CLIFT_PERFMAP"] = "1"
+            codedir = compiled[1] or os.path.join(d, "code")
+            os.makedirs(codedir, exist_ok=True)
+            env["YAVS_CLIFT_CODEDIR"] = codedir
+        r = subprocess.run(cmd + ["-o", pcfile, "--", binary, *args], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=env)
         if r.returncode:
             die(r.stderr.strip())
         pcs = [(int(a, 16), int(n)) for a, n in (ln.split() for ln in open(pcfile))]
+        anon = [(a & ~ANON, n) for a, n in pcs if a & ANON]
+        pcs = [(a, n) for a, n in pcs if not a & ANON]
+        pid = re.search(r"^step: pid (\d+)$", r.stderr, re.M).group(1)
+        r.stderr = re.sub(r"^step: pid \d+\n", "", r.stderr, flags=re.M)
+        pmap = []
+        if compiled:
+            mp = compiled[0] or f"/tmp/perf-{pid}.map"
+            if os.path.exists(mp):
+                pmap = perf_map(mp)
+                if not compiled[0]:
+                    os.remove(mp)  # written by this run, only for us
+            report = io.StringIO()  # the code directory may be ours: report before it goes
+            with contextlib.redirect_stdout(report):
+                if not anon:
+                    print("\nno instructions in generated code (--tier=auto needed to compile)")
+                elif not pmap:
+                    print(f"\nstepcount: {len(anon)} generated-code addresses but no perf map {mp}")
+                else:
+                    print_compiled(anon, pmap, codedir, per, top, nlines)
+            report = report.getvalue().rstrip()
         armdata = None
         if ops is not None:
             armdata = (open(armfile).read(), open(armfile + ".fn").read())
@@ -156,6 +241,8 @@ def run(binary, args, frm, to, mx, per, top, nlines, within, inner, ops=None, op
     total = sum(n for _, n in pcs)
     for ln in r.stderr.strip().splitlines():
         print(ln)
+    if compiled and ops is None:
+        print(report)
     if ops is not None:
         print_ops(armdata, syms, table, total, per, ops, ops_detail)
         if ops_lines:
@@ -313,7 +400,48 @@ def self_test():
             assert work == 2002, f"{pie}: work executed {work} instructions, expected 2002"
             info = lines_of(exe, list(counts))
             assert any("t.c" in loc for loc, _ in info.values()), f"{pie}: addr2line found no line of t.c"
+    compiled_self_test()
     print("stepcount self-test ok")
+
+
+GEN_C = r"""
+#include <string.h>
+#include <sys/mman.h>
+/* Generated code at a fixed address, as a JIT leaves it: mov ecx,1000; dec ecx; jnz -4; ret. */
+int main(void) {
+    static const unsigned char code[] = {0xb9, 0xe8, 0x03, 0, 0, 0xff, 0xc9, 0x75, 0xfc, 0xc3};
+    void *p = mmap((void *)0x10000000, 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+    if (p != (void *)0x10000000) return 1;
+    memcpy(p, code, sizeof code);
+    ((void (*)(void))p)();
+    return 0;
+}
+"""
+
+
+def compiled_self_test():
+    """Generated code of a tiny program (mapped after start, as a JIT does) is counted per function and
+    per IR position from a hand-written perf map and srcmap: 1 + 2 * 1000 + 1 instructions."""
+    with tempfile.TemporaryDirectory(prefix="stepcount-test", dir=_cache()) as d:
+        src, exe, mp, cd = (os.path.join(d, n) for n in ("g.c", "g", "g.map", "code"))
+        os.mkdir(cd)
+        open(src, "w").write(GEN_C)
+        r = subprocess.run([os.environ.get("CC", "cc"), "-O1", "-no-pie", "-o", exe, src], capture_output=True, text=True)
+        if r.returncode:
+            die(r.stderr)
+        open(mp, "w").write("10000000 a f1_work\n")
+        open(os.path.join(cd, "f1_work.srcmap"), "w").write("0 5 1\n5 10 2\n")  # IR pc 0: the mov, pc 1: the rest
+        out = subprocess.run([sys.executable, "-I", os.path.abspath(__file__), "--perfmap", mp, "--codedir", cd, "--lines", "10", exe],
+                             capture_output=True, text=True)
+        if out.returncode:
+            die(out.stderr)
+        want = ("2002.0", "f1_work  pc 1", "1.0")
+        row = [ln for ln in out.stdout.splitlines() if ln.rstrip().endswith("f1_work")]
+        assert row and row[0].split()[0] == want[0], f"compiled code per function:\n{out.stdout}"
+        pos = {ln.split()[-1]: ln.split()[0] for ln in out.stdout.splitlines() if "f1_work  pc" in ln}
+        assert pos == {"1": "2001.0", "0": "1.0"}, f"compiled code per IR position: {pos}\n{out.stdout}"
+        assert os.path.exists(mp), "a map given with --perfmap is kept"
 
 
 def _cache():
@@ -336,6 +464,9 @@ def main():
     ap.add_argument("--ops-lines", metavar="OP", help="with --ops: where the instructions of the op OP are spent, by source line (callees included)")
     ap.add_argument("--ops-pcs", metavar="FILE", help="with --ops-lines: also write the relative pc and count of every instruction of the op to FILE")
     ap.add_argument("--ops-fn", metavar="SYM", help="with --ops: the function holding the dispatch jump (default the loop `run_ops::<false, false>`)")
+    ap.add_argument("--compiled", action="store_true", help="also count generated code (Cranelift tier) per function and IR position: sets YAVS_CLIFT_PERFMAP=1 and a temporary YAVS_CLIFT_CODEDIR for the run")
+    ap.add_argument("--perfmap", metavar="FILE", help="with --compiled: read this perf map instead of /tmp/perf-<pid>.map (and keep it)")
+    ap.add_argument("--codedir", metavar="DIR", help="with --compiled: the YAVS_CLIFT_CODEDIR to use and keep (per IR position needs its .srcmap files)")
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("binary", nargs="?")
     ap.add_argument("args", nargs=argparse.REMAINDER)
@@ -344,7 +475,8 @@ def main():
         return self_test()
     if not a.binary:
         ap.error("BIN is required")
-    run(a.binary, a.args, a.frm, a.to, a.max, a.per, a.top, a.lines, a.within, a.inner, a.ops, a.ops_fn, a.ops_detail, a.ops_lines, a.ops_pcs)
+    run(a.binary, a.args, a.frm, a.to, a.max, a.per, a.top, a.lines, a.within, a.inner, a.ops, a.ops_fn, a.ops_detail, a.ops_lines, a.ops_pcs,
+        (a.perfmap, a.codedir) if a.compiled or a.perfmap or a.codedir else None)
 
 
 if __name__ == "__main__":

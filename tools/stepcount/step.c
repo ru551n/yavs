@@ -13,7 +13,8 @@
  *    lines (hex arm, decimal), and with SYMFILE ("hex-address hex-size" lines, sorted) ARMFILE.fn gets
  *    "arm symbol-index instructions" lines: where the instructions of each op were spent.
  * -w ARM: also ARMFILE.pc gets "relative-pc count" lines for the instructions executed by the ops of that arm (hex).
- * PCFILE gets "relative-pc count" lines (hex pc, decimal) for addresses of the program file;
+ * PCFILE gets "relative-pc count" lines (hex pc, decimal) for addresses of the program file, and for
+ * instructions in anonymous memory (generated code) "address count" lines with bit 63 of the address set;
  * stderr gets the totals, and the instructions outside it (libraries, vdso) per mapping.
  * Only the main thread is traced: run the program with one thread. x86-64 Linux only.
  */
@@ -30,6 +31,8 @@
 #include <sys/user.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#define ANON (1ull << 63) /* tag of an absolute address of anonymous memory (compiled code) in PCFILE */
 
 static void die(const char *m) {
     fprintf(stderr, "step: %s: %s\n", m, errno ? strerror(errno) : "failed");
@@ -139,7 +142,9 @@ static uint64_t load_maps(pid_t pid, uint64_t first_vaddr) {
     snprintf(p, sizeof p, "/proc/%d/maps", pid);
     FILE *f = fopen(p, "r");
     if (!f) die("open maps");
-    uint64_t base = 0; int have = 0; nmaps = 0;
+    uint64_t base = 0, olo[256], on[256]; int have = 0, nold = nmaps; /* counts survive a re-read, by start address */
+    for (int i = 0; i < nold; i++) { olo[i] = maps[i].lo; on[i] = maps[i].n; }
+    nmaps = 0;
     while (fgets(line, sizeof line, f) && nmaps < 256) {
         uint64_t lo, hi, off; char name[4096] = "";
         if (sscanf(line, "%" SCNx64 "-%" SCNx64 " %*s %" SCNx64 " %*s %*s %4095[^\n]", &lo, &hi, &off, name) < 3) continue;
@@ -148,6 +153,8 @@ static uint64_t load_maps(pid_t pid, uint64_t first_vaddr) {
         maps[nmaps].lo = lo; maps[nmaps].hi = hi;
         snprintf(maps[nmaps].name, sizeof maps[nmaps].name, "%s", *nm ? nm : "[anon]");
         maps[nmaps].is_exe = !strcmp(nm, exe);
+        maps[nmaps].n = 0;
+        for (int i = 0; i < nold; i++) if (olo[i] == lo) maps[nmaps].n = on[i];
         nmaps++;
     }
     fclose(f);
@@ -224,6 +231,7 @@ int main(int argc, char **argv) {
     if (waitpid(pid, &st, 0) < 0 || !WIFSTOPPED(st)) { errno = 0; die("child did not stop at exec"); }
     uint64_t base = load_maps(pid, fv);
     if (!pie) base = 0;
+    fprintf(stderr, "step: pid %d\n", pid);
 
     struct user_regs_struct r;
     int open_win = from == 0;
@@ -260,10 +268,21 @@ int main(int argc, char **argv) {
         if (max && total >= max) break;
         total++;
         uint64_t rel = pc - base;
-        int in = 0;
-        for (int i = 0; i < nmaps; i++)
-            if (pc >= maps[i].lo && pc < maps[i].hi) { if (maps[i].is_exe) in = 1; else maps[i].n++; break; }
-        if (in) bump(rel); else outside++;
+        int in = 0, anon = 1, seen = 0;
+        for (int retry = 0; retry < 2 && !seen; retry++) {
+            for (int i = 0; i < nmaps; i++)
+                if (pc >= maps[i].lo && pc < maps[i].hi) {
+                    seen = 1;
+                    anon = !maps[i].is_exe && !strcmp(maps[i].name, "[anon]");
+                    if (maps[i].is_exe) in = 1; else maps[i].n++;
+                    break;
+                }
+            if (!seen && !retry) { /* mapped since the last read (a library, generated code) */
+                load_maps(pid, fv);
+            }
+        }
+        if (in) bump(rel);
+        else { outside++; if (anon) bump(pc | ANON); } /* absolute address, tagged */
         if (disp) {
             if (after_dispatch) { cur = rel; after_dispatch = 0; arms[arm_index(cur)].ops++; }
             if (cur) {

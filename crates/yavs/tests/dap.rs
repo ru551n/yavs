@@ -1053,6 +1053,37 @@ fn tcp_probe_is_no_session() {
     tcp_session(true);
 }
 
+/// #864: over TCP the session of a failing run waits for `disconnect` after `terminated`, and a
+/// client that closes its socket instead ends the process at once, with the run's status.
+#[test]
+fn tcp_close_after_a_failing_run_ends_the_process() {
+    let d = design(
+        "tcpfail",
+        "entity t is end;
+architecture a of t is
+begin
+  process
+  begin
+    assert false report \"bad\" severity failure;
+    wait;
+  end process;
+end;
+",
+        &[],
+    );
+    let mut child = spawn(&d, "t", &["--dap=0"]);
+    let _w = Watchdog::new(child.id(), 60);
+    let (mut c, _) = attach_tcp(&mut child);
+    c.request("launch", json!({}));
+    c.request("configurationDone", json!({}));
+    assert_eq!(c.event("exited")["body"]["exitCode"], 1);
+    c.event("terminated");
+    let start = std::time::Instant::now();
+    drop(c);
+    assert_eq!(child.wait().expect("wait").code(), Some(1));
+    assert!(start.elapsed().as_secs() < 10, "{:?}", start.elapsed());
+}
+
 fn tcp_session(probe: bool) {
     let dir = setup("tcp");
     let mut child = spawn(&dir, "tb", &["--dap=0"]);

@@ -300,3 +300,27 @@ begin
   u1 : entity work.calls_sub generic map (N => 1);
   u2 : entity work.calls_sub generic map (N => 2);
 end architecture;
+
+-- A protected state variable whose range reads another state variable: the object keeps the
+-- bounds, which the debugger does not list as variables (#1176).
+entity prot_range is end;
+architecture a of prot_range is
+  type bounded_t is protected
+    procedure bump;
+  end protected;
+  type bounded_t is protected body
+    variable k : integer := 5;
+    variable q : integer range 0 to k := 1;
+    procedure bump is
+    begin
+      q := q + 1;
+    end procedure;
+  end protected body;
+  shared variable sv : bounded_t;
+begin
+  process
+  begin
+    sv.bump;
+    wait;
+  end process;
+end architecture;

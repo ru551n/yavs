@@ -81,9 +81,12 @@ pub enum Ty {
     File {
         elem: TyId,
     },
-    /// A protected type; `state` is the record type of its private variables.
+    /// A protected type; `state` is the record type of its private variables, `vars` how many
+    /// of its leading fields are the body's declared variables (the rest is the object's own
+    /// bookkeeping, which a debugger does not list).
     Protected {
         state: TyId,
+        vars: u32,
     },
 }
 

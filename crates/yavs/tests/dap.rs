@@ -289,6 +289,16 @@ fn console_commands_in_evaluate() {
     script_case("console", &[]);
 }
 
+/// A protected object's state lists the body's variables, not the bounds the object keeps for
+/// `variable q : integer range 0 to k` (#1176): `prot_range.script` stops in a method.
+#[test]
+fn protected_state_hides_kept_ranges() {
+    script_case("prot_range", &[]);
+    let t = std::fs::read_to_string(cases().join("prot_range.expected")).expect("expected");
+    assert!(t.contains(r#""name":"q""#), "{t}");
+    assert!(!t.contains("'left") && !t.contains("'right"), "{t}");
+}
+
 /// Signal breakpoints: data breakpoint info for a signal, a local and unknown names, stops on
 /// changes (`setDataBreakpoints`, one with a condition that never holds) and on values
 /// (`yavs/setSignalBreakpoints`), rejected values. Identical at `--threads=4`.

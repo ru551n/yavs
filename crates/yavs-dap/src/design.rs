@@ -1200,7 +1200,7 @@ pub(crate) fn ir_lit(prog: &Program, ty: TyId, v: &ConstValue) -> Option<(LitTyp
             },
             Lit::Handle(*h as u64),
         ),
-        (Ty::Protected { state }, ConstValue::Int(h)) => (
+        (Ty::Protected { state, .. }, ConstValue::Int(h)) => (
             LitType::Handle {
                 target: state.0,
                 protected: true,

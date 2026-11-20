@@ -88,7 +88,7 @@ impl Fx<'_, '_> {
     fn state_of(&mut self, t: TypeId, span: Span) -> R<TyId> {
         let tid = self.ty(t, span)?;
         match self.fb.program().types().get(tid) {
-            Some(Ty::Protected { state }) => Ok(*state),
+            Some(Ty::Protected { state, .. }) => Ok(*state),
             _ => Err(self.cx.ice(span, "protected type without a state record")),
         }
     }

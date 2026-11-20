@@ -1799,3 +1799,38 @@ fn conditions_read_shared_variables() {
     assert!(o.contains("t.vhd:40"), "{o}");
     assert!(o.contains("\n6\n"), "{o}");
 }
+
+/// A protected object's state lists the body's variables, not the bounds it keeps for
+/// `variable q : integer range 0 to k` (#1176).
+#[test]
+fn protected_state_hides_kept_ranges() {
+    let d = tempdir_with(
+        "protrange",
+        "entity t is end;
+architecture a of t is
+  type bounded_t is protected
+    procedure bump;
+  end protected;
+  type bounded_t is protected body
+    variable k : integer := 5;
+    variable q : integer range 0 to k := 1;
+    procedure bump is
+    begin
+      q := q + 1;
+    end procedure;
+  end protected body;
+  shared variable sv : bounded_t;
+begin
+  process
+  begin
+    sv.bump;
+    wait;
+  end process;
+end;
+",
+    );
+    let o = script(&d, "t", "break t.vhd:11; run; describe sv; examine sv.q");
+    let out = stdout(&o) + &stderr(&o);
+    assert!(out.contains("fields k, q\n"), "{out}");
+    assert!(!out.contains("'left") && !out.contains("'right"), "{out}");
+}

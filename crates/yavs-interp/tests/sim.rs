@@ -2780,7 +2780,7 @@ fn protected_counter() {
             desc: None,
         }],
     });
-    let pt = pb.ty(Ty::Protected { state });
+    let pt = pb.ty(Ty::Protected { state, vars: 1 });
     let what = pb.check_msg("counter", Dir::To);
     let make = pb.declare("make_counter", FuncKind::Function, None);
     let incr = pb.declare("counter.incr", FuncKind::Procedure, None);

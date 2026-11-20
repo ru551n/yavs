@@ -66,7 +66,8 @@ pub(crate) fn lower_ty(
         }
         TypeKind::Protected { .. } => {
             let state = pb.ty(Ty::Record { fields: Vec::new() });
-            let id = pb.ty(Ty::Protected { state });
+            let vars = crate::protected::state_vars(db, t).len() as u32;
+            let id = pb.ty(Ty::Protected { state, vars });
             cx.tys.insert(t, id);
             let mut fields = Vec::new();
             for d in crate::protected::state_vars(db, t) {

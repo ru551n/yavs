@@ -1037,7 +1037,7 @@ fn local(
 /// can read it. A stopped process reads its own heap and, if it holds the shared state, the shared
 /// heap; else the shared heap is free to lock.
 fn deref(sh: &Shared, at: &At<'_, '_>, t: &LitType, v: &Lit) -> Option<(LitType, Lit)> {
-    let (LitType::Handle { target, .. }, Lit::Handle(h)) = (t, v) else {
+    let (LitType::Handle { target, protected }, Lit::Handle(h)) = (t, v) else {
         return None;
     };
     if *h == 0 {
@@ -1054,7 +1054,20 @@ fn deref(sh: &Shared, at: &At<'_, '_>, t: &LitType, v: &Lit) -> Option<(LitType,
         At::Kernel(_) => shared(),
     }?;
     let c = yavs_elab::ir_decode_shown(&sh.prog, ty, &cv)?;
-    design::ir_lit(&sh.prog, ty, &c)
+    let (t, v) = design::ir_lit(&sh.prog, ty, &c)?;
+    // A protected state lists the body's variables only, not the object's own bookkeeping.
+    match (protected, t, v) {
+        (true, LitType::Record(mut fs), Lit::Record(mut xs)) => {
+            let vars = (sh.prog.types.iter()).find_map(|(_, t)| match t {
+                yavs_ir::Ty::Protected { state, vars } if *state == ty => Some(*vars as usize),
+                _ => None,
+            });
+            fs.truncate(vars.unwrap_or(usize::MAX));
+            xs.truncate(vars.unwrap_or(usize::MAX));
+            Some((LitType::Record(fs), Lit::Record(xs)))
+        }
+        (_, t, v) => Some((t, v)),
+    }
 }
 
 /// The type and value of a shared variable at this stop; `None`: it has no object (nothing of the

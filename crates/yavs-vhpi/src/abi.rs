@@ -111,6 +111,14 @@ fn not_implemented(name: &str) {
 }
 
 fn get_obj(s: &mut State, h: vhpiHandleT, func: &str) -> Option<Object> {
+    match get_raw(s, h, func)? {
+        Object::Stmt { node, .. } => Some(Object::Node(node)),
+        o => Some(o),
+    }
+}
+
+/// [`get_obj`] with a statement's owner kept (`Object::Stmt`).
+fn get_raw(s: &mut State, h: vhpiHandleT, func: &str) -> Option<Object> {
     let obj = s.handles.get(h).cloned();
     if obj.is_none() {
         s.fail(Fault::Misuse, format!("{func}: invalid or released handle"));
@@ -118,13 +126,13 @@ fn get_obj(s: &mut State, h: vhpiHandleT, func: &str) -> Option<Object> {
     obj
 }
 
-/// The object of an optional reference handle: `Ok(None)` for NULL, `Err` (reported) for a
-/// stale one.
+/// The object of an optional reference handle, a statement with its owner: `Ok(None)` for
+/// NULL, `Err` (reported) for a stale one.
 fn get_ref(s: &mut State, h: vhpiHandleT, func: &str) -> Result<Option<Object>, ()> {
     if h.is_null() {
         return Ok(None);
     }
-    get_obj(s, h, func).map(Some).ok_or(())
+    get_raw(s, h, func).map(Some).ok_or(())
 }
 
 // ---- Called from shim.c ----------------------------------------------
@@ -353,8 +361,8 @@ pub extern "C" fn vhpi_release_handle(h: vhpiHandleT) -> c_int {
 pub extern "C" fn vhpi_compare_handles(a: vhpiHandleT, b: vhpiHandleT) -> c_int {
     with_state(|s| {
         match (
-            get_obj(s, a, "vhpi_compare_handles"),
-            get_obj(s, b, "vhpi_compare_handles"),
+            get_raw(s, a, "vhpi_compare_handles"),
+            get_raw(s, b, "vhpi_compare_handles"),
         ) {
             // Iterators are equal only to themselves.
             (Some(Object::Iter(_)), _) | (_, Some(Object::Iter(_))) => c_int::from(a == b),

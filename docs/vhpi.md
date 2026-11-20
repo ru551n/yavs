@@ -17,7 +17,7 @@ For calling a plain C function from VHDL without a plugin, see "Calling C from V
 |---|---|---|
 | Loading | `--vhpi=LIB[:ENTRY]`, several plugins, `+args` | |
 | Connectivity | drivers, contributors, loads, the simulated net, basic signals, pending transactions, resolution, signal kind, whether a signal is forced | processes that read a signal, as loads |
-| Hierarchy | instances, blocks, generates, processes, packages, generics, ports, signals, constants, variables, record fields, array elements, user attributes, aliases, files, implicit signals, components, subprograms, libraries, use clauses, equivalent processes of concurrent statements with their sensitivity, sequential statements | expressions, variables of subprograms, stack frames, `vhpiParent` of a sequential statement, configuration declarations |
+| Hierarchy | instances, blocks, generates, processes, packages, generics, ports, signals, constants, variables, record fields, array elements, user attributes, aliases, files, implicit signals, components, subprograms, libraries, use clauses, equivalent processes of concurrent statements with their sensitivity, sequential statements | expressions, variables of subprograms, stack frames, configuration declarations |
 | Lookup | by name, by index, iterators, parent/prefix handles | |
 | Reading values | all formats, from callbacks, whole records and arrays of records as raw data, the address an access variable of a process designates (`vhpiPtrVal`) | protected objects (they have no value), an alias of part of an object, access values of shared variables |
 | Writing values | signals and ports (deposit or force with propagation), variables, driver transactions | forcing variables, constants, generics, non-propagating modes on signals |

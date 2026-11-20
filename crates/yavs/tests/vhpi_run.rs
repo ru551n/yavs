@@ -1583,6 +1583,7 @@ const STMTS: &str = "entity top is end;\n\
       end if;\n\
       report \"r\";\n\
     end process;\n\
+    g: for i in 0 to 1 generate gp: process begin wait; end process; end generate;\n\
     end;\n";
 
 /// Equivalent processes, sensitivity, flags, sequential statements; statement callbacks and
@@ -1601,11 +1602,13 @@ fn vhpi_statements() {
         "vhpiConcProcCallStmtK cp label=cp postponed=0 passive=1 guarded=0 sens: c",
         "vhpiProcessStmtK bd label=bd postponed=1 passive=1 guarded=0 sens: a b",
         "old spelling: ok",
-        "vhpiIfStmtK line=15 end=21 seq=1",
-        "  vhpiVarAssignStmtK line=16 end=16 seq=1",
-        "  vhpiForLoopK line=18 end=20 seq=1",
-        "    vhpiNullStmtK line=19 end=19 seq=1",
-        "vhpiReportStmtK line=22 end=22 seq=1",
+        "vhpiIfStmtK line=15 end=21 seq=1 parent=vhpiProcessStmtK same=1",
+        "  vhpiVarAssignStmtK line=16 end=16 seq=1 parent=vhpiIfStmtK same=1",
+        "  vhpiForLoopK line=18 end=20 seq=1 parent=vhpiIfStmtK same=1",
+        "    vhpiNullStmtK line=19 end=19 seq=1 parent=vhpiForLoopK same=1",
+        "vhpiReportStmtK line=22 end=22 seq=1 parent=vhpiProcessStmtK same=1",
+        "generate 0: vhpiWaitStmtK parent=:top:g(0):gp",
+        "generate 1: vhpiWaitStmtK parent=:top:g(1):gp",
         "staticness: signal 1003 const 1002",
         "statement callback: NULL error=1",
         "stack frame: NULL error=1",

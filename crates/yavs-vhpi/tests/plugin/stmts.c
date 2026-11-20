@@ -23,8 +23,10 @@ static int err(void) {
 static void seq(vhpiHandleT o, int depth) {
   vhpiHandleT it = vhpi_iterator(vhpiSeqStmts, o);
   for (vhpiHandleT x; it && (x = vhpi_scan(it));) {
-    vhpi_printf("%*s%s line=%d end=%d seq=%d\n", depth, "", STR(vhpiKindStrP, x), vhpi_get(vhpiLineNoP, x),
-                vhpi_get(vhpiEndLineNoP, x), vhpi_get(vhpiIsSeqStmtP, x));
+    vhpiHandleT p = vhpi_handle(vhpiParent, x);
+    vhpi_printf("%*s%s line=%d end=%d seq=%d parent=%s same=%d\n", depth, "", STR(vhpiKindStrP, x),
+                vhpi_get(vhpiLineNoP, x), vhpi_get(vhpiEndLineNoP, x), vhpi_get(vhpiIsSeqStmtP, x),
+                p ? STR(vhpiKindStrP, p) : "null", p ? vhpi_compare_handles(p, o) : -1);
     seq(x, depth + 2);
   }
 }
@@ -44,6 +46,12 @@ PLUGIN_EXPORT void start(void) {
   }
   vhpi_printf("old spelling: %s\n", vhpi_iterator(vhpiSensitivitys, vhpi_handle_by_name("top:ca", NULL)) ? "ok" : "null");
   seq(vhpi_handle_by_name("top:bd", NULL), 0);
+  /* One statement node per source statement, its parent per instance (#143). */
+  for (int i = 0; i < 2; i++) {
+    vhpiHandleT g = vhpi_handle_by_name(i ? "top:g(1):gp" : "top:g(0):gp", NULL);
+    vhpiHandleT w = vhpi_scan(vhpi_iterator(vhpiSeqStmts, g));
+    vhpi_printf("generate %d: %s parent=%s\n", i, STR(vhpiKindStrP, w), STR(vhpiFullCaseNameP, vhpi_handle(vhpiParent, w)));
+  }
   vhpiHandleT sg = vhpi_handle_by_name("top:a", NULL);
   vhpi_printf("staticness: signal %d const %d\n", vhpi_get(vhpiStaticnessP, sg),
               vhpi_get(vhpiStaticnessP, vhpi_handle_by_name("top:k", NULL)));

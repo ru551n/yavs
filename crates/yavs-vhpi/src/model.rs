@@ -69,6 +69,13 @@ pub(crate) enum Object {
     Callback(u64),
     /// A region, declaration or design unit.
     Node(NodeId),
+    /// Sequential statement `node` (one node per statement of the source) as a statement of
+    /// `owner`, the process, equivalent process or subprogram body it was reached from
+    /// (`vhpiSeqStmts`), which `vhpiParent` needs (#143). Every other call sees `Node(node)`.
+    Stmt {
+        node: NodeId,
+        owner: NodeId,
+    },
     /// Sub-element `path` of declaration `base`: per step a record field index or a row-major
     /// array element index (`Layout::step`).
     Elem {
@@ -955,7 +962,7 @@ impl State {
             Object::Conn { inward: true, .. } => vhpiInPortK,
             Object::Conn { .. } => vhpiOutPortK,
             Object::Transaction(_) => vhpiTransactionK,
-            Object::Node(n) => self.design.node(*n).kind,
+            Object::Node(n) | Object::Stmt { node: n, .. } => self.design.node(*n).kind,
             Object::Elem { base, path } => {
                 self.design
                     .elem(*base, path)
@@ -1135,6 +1142,16 @@ impl State {
         kind: vhpiOneToOneT,
         reference: Option<&Object>,
     ) -> Result<Object, bool> {
+        // A statement's parent: the compound statement around it, else its owner (#143).
+        if let Some(&Object::Stmt { node, owner }) = reference {
+            if kind == vhpiParent {
+                return Ok(match self.design.extra.one.get(&(node, vhpiParent)) {
+                    Some(&p) => Object::Stmt { node: p, owner },
+                    None => Object::Node(owner),
+                });
+            }
+            return self.one_to_one(kind, Some(&Object::Node(node)));
+        }
         if let Some(Object::Node(n)) = reference {
             if let Some(&x) = self.design.extra.one.get(&(*n, kind)) {
                 return Ok(Object::Node(x));
@@ -1239,6 +1256,24 @@ impl State {
     ) -> Result<Option<Iter>, bool> {
         let list =
             |items: Vec<Object>| Ok((!items.is_empty()).then_some(Iter::List { items, next: 0 }));
+        // The statements of a process, subprogram body or compound statement know their owner.
+        if rel == vhpiSeqStmts
+            && let Some(&(Object::Node(owner) | Object::Stmt { owner, .. })) = reference
+        {
+            let n = match reference {
+                Some(&Object::Stmt { node, .. }) => node,
+                _ => owner,
+            };
+            let items = self.design.extra.many.get(&(n, vhpiSeqStmts));
+            return list(
+                (items.into_iter().flatten())
+                    .map(|&node| Object::Stmt { node, owner })
+                    .collect(),
+            );
+        }
+        if let Some(&Object::Stmt { node, .. }) = reference {
+            return self.iterate(rel, Some(&Object::Node(node)));
+        }
         // The relations of `Design::extra` (#831); no entry is an empty iteration.
         if matches!(
             rel,

@@ -810,6 +810,7 @@ impl Builder<'_> {
         for i in inner {
             let c = self.seq_stmt(i);
             self.link_many(n, vhpiSeqStmts, c);
+            self.d.extra.one.insert((c, vhpiParent), n);
         }
         n
     }

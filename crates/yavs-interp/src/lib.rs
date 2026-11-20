@@ -3007,6 +3007,18 @@ impl InterpProcess {
         Ok((ty, v))
     }
 
+    /// The address of the data of the object access variable `name` designates (null for
+    /// `null`), as a foreign call's access parameter gets it (VHPI `vhpiPtrVal`, #143).
+    pub fn access_ptr(&mut self, name: &str) -> Result<*mut std::ffi::c_void, String> {
+        let (ty, a) = self.var_slot(name)?;
+        self.with_sh(|m| match read_slot(m, ty, a)? {
+            CallVal::Cell(h) => m.access_ptr(h),
+            CallVal::Composite { .. } => Err(exec::Fault::Runtime(format!(
+                "variable `{name}` is not of an access type"
+            ))),
+        })
+    }
+
     /// Whether variable `name` holds exactly `v` (as [`InterpProcess::var`] would return it),
     /// compared in place without copying the value (the waveform recorder's per-step check).
     /// `stamp` is the [`Stamp`] of the data when `v` was read; a composite whose data is an

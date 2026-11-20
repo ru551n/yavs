@@ -856,12 +856,21 @@ pub unsafe extern "C" fn vhpi_get_value(expr: vhpiHandleT, value: *mut vhpiValue
 
 /// `vhpi_get_value` of `obj` into `v`: 0, -1 on error, or the buffer size needed.
 fn get_value(s: &mut State, obj: &Object, v: &mut vhpiValueT) -> c_int {
-    // An access parameter of a foreign call: the designated object's data, or NULL.
-    if let Some(p) = s.foreign_access(obj) {
+    // An access parameter of a foreign call or an access variable: the designated object's
+    // data, or NULL.
+    let access = match s.access_var(obj) {
+        Some(Ok(p)) => Some(p),
+        Some(Err((fault, m))) => {
+            s.fail(fault, m);
+            return -1;
+        }
+        None => s.foreign_access(obj),
+    };
+    if let Some(p) = access {
         if !matches!(v.format, vhpiPtrVal | vhpiObjTypeVal) {
             s.fail(
                 Fault::Misuse,
-                "vhpi_get_value: an access parameter has only a vhpiPtrVal value",
+                "vhpi_get_value: an access value has only a vhpiPtrVal value",
             );
             return -1;
         }

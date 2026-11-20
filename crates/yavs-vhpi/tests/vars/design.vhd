@@ -1,5 +1,5 @@
 -- Process and shared variables read and deposited through VHPI (#309): scalars, a logic
--- vector, a string and a record, by the `vars` test plugin (tests/plugin/vars.c). Analysed
+-- vector, a string, a record and access values (vhpiPtrVal), by the `vars` test plugin (tests/plugin/vars.c). Analysed
 -- with `--relaxed` (shared variables of non-protected types).
 library ieee;
 use ieee.std_logic_1164.all;
@@ -34,6 +34,7 @@ architecture a of top is
     b : std_logic_vector(3 downto 0);
     t : time;
   end record;
+  type int_ptr is access integer;
   signal clk : std_logic := '0';
   shared variable sv : integer := 5;
   shared variable pc : work.pkg.counter_t;
@@ -48,9 +49,12 @@ begin
     variable b : boolean := false;
     variable s : string(1 to 3) := "abc";
     variable x : real := 0.5;
+    variable ap : int_ptr := new integer'(42);
+    variable np : int_ptr;
   begin
     if rising_edge(clk) then
       n := n + 1;
+      ap.all := ap.all + 1;
       v := std_logic_vector(unsigned(v) + 1);
       r.a := r.a * 2;
       report "n=" & integer'image(n) & " v=" & to_string(v) & " r.a=" & integer'image(r.a)

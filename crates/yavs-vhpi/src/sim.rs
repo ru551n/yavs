@@ -7,6 +7,7 @@
 // VHPI names are matched as written in the C standard.
 #![allow(non_upper_case_globals)]
 
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use yavs_elab::{Built, ScopeId};
@@ -138,6 +139,12 @@ pub(crate) fn var(
         }
         Ok(v)
     })
+}
+
+/// The address of the data the access variable `name` of kernel process `proc` designates
+/// (null for `null`).
+pub(crate) fn var_ptr(h: &mut Hook<'_>, proc: u32, name: &str) -> Result<*mut c_void, String> {
+    interp(h, proc, |p| p.access_ptr(name))
 }
 
 /// [`var`] of the non-protected shared variable `decl` of region `scope` (`None`: a

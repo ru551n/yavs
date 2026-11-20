@@ -724,6 +724,29 @@ impl State {
         }
     }
 
+    /// `vhpiPtrVal` of a variable of an access type (#143): the address of the designated
+    /// object's data, 0 for `null`; `None` when `obj` is no such variable.
+    pub(crate) fn access_var(&self, obj: &Object) -> Option<Result<u64, (Fault, String)>> {
+        let &Object::Node(n) = obj else {
+            return None;
+        };
+        if !self.design.access.contains(&n) {
+            return None;
+        }
+        let misuse = |m: String| (Fault::Misuse, format!("vhpi_get_value: {m}"));
+        let node = self.design.node(n);
+        let Origin::Var { proc: Some(p), .. } = node.origin else {
+            return Some(Err(misuse(
+                "only a process variable of an access type has a vhpiPtrVal value".into(),
+            )));
+        };
+        Some(
+            with_hook(|h| crate::sim::var_ptr(h, p, &node.name))
+                .ok_or_else(|| misuse("variable values are read in simulation callbacks".into()))
+                .and_then(|r| r.map(|ptr| ptr as usize as u64).map_err(misuse)),
+        )
+    }
+
     /// The value of variable `node` (#309), changed by `update` when given; `None` outside a
     /// simulation callback (processes are suspended only there).
     fn var(&self, node: &Node, update: Update<'_>) -> Option<Result<ConstValue, String>> {
@@ -808,6 +831,13 @@ impl State {
         let at = self.at(obj, "vhpi_put_value")?;
         match (&at.node.origin, at.node.kind) {
             (Origin::Signal { .. }, _) => {}
+            (Origin::Var { .. }, _)
+                if Self::base(obj).is_some_and(|n| self.design.access.contains(&n)) =>
+            {
+                return Err(misuse(
+                    "an access value cannot be written through VHPI".into(),
+                ));
+            }
             (Origin::Var { .. }, _) => return self.put_var(obj, &at, mode, decode),
             _ => {
                 let kind = self.kind(obj);

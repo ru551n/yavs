@@ -34,6 +34,10 @@ vhpi:   sv=5
 vhpi:   un=8
 vhpi:   @work:pkg:pv=1010
 vhpi:   @work:pkg:pv(3)=3
+vhpi:   p:ap.all=42
+vhpi:   p:np null=1 format=14
+vhpi: an access value as an integer: error: vhpi_get_value: an access value has only a vhpiPtrVal value
+vhpi: write an access value: error: vhpi_put_value: an access value cannot be written through VHPI
 ** Note: 5000000fs+0: n=1 v=00000001 r.a=2 r.b=0000 r.t=2000000 fs b=false s=abc
     Process top.p
 ** Note: 5000000fs+0: sv=6 pv=1010
@@ -55,6 +59,10 @@ vhpi:   sv=6
 vhpi:   un=8
 vhpi:   @work:pkg:pv=1010
 vhpi:   @work:pkg:pv(3)=3
+vhpi:   p:ap.all=43
+vhpi:   p:np null=1 format=14
+vhpi: an access value as an integer: error: vhpi_get_value: an access value has only a vhpiPtrVal value
+vhpi: write an access value: error: vhpi_put_value: an access value cannot be written through VHPI
 vhpi: deposits: ok
 vhpi: t=12 after the deposits
 vhpi:   p:n=100

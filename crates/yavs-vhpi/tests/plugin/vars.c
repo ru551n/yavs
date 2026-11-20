@@ -87,6 +87,30 @@ static void dump(const char *when) {
   show("@work:pkg:pv(3)", vhpiLogicVal);
 }
 
+/* The access variables (#143): what `ap` designates, `np` is null, misuse. */
+static void access(void) {
+  vhpiValueT v;
+  memset(&v, 0, sizeof v);
+  v.format = vhpiPtrVal;
+  if (vhpi_get_value(h("p:ap"), &v))
+    check("p:ap");
+  else
+    vhpi_printf("vhpi:   p:ap.all=%lld\n", v.value.ptr ? *(long long *)v.value.ptr : -1LL);
+  memset(&v, 0, sizeof v);
+  v.format = vhpiObjTypeVal;
+  v.value.ptr = &v;
+  if (vhpi_get_value(h("p:np"), &v))
+    check("p:np");
+  else
+    vhpi_printf("vhpi:   p:np null=%d format=%d\n", v.value.ptr == NULL, (int)v.format);
+  v.format = vhpiIntVal;
+  vhpi_get_value(h("p:ap"), &v);
+  check("an access value as an integer");
+  v.format = vhpiPtrVal;
+  vhpi_put_value(h("p:ap"), &v, vhpiDeposit);
+  check("write an access value");
+}
+
 static int put(const char *name, vhpiValueT *v, vhpiPutValueModeT mode) {
   return vhpi_put_value(h(name), v, mode);
 }
@@ -118,6 +142,7 @@ static void at12(const vhpiCbDataT *cb) {
   vhpiValueT v;
   (void)cb;
   dump("t=12");
+  access();
   put_int("p:n", vhpiIntVal, 100, vhpiDepositPropagate);
   put_str("p:v", vhpiBinStrVal, "10100101");
   put_int("p:r.a", vhpiIntVal, 42, vhpiDeposit);
@@ -149,6 +174,7 @@ static void at12(const vhpiCbDataT *cb) {
 static void end_of_init(const vhpiCbDataT *cb) {
   (void)cb;
   dump("end of initialization");
+  access();
 }
 
 static void finish(const vhpiCbDataT *cb) {

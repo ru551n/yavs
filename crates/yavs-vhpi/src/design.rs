@@ -279,6 +279,8 @@ pub(crate) struct Design {
     pub(crate) net: crate::connect::Net,
     /// The variables of a protected type (`vhpi_protected_call`).
     pub(crate) protected: std::collections::HashSet<NodeId>,
+    /// The variables of an access type (`vhpiPtrVal`).
+    pub(crate) access: std::collections::HashSet<NodeId>,
     pub(crate) nodes: Vec<Node>,
     pub(crate) packages: Vec<NodeId>,
     pub(crate) types: Types,
@@ -339,6 +341,7 @@ impl Design {
             libraries: Vec::new(),
             net: Default::default(),
             protected: Default::default(),
+            access: Default::default(),
             nodes: Vec::new(),
             packages: Vec::new(),
             types: Types::default(),
@@ -1196,6 +1199,11 @@ impl Builder<'_> {
             TypeKind::Protected { .. }
         ) {
             self.d.protected.insert(node);
+        }
+        if matches!(db.types[db.base(o.subtype)].kind, TypeKind::Access { .. })
+            && matches!(self.d.node(node).origin, Origin::Var { .. })
+        {
+            self.d.access.insert(node);
         }
         self.attr_specs(node, s, d);
     }

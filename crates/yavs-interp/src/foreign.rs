@@ -546,7 +546,7 @@ impl Machine {
         Ok((out, coffs, at.next_multiple_of(align)))
     }
 
-    fn access_ptr(&mut self, h: u64) -> R<*mut std::ffi::c_void> {
+    pub(crate) fn access_ptr(&mut self, h: u64) -> R<*mut std::ffi::c_void> {
         if h == 0 {
             return Ok(std::ptr::null_mut());
         }

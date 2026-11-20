@@ -184,6 +184,12 @@ impl Fx<'_, '_> {
                 )
             };
             let copy_back = p.mode != Mode::In;
+            if p.class == ObjClass::File && vhpi.is_some() {
+                return Err(bad(
+                    self,
+                    "file parameters of a VHPI model are not supported",
+                ));
+            }
             if p.class == ObjClass::File || (p.class == ObjClass::Signal && vhpi.is_none()) {
                 return Err(bad(self, "signal and file parameters are not supported"));
             }

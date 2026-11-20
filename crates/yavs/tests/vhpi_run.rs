@@ -866,6 +866,30 @@ fn vhpi_foreign_missing_model_and_result() {
     assert!(err.contains("did not set its result"), "{err}");
 }
 
+/// A file parameter of a VHPI model is not supported (#143: the reference simulator with
+/// foreign models refuses it too): `E2001` naming the parameter, before the simulation.
+#[test]
+fn vhpi_foreign_file_parameter_is_refused() {
+    const FILE_PARAM: &str = "use std.textio.all;\n\
+        entity top is end;\n\
+        architecture a of top is\n\
+        procedure p (file f : text; x : integer) is begin end;\n\
+        attribute foreign of p : procedure is \"VHPI plug fp\";\n\
+        file fo : text;\n\
+        begin\n\
+        process begin p(fo, 3); wait; end process;\n\
+        end;\n";
+    let (lib, so) = setup_with("foreign", FILE_PARAM);
+    let spec = format!("--vhpi={}", so.display());
+    let (code, err, _) = yavs(&["run", &lib, &spec, "top"]);
+    assert_ne!(code, 0);
+    assert!(err.contains("error[E2001]"), "{err}");
+    assert!(
+        err.contains("parameter `f` of foreign subprogram `p`: file parameters of a VHPI model"),
+        "{err}"
+    );
+}
+
 /// Runs entity `top` of `yavs-vhpi/tests/farch/design.vhd` with the `farch` plugin.
 fn farch(top: &str, extra: &[&str]) -> (i32, String, String) {
     let vhdl = std::fs::read_to_string(vhpi_dir().join("tests/farch/design.vhd")).expect("design");

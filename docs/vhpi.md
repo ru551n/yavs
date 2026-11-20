@@ -22,7 +22,7 @@ For calling a plain C function from VHDL without a plugin, see "Calling C from V
 | Reading values | all formats, from callbacks, whole records and arrays of records as raw data, the address an access variable of a process designates (`vhpiPtrVal`), aliases of fields, elements and slices | protected objects (they have no value), an alias of a slice of an array of composites or with bounds known only at run time, access values of shared variables |
 | Writing values | signals and ports (deposit or force with propagation), variables, driver transactions | forcing variables, constants, generics, non-propagating modes on signals |
 | Callbacks | start/end of simulation and initialization, time step, delta cycle, process and postponed phases, after delay, time-out, value change, sensitivity on a signal, transaction, force, release, start and end of the tool and of elaboration, errors, Ctrl-C, debugger stops, start and end of a reset | statements, subprogram calls, suspend and resume of a process, analysis (`yavs run` does not analyse), quiescence, save and restart |
-| Foreign models | functions, procedures, architectures, library and application hooks | file parameters |
+| Foreign models | functions, procedures, architectures, library and application hooks | file parameters (error `E2001` when the run starts) |
 | Misc calls | `vhpi_control` stop, finish and reset, `vhpiPhaseP`, `vhpi_format_value`, `vhpi_get_next_time` (in the read-only phase), `vhpi_protected_call` | `vhpi_get_data`, `vhpi_put_data`: yavs cannot save a simulation (exported so plugins link; they return 0 with an error) |
 
 ## A first plugin

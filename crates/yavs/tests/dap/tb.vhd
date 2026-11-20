@@ -117,6 +117,13 @@ package calls_pkg is
   function make return int_arr;
   constant TABLE : int_arr;
   function lookup(i : natural) return integer;
+  -- Impure functions: one that only reads, and ones that write.
+  impure function since(t : time) return time;
+  type counter_t is protected
+    procedure inc;
+  end protected;
+  impure function quit(x : integer) return integer;
+  impure function logged(x : integer) return integer;
 end package;
 
 package body calls_pkg is
@@ -130,6 +137,33 @@ package body calls_pkg is
   function lookup(i : natural) return integer is
   begin
     return TABLE(i);
+  end function;
+
+  impure function since(t : time) return time is
+  begin
+    return now - t;
+  end function;
+
+  type counter_t is protected body
+    variable n : natural := 0;
+    procedure inc is
+    begin
+      n := n + 1;
+    end procedure;
+  end protected body;
+
+  impure function quit(x : integer) return integer is
+  begin
+    std.env.stop;
+    return x;
+  end function;
+
+  impure function logged(x : integer) return integer is
+    variable l : std.textio.line;
+  begin
+    std.textio.write(l, x);
+    std.textio.writeline(std.textio.output, l);
+    return x;
   end function;
 end package body;
 
@@ -188,6 +222,29 @@ architecture a of calls is
   begin
     return x + seen;
   end function;
+
+  impure function edges return natural is
+  begin
+    return seen;
+  end function;
+
+  shared variable hits : counter_t;
+
+  impure function tick(x : integer) return integer is
+  begin
+    hits.inc;
+    return x;
+  end function;
+
+  impure function via_tick(x : integer) return integer is
+  begin
+    return tick(x) + 1;
+  end function;
+
+  impure function rose(x : integer) return boolean is
+  begin
+    return clk'event;
+  end function;
 begin
   p : process
     variable v : unsigned(3 downto 0) := "0000";
@@ -212,4 +269,34 @@ begin
   begin
     seen <= seen + 1;
   end process;
+end architecture;
+
+-- The same function of two instances reads the signal of the instance it is called from (#364).
+entity calls_sub is
+  generic (N : natural);
+end entity;
+
+architecture a of calls_sub is
+  signal s : natural := N * 10;
+
+  impure function get_s(x : integer) return integer is
+  begin
+    return s + x;
+  end function;
+begin
+  p : process
+  begin
+    wait for 1 ns;
+    s <= s + 1;
+    wait;
+  end process;
+end architecture;
+
+entity calls_two is
+end entity;
+
+architecture a of calls_two is
+begin
+  u1 : entity work.calls_sub generic map (N => 1);
+  u2 : entity work.calls_sub generic map (N => 2);
 end architecture;

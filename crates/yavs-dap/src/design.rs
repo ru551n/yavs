@@ -391,6 +391,8 @@ pub(crate) struct Design {
     pub sigs: Vec<Sig>,
     /// Lower-case path (`:top:u1:s`) to `sigs` index.
     by_path: HashMap<String, usize>,
+    /// The elaborated signal object to `sigs` index.
+    pub by_obj: HashMap<yavs_elab::ObjId, usize>,
     pub shared: Vec<SharedVar>,
     shared_by_path: HashMap<String, usize>,
     /// By process name ([`Elaborated::proc_name`]).
@@ -544,6 +546,7 @@ impl Design {
             lines,
             sigs: Vec::new(),
             by_path: HashMap::new(),
+            by_obj: HashMap::new(),
             shared: Vec::new(),
             shared_by_path: HashMap::new(),
             procs: HashMap::new(),
@@ -583,6 +586,7 @@ impl Design {
                     fmt: fmt(db, &obj.shape),
                 });
                 d.by_path.insert(path, k);
+                d.by_obj.insert(o, k);
                 scope_sigs.entry(s).or_default().push(k);
             }
         }

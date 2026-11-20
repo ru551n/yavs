@@ -334,6 +334,12 @@ fn calls() {
     script_case("calls", &["--threads=4"]);
 }
 
+/// A function of two instances reads the signal of the instance of the stopped process (#364).
+#[test]
+fn calls_two() {
+    script_case("calls_two", &[]);
+}
+
 /// Composite variables (records by field, arrays by index, paged), setting a field or an
 /// element of a local and of a signal, the Hierarchy scope and `yavs/hierarchy`.
 #[test]

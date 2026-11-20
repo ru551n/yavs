@@ -48,7 +48,9 @@ mod tier_census;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-pub use env::{AssertSite, Sources, capture_elab_reports, elaboration_reports, set_library_files};
+pub use env::{
+    AssertSite, Sources, at_time, capture_elab_reports, elaboration_reports, set_library_files,
+};
 use yavs_ffi::ForeignFn;
 use yavs_ir::{ForeignId, FuncId, FuncKind, Program};
 use yavs_kernel::{

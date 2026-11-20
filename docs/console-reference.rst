@@ -172,19 +172,28 @@ the names the stop sees. ``if`` ends the place of a ``break`` and starts the con
   ``q = '1'``).
 * ``unsigned`` and ``signed`` signals compare with numbers and with each other (``cnt > 3``). A
   time is compared and added with times, and scaled by an integer.
-* Calls of pure functions visible from the process: those of the design and of packages such as
+* Calls of functions visible from the process: those of the design and of packages such as
   ``numeric_std`` and ``std_logic_1164`` (``to_integer(unsigned(d)) > 40``, ``resize(cnt, 8) + 1``,
   ``f(n) = 3``), with positional arguments; the overload is chosen by the types of the arguments.
-  Type conversions (``unsigned(d)``, ``integer(x)``). An operator that a type declares calls that
-  function: ``cnt + 1 = 4`` on an ``unsigned``, ``(clk and en) = '1'`` on ``std_logic``.
-* A called function runs apart from the simulation: it cannot change a signal or a variable, and a
-  report it makes is neither printed nor counted. Refused, with the reason: impure functions,
-  functions with a signal parameter (write ``clk'event and clk = '1'`` for ``rising_edge(clk)``),
-  foreign functions, functions that use shared variables or files, functions declared in a
-  process or a subprogram, and functions that read a constant whose value is computed only when
-  the simulation starts (one of a package, or one of the design that elaboration did not need). A
-  function without parameters is written as its bare name, which reads as a literal: it is not
-  called. A function that never returns holds the stop.
+  A function without parameters is its bare name (``edges > 2``), and ``now`` is the time of the
+  stop. Type conversions (``unsigned(d)``, ``integer(x)``). An operator that a type declares calls
+  that function: ``cnt + 1 = 4`` on an ``unsigned``, ``(clk and en) = '1'`` on ``std_logic``.
+* Pure and impure functions are called if they only read: an impure function may read the
+  signals of its architecture, block or entity (their values at the stop) and ``now``. Before a
+  function is called, its code and that of everything it calls are checked: one that may write
+  (assign a signal, call a method of a protected object, use a shared variable or a file, end the
+  simulation with ``std.env.stop``, call foreign code) is refused, naming what it does and where
+  (``tick may write, so a condition does not call it: it calls a method of a protected object
+  (tb.vhd:235)``). A called function runs apart from the simulation on copies of what it reads, so
+  it cannot change the simulation, and a report it makes is neither printed nor counted: a run
+  with conditions prints and exits as one without them.
+* Also refused, with the reason: functions with a signal parameter (write ``clk'event and clk =
+  '1'`` for ``rising_edge(clk)``) or an ``out`` or ``inout`` parameter, functions that read an
+  attribute of a signal or a signal of a package, functions that use a shared variable of a type
+  that is not protected (reading and writing one are not told apart), foreign functions, functions declared in a process or a subprogram, and functions that
+  read a constant whose value is computed only when the simulation starts (one of a package, or
+  one of the design that elaboration did not need). A function that never returns holds the
+  stop.
 * The type of a field of a record and of a variable of a subprogram is not known at a stop: an
   operator of ``numeric_std`` on one needs a conversion (``unsigned(y) + 1``); comparisons with
   numbers still work.

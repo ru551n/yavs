@@ -634,7 +634,7 @@ pub(crate) fn conv_fn(
     let (mut free, mut inst_size) = (Vec::new(), 0);
     let func = match &db.decls[f].kind {
         DeclKind::Subprogram(_) => {
-            let l = lower_one(db, f, false, true).map_err(|e| match e {
+            let l = lower_one(db, f, None, true).map_err(|e| match e {
                 crate::pkgcall::Fail::Lower(why) => not_callable(db, f, at, &why),
                 crate::pkgcall::Fail::Unsupported(w) => err(codes::INTERNAL, at, w, "here"),
                 crate::pkgcall::Fail::Runtime(w) => err(codes::INTERNAL, at, w, "here"),
@@ -1122,7 +1122,7 @@ impl Model {
         match self
             .funcs
             .entry(callee)
-            .or_insert_with(|| lower_one(db, callee, true, false))
+            .or_insert_with(|| lower_one(db, callee, Some(false), false))
         {
             Ok(l) => {
                 yavs_interp::Runtime::promote_hot(&mut l.rt);
@@ -2204,16 +2204,17 @@ fn not_callable(db: &Db, f: DeclId, at: Span, why: &str) -> Box<Diagnostic> {
 /// Lower `f` (and what it calls) into its own program, for elaboration-time calls.
 ///
 /// With `capture`, the constants and generics of the regions around `f` that it reads are
-/// listed in the result, to be given their values in each call.
+/// listed in the result, to be given their values in each call; `Some(true)` also its protected
+/// shared variables (`Lowerer::capture_free_objects`).
 fn lower_one(
     db: &Db,
     f: DeclId,
-    capture: bool,
+    capture: Option<bool>,
     sigs: bool,
 ) -> Result<Lowered1, crate::pkgcall::Fail> {
     let mut l = yavs_lower::Lowerer::new(db, yavs_lower::LowerOptions::default());
-    if capture {
-        l.capture_free_objects(false);
+    if let Some(vars) = capture {
+        l.capture_free_objects(vars);
         // A call whose function does not lower alone runs in the session (`Model::call`).
         l.stop_at_first_error();
     }
@@ -2238,41 +2239,154 @@ fn lower_one(
 }
 
 /// A function lowered into a program of its own and called with values only, as elaboration-time
-/// calls run: no kernel, no signals, no shared state, its own heap and coverage counters. A
-/// debugger's breakpoint conditions call functions so (#364): nothing of the running simulation
-/// executes, so a call cannot change it.
-pub struct Isolated(Lowered1);
+/// calls run: no kernel, no shared state, its own heap and coverage counters; the constants,
+/// generics and signals of its regions it reads are copies the caller gives, and `now` the time
+/// it gives. A debugger's breakpoint conditions call functions so (#364): nothing of the running
+/// simulation executes, so a call cannot change it, and [`Isolated::effect`] says whether the
+/// function would change anything at all.
+pub struct Isolated(Lowered1, Option<(String, Option<Span>)>);
 
 impl Isolated {
     /// Lower function `f` alone; the error says why it cannot be.
     pub fn new(db: &Db, f: DeclId) -> Result<Isolated, String> {
-        lower_one(db, f, true, false)
-            .map(Isolated)
+        // Protected shared variables are captured too, so that a function using one lowers and
+        // `effect` names the method call instead of the lowering failing.
+        lower_one(db, f, Some(true), true)
+            .map(|l| {
+                let e = Isolated::find_effect(db, &l);
+                Isolated(l, e)
+            })
             .map_err(|e| match e {
                 crate::pkgcall::Fail::Lower(m) | crate::pkgcall::Fail::Runtime(m) => m,
                 crate::pkgcall::Fail::Unsupported(w) => w.to_string(),
             })
     }
 
-    /// What the lowered function and what it calls may do besides computing.
-    pub fn flags(&self) -> yavs_ir::FuncFlags {
-        let prog = &self.0.rt.prog;
-        prog.funcs
-            .get(self.0.sig.func)
-            .map_or_else(Default::default, |f| f.flags)
+    /// The first thing the function, or one it calls, does besides computing and reading
+    /// (`yavs_ir::first_effect` over the code as lowered): what it is in plain words, and where.
+    /// `None`: it writes nothing outside its own call, no signal, variable, file or state of the
+    /// simulation, so a call changes nothing.
+    pub fn effect(&self) -> Option<(&str, Option<Span>)> {
+        self.1.as_ref().map(|(w, s)| (w.as_str(), *s))
     }
 
-    /// The constants and generics of the regions around the function that it reads.
-    pub fn reads(&self) -> impl Iterator<Item = DeclId> + '_ {
-        self.0.free.iter().map(|f| f.decl)
+    /// [`Isolated::effect`], worked out once: the instructions, then a shared variable it reaches
+    /// through a captured cell (which lowering marks by a flag only), then the flags.
+    fn find_effect(db: &Db, l: &Lowered1) -> Option<(String, Option<Span>)> {
+        if let Some(e) = Isolated::first_effect(l) {
+            return Some(e);
+        }
+        if let Some(v) = l.free.iter().find(|f| f.var) {
+            let d = &db.decls[v.decl];
+            return Some((
+                format!("it reads or writes shared variable `{}`", d.name),
+                Some(d.span),
+            ));
+        }
+        let flags = (l.rt.prog.funcs.get(l.sig.func)).map_or_else(Default::default, |f| f.flags);
+        for (bit, what) in [
+            (
+                yavs_ir::FuncFlags::TOUCHES_SHARED,
+                "it uses a shared variable",
+            ),
+            (yavs_ir::FuncFlags::TOUCHES_FILES, "it uses a file"),
+            (yavs_ir::FuncFlags::MAY_SUSPEND, "it may wait"),
+        ] {
+            if flags.contains(bit) {
+                return Some((what.into(), None));
+            }
+        }
+        None
     }
 
-    /// Call it with `args`, `read` giving the value of each object of [`Isolated::reads`].
-    /// Reports the call makes are neither printed nor counted; a failure ends it with an error.
-    pub fn call(&self, args: &[Val], read: &dyn Fn(DeclId) -> Option<Val>) -> Result<Val, String> {
+    fn first_effect(l: &Lowered1) -> Option<(String, Option<Span>)> {
+        let prog = &l.rt.prog;
+        let (fid, at) = yavs_ir::first_effect(prog, l.sig.func)?;
+        let f = prog.funcs.get(fid);
+        let name = f.map_or_else(|| "a function".to_string(), |f| format!("`{}`", f.name));
+        let Some((f, k)) = f.zip(at) else {
+            return Some((
+                format!("it calls {name}, whose body cannot be checked"),
+                None,
+            ));
+        };
+        let code = &f.full().code;
+        let span = (code.get(k))
+            .and_then(|_| f.full().loc.get(k))
+            .and_then(|s| prog.stmts.get(*s))
+            .map(|s| s.span);
+        use yavs_ir::Inst as I;
+        let what = match code.get(k) {
+            Some(I::CallNative { native, .. }) => {
+                let sym = prog.natives.get(*native).map_or("", |n| n.symbol.as_str());
+                let why =
+                    if sym.starts_with("yavs.env.stop.") || sym.starts_with("yavs.env.finish.") {
+                        "which ends the simulation"
+                    } else if sym.starts_with("yavs.implicit.") || sym.starts_with("yavs.textio.") {
+                        "which uses a file"
+                    } else {
+                        "which reads or changes the state of the simulation or of the host"
+                    };
+                format!("it calls `{}`, {why}", yavs_ir::native_shown(sym))
+            }
+            Some(
+                I::Drive { .. }
+                | I::DriveSlot { .. }
+                | I::Disconnect { .. }
+                | I::DisconnectSlot { .. }
+                | I::Force { .. }
+                | I::Release { .. },
+            ) => "it assigns a signal".into(),
+            Some(I::CallProt { .. }) => "it calls a method of a protected object".into(),
+            Some(I::AddrOf { .. } | I::New { .. } | I::NewFill { .. }) => {
+                "it uses a shared variable".into()
+            }
+            Some(I::CallForeign { .. }) => "it calls foreign code, which cannot be checked".into(),
+            Some(I::CallIndirect { .. }) => "it makes a call that cannot be followed".into(),
+            Some(I::Output { .. }) => "it writes to the standard output".into(),
+            Some(I::WaitOn { .. } | I::WaitEdge { .. } | I::WaitFor { .. } | I::WaitAt { .. })
+            | Some(I::Suspend { .. }) => "it may wait".into(),
+            _ => "it does more than compute and read".into(),
+        };
+        let what = match fid == l.sig.func {
+            true => what,
+            false => format!("{what}, in {name}"),
+        };
+        Some((what, span))
+    }
+
+    /// Whether it may read `now` (its program calls the native).
+    pub fn reads_now(&self) -> bool {
+        let mut n = self.0.rt.prog.natives.values().iter();
+        n.any(|n| n.symbol.starts_with("yavs.standard.now."))
+    }
+
+    /// The constants, generics and signals (`true`) of the regions around the function that it
+    /// reads.
+    pub fn reads(&self) -> impl Iterator<Item = (DeclId, bool)> + '_ {
+        self.0
+            .free
+            .iter()
+            .filter(|f| !f.var)
+            .map(|f| (f.decl, f.sig))
+    }
+
+    /// Call it with `args`, `read` giving the value of each object of [`Isolated::reads`] (a
+    /// signal's current value) and `now` the time in femtoseconds. Reports the call makes are
+    /// neither printed nor counted; a failure ends it with an error.
+    pub fn call(
+        &self,
+        args: &[Val],
+        read: &dyn Fn(DeclId) -> Option<Val>,
+        now: u64,
+    ) -> Result<Val, String> {
         let l = &self.0;
         if args.len() != l.sig.params.len() {
             return Err("a call with a named return value".into());
+        }
+        // (Such a function has an `effect`.)
+        if l.free.iter().any(|f| f.var) {
+            return Err("it uses a shared variable, which is not passed".into());
         }
         let inst = if l.free.is_empty() {
             None
@@ -2300,7 +2414,7 @@ impl Isolated {
             Some(inst)
         };
         let (r, _) = yavs_interp::capture_elab_reports(|| {
-            crate::pkgcall::run(&l.rt, &l.sig, args, None, inst)
+            yavs_interp::at_time(now, || crate::pkgcall::run(&l.rt, &l.sig, args, None, inst))
         });
         r.map_err(|e| match e {
             crate::pkgcall::Fail::Lower(m) | crate::pkgcall::Fail::Runtime(m) => m,

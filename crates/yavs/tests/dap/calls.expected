@@ -3,10 +3,10 @@
 > launch {}
 < {"body":{},"event":"initialized","type":"event"}
 < {"body":{},"command":"launch","request_seq":2,"success":true,"type":"response"}
-> setBreakpoints {"breakpoints":[{"condition":"to_integer(unsigned(d)) > 40 and u + 1 = 4 and v = 8","line":201},{"condition":"clk'event and rising_edge(clk)","line":213},{"condition":"bump(1) = 2","line":197},{"condition":"u'image(u) = \"3\"","line":198},{"condition":"to_integer(d) = 3","line":196}],"source":{"path":"$TMP/tb.vhd"}}
-< {"body":{"breakpoints":[{"line":201,"message":"not checked until the condition is evaluated at a stop: `v`","source":{"name":"tb.vhd","path":"$TMP/tb.vhd"},"verified":true},{"line":213,"message":"condition `clk'event and rising_edge(clk)`: `rising_edge` takes a signal parameter, which a condition cannot pass (it reads values only): write the test with attributes, as in clk'event and clk = '1'","verified":false},{"line":197,"message":"condition `bump(1) = 2`: `bump` is an impure function: conditions call pure functions only, so that evaluating one cannot change the simulation","verified":false},{"line":198,"message":"attribute `'image` is not supported in conditions (only 'event, 'active, 'last_value, 'last_event, 'last_active, 'length, 'left, 'right, 'high, 'low, 'ascending)","verified":false},{"line":196,"message":"condition `to_integer(d) = 3`: no `to_integer` here takes (std_ulogic_vector); there are TO_INTEGER(UNRESOLVED_UNSIGNED) return INTEGER, TO_INTEGER(UNRESOLVED_SIGNED) return INTEGER","verified":false}]},"command":"setBreakpoints","request_seq":3,"success":true,"type":"response"}
-> setBreakpoints {"breakpoints":[{"condition":"to_integer(unsigned(d)) > 40 and u + 1 = 4 and v = 8","line":201},{"condition":"clk'event and clk'last_value = '0' and (clk and en) = '1' and seen'last_event >= 5 ns","line":213},{"condition":"y = 3 and y(3 downto 2) = \"00\"","line":178}],"source":{"path":"$TMP/tb.vhd"}}
-< {"body":{"breakpoints":[{"line":201,"message":"not checked until the condition is evaluated at a stop: `v`","source":{"name":"tb.vhd","path":"$TMP/tb.vhd"},"verified":true},{"line":213,"source":{"name":"tb.vhd","path":"$TMP/tb.vhd"},"verified":true},{"line":178,"message":"not checked until the condition is evaluated at a stop: `y`","source":{"name":"tb.vhd","path":"$TMP/tb.vhd"},"verified":true}]},"command":"setBreakpoints","request_seq":4,"success":true,"type":"response"}
+> setBreakpoints {"breakpoints":[{"condition":"to_integer(unsigned(d)) > 40 and u + 1 = 4 and v = 8","line":258},{"condition":"clk'event and rising_edge(clk)","line":270},{"condition":"bump(1) = 2","line":254},{"condition":"u'image(u) = \"3\"","line":255},{"condition":"to_integer(d) = 3","line":253},{"condition":"tick(1) = 1","line":256}],"source":{"path":"$TMP/tb.vhd"}}
+< {"body":{"breakpoints":[{"line":258,"message":"not checked until the condition is evaluated at a stop: `v`","source":{"name":"tb.vhd","path":"$TMP/tb.vhd"},"verified":true},{"line":270,"message":"condition `clk'event and rising_edge(clk)`: `rising_edge` takes a signal parameter, which a condition cannot pass (it reads values only): write the test with attributes, as in clk'event and clk = '1'","verified":false},{"line":254,"source":{"name":"tb.vhd","path":"$TMP/tb.vhd"},"verified":true},{"line":255,"message":"attribute `'image` is not supported in conditions (only 'event, 'active, 'last_value, 'last_event, 'last_active, 'length, 'left, 'right, 'high, 'low, 'ascending)","verified":false},{"line":253,"message":"condition `to_integer(d) = 3`: no `to_integer` here takes (std_ulogic_vector); there are TO_INTEGER(UNRESOLVED_UNSIGNED) return INTEGER, TO_INTEGER(UNRESOLVED_SIGNED) return INTEGER","verified":false},{"line":256,"message":"condition `tick(1) = 1`: `tick` may write, so a condition does not call it: it calls a method of a protected object (tb.vhd:235)","verified":false}]},"command":"setBreakpoints","request_seq":3,"success":true,"type":"response"}
+> setBreakpoints {"breakpoints":[{"condition":"to_integer(unsigned(d)) > 40 and u + 1 = 4 and v = 8","line":258},{"condition":"clk'event and clk'last_value = '0' and (clk and en) = '1' and seen'last_event >= 5 ns","line":270},{"condition":"y = 3 and y(3 downto 2) = \"00\"","line":212}],"source":{"path":"$TMP/tb.vhd"}}
+< {"body":{"breakpoints":[{"line":258,"message":"not checked until the condition is evaluated at a stop: `v`","source":{"name":"tb.vhd","path":"$TMP/tb.vhd"},"verified":true},{"line":270,"source":{"name":"tb.vhd","path":"$TMP/tb.vhd"},"verified":true},{"line":212,"message":"not checked until the condition is evaluated at a stop: `y`","source":{"name":"tb.vhd","path":"$TMP/tb.vhd"},"verified":true}]},"command":"setBreakpoints","request_seq":4,"success":true,"type":"response"}
 > configurationDone {}
 < {"body":{},"command":"configurationDone","request_seq":5,"success":true,"type":"response"}
 < {"body":{"allThreadsStopped":true,"description":"breakpoint at 10 ns, delta 1","reason":"breakpoint","threadId":2},"event":"stopped","type":"event"}
@@ -23,7 +23,7 @@
 > evaluate {"expression":"noisy(5) = 5","frameId":131072}
 < {"body":{"result":"TRUE","variablesReference":0},"command":"evaluate","request_seq":11,"success":true,"type":"response"}
 > evaluate {"expression":"bump(1)","frameId":131072}
-< {"command":"evaluate","message":"`bump` is an impure function: conditions call pure functions only, so that evaluating one cannot change the simulation","request_seq":12,"success":false,"type":"response"}
+< {"body":{"result":"4","variablesReference":0},"command":"evaluate","request_seq":12,"success":true,"type":"response"}
 > evaluate {"expression":"nosuch(1) = 2","frameId":131072}
 < {"command":"evaluate","message":"`nosuch(1)`: not an array, local or signal here","request_seq":13,"success":false,"type":"response"}
 > evaluate {"expression":"twice(2)","frameId":131072}
@@ -37,42 +37,58 @@
 > evaluate {"expression":"plus_k2(1)","frameId":131072}
 < {"command":"evaluate","message":"`plus_k2` reads `K2`, a constant whose value elaboration did not keep: conditions cannot call it yet","request_seq":18,"success":false,"type":"response"}
 > evaluate {"expression":"lookup(2)","frameId":131072}
-< {"command":"evaluate","message":"`lookup` cannot be called in a condition: package constant `TABLE` without a folded value is not implemented yet in yavs","request_seq":19,"success":false,"type":"response"}
+< {"body":{"result":"30","variablesReference":0},"command":"evaluate","request_seq":19,"success":true,"type":"response"}
+> evaluate {"expression":"since(4 ns)","frameId":131072}
+< {"body":{"result":"6 ns","variablesReference":0},"command":"evaluate","request_seq":20,"success":true,"type":"response"}
+> evaluate {"expression":"edges","frameId":131072}
+< {"body":{"result":"3","variablesReference":0},"command":"evaluate","request_seq":21,"success":true,"type":"response"}
+> evaluate {"expression":"edges + bump(1)","frameId":131072}
+< {"body":{"result":"7","variablesReference":0},"command":"evaluate","request_seq":22,"success":true,"type":"response"}
+> evaluate {"expression":"tick(1)","frameId":131072}
+< {"command":"evaluate","message":"`tick` may write, so a condition does not call it: it calls a method of a protected object (tb.vhd:235)","request_seq":23,"success":false,"type":"response"}
+> evaluate {"expression":"via_tick(1)","frameId":131072}
+< {"command":"evaluate","message":"`via_tick` may write, so a condition does not call it: it calls a method of a protected object, in `tick` (tb.vhd:235)","request_seq":24,"success":false,"type":"response"}
+> evaluate {"expression":"quit(1)","frameId":131072}
+< {"command":"evaluate","message":"`quit` may write, so a condition does not call it: it calls `std.env.stop`, which ends the simulation (tb.vhd:157)","request_seq":25,"success":false,"type":"response"}
+> evaluate {"expression":"logged(1)","frameId":131072}
+< {"command":"evaluate","message":"`logged` may write, so a condition does not call it: it calls `std.textio.writeline`, which uses a file (tb.vhd:165)","request_seq":26,"success":false,"type":"response"}
+> evaluate {"expression":"rose(1)","frameId":131072}
+< {"command":"evaluate","message":"`rose` cannot be called in a condition: it reads signal `clk` other than by its value (an attribute, or as a signal parameter), and a condition gives a function the values of signals only","request_seq":27,"success":false,"type":"response"}
 > continue {"threadId":2}
-< {"body":{"allThreadsContinued":true},"command":"continue","request_seq":20,"success":true,"type":"response"}
+< {"body":{"allThreadsContinued":true},"command":"continue","request_seq":28,"success":true,"type":"response"}
 < {"body":{"allThreadsStopped":true,"description":"breakpoint at 15 ns, delta 0","reason":"breakpoint","threadId":1},"event":"stopped","type":"event"}
 > stackTrace {"threadId":1}
-< {"body":{"stackFrames":[{"column":5,"id":65537,"line":178,"name":"check","source":{"name":"tb.vhd","path":"$TMP/tb.vhd"}},{"column":7,"id":65536,"line":200,"name":"calls.p","source":{"name":"tb.vhd","path":"$TMP/tb.vhd"}}],"totalFrames":2},"command":"stackTrace","request_seq":21,"success":true,"type":"response"}
+< {"body":{"stackFrames":[{"column":5,"id":65537,"line":212,"name":"check","source":{"name":"tb.vhd","path":"$TMP/tb.vhd"}},{"column":7,"id":65536,"line":257,"name":"calls.p","source":{"name":"tb.vhd","path":"$TMP/tb.vhd"}}],"totalFrames":2},"command":"stackTrace","request_seq":29,"success":true,"type":"response"}
 > evaluate {"expression":"y + 1","frameId":65537}
-< {"command":"evaluate","message":"`+` on an array whose type is not known here (a field, or a variable of a subprogram): convert it, as in unsigned(x) + 1, or write to_integer(x) + ...","request_seq":22,"success":false,"type":"response"}
+< {"command":"evaluate","message":"`+` on an array whose type is not known here (a field, or a variable of a subprogram): convert it, as in unsigned(x) + 1, or write to_integer(x) + ...","request_seq":30,"success":false,"type":"response"}
 > evaluate {"expression":"unsigned(y) + 1","frameId":65537}
-< {"body":{"result":"\"0100\"","variablesReference":0},"command":"evaluate","request_seq":23,"success":true,"type":"response"}
+< {"body":{"result":"\"0100\"","variablesReference":0},"command":"evaluate","request_seq":31,"success":true,"type":"response"}
 > continue {"threadId":1}
-< {"body":{"allThreadsContinued":true},"command":"continue","request_seq":24,"success":true,"type":"response"}
+< {"body":{"allThreadsContinued":true},"command":"continue","request_seq":32,"success":true,"type":"response"}
 < {"body":{"allThreadsStopped":true,"description":"breakpoint at 15 ns, delta 0","reason":"breakpoint","threadId":1},"event":"stopped","type":"event"}
 > stackTrace {"threadId":1}
-< {"body":{"stackFrames":[{"column":7,"id":65536,"line":201,"name":"calls.p","source":{"name":"tb.vhd","path":"$TMP/tb.vhd"}}],"totalFrames":1},"command":"stackTrace","request_seq":25,"success":true,"type":"response"}
+< {"body":{"stackFrames":[{"column":7,"id":65536,"line":258,"name":"calls.p","source":{"name":"tb.vhd","path":"$TMP/tb.vhd"}}],"totalFrames":1},"command":"stackTrace","request_seq":33,"success":true,"type":"response"}
 > evaluate {"expression":"v + 1","frameId":65536}
-< {"body":{"result":"\"1001\"","variablesReference":0},"command":"evaluate","request_seq":26,"success":true,"type":"response"}
+< {"body":{"result":"\"1001\"","variablesReference":0},"command":"evaluate","request_seq":34,"success":true,"type":"response"}
 > evaluate {"expression":"to_integer(v) * 2 = 16 and integer(2.5) = 3","frameId":65536}
-< {"body":{"result":"TRUE","variablesReference":0},"command":"evaluate","request_seq":27,"success":true,"type":"response"}
+< {"body":{"result":"TRUE","variablesReference":0},"command":"evaluate","request_seq":35,"success":true,"type":"response"}
 > setBreakpoints {"breakpoints":[],"source":{"path":"$TMP/tb.vhd"}}
-< {"body":{"breakpoints":[]},"command":"setBreakpoints","request_seq":28,"success":true,"type":"response"}
+< {"body":{"breakpoints":[]},"command":"setBreakpoints","request_seq":36,"success":true,"type":"response"}
 > setDataBreakpoints {"breakpoints":[{"condition":"clk'event and clk'last_value = '1' and d'last_event = 0 ns","dataId":":calls:clk"}]}
-< {"body":{"breakpoints":[{"description":"calls.clk","verified":true}]},"command":"setDataBreakpoints","request_seq":29,"success":true,"type":"response"}
+< {"body":{"breakpoints":[{"description":"calls.clk","verified":true}]},"command":"setDataBreakpoints","request_seq":37,"success":true,"type":"response"}
 > continue {"threadId":1}
-< {"body":{"allThreadsContinued":true},"command":"continue","request_seq":30,"success":true,"type":"response"}
+< {"body":{"allThreadsContinued":true},"command":"continue","request_seq":38,"success":true,"type":"response"}
 < {"body":{"allThreadsStopped":true,"description":"data breakpoint at 15 ns, delta 1","reason":"data breakpoint","text":"calls.clk = '0'"},"event":"stopped","type":"event"}
 > evaluate {"expression":"clk"}
-< {"body":{"evaluateName":"calls.clk","result":"'0'","type":"STD_ULOGIC","variablesReference":0},"command":"evaluate","request_seq":31,"success":true,"type":"response"}
+< {"body":{"evaluateName":"calls.clk","result":"'0'","type":"STD_ULOGIC","variablesReference":0},"command":"evaluate","request_seq":39,"success":true,"type":"response"}
 > setDataBreakpoints {"breakpoints":[]}
-< {"body":{"breakpoints":[]},"command":"setDataBreakpoints","request_seq":32,"success":true,"type":"response"}
+< {"body":{"breakpoints":[]},"command":"setDataBreakpoints","request_seq":40,"success":true,"type":"response"}
 > continue {"threadId":1}
-< {"body":{"allThreadsContinued":true},"command":"continue","request_seq":33,"success":true,"type":"response"}
+< {"body":{"allThreadsContinued":true},"command":"continue","request_seq":41,"success":true,"type":"response"}
 < {"body":{"category":"stdout","output":"** Note: 30000000fs+0: u=6 v=C seen=7\n    Process calls.p\n"},"event":"output","type":"event"}
 < {"body":{"category":"console","output":"the session ended with exit status 0\n"},"event":"output","type":"event"}
 < {"body":{"exitCode":0},"event":"exited","type":"event"}
 < {"body":{},"event":"terminated","type":"event"}
 > disconnect {}
-< {"body":{},"command":"disconnect","request_seq":34,"success":true,"type":"response"}
+< {"body":{},"command":"disconnect","request_seq":42,"success":true,"type":"response"}
 exit 0

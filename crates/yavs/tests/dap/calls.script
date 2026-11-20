@@ -1,8 +1,8 @@
 top calls
 request initialize {"adapterID": "yavs"}
 request launch {}
-request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": [{"line": 201, "condition": "to_integer(unsigned(d)) > 40 and u + 1 = 4 and v = 8"}, {"line": 213, "condition": "clk'event and rising_edge(clk)"}, {"line": 197, "condition": "bump(1) = 2"}, {"line": 198, "condition": "u'image(u) = \"3\""}, {"line": 196, "condition": "to_integer(d) = 3"}]}
-request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": [{"line": 201, "condition": "to_integer(unsigned(d)) > 40 and u + 1 = 4 and v = 8"}, {"line": 213, "condition": "clk'event and clk'last_value = '0' and (clk and en) = '1' and seen'last_event >= 5 ns"}, {"line": 178, "condition": "y = 3 and y(3 downto 2) = \"00\""}]}
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": [{"line": 258, "condition": "to_integer(unsigned(d)) > 40 and u + 1 = 4 and v = 8"}, {"line": 270, "condition": "clk'event and rising_edge(clk)"}, {"line": 254, "condition": "bump(1) = 2"}, {"line": 255, "condition": "u'image(u) = \"3\""}, {"line": 253, "condition": "to_integer(d) = 3"}, {"line": 256, "condition": "tick(1) = 1"}]}
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": [{"line": 258, "condition": "to_integer(unsigned(d)) > 40 and u + 1 = 4 and v = 8"}, {"line": 270, "condition": "clk'event and clk'last_value = '0' and (clk and en) = '1' and seen'last_event >= 5 ns"}, {"line": 212, "condition": "y = 3 and y(3 downto 2) = \"00\""}]}
 request configurationDone {}
 event stopped
 request evaluate {"expression": "plus_k(2) + times_w(2)", "frameId": 131072}
@@ -19,6 +19,14 @@ request evaluate {"expression": "r.b = \"0101\" and r.n = 3", "frameId": 131072}
 request evaluate {"expression": "r.n + 1", "frameId": 131072}
 request evaluate {"expression": "plus_k2(1)", "frameId": 131072}
 request evaluate {"expression": "lookup(2)", "frameId": 131072}
+request evaluate {"expression": "since(4 ns)", "frameId": 131072}
+request evaluate {"expression": "edges", "frameId": 131072}
+request evaluate {"expression": "edges + bump(1)", "frameId": 131072}
+request evaluate {"expression": "tick(1)", "frameId": 131072}
+request evaluate {"expression": "via_tick(1)", "frameId": 131072}
+request evaluate {"expression": "quit(1)", "frameId": 131072}
+request evaluate {"expression": "logged(1)", "frameId": 131072}
+request evaluate {"expression": "rose(1)", "frameId": 131072}
 request continue {"threadId": 2}
 event stopped
 request stackTrace {"threadId": 1}

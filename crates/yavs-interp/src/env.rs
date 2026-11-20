@@ -384,6 +384,26 @@ pub fn capture_elab_reports<T>(f: impl FnOnce() -> T) -> (T, Vec<(u8, String)>) 
 }
 
 thread_local! {
+    /// What `now` gives a call that runs without a kernel ([`at_time`]).
+    static NO_KERNEL_NOW: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Run `f` with `now` giving `fs` femtoseconds in the calls it makes without a kernel: a
+/// debugger's call of a function apart from the simulation reads the time of the stop (#364).
+/// Elsewhere such a call reads 0 fs, the time of elaboration (LRM 14.7.5.2).
+pub fn at_time<T>(fs: u64, f: impl FnOnce() -> T) -> T {
+    let outer = NO_KERNEL_NOW.replace(fs);
+    let r = f();
+    NO_KERNEL_NOW.set(outer);
+    r
+}
+
+/// The time `now` gives without a kernel ([`at_time`]).
+pub(crate) fn no_kernel_now() -> u64 {
+    NO_KERNEL_NOW.get()
+}
+
+thread_local! {
     /// The standard library's source files of the design this thread elaborates.
     static LIBRARY: std::cell::RefCell<std::rc::Rc<std::collections::HashSet<yavs_diag::FileId>>> =
         std::cell::RefCell::new(std::rc::Rc::default());

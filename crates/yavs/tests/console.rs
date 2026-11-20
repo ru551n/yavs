@@ -714,6 +714,153 @@ fn typos_and_conditions_are_helped() {
     assert!(stdout(&o).contains("t.vhd:39"), "{}", stdout(&o));
 }
 
+/// An impure function that reads a signal and `now` and reports, also called by the design.
+const WATCH: &str = "\
+entity t is
+end;
+architecture a of t is
+  signal cnt : natural := 0;
+  impure function watch(x : integer) return integer is
+  begin
+    report \"watch \" & integer'image(cnt) severity error;
+    return cnt + x + now / 1 ns;
+  end function;
+begin
+  p : process
+  begin
+    for i in 1 to 5 loop
+      cnt <= cnt + 1;
+      wait for 10 ns;
+    end loop;
+    report \"done \" & integer'image(watch(0));
+    wait;
+  end process;
+end;
+";
+
+/// Conditions that call a read-only impure function change nothing: a run whose conditions never
+/// hold prints and exits as a plain run, with line and `run until` conditions, at any `--threads`
+/// (#364). One that holds stops where it should.
+#[test]
+fn read_only_impure_calls_change_nothing() {
+    let d = tempdir_with("impure", WATCH);
+    for threads in ["--threads=1", "--threads=4"] {
+        let plain = run(&d, "t", &[threads]);
+        assert!(stdout(&plain).contains("watch 5"), "{}", stdout(&plain));
+        for cmds in [
+            "break t.vhd:15 if watch(1000) = -1; run; quit",
+            "run until watch(1000) = -1 and cnt > 0; quit",
+        ] {
+            let o = run(&d, "t", &[threads, &format!("--do={cmds}")]);
+            // (Less the console's answer to `break`.)
+            let out = stdout(&o);
+            let out: Vec<&str> = out
+                .lines()
+                .filter(|l| !l.starts_with("breakpoint 1: "))
+                .collect();
+            assert_eq!(
+                out,
+                stdout(&plain).lines().collect::<Vec<_>>(),
+                "{cmds}: {}",
+                stderr(&o)
+            );
+            assert_eq!(o.status.code(), plain.status.code(), "{cmds}");
+        }
+    }
+    let o = script(
+        &d,
+        "t",
+        "break t.vhd:15 if watch(0) > 30; run; examine cnt; examine watch(0); examine now",
+    );
+    let out = stdout(&o);
+    let lines: Vec<&str> = out.lines().skip(1).collect();
+    assert_eq!(lines, ["3", "33", "30 ns"], "{}", stderr(&o));
+}
+
+/// Functions that use a shared variable that is not protected or a signal of a package (#364).
+const UNPROTECTED: &str = "\
+package spk is
+  signal ps : integer := 7;
+  impure function getp(x : integer) return integer;
+end package;
+package body spk is
+  impure function getp(x : integer) return integer is
+  begin
+    return ps + x;
+  end function;
+end package body;
+use work.spk.all;
+entity t is end;
+architecture a of t is
+  shared variable n : natural := 0;
+  impure function bumpn(x : integer) return integer is
+  begin
+    n := n + 1;
+    return x + n;
+  end function;
+begin
+  p : process
+  begin
+    wait for 1 ns;
+    report \"here\";
+    wait;
+  end process;
+end;
+";
+
+/// A function that may write is refused when the condition is set, naming the variable; one that
+/// reads what a condition cannot pass says so (#364).
+#[test]
+fn writers_and_unreachable_reads_are_refused() {
+    let d = tempdir("console-unprotected");
+    std::fs::write(d.join("t.vhd"), UNPROTECTED).expect("write");
+    let ok = yavs()
+        .current_dir(&*d)
+        .args(["analyze", "--relaxed", "--work=work:lib", "t.vhd"])
+        .status()
+        .expect("yavs")
+        .success();
+    assert!(ok, "analyze failed");
+    for (cmds, want) in [
+        (
+            "break t.vhd:24 if bumpn(1) = 1",
+            "`bumpn` may write, so a condition does not call it: it reads or writes shared \
+             variable `n` (t.vhd:14)",
+        ),
+        (
+            "break t.vhd:24; run; examine getp(1)",
+            "`getp` cannot be called in a condition: it reads `ps`, which a condition cannot pass",
+        ),
+    ] {
+        let o = run(&d, "t", &["--relaxed", &format!("--do={cmds}")]);
+        assert!(stderr(&o).contains(want), "{cmds}: {}", stderr(&o));
+        assert_eq!(o.status.code(), Some(1), "{cmds}");
+    }
+    // An impure function with an inout parameter (2019) writes what it is given.
+    let src = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/dap/inout_fn.vhd"),
+    )
+    .expect("read");
+    std::fs::write(d.join("m.vhd"), src).expect("write");
+    let ok = yavs()
+        .current_dir(&*d)
+        .args(["analyze", "--std=2019", "--work=work:lib", "m.vhd"])
+        .status()
+        .expect("yavs")
+        .success();
+    assert!(ok, "analyze failed");
+    let o = run(
+        &d,
+        "t3",
+        &["--std=2019", "--do=break m.vhd:15; run; examine take(1)"],
+    );
+    assert!(
+        stderr(&o).contains("`take` has a parameter of mode out or inout"),
+        "{}",
+        stderr(&o)
+    );
+}
+
 #[test]
 fn restart_recreates_the_wave_file() {
     let d = setup("wave");

@@ -110,9 +110,9 @@ Set breakpoints, start the configuration with F5, and the run continues to the f
 
 - Line breakpoints, with a condition (a VHDL boolean expression over locals and visible
   signals) and a hit condition (`3`, `>= 3`, `% 3`). A breakpoint on a line without a statement
-  moves to the next line that has one. A condition may call pure functions (`to_integer(unsigned(d)) > 40`) and
-  read the attributes of signals and arrays (`clk'event`, `v'length`); an impure function or another attribute
-  shows the breakpoint as unverified with the reason.
+  moves to the next line that has one. A condition may call functions that only read, pure or impure
+  (`to_integer(unsigned(d)) > 40`, `edges > 2`), and read the attributes of signals and arrays (`clk'event`,
+  `v'length`); a function that may write or another attribute shows the breakpoint as unverified with the reason.
 - Continue, pause, step over, into and out. The call stack lists one thread per process.
 - The Variables view shows locals, the signals and ports around the process, the generics of its
   instance and a Hierarchy scope. Records expand by field, large arrays in pages. "Set Value"

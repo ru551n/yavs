@@ -110,21 +110,22 @@ pub(crate) fn plain_array(prog: &Program, t: TyId) -> Option<MemoArr> {
 }
 
 /// An instruction a function may execute and still be memoised (`calls` collects the functions
-/// it calls).
-fn inst_ok(prog: &Program, i: &Inst, calls: &mut Vec<FuncId>) -> bool {
+/// it calls). With `reads`, also reading instance data, enclosing frames and `now`
+/// ([`first_effect`]).
+fn inst_ok(prog: &Program, i: &Inst, calls: &mut Vec<FuncId>, reads: bool) -> bool {
     match *i {
-        Inst::AddrOf { space, .. } => matches!(
-            space,
-            AddrSpace::Frame | AddrSpace::Const(_) | AddrSpace::Pkg(_)
-        ),
+        Inst::AddrOf { space, .. } => match space {
+            AddrSpace::Frame | AddrSpace::Const(_) | AddrSpace::Pkg(_) => true,
+            AddrSpace::Inst | AddrSpace::Up(_) => reads,
+            AddrSpace::Shared => false,
+        },
         Inst::Call { func, .. } => {
             calls.push(func);
             true
         }
-        Inst::CallNative { native, .. } => prog
-            .natives
-            .get(native)
-            .is_some_and(|n| crate::native_is_pure(&n.symbol)),
+        Inst::CallNative { native, .. } => prog.natives.get(native).is_some_and(|n| {
+            crate::native_is_pure(&n.symbol) || reads && n.symbol.starts_with("yavs.standard.now.")
+        }),
         Inst::New { shared, .. } | Inst::NewFill { shared, .. } => !shared,
         Inst::Const { .. }
         | Inst::ConstF { .. }
@@ -201,7 +202,38 @@ fn body_ok(prog: &Program, f: &Func, calls: &mut Vec<FuncId>) -> bool {
         && f.defined
         && !f.reg_ty.contains(&RegTy::Sig)
         && f.params.iter().all(|p| p.class == ParamClass::Value)
-        && f.full().code.iter().all(|i| inst_ok(prog, i, calls))
+        && f.full().code.iter().all(|i| inst_ok(prog, i, calls, false))
+}
+
+/// The first instruction, as (function, index in its code), of `id` or of a function it calls that
+/// does more than compute from its arguments, its frame, constants, package data, instance data,
+/// enclosing frames and `now`: a call of a function apart from the simulation (a debugger's
+/// condition, #364) whose instance data holds copies changes nothing outside it unless one of
+/// them runs. Instructions are allowed by name as for memoising (`inst_ok`), anything else is
+/// one; a function without code is one at index `None`.
+pub fn first_effect(prog: &Program, id: FuncId) -> Option<(FuncId, Option<usize>)> {
+    let (mut seen, mut work) = (vec![id], vec![id]);
+    while let Some(id) = work.pop() {
+        let Some(f) = prog.funcs.get(id) else {
+            return Some((id, None));
+        };
+        if !f.defined {
+            return Some((id, None));
+        }
+        let mut calls = Vec::new();
+        for (k, i) in f.full().code.iter().enumerate() {
+            if !inst_ok(prog, i, &mut calls, true) {
+                return Some((id, Some(k)));
+            }
+        }
+        for c in calls {
+            if !seen.contains(&c) {
+                seen.push(c);
+                work.push(c);
+            }
+        }
+    }
+    None
 }
 
 /// Whether `f` and everything it calls compute from their arguments only. A call back to a

@@ -162,10 +162,12 @@ Limits
 * One driver per run: ``--dap`` cannot be combined with ``--interactive`` or ``--do``, and ``--yavs-debug`` not with
   ``--yavs-interactive``. ``--surfer`` and ``--yavs-surfer`` combine with either.
 * ``--cov`` and ``--profile`` cannot be combined with ``--dap``.
-* Breakpoint conditions, and expressions in a Watch or ``examine``, call pure functions only (of the design and of
-  packages such as ``numeric_std``), and run them apart from the simulation, so a condition cannot change it; impure
-  functions, functions with a signal parameter such as ``rising_edge`` (write ``clk'event and clk = '1'``) and functions
-  declared in a process are refused with the reason. Attributes are those of signals (``'event``, ``'active``,
+* Breakpoint conditions, and expressions in a Watch or ``examine``, call functions of the design and of packages such as
+  ``numeric_std`` that only read: pure functions, and impure ones that read signals of their region and ``now``. They run
+  apart from the simulation, so a condition cannot change it. A function whose code, or that of what it calls, may write
+  (a signal, a shared variable, a protected object, a file, ``std.env.stop``) is refused, naming what and where; so are
+  functions with a signal parameter such as ``rising_edge`` (write ``clk'event and clk = '1'``) and functions declared
+  in a process. Attributes are those of signals (``'event``, ``'active``,
   ``'last_value``, ``'last_event``, ``'last_active``) and of arrays (``'length``, ``'left``, ``'right``, ``'high``,
   ``'low``, ``'ascending``). A variable of a subprogram has no known type at a stop, so an ``unsigned`` or ``signed`` one
   whose leftmost bit is 1 needs a bit string. A literal that cannot be a value of a signal is refused when the breakpoint

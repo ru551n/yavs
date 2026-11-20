@@ -2622,22 +2622,57 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   explicit functions of the arity, chosen by base type name where the argument's is known
   (signals, process variables, results of calls and conversions) and else by the shape of the
   value. The function is lowered on its own and run by `yavs_elab::Isolated`, as elaboration-time
-  calls are: no kernel, no signals, no shared state, its own heap and counters, reports captured
+  calls are: no kernel, no shared state, its own heap and counters, reports captured
   (`capture_elab_reports`: neither printed nor counted); the constants and generics of its regions
   come from the elaborated values of the process's instance. So a condition cannot change the
   simulation's state, output or exit status. Why: the running program cannot take a new function,
   and a separate program needs no change to it. Refused with the reason: functions declared in a
   process or subprogram (no static link apart from the simulation), signal parameters
-  (`rising_edge`), foreign functions, functions whose lowering touches shared variables or files.
-  Impure functions are not supported yet: whether and how a condition may call one is open for the
-  maintainer (#364). Signal attributes come from `Ctx` at a stop in a process and from
-  `SimControl::attributes` between cycles (the cycle just run is the current one); array attributes
-  from the value. Not done: a time limit on a function that never returns, attributes of types,
-  conversions checked against a subtype's range (`natural(-1)` gives -1), functions that read a
-  constant elaboration did not evaluate (a package constant without a folded value, a constant of
-  the design nothing read during elaboration: its value is only in the running design's instance
-  data), a type name for record fields and subprogram variables (an operator of a type needs a
-  conversion there; several candidates of equal fit keep the predefined meaning).
+  (`rising_edge`), foreign functions. Signal attributes come from `Ctx` at a stop in a process and
+  from `SimControl::attributes` between cycles (the cycle just run is the current one); array
+  attributes from the value. Not done: a time limit on a function that never returns, attributes of
+  types, conversions checked against a subtype's range (`natural(-1)` gives -1), functions that
+  read a constant elaboration did not evaluate (a package constant without a folded value, a
+  constant of the design nothing read during elaboration: its value is only in the running design's
+  instance data), a type name for record fields and subprogram variables (an operator of a type
+  needs a conversion there; several candidates of equal fit keep the predefined meaning).
+- **A debugger's expressions call impure functions that only read** (user, 2026-11-20, #364):
+  pure or impure, a function may be called by a breakpoint condition, Watch, hover or `examine` if
+  it reads only: signals, `now` and other objects outside it, writing nothing (no signal assignment
+  or driver, no variable or shared variable outside its own call, no file, nothing on the heap that
+  outlives the call). One that may write stays refused, naming what it does and where. How:
+  - Reads are copies. The function is lowered with `capture_signals` as well (the mechanism of
+    impure port conversion functions): each signal of its entity, architecture, block or generate
+    it reads is a slot of instance data, filled with the signal's value at the stop, found by
+    `Elaborated::signal` from the stopped process's instance (`calls::signal_value`). `now` reads
+    the stop's time (`yavs_interp::at_time`, a thread-local the `now` native reads when it has no
+    kernel; elaboration still reads 0 fs). A function without parameters is its bare name (a word
+    that names no object and no enumeration literal); `now` itself is answered from the stop.
+  - The proof is over the code as lowered, the code that runs, so callees, natives and the
+    initialisers of declarations are covered without a walk of the source: `yavs_ir::first_effect`
+    visits every function reachable from the called one and allows only the instructions the memo
+    of pure calls allows (`memo_fn::inst_ok`) plus addresses of instance data and enclosing frames
+    and the `now` native. Anything else is an effect: a drive, a force, a call of a protected
+    method, a shared address or allocation, a native off the `native_is_pure` list (files,
+    `std.env.stop`, the setters of `std.env`), foreign and indirect calls, a wait. Heap writes are
+    allowed: everything the call reaches was made by it (arguments, constants and signals are copied
+    in, nothing is shared), so none outlives it. `Isolated::effect` turns the first effect into words
+    and the position of its statement; protected shared variables are captured as handles only so
+    that a function using one lowers and the message names the method call. Behind the scan, a
+    captured shared variable (lowering reaches one through an instance cell and marks it by a flag
+    only, `Space::Region`) is an effect naming the variable, and so are the function's
+    `TOUCHES_SHARED`, `TOUCHES_FILES` and `MAY_SUSPEND` flags. A function with an `out` or `inout`
+    parameter (2019) is refused before any of this.
+  - The effect is worked out once, when the function is lowered (cached per declaration with the
+    lowering); the check runs when the condition is set (`verified: false` with the message) and
+    at each call. A run whose conditions call such functions prints and exits as one
+    without them (`console.rs` `read_only_impure_calls_change_nothing`, at `--threads=1` and 4).
+  Why: conditions such as `fifo_level > 3` through a helper of the testbench are common, and
+  copies plus a whole-program check make a call harmless by construction. Not done, refused with
+  the reason: reading a signal of a package or a shared variable that is not protected (the
+  lowering captures neither: "cannot pass to it yet"), an attribute of a signal inside the function
+  (only values are copied), a function declared in a process (the static link), a selected name
+  without arguments (`pkg.f`).
 - **Live waves are a second sink of the `--wave` recorder** (#325): `yavs/waveSubscribe` builds a
   `yavs_wave::Recorder` (`record_to`, a `Sink` beside the FST `WaveWriter`) for the client's
   selection, so the stream has the hierarchy, selection rules, final value per time step and

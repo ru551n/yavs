@@ -625,13 +625,18 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   `condition` on line and data breakpoints (`supportsConditionalBreakpoints`) is a VHDL boolean
   expression over the stopped frame's locals and the signals visible from the process (or the
   watched signal's region) or by path, with predefined operators, numeric comparisons of `unsigned`
-  and `signed`, calls of pure functions visible from the process and type conversions (operators a
-  type declares call that function), each run apart from the simulation (no signal, variable or
-  shared state; its reports neither printed nor counted), and the attributes `'event`, `'active`,
-  `'last_value`, `'last_event`, `'last_active` of signals and `'length`, `'left`, `'right`, `'high`,
-  `'low`, `'ascending` of arrays (#364); an impure function, a signal parameter, a foreign function,
-  one that uses shared variables or files, one declared in a process or subprogram, and any other
-  attribute are refused naming the reason. One that does not parse, uses something unsupported or compares a
+  and `signed`, calls of functions visible from the process that only read (pure ones, and impure
+  ones reading signals of their region and `now`; one without parameters by its bare name, `now`
+  the time of the stop) and type conversions (operators a type declares call that function), each
+  run apart from the simulation on copies of what it reads (no shared state; its reports neither
+  printed nor counted), and the attributes `'event`, `'active`, `'last_value`, `'last_event`,
+  `'last_active` of signals and `'length`, `'left`, `'right`, `'high`, `'low`, `'ascending` of
+  arrays (#364); a function whose code or that of a callee may write (a signal, a shared variable,
+  a protected object, a file, the end of the simulation, foreign code: `may write, so a condition
+  does not call it: WHAT (FILE:LINE)`), a signal parameter, an `out` or `inout` parameter, a foreign function, one declared in a
+  process or subprogram, one reading a signal attribute or a package signal, and any other
+  attribute are refused naming the reason. A run whose conditions call functions prints and exits
+  as one without them. One that does not parse, uses something unsupported or compares a
   signal with a literal that is no value of its type, names nothing visible, mixes operand types or is
   not boolean is `verified: false` with a `message` (the check runs when the breakpoint is set; a
   variable of a process is known by name only, so a verified breakpoint names such variables in its

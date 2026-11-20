@@ -1,0 +1,13 @@
+top calls_two
+request initialize {"adapterID": "yavs"}
+request launch {}
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": [{"line": 290, "condition": "get_s(1) > 20"}]}
+request configurationDone {}
+event stopped
+request stackTrace {"threadId": 2}
+request evaluate {"expression": "get_s(1)", "frameId": 131072}
+request evaluate {"expression": "get_s(1)", "frameId": 65536}
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": []}
+request continue {"threadId": 2}
+event terminated
+request disconnect {}

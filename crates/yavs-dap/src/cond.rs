@@ -566,7 +566,14 @@ impl Cond {
         match &e.kind {
             ExprKind::Paren(x) => self.value(x, env),
             ExprKind::Literal(_) => Ok(V::Text(self.text(e))),
-            ExprKind::Name(n) => self.name(n, env),
+            ExprKind::Name(n) => match self.name(n, env)? {
+                // A word that names no object: a function without parameters, else a literal.
+                V::Text(w) if matches!(n.kind, NameKind::Simple(_)) => match env.call(&w, &[]) {
+                    Some(c) => c.map(V::called),
+                    None => Ok(V::Text(w)),
+                },
+                v => Ok(v),
+            },
             ExprKind::Unary { op, operand } => {
                 let v = self.value(operand, env)?;
                 let sym = match op {

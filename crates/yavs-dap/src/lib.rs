@@ -1528,7 +1528,7 @@ impl cond::Env for Names<'_, '_, '_> {
     }
 
     fn call(&self, name: &str, args: &[cond::Arg<'_>]) -> Option<Result<cond::Called, String>> {
-        calls::call(self.sh, &site(self.sh, self.tid), name, args, true)
+        calls::call(self.sh, &site(self.sh, self.tid), name, args, Some(self.at))
     }
 
     fn signal_attr(&self, name: &str, attr: &str) -> Option<Result<cond::Called, String>> {
@@ -1721,7 +1721,7 @@ impl cond::Env for Typed<'_> {
     }
 
     fn call(&self, name: &str, args: &[cond::Arg<'_>]) -> Option<Result<cond::Called, String>> {
-        calls::call(self.sh, &self.seen.site, name, args, false)
+        calls::call(self.sh, &self.seen.site, name, args, None)
     }
 
     fn signal_attr(&self, name: &str, attr: &str) -> Option<Result<cond::Called, String>> {

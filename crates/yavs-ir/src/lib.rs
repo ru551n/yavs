@@ -32,7 +32,7 @@ pub use inst::{
     Inst, IntOp, IntUnOp, LNumOp, LOp, Part, PhysOp, Reg, RegTy, Regs, Role, SCATTER_PART,
     SCATTER_REJECT, SIG_PART_BYTES, Width,
 };
-pub use memo_fn::{MemoArg, MemoArr, MemoSig, native_is_pure};
+pub use memo_fn::{MemoArg, MemoArr, MemoSig, first_effect, native_is_pure};
 pub use program::{
     Block, CaseTable, CheckMsg, ConstData, CovArm, CovComb, CovCond, CovInfo, CovKind, CovNode,
     CovRow, CovWaiver, Dir, ElabRaw, FatLayout, ForeignArg, ForeignMode, ForeignRef, Func,

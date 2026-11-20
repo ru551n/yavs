@@ -1,23 +1,24 @@
 //! Function calls, type conversions and operators a type declares (`numeric_std."+"`) in the
 //! debugger's expressions (#364). The subprogram is found by visibility from the region of the
 //! stopped process and chosen by the types of the arguments; it runs lowered on its own
-//! (`yavs_elab::Isolated`): no kernel, signals or shared state, so a call cannot change the
-//! simulation. Only pure functions are called.
+//! (`yavs_elab::Isolated`) on copies of what it reads (the signals and constants of its regions,
+//! `now`), with no kernel or shared state, so a call cannot change the simulation. Pure and
+//! impure functions are called if their code, and that of what they call, writes nothing
+//! (`Isolated::effect`); one that may write is refused with the reason.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use yavs_elab::{Isolated, Val};
-use yavs_ir::FuncFlags;
 use yavs_sem::decl::{Body, DeclKind, ObjClass, SubprogramKind, operator_key};
 use yavs_sem::scope::UseItem;
 use yavs_sem::{Db, DeclId, ScopeId, TypeId};
 use yavs_std::value::{Lit, LitType, literal};
 use yavs_syntax::Symbol;
 
-use crate::Shared;
 use crate::cond::{Arg, Called};
 use crate::design::{fits, from_val, literal_type, to_val};
+use crate::{At, Shared};
 
 /// The functions lowered for calls so far, by declaration.
 #[derive(Default)]
@@ -215,20 +216,21 @@ fn round(x: f64) -> Result<i64, String> {
     }
 }
 
-/// A call of `name` (an operator as `"+"`) on `args` seen from `site`. `run` false only resolves
-/// it, for the check made when a condition is set. `None`: nothing of that name takes these
-/// arguments here, and an operator keeps its predefined meaning.
+/// A call of `name` (an operator as `"+"`) on `args` seen from `site`, run with the signals and
+/// time of stop `at`; without one it is only resolved and checked, as when a condition is set.
+/// `None`: nothing of that name takes these arguments here (a name without arguments is no
+/// function), and an operator keeps its predefined meaning.
 pub(crate) fn call(
     sh: &Shared,
     site: &Site,
     name: &str,
     args: &[Arg<'_>],
-    run: bool,
+    at: Option<&At<'_, '_>>,
 ) -> Option<Result<Called, String>> {
     let db = &*sh.db;
     let Some(scope) = site.scope else {
-        // Statements of a subprogram: its caller decides what is visible.
-        return (!run).then_some(Ok(None));
+        // Statements of a subprogram: its caller decides what is visible (a word stays a word).
+        return (at.is_none() && !args.is_empty()).then_some(Ok(None));
     };
     let (qual, simple) = match name.rsplit_once('.') {
         Some((q, s)) if !name.starts_with('"') => (Some(q), s),
@@ -267,7 +269,8 @@ pub(crate) fn call(
         .collect();
     if funcs.is_empty() {
         // Nothing of the name: the caller's message for an unknown name, with its suggestions.
-        if op.is_some() || decls.is_empty() {
+        // A name without arguments reads as a literal.
+        if op.is_some() || decls.is_empty() || args.is_empty() {
             return None;
         }
         return Some(Err(format!(
@@ -336,22 +339,45 @@ pub(crate) fn call(
             "this is a bug in yavs: a function that is no subprogram".into(),
         ));
     };
-    if matches!(sp.kind, SubprogramKind::Function { pure: false }) {
-        return Some(Err(format!(
-            "`{shown}` is an impure function: conditions call pure functions only, so that \
-             evaluating one cannot change the simulation"
-        )));
-    }
-    if sp.impure_reads {
-        return Some(Err(format!(
-            "`{shown}` is declared pure but reads objects outside it, as an impure function \
-             does: conditions do not call it"
-        )));
+    if args.is_empty()
+        && decls
+            .iter()
+            .any(|&d| db.decls[d].kind.subprogram().is_none())
+    {
+        // An enumeration literal of the same name: the literal.
+        return None;
     }
     if matches!(sp.body, Body::Foreign(_)) {
         return Some(Err(format!(
             "`{shown}` is a foreign function: conditions do not call it"
         )));
+    }
+    if (sp.params.iter()).any(|p| !matches!(p.mode, yavs_sem::hir::Mode::In)) {
+        return Some(Err(format!(
+            "`{shown}` has a parameter of mode out or inout, which writes what it is given: \
+             conditions do not call it"
+        )));
+    }
+    if let Body::Native(sym) = &sp.body {
+        // `now`, the time of the stop; the other subprograms of std without a VHDL body change
+        // or read the state of the simulation or of the host.
+        if !sym.as_str().starts_with("yavs.standard.now.") {
+            return Some(Err(format!(
+                "`{shown}` is built into the simulator: conditions do not call it"
+            )));
+        }
+        let Some(at) = at else {
+            return Some(Ok(None));
+        };
+        let t = at.now().ok_or("`now` has no value at this stop");
+        return Some(
+            t.map(|t| {
+                let fs = i64::try_from(t.as_fs()).unwrap_or(i64::MAX);
+                let ty = LitType::Phys(yavs_std::types::time_type(), yavs_std::types::Bounds::I64);
+                Some((ty, Lit::Phys(fs), None))
+            })
+            .map_err(String::from),
+        );
     }
     // ponytail: a function of a process or subprogram needs the frame of its parent (a static
     // link), which a call made apart from the simulation does not have.
@@ -366,10 +392,66 @@ pub(crate) fn call(
         }
         sc = db.scopes[s].parent;
     }
-    if !run {
-        return Some(Ok(None));
+    let lowered = sh.calls.get(db, f);
+    if let Err(e) = callable(sh, &lowered, &shown) {
+        return Some(Err(e));
     }
-    Some(run_call(sh, site, f, &shown, args))
+    let Some(at) = at else {
+        return Some(Ok(None));
+    };
+    Some(run_call(sh, site, f, &shown, args, at))
+}
+
+/// Whether the lowered function may be called: it lowered, and neither it nor anything it calls
+/// writes (`Isolated::effect`).
+fn callable(sh: &Shared, lowered: &Result<Isolated, String>, shown: &str) -> Result<(), String> {
+    let l = match lowered {
+        Ok(l) => l,
+        Err(why) => {
+            return Err(format!(
+                "`{shown}` cannot be called in a condition: {}",
+                plain_lowering(why)
+            ));
+        }
+    };
+    if let Some((what, span)) = l.effect() {
+        let place = span
+            .and_then(|s| crate::design::decl_of(&sh.db, s, &sh.link.source_map))
+            .map_or(String::new(), |(f, n)| {
+                let f = std::path::Path::new(&f)
+                    .file_name()
+                    .map_or(f.clone(), |f| f.to_string_lossy().into_owned());
+                format!(" ({f}:{n})")
+            });
+        return Err(format!(
+            "`{shown}` may write, so a condition does not call it: {what}{place}"
+        ));
+    }
+    Ok(())
+}
+
+/// A lowering message about a function lowered on its own, in the words of a debugger's call:
+/// the lowering speaks of a port conversion function, which reads signals the same way.
+fn plain_lowering(why: &str) -> String {
+    let signal = why
+        .strip_prefix("a use of signal `")
+        .and_then(|r| r.split_once("` other than its value in a port conversion function"));
+    match signal {
+        Some((name, _)) => format!(
+            "it reads signal `{name}` other than by its value (an attribute, or as a signal \
+             parameter), and a condition gives a function the values of signals only"
+        ),
+        None => match why
+            .strip_prefix("object `")
+            .and_then(|r| r.split_once("` declared outside the lowered units"))
+        {
+            Some((name, _)) => format!(
+                "it reads `{name}`, which a condition cannot pass to it yet (a signal of a \
+                 package, or a shared variable that is not protected)"
+            ),
+            None => why.to_string(),
+        },
+    }
 }
 
 fn run_call(
@@ -378,6 +460,7 @@ fn run_call(
     f: DeclId,
     shown: &str,
     args: &[Arg<'_>],
+    at: &At<'_, '_>,
 ) -> Result<Called, String> {
     let db = &*sh.db;
     let sp = db.decls[f]
@@ -385,18 +468,29 @@ fn run_call(
         .subprogram()
         .ok_or("this is a bug in yavs: no subprogram")?;
     let lowered = sh.calls.get(db, f);
-    let l = match &*lowered {
-        Ok(l) => l,
-        Err(why) => return Err(format!("`{shown}` cannot be called in a condition: {why}")),
+    let Ok(l) = &*lowered else {
+        return Err("this is a bug in yavs: a call that was not checked".into());
     };
-    if l.flags().0 & (FuncFlags::TOUCHES_SHARED.0 | FuncFlags::TOUCHES_FILES.0) != 0 {
-        return Err(format!(
-            "`{shown}` reads or writes shared variables or files: conditions do not call it"
-        ));
-    }
+    let now = match at.now() {
+        Some(t) => t.as_fs(),
+        None if l.reads_now() => {
+            return Err(format!(
+                "`{shown}` reads `now`, which has no value at this stop"
+            ));
+        }
+        None => 0,
+    };
     // ponytail: a constant that elaboration did not evaluate lives only in the instance data of
     // the running design; reading it there would need its offset in the process's instance.
-    for d in l.reads() {
+    let mut sigs = HashMap::new();
+    for (d, sig) in l.reads() {
+        if sig {
+            sigs.insert(
+                d,
+                signal_value(sh, site, d, at).map_err(|e| format!("`{shown}` {e}"))?,
+            );
+            continue;
+        }
         if region_value(sh, site.inst, d).is_none() {
             return Err(format!(
                 "`{shown}` reads `{}`, a constant whose value elaboration did not keep: \
@@ -417,8 +511,12 @@ fn run_call(
             v.ok_or_else(|| format!("`{shown}`: an argument of this type cannot be passed yet"))?,
         );
     }
+    let read = |d: DeclId| match sigs.get(&d) {
+        Some(v) => Some(v.clone()),
+        None => region_value(sh, site.inst, d),
+    };
     let v = l
-        .call(&vals, &|d| region_value(sh, site.inst, d))
+        .call(&vals, &read, now)
         .map_err(|e| format!("`{shown}`: {e}"))?;
     let ret = sp
         .ret
@@ -427,4 +525,25 @@ fn run_call(
     let (t, x) = from_val(db, ret, &v)
         .ok_or_else(|| format!("`{shown}`: its result cannot be shown yet"))?;
     Ok(Some((t, x, Some(type_name(db, ret)))))
+}
+
+/// The current value of signal `d` of a region around the function, seen from the process of
+/// `site`, at stop `at`. The error follows the function's name.
+fn signal_value(sh: &Shared, site: &Site, d: DeclId, at: &At<'_, '_>) -> Result<Val, String> {
+    let db = &*sh.db;
+    let name = &db.decls[d].name;
+    let k = site
+        .inst
+        .and_then(|i| sh.elab.signal(i, d))
+        .and_then(|o| sh.design.by_obj.get(&o).copied())
+        .ok_or_else(|| format!("reads signal `{name}`, which is not seen from here"))?;
+    let s = &sh.design.sigs[k];
+    let v = s
+        .value(&|r| at.read(r))
+        .ok_or_else(|| format!("reads signal `{name}`, which cannot be read at this stop"))?;
+    let yavs_sem::decl::DeclKind::Object(o) = &db.decls[d].kind else {
+        return Err(format!("reads `{name}`, which is no signal"));
+    };
+    to_val(db, db.base(o.subtype), &s.lit, &v)
+        .ok_or_else(|| format!("reads signal `{name}`, whose type cannot be passed yet"))
 }

@@ -3331,7 +3331,8 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
     what a later store of the same program writes, so `learn` copies bytes instead of serialising every copy again (the
     session's copies are in the design's program too: they were serialised up to three times by the run that stores).
     Exact: a function's optimised copy is set once and never changes. A copy read from the cache is not kept as bytes:
-    keeping them cost a warm run that stores nothing 0.07 percent (`vunit_logging`).
+    keeping them cost a warm run that stores nothing 0.07 percent (`vunit_logging`). (On the branch of "Predecoded code
+    in the compilation cache" a copy read back keeps its bytes: they name it in the predecoded entry's records.)
   - *Entries per design:* `ir` is one more beside `sem` and `low`, so the store keeps the 96 most
     recently used entries instead of 48.
 
@@ -6619,6 +6620,57 @@ every elaboration, and again for every instance. Decisions:
   corpus (`yavs-auto-warm`, 1 and 4 threads, and with six earlier runs).
 - **What it widens.** Storing package state after impure calls widens the `ecall`, `sopt` and `init` decisions.
   `now` during elaboration is taken as an input (the constant 0 fs), not a taint; `YAVS_SREP_NOW=0` makes it a taint.
+
+## Predecoded code in the compilation cache (yavs-interp `pdec.rs`, yavs-ir, yavs-elab `sim.rs`, 2026-11-20; branch only, widens "Build and switch fingerprint of cache entries")
+
+- **Problem:** predecoding (`Pre::new`, `Code::new`) was made again in every run: about 25 M instructions of a warm
+  short test of the 114-test AXI-stream suite (6 percent), spread over many passes with no hot line.
+- **Decision:** a new stage entry `pdec`, one per cached program: its key is the stage key
+  (build, optimiser switches) of the program's identity (`Program::identity`, the name of its `ir` entry or of the
+  library-prefix lowering it was built on) and a format text. It holds a record per function: the function's `Pre`
+  serialised (without a run's counts, votes and lean decision, rebuilt on load) and the digest of the code it was made
+  from (`Program::code_digest`: of the optimised copy's serialised bytes, which an optimised copy is written as once
+  and a stored one is read from; 0 for code left as lowered, which the identity names). A record is used only when
+  its digest is that of the code `Program::func` hands out in this run and its lengths fit the function. Not kept: the
+  form run as lowered under elaboration-time evaluation (`budget`), reserved slots and any code that calls one (a
+  copy's id names other code in another run), the armed form, programs without an identity (elaboration sessions),
+  closures on their first run, and runs with `YAVS_DUMPIR` (whose op dump is made by predecoding). Everything else
+  predecoding reads (callees' memo signatures and flags, case tables, natives, types) is named by the identity.
+- **Store:** at the end of a run (`Elaborated::learn_pre`, after `learn`), only when the run made a record the entry
+  lacked: the records read, the entry as stored now (other runs may have added to it) and this run's, this run's
+  winning. One run stores at a time (`StageCache::make_or_wait` on the entry, the scheme of "One maker of a closure's
+  entries, the others wait"); a run that finds another storing waits for it within its `YAVS_CACHE_WAIT_MS` budget
+  and then adds to what it stored. No run waits to read the entry: it is made after a simulation, so the first wave of
+  a parallel round predecodes as before, and the read goes through `get`, so a first-wave run whose first miss is this
+  entry spends its one wait for the image maker there (it would have spent it at the next miss).
+- **Switches:** `YAVS_PDEC=0` reads and stores none; `YAVS_PDEC_CHECK=1` predecodes anyway and fails with an internal
+  error when the stored record differs (`tests/cache.rs` `predecoded_code_is_cached`).
+- **Costs:** the run that stores pays the serialisation and the write, so it is slower than without the entry by
+  construction; with this decision a closure's second run (which stores `ir`) also stores `pdec`. A stored optimised
+  copy read back now keeps its bytes (`opt_bytes`) for the digest and a later store; keeping read copies as bytes
+  was measured before at 0.07 percent steady on one test ("The copies the calls optimised are kept with the closure"). Measured numbers: see below.
+- **Measured:** all-thread instructions of `perf stat`, fresh worlds made by each binary, byte copy of the old build as
+  A/A, labels interleaved run by run; branch build 16abb1cd6 on main e21845dd5. One world, the same binary with
+  `YAVS_PDEC=0` and without, 16 warm suite tests: 16.5 M fewer per test under `--tier=interp` (0.960, 0.951 to
+  0.976), 20.6 M under `--tier=auto` (0.955). The 114-test AXI-stream suite through the test runner, `-p1`, two
+  trials of three rounds: median test 0.967 / 0.959 / 0.964 and 0.970 / 0.963 / 0.959 (A/A 1.001 / 1.004 / 1.006 and
+  1.001 / 1.000 / 1.001); `-p0`, two trials of two rounds: 0.961 / 0.944 and 0.964 / 0.945 (A/A 1.000 / 0.976 and
+  0.997 / 0.985). One entry of 527 KB serves the whole suite; it is stored by 14 runs of the first `-p1` round, none
+  of the second, 2 of the third; at `-p0` by 15 of the first round, 10 runs waited 22 ms in all to store, 1 store in
+  round 2, none in round 3. One-test closures (seven cells, short and long, interpreter and `auto`, 16 worlds, 6 runs):
+  the store run (run 2) +0.3 percent short under the interpreter (geomean of all 1.0016; A/A 1.0000), run 3 and later
+  0.988 to 0.995 short, long cells 0.9999; under the probe build pair the same (1.0031 / 0.9935). Sum of the six runs:
+  0.9987 interpreter, 0.9997 `auto` (A/A 1.0000, 1.0007). Realbench short tests under `auto`, 16 worlds, 6 runs: run 1
+  1.0016, run 2 1.0088 (worst `sc5_timestamp` 1.135, a run-2 policy mode; the probe pair 1.0036), runs 3 to 6 0.970
+  to 0.972 (best `vai_weight_buffer` 0.895); sum of six runs 0.994 (A/A 1.0004). The 8 longer tests, 4 worlds, 4 runs:
+  sum 1.0027 (A/A 1.0042). The 26 bench designs, main thread: 0.9998 interpreter, 1.0000 `auto` (largest +0.3 percent
+  `textio_heavy`, which in one world is 11 M fewer with the entry: layout). Entry size: 123 to 228 KB per cell closure
+  (1.0 to 1.5 percent of the closure's entries), realbench median 147 KB (1.4 percent), the longer tests 508 KB
+  (9 percent)
+- **Exception to the landing rule:** the store run is slower than without the entry; taken because the first six
+  runs together are cheaper. **What it widens:** predecoded code is now generated code kept across runs; code left
+  as lowered is checked by the program's identity alone (digest 0), where the compiled tier's key also hashes the
+  function's bytes.
 
 ## One maker of a closure's entries, the others wait (yavs-cache, yavs `cache.rs`, yavs-elab `srep.rs`, 2026-11-20; widens "One run makes a closure's image at a time")
 

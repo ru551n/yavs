@@ -74,6 +74,8 @@ pub struct Ir {
     pub start: Option<Arc<crate::pkgcall::StartState>>,
     /// How to store the optimised copies the run makes (#479); `None`: the design is not cached.
     pub(crate) learn: Option<Learn>,
+    /// Where the predecoded code of the program is kept (`yavs_interp::pdec`); `None`: nowhere.
+    pub(crate) pre: Option<LoweringKey>,
     /// Where the packages' state after initialisation is cached (#407).
     pub(crate) init_key: Option<crate::pkgcall::InitKey>,
     /// The library prefix the program was lowered on top of, if any (`libstage`).
@@ -129,7 +131,7 @@ struct Lowering<'a> {
 
 /// The stage-cache entry of a [`Lowering`].
 #[derive(Clone)]
-struct LoweringKey {
+pub(crate) struct LoweringKey {
     cache: Arc<dyn yavs_sem::StageCache>,
     extent: Vec<usize>,
     part: Vec<u8>,
@@ -550,6 +552,21 @@ impl Elaborated {
         if let (Some(k), Some(id)) = (&key, &program.identity) {
             k.cache.note(&format!("program {id}"));
         }
+        // The predecoded code earlier runs of this program stored, named by its identity: also a
+        // program built on a library prefix's lowering, which keeps no `ir` entry.
+        let pre = match (&key, &program.identity) {
+            (Some(k), Some(id)) if k.cache.closure() && yavs_interp::pdec::enabled() => {
+                let k = LoweringKey {
+                    cache: k.cache.clone(),
+                    extent: k.extent.clone(),
+                    part: format!("{id} {}", yavs_interp::pdec::fingerprint()).into_bytes(),
+                };
+                let now = k.cache.get(&k.extent, yavs_interp::pdec::KIND, &k.part);
+                program.stored_pre = Some(yavs_interp::pdec::read(now.as_ref()));
+                Some(k)
+            }
+            _ => None,
+        };
         let Rest {
             units: arch_units,
             packages: pkg_irs,
@@ -683,6 +700,7 @@ impl Elaborated {
             var_slots,
             start,
             learn,
+            pre,
             init_key: crate::pkgcall::init_key(db, &packages, &opts, lib.as_ref()),
             lib,
         });
@@ -913,6 +931,28 @@ impl Elaborated {
         if ir.program.optimized_count() > l.stored {
             l.stored = l.key.put(&ir.program, &l.rest);
         }
+    }
+
+    /// Call at the end of a run, with the simulation's runtime: store the predecoded code of the
+    /// functions it ran that the stored entry lacks, with what other runs stored meanwhile. One
+    /// run at a time stores it (`StageCache::make_or_wait`); the others wait for it, briefly.
+    pub fn learn_pre(&self, rt: &yavs_interp::Runtime) {
+        let Some(k) = self.ir.as_ref().and_then(|ir| ir.pre.as_ref()) else {
+            return;
+        };
+        if !rt.pre_fresh() {
+            return;
+        }
+        let kind = yavs_interp::pdec::KIND;
+        let hold = k
+            .cache
+            .make_or_wait(&k.extent, kind, &k.part)
+            .or_else(|| k.cache.make_or_wait(&k.extent, kind, &k.part));
+        let now = k.cache.get(&k.extent, kind, &k.part);
+        if let Some(bytes) = rt.pre_entry(now.as_ref()) {
+            k.cache.put(&k.extent, kind, &k.part, &bytes);
+        }
+        drop(hold);
     }
 
     /// The instance whose data resolution function `d` reads when it resolves a signal

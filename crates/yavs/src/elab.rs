@@ -2721,6 +2721,9 @@ fn run_design(
     let done = out.finish(code);
     // The optimised copies of this run's functions go into the stored lowering of the design.
     e.learn();
+    if let Some(rt) = &rt {
+        e.learn_pre(rt);
+    }
     if let Some(t) = tier_up {
         // `end` may end the process at once, without destructors: the files the design left
         // open are written out and closed first.

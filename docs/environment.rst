@@ -687,6 +687,16 @@ Compiled tiers: Cranelift
      - not ``0``
      - unset
      - ``elab``, ``run``
+   * - ``YAVS_PDEC``
+     - ``0``: the interpreter's predecoded code of each function is made in every run, and none is stored for the next run (by default a run of a cached design reads the predecoded code earlier runs stored and stores what it made that was missing).
+     - ``0``
+     - unset
+     - ``run``
+   * - ``YAVS_PDEC_CHECK``
+     - Does not use the stored predecoded code, and fails when the code it makes is not the stored one. A check for bugs in yavs.
+     - not ``0``
+     - unset
+     - ``run``
    * - ``YAVS_SREP``
      - ``0``: the calls elaboration makes always run, and nothing of them is stored for the next run (by default a run whose calls and arguments are those of an earlier run of the same design takes their results and the package state they left).
      - ``0``

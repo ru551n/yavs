@@ -53,6 +53,12 @@ pub struct Program {
     #[serde(skip)]
     #[doc(hidden)]
     pub opt_bytes: StoredOpt,
+    /// The interpreter's predecoded code of functions, as earlier runs of this program stored it
+    /// (`yavs-interp` `pdec.rs`): by function id, the [`Program::code_digest`] it was made from
+    /// and its bytes. `None`: this run neither reads nor stores any.
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub stored_pre: Option<StoredPre>,
     /// Specialised copies of processes made while the program runs (`copies.rs`); a copy of the
     /// program starts without them.
     #[serde(skip)]
@@ -102,6 +108,16 @@ impl StoredOpt {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// See [`Program::stored_pre`].
+#[derive(Default, Debug)]
+pub struct StoredPre(pub std::collections::HashMap<u32, (u64, yavs_diag::Slice)>);
+
+impl Clone for StoredPre {
+    fn clone(&self) -> Self {
+        Self::default()
     }
 }
 
@@ -376,7 +392,38 @@ impl Program {
             return None;
         }
         let bytes = self.stored_opt.map().remove(&f.0)?;
-        postcard::from_bytes::<Func>(bytes.get()).ok().map(Box::new)
+        let o = postcard::from_bytes::<Func>(bytes.get())
+            .ok()
+            .map(Box::new)?;
+        // (A later store copies these bytes, and `code_digest` reads them.)
+        self.opt_bytes.map().insert(f.0, bytes);
+        Some(o)
+    }
+
+    /// A digest of `f`, the code [`Program::func`] hands out for `id`, that names it in every run
+    /// of this program ([`Program::identity`]): of its serialised form for an optimised copy
+    /// (made once, `opt_copy`), 0 for the function as lowered, which the identity names.
+    /// `None` for a reserved slot and for code that calls one: a copy's id names other code in
+    /// another run.
+    pub fn code_digest(&self, id: FuncId, f: &Func) -> Option<u64> {
+        let raw = self.funcs.get(id)?;
+        if raw.spare {
+            return None;
+        }
+        let spare = |g: FuncId| self.funcs.get(g).is_none_or(|r| r.spare);
+        if f.code.iter().any(
+            |i| matches!(*i, Inst::Call { func, .. } | Inst::CallProt { func, .. } if spare(func)),
+        ) {
+            return None;
+        }
+        match raw.opt.get() {
+            Some(Some(o)) if std::ptr::eq(&**o, f) => {
+                let b = self.opt_copy(id, o)?.bytes;
+                Some(yavs_diag::digest(b.get()))
+            }
+            Some(None) if std::ptr::eq(raw.full(), f) => Some(0),
+            _ => None,
+        }
     }
 
     /// The serialised optimised copy `o` of `f`, made once.

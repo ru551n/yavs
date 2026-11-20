@@ -24,6 +24,8 @@ use yavs_ir::{
 
 use crate::exec::{CONST, FRAME, INST, PKG, R, SHARED, mk_addr};
 
+/// Stored across runs (`pdec.rs`) without the counts and votes a run keeps.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Pre {
     /// Made from the function as lowered, under elaboration-time evaluation (`Runtime::forget_raw`).
     pub raw: bool,
@@ -37,9 +39,13 @@ pub(crate) struct Pre {
     pub lean: bool,
     /// Calls through the full path left before `lean_params` looks at the function (`late`):
     /// 0 when it never does (`lean` holds, or the function's shape is not one for a lean call).
+    #[serde(skip)]
     late_n: std::sync::atomic::AtomicU32,
+    /// The count `late_n` starts at.
+    late0: u32,
     /// What `lean_params` found: the parameters (by index) a lean call also writes to their
     /// slots, `None` when no call of the function is lean.
+    #[serde(skip)]
     late: std::sync::OnceLock<Option<Box<[u32]>>>,
     /// The bytes of slots such a call allocates: none when the parameters are all the frame has.
     pub fslots: u32,
@@ -50,14 +56,18 @@ pub(crate) struct Pre {
     pub nested: bool,
     /// The memo of pure calls is off for this function in every process (`pmemo::State::look`
     /// found too few repeats in several processes).
+    #[serde(skip)]
     pub memo_off: std::sync::atomic::AtomicBool,
     /// Processes that gave the memo of this function up.
+    #[serde(skip)]
     pub memo_votes: std::sync::atomic::AtomicU32,
     /// Processes that called this function through the memo.
+    #[serde(skip)]
     pub memo_users: std::sync::atomic::AtomicU32,
     /// Some flag of `NativeFlags::func` is set for this function (compiled, asked, called by the
     /// tier or counted; never cleared). The watching loop looks at this byte of the callee's
     /// `Pre`, which the call has loaded, instead of the flag table (`Runtime::sync_native`).
+    #[serde(skip)]
     pub native: std::sync::atomic::AtomicBool,
     /// Registers defined once by a constant or an address (not of an up-level frame): the
     /// frame starts with their values, the interpreter never executes their definitions.
@@ -275,17 +285,18 @@ impl Pre {
         } else {
             f.frame
         };
+        let late0 = if shape.is_some() && !lean {
+            LATE_AFTER
+        } else {
+            0
+        };
         Pre {
             raw: budget,
             init,
             slots: f.frame,
             lean,
-            late_n: if shape.is_some() && !lean {
-                LATE_AFTER
-            } else {
-                0
-            }
-            .into(),
+            late_n: late0.into(),
+            late0,
             late: Default::default(),
             fslots,
             params,
@@ -300,6 +311,26 @@ impl Pre {
             next,
             code,
         }
+    }
+}
+
+impl Pre {
+    /// The facts of `f` stored by an earlier run (`pdec.rs`), when the bytes decode to facts of
+    /// its shape.
+    pub(crate) fn stored(bytes: &[u8], f: &Func) -> Option<Pre> {
+        let p: Pre = postcard::from_bytes(bytes).ok()?;
+        let (n, pcs) = (f.reg_ty.len(), f.code.len() + 1);
+        if p.init.len() != n
+            || p.preloaded.len() != n
+            || p.next.len() != pcs
+            || p.code.entry.len() != pcs
+            || p.code.at.len() != p.code.ops.len()
+        {
+            return None;
+        }
+        p.late_n
+            .store(p.late0, std::sync::atomic::Ordering::Relaxed);
+        Some(p)
     }
 }
 
@@ -373,7 +404,7 @@ fn const_addr(dst: yavs_ir::Reg, space: u8, idx: u32, off: u32, pc: usize) -> Op
 
 /// One predecoded operation (`Code`). Registers are `u32` indices into the frame's
 /// registers, jump targets op indices. Widths are never `Width::Sig` (those go to `Step`).
-#[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug)]
 pub(crate) enum Op {
     /// The IR instruction at this pc, through `Machine::step`.
     Step(u32),
@@ -1480,6 +1511,7 @@ pub(crate) enum Op {
 const _: () = assert!(size_of::<Op>() <= 24);
 
 /// A function's predecoded code (#431).
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Code {
     pub ops: Vec<Op>,
     /// The IR pc of each op (of its first instruction when it stands for several).
@@ -1513,6 +1545,7 @@ pub(crate) struct Code {
 }
 
 /// A run of scalar drives, each `[Stmt?, SigVal, LoadSlot, Aff1?, LSetDrive]`, in consecutive ops.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct DriveRun {
     /// The op of each drive's `Stmt` (its `SigVal` when it has none).
     pub starts: Vec<u32>,
@@ -1522,6 +1555,7 @@ pub(crate) struct DriveRun {
 }
 
 /// The operands of one drive of a `DriveRun`.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct RunDrive {
     pub sv: u32,
     pub sig: u32,
@@ -2066,6 +2100,7 @@ fn prologue(code: &mut Code, params: &[(u32, Width)]) -> Box<[u32]> {
 }
 
 /// A `Case` table with its targets as op indices.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct CaseOps {
     /// Sorted, non-overlapping inclusive ranges and their targets.
     pub arms: Vec<(i64, i64, u32)>,
@@ -3468,7 +3503,7 @@ pub fn fused_drives(prog: &Program, f: &Func) -> (Vec<ScalarDrive>, Vec<FusedCop
 
 /// Where an operand of an element loop comes from: a register the loop does not write, the
 /// loop variable, or the result of an earlier step of the same iteration.
-#[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug)]
 pub(crate) enum V {
     Inv(u32),
     Ind,
@@ -3476,14 +3511,14 @@ pub(crate) enum V {
 }
 
 /// The step of the loop variable: a constant of the latch or the register of the `Bin` after it.
-#[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug)]
 pub(crate) enum Delta {
     K(i64),
     R(u32),
 }
 
 /// The range a `BinRange` result must lie in: constants, or registers the loop does not write.
-#[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug)]
 pub(crate) enum Bound {
     None,
     K(i32, i32),
@@ -3492,7 +3527,7 @@ pub(crate) enum Bound {
 
 /// One instruction of an element loop's body. Every value is affine in the iteration number, so
 /// `Machine::loop_plan` evaluates each as a pair (value at 0, change per iteration).
-#[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug)]
 pub(crate) enum LStep {
     Mov(V),
     K(i64),
@@ -3549,6 +3584,7 @@ pub(crate) enum LStep {
 /// when every position, index and element of them is in range. The generic ops run the rest
 /// from the head, the iteration that leaves the loop included, so registers, the exit and every
 /// failure are theirs.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct ElemLoop {
     pub ind: u32,
     pub bound: u32,

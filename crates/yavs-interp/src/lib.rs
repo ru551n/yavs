@@ -24,6 +24,7 @@ pub use gather::{
     DirectGather, DirectPart, DirectScatter, compared_scatter, direct_gather, direct_part,
     direct_scatter,
 };
+pub mod pdec;
 mod pmemo;
 mod pre;
 mod scan;
@@ -1712,6 +1713,9 @@ pub struct Runtime {
     pub(crate) expanded: Vec<std::sync::OnceLock<Vec<u8>>>,
     /// Per-function facts, computed on the first call (`pre.rs`).
     pre: Vec<std::sync::OnceLock<pre::Pre>>,
+    /// The functions whose facts were made, not read from `Program::stored_pre`, and the code
+    /// digest each was made from (`pdec.rs`).
+    pre_made: Mutex<Vec<(u32, u64)>>,
     /// The facts of a function with interpreter arms (`Program::arm`), made when the tier's count
     /// of its calls runs out (`counted_out`), and their roots; `any_arms` once one was made.
     pre_arm: Vec<std::sync::OnceLock<pre::Pre>>,
@@ -2295,6 +2299,7 @@ impl Runtime {
                 .collect(),
             expanded: (0..prog.consts.len()).map(|_| Default::default()).collect(),
             pre: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
+            pre_made: Default::default(),
             pre_arm: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             live_arm: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             any_arms: std::sync::atomic::AtomicBool::new(false),
@@ -2436,10 +2441,26 @@ impl Runtime {
     #[inline(always)]
     pub(crate) fn pre(&self, id: yavs_ir::FuncId, f: &yavs_ir::Func) -> Option<&pre::Pre> {
         Some(self.pre.get(id.0 as usize)?.get_or_init(|| {
-            let mut p = pre::Pre::new(f, &self.prog, self.prog.runs_raw(id), &[]);
+            let mut p = pdec::pre(&self.prog, &self.pre_made, id, f);
             p.native = self.native.flagged(id.0).into();
             p
         }))
+    }
+
+    /// The entry of predecoded code to store at the end of a run (`pdec.rs`): `now` is the entry
+    /// as it is stored now. `None` when the run made nothing it lacks.
+    pub fn pre_entry(&self, now: Option<&yavs_diag::Buffer>) -> Option<Vec<u8>> {
+        pdec::entry(
+            &self.prog,
+            &self.pre_made,
+            |id| self.pre.get(id.0 as usize)?.get(),
+            now,
+        )
+    }
+
+    /// Whether this run made facts of functions that the stored entry lacked.
+    pub fn pre_fresh(&self) -> bool {
+        self.pre_made.lock().is_ok_and(|m| !m.is_empty())
     }
 
     /// The code of `id` and its facts without interpreter arms, as a root frame runs them.

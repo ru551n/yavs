@@ -27,6 +27,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
     let srep = yavs_elab::session_replay_stats();
     let (reads, idle) = yavs_wave::var_counts();
     let (memo_hits, memo_runs) = yavs_interp::pmemo_stats();
+    let pdec = yavs_interp::pdec::stats();
     let (serial_execs, shared_publishes) = yavs_interp::serial_stats();
     let mut rows = vec![
         ("cycles", s.cycles),
@@ -90,6 +91,9 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         ("opt_type_memo", yavs_ir::opt::type_memo_hits()),
         ("elab_restarts", yavs_ir::restarted_calls()),
         ("gc_collections", yavs_interp::gc_collections()),
+        ("pdec_hits", pdec.0),
+        ("pdec_made", pdec.1),
+        ("pdec_other", pdec.2),
         ("pmemo_hits", memo_hits),
         ("pmemo_runs", memo_runs),
         // The part of `pmemo_hits` compiled code answered by itself.

@@ -1655,6 +1655,13 @@ them with what other runs stored since it read them. A killed maker lets the wai
 79.2 G and 3.33 s to 3.26 s of round wall (8 threads); later rounds, `-p1`, the cells and the realbench short tests
 unchanged (`docs/decisions.md` "One maker of a closure's entries, the others wait").
 
+Predecoded code is kept across runs (stage entry `pdec`, branch only, 2026-11-20): a run of a cached program reads the
+interpreter's predecoded code of each function earlier runs stored, when the code it was made from is the code this run
+hands out, and stores what it made that was missing at its end, one run at a time (`yavs-interp` `pdec.rs`). A warm
+test of the 114-test suite: 16.5 M instructions fewer (4 percent) under the interpreter; the run that stores is up to
+about 1 percent slower. `YAVS_PDEC=0` turns it off, `YAVS_PDEC_CHECK=1` predecodes and compares (`docs/decisions.md`
+"Predecoded code in the compilation cache").
+
 `Inst::visit` and `visit_mut` are generic over the closure instead of `dyn FnMut` (the optimiser, the predecoder and the verifier
 call them for every operand): `yavs run --no-cache` to 0 fs, instructions over the 42 realbench tests, geometric mean 0.973
 (`neorv32_*` 0.92 to 0.93, most others 0.97 to 0.98, `grlib_leon3mp` 1.003); the binary grows by 0.5 percent.

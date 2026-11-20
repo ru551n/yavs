@@ -37,7 +37,7 @@ pub use program::{
     Block, CaseTable, CheckMsg, ConstData, CovArm, CovComb, CovCond, CovInfo, CovKind, CovNode,
     CovRow, CovWaiver, Dir, ElabRaw, FatLayout, ForeignArg, ForeignMode, ForeignRef, Func,
     FuncFlags, FuncKind, Labels, Local, Mode, NativeRef, OptCopy, Param, ParamClass, Program,
-    RootKind, StmtInfo, StmtKind, VhpiIndex, VhpiModel, VhpiParam, ViaNode,
+    RootKind, StmtInfo, StmtKind, StoredPre, VhpiIndex, VhpiModel, VhpiParam, ViaNode,
 };
 pub use program::{
     COV_INPUTS, FRAME_OBJECT, frame_object_addr, frame_object_range, is_frame_object, native_shown,

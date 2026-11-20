@@ -43,7 +43,8 @@ compiled code. The first run of a design notes it, the second stores it, later r
 (:doc:`running-faster`); compiled code is stored from the first run, so the second takes what the first
 compiled without making it again. The lowered form holds the functions that the design's elaboration ran and
 optimised, so a testbench that creates verification components in its declarations does not optimise them
-again in later runs. The calls such declarations make are stored too, with the package state they leave
+again in later runs. The interpreter's predecoded form of the functions a run ran is stored at the end
+of the run, so later runs do not make it again. The calls such declarations make are stored too, with the package state they leave
 (about 3 MB for a verification-component testbench, one copy for each set of generics that changes their
 arguments): a later run whose calls and arguments are the same takes their results and that state instead of
 making the calls, and prints what a run that makes them prints. A call that reads a file, the environment

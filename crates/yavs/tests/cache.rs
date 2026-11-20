@@ -190,8 +190,8 @@ fn warm_run_is_identical_to_cold() {
     assert_eq!(visible(&plain), visible(&first));
     let cold = e.run(&[]);
     assert!(note(&cold, "store"), "{cold:?}");
-    // The analysis and the lowered design (`sem`, `ir`).
-    assert_eq!(e.entries(), 2);
+    // The analysis, the lowered design and its predecoded code (`sem`, `ir`, `pdec`).
+    assert_eq!(e.entries(), 3);
     let warm = e.run(&[]);
     assert!(note(&warm, "hit"), "{warm:?}");
     assert_eq!(visible(&plain), visible(&cold));
@@ -203,7 +203,7 @@ fn warm_run_is_identical_to_cold() {
         assert!(note(&w, "hit"), "{w:?}");
         assert_eq!(nc, visible(&w), "{args:?}");
     }
-    assert_eq!(e.entries(), 2);
+    assert_eq!(e.entries(), 3);
 }
 
 #[test]
@@ -241,7 +241,7 @@ fn damaged_entries_are_ignored() {
     }] {
         std::fs::write(&img, bad).expect("write");
         // Only the analysis image is under test: its hit must not be told from the lowered design's.
-        for f in e.entry_files("ir") {
+        for f in [e.entry_files("ir"), e.entry_files("pdec")].concat() {
             std::fs::remove_file(f).expect("remove");
         }
         let r = e.run(&[]);
@@ -373,18 +373,18 @@ fn clean_removes_entries() {
     // `--std-cache=off`: a clean of the shared store would hit every test running at the same time.
     let e = Env::new("clean");
     e.cold("tb", &[]);
-    assert_eq!(e.entries(), 2);
+    assert_eq!(e.entries(), 3);
     let work = e.work();
     let o = e.yavs(&["cache", "clean", "--work", &work, "--std-cache=off"]);
     assert_eq!(o.code, 0, "{o:?}");
-    // The two of the run and the analysed units `analyze` made.
+    // The three of the run and the analysed units `analyze` made.
     let n: usize = o
         .stdout
         .split_whitespace()
         .nth(2)
         .and_then(|n| n.parse().ok())
         .expect("a count");
-    assert!(n > 2, "{o:?}");
+    assert!(n > 3, "{o:?}");
     assert!(!e.cache_dir().exists());
     // The records of the library's files are not cache entries (#599).
     let lib = e
@@ -410,7 +410,7 @@ fn parallel_cold_runs_agree() {
             assert_eq!(plain, h.join().expect("join"));
         }
     });
-    assert_eq!(e.entries(), 2);
+    assert_eq!(e.entries(), 3);
     assert!(Path::new(&e.cache_dir()).is_dir());
     let leftovers = std::fs::read_dir(e.cache_dir())
         .expect("dir")
@@ -2500,4 +2500,61 @@ fn an_edited_file_known_by_a_symlink_of_another_name_has_one_entry() {
         o.stderr.contains("L0031") && !o.stderr.contains("L0034"),
         "{o:?}"
     );
+}
+
+/// The predecoded code of the functions a run ran is stored at its end (`pdec`) and read by the
+/// next run of the program; `YAVS_PDEC_CHECK` predecodes anyway and compares, `YAVS_PDEC=0` reads
+/// none.
+#[test]
+fn predecoded_code_is_cached() {
+    let e = Env::with_env("pdec", &[("YAVS_COUNTERS", "1")]);
+    let count = |o: &Out, c: &str| -> u64 {
+        o.stderr
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("counters: {c}=")))
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no {c} counter: {o:?}"))
+    };
+    let shown = |o: &Out| {
+        let mut v = visible(o);
+        v.stderr = v
+            .stderr
+            .lines()
+            .filter(|l| !l.starts_with("counters: "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        v
+    };
+    let plain = shown(&e.run(&["--no-cache"]));
+    let stored = e.cold("tb", &[]);
+    assert!(note(&stored, "store pdec"), "{stored:?}");
+    assert!(count(&stored, "pdec_made") > 0, "{stored:?}");
+    assert_eq!(e.entry_files("pdec").len(), 1);
+    let warm = e.run(&[]);
+    assert!(
+        note(&warm, "hit pdec") && !note(&warm, "store pdec"),
+        "{warm:?}"
+    );
+    assert!(count(&warm, "pdec_hits") > 0, "{warm:?}");
+    assert_eq!(count(&warm, "pdec_made"), 0, "{warm:?}");
+    assert_eq!(plain, shown(&warm));
+    let check = e.yavs_with(
+        &["run", "--work", &e.work(), "tb"],
+        &[("YAVS_PDEC_CHECK", "1")],
+    );
+    assert_eq!(count(&check, "pdec_hits"), 0, "{check:?}");
+    // (Every record was compared: none was made as if missing.)
+    assert_eq!(count(&check, "pdec_made"), 0, "{check:?}");
+    assert_eq!(plain, shown(&check));
+    let off = e.yavs_with(&["run", "--work", &e.work(), "tb"], &[("YAVS_PDEC", "0")]);
+    assert!(!note(&off, "pdec"), "{off:?}");
+    assert_eq!(count(&off, "pdec_hits"), 0, "{off:?}");
+    assert_eq!(plain, shown(&off));
+    // A damaged entry is a miss, and the run stores it again.
+    for f in e.entry_files("pdec") {
+        std::fs::write(&f, b"junk").expect("write");
+    }
+    let again = e.run(&[]);
+    assert!(note(&again, "store pdec"), "{again:?}");
+    assert_eq!(plain, shown(&again));
 }

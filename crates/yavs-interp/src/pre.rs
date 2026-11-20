@@ -303,6 +303,12 @@ impl Pre {
     }
 }
 
+/// `YAVS_DUMPIR` is set (read once: every function's predecode asks).
+fn dump_ir() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("YAVS_DUMPIR").is_some())
+}
+
 /// The calls through the full path after which `lean_params` looks at a function `lean` refuses:
 /// its analysis costs more than a lean call saves, so only a function called often pays it.
 pub(crate) const LATE_AFTER: u32 = 128;
@@ -2613,7 +2619,7 @@ fn read_counts(f: &Func) -> Vec<u32> {
 fn waveform_is_private(
     f: &Func,
     block_start: &[bool],
-    total: &std::cell::OnceCell<Vec<u32>>,
+    uses: &[u32],
     from: usize,
     to: usize,
     wave: u32,
@@ -2636,10 +2642,7 @@ fn waveform_is_private(
         let reg = yavs_ir::Reg(r);
         match live_within(f, to, reg, 256) {
             Some(live) => !live,
-            None => {
-                total.get_or_init(|| read_counts(f)).get(r as usize) == Some(&n)
-                    || !live_after(f, to, reg)
-            }
+            None => uses.get(r as usize) == Some(&n) || !live_after(f, to, reg),
         }
     };
     nw == 3 && nb == 1 && dead(wave, nw) && dead(base, nb)
@@ -2654,7 +2657,7 @@ fn frame_wave_is_private(
     f: &Func,
     known: &[Known],
     block_start: &[bool],
-    total: &std::cell::OnceCell<Vec<u32>>,
+    uses: &[u32],
     (from, to): (usize, usize),
     (off, bytes): (u32, u32),
     want: u32,
@@ -2677,7 +2680,7 @@ fn frame_wave_is_private(
     // (Those registers are defined once, before `from`: read only in the range, they are dead.)
     regs.iter().map(|x| x.1).sum::<u32>() == want
         && regs.iter().all(|&(r, n)| {
-            total.get_or_init(|| read_counts(f)).get(r as usize) == Some(&n)
+            uses.get(r as usize) == Some(&n)
                 || live_within(f, to, yavs_ir::Reg(r), 256) == Some(false)
         })
 }
@@ -2701,7 +2704,10 @@ fn peephole(
     uses: &[u32],
     known: &[Known],
 ) {
-    let (old, old_at) = (std::mem::take(ops), std::mem::take(at));
+    let (old, old_at) = (
+        std::mem::replace(ops, Vec::with_capacity(ops.len())),
+        std::mem::replace(at, Vec::with_capacity(at.len())),
+    );
     // The waveform starts `WaveBuf` made so far: wave register, the register 8 bytes in and
     // the IR pc of the `Alloc`.
     // The `Copy` positions where a `CopyDrive` goes, and the op.
@@ -2737,8 +2743,6 @@ fn peephole(
         .iter()
         .position(|k| matches!(k, Known::Int(0)))
         .and_then(|r| u16::try_from(r).ok());
-    // The reads of each register in the function, found when a waveform needs them.
-    let total = std::cell::OnceCell::new();
     // The `Drive`s of a waveform in the frame, by op index, with the frame offset of the waveform.
     let frame_drives: Vec<(usize, u32)> = old
         .iter()
@@ -2808,7 +2812,7 @@ fn peephole(
                     let clean = wave == w
                         && int(n) == Some(1)
                         && free(j + 1)
-                        && waveform_is_private(f, block_start, &total, from, to, w, e)
+                        && waveform_is_private(f, block_start, uses, from, to, w, e)
                         && !(from + 3..to).any(|p| {
                             let mut def = false;
                             f.code[p].visit(&mut |r, role, _| {
@@ -2956,7 +2960,7 @@ fn peephole(
                             f,
                             known,
                             block_start,
-                            &total,
+                            uses,
                             (from, to),
                             (off, bytes),
                             3 + u32::from(time.is_some()),
@@ -3081,7 +3085,7 @@ fn peephole(
                     f,
                     known,
                     block_start,
-                    &total,
+                    uses,
                     (from as usize, to as usize),
                     (off, 16),
                     3,
@@ -3804,7 +3808,7 @@ fn elem_loops(ops: &mut Vec<Op>, at: &mut Vec<u32>) -> Vec<ElemLoop> {
             let steps = match loop_body(&ops[head..end], ind, bound, delta) {
                 Ok(steps) => steps,
                 Err(i) => {
-                    if std::env::var_os("YAVS_DUMPIR").is_some() {
+                    if dump_ir() {
                         eprintln!(
                             "loop of ops {head} to {end} is not an element loop: op {}",
                             head + i
@@ -6305,7 +6309,7 @@ impl Code {
         }
         let first = entry.first().copied().unwrap_or(NONE);
         // Debug aid next to the IR dump of `YAVS_DUMPIR`.
-        if std::env::var_os("YAVS_DUMPIR").is_some() {
+        if dump_ir() {
             eprintln!("ops of `{}`", f.name);
             for (i, o) in ops.iter().enumerate() {
                 eprintln!("{i:6} pc{} {o:?}", at[i]);
@@ -6320,7 +6324,7 @@ impl Code {
             no_tier,
             cases,
             loops,
-            trace: std::env::var_os("YAVS_DUMPIR").is_some(),
+            trace: dump_ir(),
             skip: NONE,
             go: first,
             runs,

@@ -319,6 +319,58 @@ fn snapshots() {
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
 
+/// A warning made an error before the simulation starts is shown as an error and stops `run`
+/// with exit 2: nothing of the design runs (#840).
+#[test]
+fn werror_stops_run_before_the_simulation() {
+    let tmp = tempdir("werror_run");
+    std::fs::write(
+        tmp.join("nowait.vhd"),
+        "entity nowait is end;
+architecture a of nowait is
+begin
+  process
+  begin
+    report \"ran\";
+    std.env.finish;
+  end process;
+end;
+",
+    )
+    .expect("write");
+    let yavs = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never"])
+            .args(args)
+            .current_dir(&tmp)
+            .output()
+            .expect("yavs")
+    };
+    assert!(
+        yavs(&["analyze", "--work=work:lib", "nowait.vhd"])
+            .status
+            .success()
+    );
+    let o = yavs(&["run", "--work=work:lib", "nowait"]);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    for (flag, note) in [
+        ("-Werror=W3102", "under `-Werror=W3102`"),
+        ("-Werror", "under `-Werror`"),
+    ] {
+        let o = yavs(&["run", "--work=work:lib", flag, "nowait"]);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(2), "{flag}: {err}");
+        assert!(err.starts_with("error[W3102]"), "{flag}: {err}");
+        assert!(err.contains(note), "{flag}: {err}");
+        assert!(
+            !String::from_utf8_lossy(&o.stdout).contains("ran"),
+            "{flag}: {o:?}"
+        );
+    }
+    let o = yavs(&["run", "--work=work:lib", "-Werror", "-WW3102", "nowait"]);
+    assert_eq!(o.status.code(), Some(0), "-WCODE: {o:?}");
+}
+
 /// A design with PSL elaborates and runs: PSL outside the subset is skipped (#138), the
 /// subset runs as checker processes (#226), a `-- psl` pragma included.
 #[test]

@@ -36,7 +36,8 @@ Every ``yavs`` command says how it went with its exit status, so a CI step fails
 
 :doc:`cli-reference` has the exact wording. A pipe hides the status of ``yavs``: in a shell step use
 ``set -o pipefail``, as GitHub Actions does for ``bash`` when you write ``shell: bash``. ``-Werror`` makes
-warnings fail the step too.
+warnings fail the step too: each is then shown as ``error[CODE]`` with a note naming the option, and a
+``run`` stops with status 2 before the simulation starts.
 
 .. _ci-getting-yavs:
 

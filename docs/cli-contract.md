@@ -366,6 +366,8 @@ yavs analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=alwa
     as any error before the simulation starts).
   - `-Werror=CODE`: that warning is an error. `-Wno-CODE`: that warning is not
     printed. `-WCODE`: that warning stays a warning even under `-Werror`.
+  - A warning made an error is shown as one (`error[CODE]`, JSON `level` `error`) with a note
+    naming the option that made it so (#840).
   - For one code the last option wins; `CODE` must be a registered warning code
     (`W0001`, `W1008`, ...), else `E0103` and exit 2.
 - An encrypted source (IEEE 1735 `` `protect begin_protected `` envelope, #775) is one error

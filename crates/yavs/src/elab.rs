@@ -2219,6 +2219,10 @@ fn run_design(
     for w in e.no_wait_warnings(&procs) {
         out.emit(&db.sources, &w);
     }
+    // One of them made an error by `-Werror`: the simulation does not start (#840).
+    if out.errors > 0 {
+        return out.finish(2);
+    }
     // Held to the end of the run: `end` or a drop ends tier-up.
     let mut tier_up = match use_tier(built.as_ref().map(|b| &*b.rt), &a) {
         Ok(g) => g,

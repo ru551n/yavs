@@ -184,10 +184,30 @@ impl Out {
             return;
         }
         let errors = self.errors;
+        // A warning made an error is shown as one, with the option that made it so (#840).
+        let promoted = match d.severity {
+            Severity::Warning if action == Some(Action::Deny) => {
+                Some(format!("-Werror={}", d.code))
+            }
+            Severity::Warning if self.werror && action != Some(Action::Keep) => {
+                Some("-Werror".to_string())
+            }
+            _ => None,
+        };
+        let shown;
+        let d = match promoted {
+            Some(o) => {
+                let mut e = d
+                    .clone()
+                    .with_note(format!("this warning is an error under `{o}`"));
+                e.severity = Severity::Error;
+                shown = e;
+                &shown
+            }
+            None => d,
+        };
         match d.severity {
             Severity::Error => self.errors += 1,
-            Severity::Warning if action == Some(Action::Deny) => self.errors += 1,
-            Severity::Warning if self.werror && action != Some(Action::Keep) => self.errors += 1,
             Severity::Warning => self.warnings += 1,
             Severity::Note => {}
         }

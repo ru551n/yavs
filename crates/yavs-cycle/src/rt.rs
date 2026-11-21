@@ -1356,8 +1356,8 @@ impl<const RAIL: bool> RegionProc<RAIL> {
     }
 
     /// Run `f` on the rail's image after the region's own run: a failed check ends it (`Err`
-    /// with its site), the notes it logs are dropped. A run of the skip checks that saw a
-    /// difference is an internal error, as on the region's image.
+    /// with its site), the notes it logs stay in its log for [`Self::release`]. A run of the
+    /// skip checks that saw a difference is an internal error, as on the region's image.
     /// Of an edge, its own steps run (`edge`) before the region's run, so its clocked members read
     /// the region's image as it was before the edge, and the settle's after it.
     #[allow(clippy::too_many_arguments)]
@@ -1381,11 +1381,7 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                 img[o] = (self.img.as_ptr() as isize).wrapping_sub(img.as_ptr() as isize) as u64;
                 img[o + 1] = if seed { !0 } else { 0 };
             }
-            let res = self.code.run_rail(img, f, mark, edge);
-            if self.log.1 > 0 {
-                img[self.log.0] = 0;
-            }
-            res
+            self.code.run_rail(img, f, mark, edge)
         };
         let mut res = run(&mut r.img, true);
         for (k, m) in r.more.iter_mut().enumerate() {
@@ -1532,25 +1528,50 @@ impl<const RAIL: bool> RegionProc<RAIL> {
         e
     }
 
-    fn run_code(&mut self, ctx: &mut Ctx<'_>, f: Fun) -> Result<(), SimError> {
-        self.run_marked(ctx, f, false)
+    fn run_code(&mut self, ctx: &mut Ctx<'_>, f: Fun, hold: bool) -> Result<(), SimError> {
+        self.run_marked(ctx, f, false, hold)
     }
 
     /// Run function `f`; with `marked`, the settle only where the inputs read since the last
-    /// settle reach (`mark`).
-    fn run_marked(&mut self, ctx: &mut Ctx<'_>, f: Fun, marked: bool) -> Result<(), SimError> {
+    /// settle reach (`mark`). With `hold` (the rail runs) its notes wait for [`Self::release`].
+    fn run_marked(
+        &mut self,
+        ctx: &mut Ctx<'_>,
+        f: Fun,
+        marked: bool,
+        hold: bool,
+    ) -> Result<(), SimError> {
         let mark = marked.then_some(&self.mark[..]);
         let r = self.code.run(&mut self.img, f, mark);
         // The notes of the run come first, as in the normal mode before a failed check.
-        if self.log.1 > 0 && self.img[self.log.0] > 0 {
-            self.notes(ctx)?;
+        if self.log.1 > 0 && self.img[self.log.0] > 0 && (!hold || r.is_err()) {
+            self.notes(ctx, None)?;
         }
         r.map_err(|site| self.failed(ctx, site))
     }
 
-    /// Report the notes the last run logged, in the order they fired, as their members.
+    /// After the rail's run of the region's last run: the notes that run held, with the
+    /// rail's `'U'` and `'X'` while it runs; the rail's log is emptied.
+    fn release(&mut self, ctx: &mut Ctx<'_>, rail: Option<&mut Rail>) -> Result<(), SimError> {
+        if self.log.1 == 0 {
+            return Ok(());
+        }
+        if self.img[self.log.0] > 0 {
+            self.notes(ctx, rail.as_deref())?;
+        }
+        if let Some(r) = rail {
+            for m in std::iter::once(&mut r.img).chain(r.more.iter_mut()) {
+                m[self.log.0] = 0;
+            }
+        }
+        Ok(())
+    }
+
+    /// Report the notes the last run logged, in the order they fired, as their members. With
+    /// `rail`, a note that fired on each of its images too shows `'U'` or `'X'` where they differ
+    /// (as `export_rail`); one that did not fired on another path there: two-state text.
     #[cold]
-    fn notes(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+    fn notes(&mut self, ctx: &mut Ctx<'_>, rail: Option<&Rail>) -> Result<(), SimError> {
         let (at, cap) = self.log;
         let n = std::mem::take(&mut self.img[at]) as usize;
         self.idle.noted = true;
@@ -1568,7 +1589,28 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             let Some((Check::Note(nt), _, pi, _)) = self.checks.get(site) else {
                 return Err(internal(ctx, "a note of a site that is no note"));
             };
-            fired.push((nt.comb, *pi, nt.severity, nt.text(&self.img)));
+            let logged = |m: &[u64]| {
+                let k = (m[at] as usize).min(cap);
+                m[at + 1..at + 1 + k].contains(&(site as u64))
+            };
+            let text = match rail {
+                Some(r) if logged(&r.img) && r.more.iter().all(|m| logged(m)) => {
+                    nt.text_meta(&self.img, |n, k| {
+                        let crate::lower::Ref::Loc(w) = nt.args[n].0 else {
+                            return (0, 0);
+                        };
+                        let i = (w + k) as usize;
+                        let (v, b) = (self.img[i], r.img[i]);
+                        let d = v ^ b;
+                        match &r.more[..] {
+                            [mu, mx] => (d, d & !(mu[i] ^ v) & !(mx[i] ^ b)),
+                            _ => (d, 0),
+                        }
+                    })
+                }
+                _ => nt.text(&self.img),
+            };
+            fired.push((nt.comb, *pi, nt.severity, text));
         }
         // In the normal mode's order: the clocked members' at the edge, then the combinational
         // ones', each in elaboration order (the processes of a delta run in it).
@@ -1716,18 +1758,20 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             if R {
                 self.rail_snap(&mut rail);
             }
-            self.run_code(ctx, Fun::Init)?;
+            self.run_code(ctx, Fun::Init, R && rail.is_some())?;
             if R {
                 self.rail_run(ctx, &mut rail, &mut ended, Fun::Init, false, false)?;
+                self.release(ctx, rail.as_deref_mut())?;
             }
             // A reset that holds at time 0 applies (its branch is in the settle), as when the
             // normal mode runs every process once.
             if R {
                 self.rail_snap(&mut rail);
             }
-            self.run_code(ctx, Fun::Settle)?;
+            self.run_code(ctx, Fun::Settle, R && rail.is_some())?;
             if R {
                 self.rail_run(ctx, &mut rail, &mut ended, Fun::Settle, false, false)?;
+                self.release(ctx, rail.as_deref_mut())?;
             }
             self.export_rail_or::<R>(ctx, &mut rail, ended)?;
             if R {
@@ -1772,9 +1816,10 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             if R {
                 self.rail_snap(&mut rail);
             }
-            self.run_marked(ctx, Fun::Settle, true)?;
+            self.run_marked(ctx, Fun::Settle, true, R && rail.is_some())?;
             if R {
                 self.rail_run(ctx, &mut rail, &mut ended, Fun::Settle, true, false)?;
+                self.release(ctx, rail.as_deref_mut())?;
             }
             self.mark.fill(0);
         }
@@ -1851,9 +1896,10 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                     self.rail_run(ctx, &mut rail, &mut ended, f, true, true)?;
                 }
             }
-            self.run_marked(ctx, f, true)?;
+            self.run_marked(ctx, f, true, R && rail.is_some())?;
             if R {
                 self.rail_run(ctx, &mut rail, &mut ended, f, true, false)?;
+                self.release(ctx, rail.as_deref_mut())?;
                 if edge && let Some(mut r) = rail.take() {
                     r.edges += 1;
                     self.metas.rail_edges.store(r.edges, Ordering::Relaxed);

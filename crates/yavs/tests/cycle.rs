@@ -1085,8 +1085,8 @@ fn an_edge_tested_concurrent_assert_is_a_check_at_the_edge() {
 /// Under `--cycle-exact-meta` a member below the top-level unit whose report reads a signal the
 /// region does not drive alone stays out (E4140) and reports the 'U' start as the normal mode;
 /// under the default contract it joins and reports 0. The top-level checker that reads only a
-/// member's register joins and reports its 'U' start as 0 also under `--cycle-exact-meta` (a known
-/// gap, docs "Two-state values": notes read the region's image, not the second one).
+/// member's register joins and reports its 'U' start as 'U' under `--cycle-exact-meta` (the second
+/// image), as 0 under the default contract.
 #[test]
 fn exact_meta_keeps_out_a_report_reading_the_kernel() {
     let dir = tempdir("cycle-exactnote");
@@ -1115,10 +1115,10 @@ fn exact_meta_keeps_out_a_report_reading_the_kernel() {
     for t in tiers() {
         let exact = go(&[&t[..], &["--cycle", "--cycle-exact-meta"]].concat());
         assert!(
-            has(&exact, "q=U r=U") && has(&exact, "top q=0"),
+            has(&exact, "q=U r=U") && has(&exact, "top q=U"),
             "{t:?} {exact:#?}"
         );
-        assert_eq!(exact[2..], normal[2..], "{t:?}");
+        assert_eq!(exact, normal, "{t:?}");
         let plain = go(&[&t[..], &["--cycle"]].concat());
         assert!(
             has(&plain, "q=0 r=0") && has(&plain, "top q=0"),
@@ -1141,6 +1141,69 @@ fn exact_meta_keeps_out_a_report_reading_the_kernel() {
         err.contains("cycle mode: 4 of 5 processes run cycle-based"),
         "{err}"
     );
+}
+
+/// A59: under `--cycle-exact-meta` asserts and reports of members read the second image: a 'U' or
+/// 'X' start (whole, in a field, in a part of a vector; widths 1/63/64/65/128; `to_hstring` digits
+/// `X`) prints as in the normal mode from a clocked checker and from a combinational process; a BIT
+/// copy of a 'U' prints 0. Differences: `zero` fires on the region's image only (two-state text, a
+/// line the normal mode does not make), `one` on the second image only (not made), and the
+/// combinational report of the event from 'U' to 0 at 0 fs is gone (two-state twins). Membership
+/// asserted: every process but the stimulus joins in both contracts.
+#[test]
+fn exact_meta_notes_show_the_second_images_metavalues() {
+    let dir = tempdir("cycle-notemeta");
+    analyze(&dir, "notemeta.vhd", include_str!("cycle/notemeta.vhd"));
+    let go = |flags: &[&str]| {
+        let mut args = vec!["run", "--work=work:lib", "--no-cache"];
+        args.extend(flags);
+        args.push("cycle_notemeta");
+        let o = yavs(&dir, &args);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        report_set(&String::from_utf8_lossy(&o.stdout))
+    };
+    let normal = go(&[]);
+    let at = |r: &[String], time: &str, t: &str| {
+        (r.iter()).any(|l| l.starts_with(&format!("** Note: {time}fs ")) && l.contains(t))
+    };
+    for t in [
+        "q1=U qx='X' q63=UUU",
+        "q64=XXXXXXXXXXXXXXXX q65=UUU",
+        "0XXXXXXXXXXX000",
+        "ph=XX000000000000XXX00000000000000X po=00X0",
+        "r.a=UUU",
+        "r.b=U",
+        "comb s1=U sx=X s65=UUU",
+    ] {
+        assert!(at(&normal, "0", t), "{t}: {normal:#?}");
+    }
+    assert!(at(&normal, "10000000", "bv=0000"), "{normal:#?}");
+    let zero = "** Note: 0fs zero q64=0000000000000000 | Process cycle_notemeta.chk";
+    let comb = format!(
+        "** Note: 0fs comb s1=0 sx=0 s65={} | Process cycle_notemeta.dut.comb",
+        "0".repeat(65)
+    );
+    for t in tiers() {
+        let exact = go(&[&t[..], &["--cycle", "--cycle-exact-meta"]].concat());
+        let extra: Vec<&String> = exact.iter().filter(|l| !normal.contains(l)).collect();
+        let lost: Vec<&String> = normal.iter().filter(|l| !exact.contains(l)).collect();
+        assert!(
+            extra == [zero] && lost == [&comb],
+            "{t:?} {extra:#?} {lost:#?}"
+        );
+        let plain = go(&[&t[..], &["--cycle"]].concat());
+        assert!(
+            at(&plain, "0", "q1=0 qx='0' q63=000") && at(&plain, "0", "comb s1=0 sx=0 s65=000"),
+            "{t:?} {plain:#?}"
+        );
+    }
+    for flags in [&["--cycle", "--cycle-exact-meta"][..], &["--cycle"]] {
+        let err = with_report(&dir, flags, "cycle_notemeta", String::new());
+        assert!(
+            err.contains("cycle mode: 11 of 12 processes run cycle-based"),
+            "{flags:?} {err}"
+        );
+    }
 }
 
 /// A25: the reports of clocked members of two edge classes whose edges come in one delta are

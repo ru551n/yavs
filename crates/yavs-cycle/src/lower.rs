@@ -155,17 +155,29 @@ pub(crate) enum Piece {
     /// The enumeration value in the words of arg `n` (a position, or a logic value's 0 or 1):
     /// the text of each.
     Enum(usize, Box<[Box<[u8]>]>),
-    /// The `len` elements of arg `n`, leftmost first, `bits` per digit (1, 3 or 4).
+    /// A `std_ulogic` value in arg `n` (0 or 1): the texts of `'0'`, `'1'`, `'U'` and `'X'`, the
+    /// last two for the second image of `--cycle-exact-meta` (`Note::text_meta`).
+    Logic(usize, Box<[Box<[u8]>]>),
+    /// The `len` elements of arg `n`, leftmost first, `bits` per digit (1, 3 or 4); `logic`:
+    /// `std_ulogic` elements, which may show `'U'` or `'X'` (`Note::text_meta`).
     Bits {
         n: usize,
         len: u32,
         bits: u32,
+        logic: bool,
     },
 }
 
 impl Note {
     /// The message, from the image words of the args.
     pub(crate) fn text(&self, img: &[u64]) -> String {
+        self.text_meta(img, |_, _| (0, 0))
+    }
+
+    /// The message with `meta(arg, word)`: the `'U'` or `'X'` bits of that word and, of those,
+    /// the `'X'` ones. Only `std_ulogic` pieces show them: a digit of `to_hstring` or
+    /// `to_ostring` with one shows `X`.
+    pub(crate) fn text_meta(&self, img: &[u64], meta: impl Fn(usize, u32) -> (u64, u64)) -> String {
         let mut out: Vec<u8> = Vec::new();
         let word = |n: usize, k: u32| match self.args[n].0 {
             Ref::Loc(w) => img[(w + k) as usize],
@@ -179,16 +191,38 @@ impl Note {
                     let v = word(*n, 0) as usize;
                     out.extend_from_slice(names.get(v).map_or(&b"?"[..], |t| &t[..]));
                 }
-                Piece::Bits { n, len, bits } => {
+                Piece::Logic(n, names) => {
+                    let (u, x) = meta(*n, 0);
+                    let v = if u & 1 == 0 {
+                        word(*n, 0) & 1
+                    } else {
+                        2 + (x & 1)
+                    };
+                    out.extend_from_slice(names.get(v as usize).map_or(&b"?"[..], |t| &t[..]));
+                }
+                Piece::Bits {
+                    n,
+                    len,
+                    bits,
+                    logic,
+                } => {
                     let bit = |i: u32| (word(*n, i / 64) >> (i % 64)) & 1;
+                    let um = |i: u32| *logic && (meta(*n, i / 64).0 >> (i % 64)) & 1 != 0;
+                    let xm = |i: u32| (meta(*n, i / 64).1 >> (i % 64)) & 1 != 0;
                     let digits = len.div_ceil(*bits);
                     for d in (0..digits).rev() {
-                        let mut v = 0;
+                        let (mut v, mut m) = (0, false);
                         for b in (0..*bits).rev() {
                             let i = d * bits + b;
                             v = v << 1 | if i < *len { bit(i) } else { 0 };
+                            m |= i < *len && um(i);
                         }
-                        out.push(b"0123456789ABCDEF"[v as usize]);
+                        out.push(match m {
+                            false => b"0123456789ABCDEF"[v as usize],
+                            true if *bits > 1 => b'X',
+                            true if xm(d) => b'X',
+                            true => b'U',
+                        });
                     }
                 }
             }
@@ -2761,7 +2795,7 @@ impl Lx<'_> {
                 let (r, len, names) = match v {
                     Val::Int(i) => (i.r, 64, all()),
                     // A logic value is its element's 0 or 1: BIT and BOOLEAN their two
-                    // literals, STD_ULOGIC '0' and '1'.
+                    // literals, STD_ULOGIC '0' and '1' (and 'U' and 'X', `Piece::Logic`).
                     Val::Part(p) if p.len == 1 => {
                         let names = if lits.len() == 2 {
                             all()
@@ -2771,10 +2805,15 @@ impl Lx<'_> {
                                     matches!(db.decls[d].name, yavs_sem::decl::Designator::Char(x) if x == c)
                                 })
                             };
-                            let (Some(&z), Some(&o)) = (at('0'), at('1')) else {
+                            let mut cs = vec!['0', '1'];
+                            if self.nine_valued(ty) {
+                                cs.extend(['U', 'X']);
+                            }
+                            let Some(ds) = cs.into_iter().map(at).collect::<Option<Vec<_>>>()
+                            else {
                                 return Err("a logic value of an unknown type in a report".into());
                             };
-                            Box::new([lit(z).into(), lit(o).into()])
+                            ds.into_iter().map(|&d| lit(d).into()).collect()
                         };
                         let p = self.materialise(p);
                         (self.whole(p), 1, names)
@@ -2782,7 +2821,11 @@ impl Lx<'_> {
                     _ => return Err("an enumeration value of another form in a report".into()),
                 };
                 let n = self.keep_arg(r, len, args);
-                out.push(Piece::Enum(n, names));
+                out.push(if names.len() == 4 && len == 1 {
+                    Piece::Logic(n, names)
+                } else {
+                    Piece::Enum(n, names)
+                });
                 Ok(())
             }
             TypeKind::Array { .. } if !image => self.bits_piece(x, 1, out, args),
@@ -2810,7 +2853,13 @@ impl Lx<'_> {
         let len = p.len;
         let w = self.whole(p);
         let n = self.keep_arg(w, len, args);
-        out.push(Piece::Bits { n, len, bits });
+        let logic = self.nine_valued(self.db.base(self.db.exprs[x].subtype));
+        out.push(Piece::Bits {
+            n,
+            len,
+            bits,
+            logic,
+        });
         Ok(())
     }
 

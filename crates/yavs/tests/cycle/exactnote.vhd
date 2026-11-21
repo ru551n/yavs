@@ -1,8 +1,8 @@
 -- Asserts and reports under `--cycle-exact-meta`: `mon.process` (below the top) reports a register
 -- with a 'U' start and reads the testbench's `d`, so it stays in the event kernel and reports the
--- 'U' as the normal mode does; under the default contract it joins and reports 0. `tb2.chk` (the
--- top-level unit) reads only a member's register: it joins and still reports the 'U' start as 0
--- under `--cycle-exact-meta` (a known gap: notes read the region's image, not the second one).
+-- 'U' as the normal mode does; under the default contract it joins and reports 0. `chk` (the
+-- top-level unit) reads only a member's register: it joins and reports the 'U' start as 'U' under
+-- `--cycle-exact-meta` (from the second image), as 0 under the default contract.
 library ieee;
 use ieee.std_logic_1164.all;
 

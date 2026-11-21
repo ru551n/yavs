@@ -404,9 +404,16 @@ A cycle-based process computes with ``0`` and ``1`` only.
 
   Where it still differs from the normal mode:
 
-  - An ``assert`` or ``report`` of the region formats the region's own values: a register's ``'U'`` start reads
-    ``0`` there. A process whose assert or report reads a signal the region does not drive alone stays in the event
-    simulation (:ref:`cycle-reports`), so only what members drive is seen this way.
+  - An ``assert`` or ``report`` of the region shows ``'U'`` or ``'X'`` where the two sets of values differ, as the
+    outputs do, when it fires on both sets (a register's ``'U'`` start prints ``U``, also in a field or a part of a
+    vector; a ``to_hstring`` or ``to_ostring`` digit with one prints ``X``; ``bit``, ``boolean``, other enumeration
+    and integer values print the region's own value). One that fires on the region's own set only (a choice on a
+    ``'U'`` that the second set takes the other way, ``if s = '0'`` with ``s`` ``'U'``) prints the region's own
+    values, ``0`` for a ``'U'``, where the normal mode does not fire; one that fires on the second set only is not
+    made. After the second set ends a message prints ``0`` and ``1`` again. A process whose assert or report reads
+    a signal the region does not drive alone stays in the event simulation (:ref:`cycle-reports`): the second set
+    would show the testbench's ``'Z'`` as ``X`` and ``'H'`` or ``'L'`` as ``1`` or ``0``, and none of its
+    metavalues after it ends.
 
   - The region's own set of values reads a ``'U'`` as ``0``. Where that takes the branch the normal mode does not
     (``y <= a when s = '0' else b`` with ``s`` ``'U'``: the normal mode gives ``b``), the result is the region's
@@ -568,7 +575,8 @@ What can differ:
   it waits on changed as two-state values: a change from ``'1'`` to ``'H'`` or from ``'U'`` to ``'X'`` is none.
   Under ``--cycle-exact-meta`` a process with an ``assert`` or ``report`` that reads a signal the region does not
   drive alone stays in the event simulation (E4140), so it sees the metavalues the rest of the design gives it;
-  what members drive it still sees two-state (a register's ``'U'`` start as ``0``).
+  what members drive it sees as the outputs show it (a register's ``'U'`` start as ``'U'`` while the second set of
+  values runs, :ref:`cycle-two-state`).
 
 An assert or report cycle mode cannot evaluate keeps its process in the event simulation, where it runs as before
 (E4140 in the report, an error below the top-level unit under ``--cycle-strict``). Cycle mode takes a message made of

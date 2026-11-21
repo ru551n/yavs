@@ -3941,24 +3941,18 @@ fn bench_rtl_designs_give_the_same_output_in_cycle_mode() {
     }
 }
 
-/// Bench designs whose processes cannot join (yet), with the reason the report gives.
+/// A bench design whose processes cannot join (yet), with the reason the report gives.
 #[test]
 fn bench_designs_cycle_mode_leaves_out_say_why() {
-    for (name, src, top, why) in [(
-        "rtl_bus",
-        include_str!("../../../tools/bench/designs/rtl_bus.vhd"),
-        "bench_rtl_bus",
-        "E4118 a `'Z'` value",
-    )] {
-        let dir = tempdir(&format!("cycle-out-{name}"));
-        analyze(&dir, &format!("{name}.vhd"), src);
-        let flags = ["--tier=interp", "-gCYC=20"];
-        let (normal, _) = run_text(&dir, &flags, top);
-        let (cycle, err) = run_text(&dir, &[&flags[..], &["--cycle"]].concat(), top);
-        assert_eq!(cycle, normal, "{name}\n{err}");
-        assert!(err.contains(" 0 of "), "{name}: {err}");
-        assert!(err.contains(why), "{name}: {err}");
-    }
+    let dir = tempdir("cycle-out-rtl_bus");
+    let src = include_str!("../../../tools/bench/designs/rtl_bus.vhd");
+    analyze(&dir, "rtl_bus.vhd", src);
+    let flags = ["--tier=interp", "-gCYC=20"];
+    let (normal, _) = run_text(&dir, &flags, "bench_rtl_bus");
+    let (cycle, err) = run_text(&dir, &[&flags[..], &["--cycle"]].concat(), "bench_rtl_bus");
+    assert_eq!(cycle, normal, "{err}");
+    assert!(err.contains(" 0 of "), "{err}");
+    assert!(err.contains("E4118 a `'Z'` value"), "{err}");
 }
 
 /// `std_match` and `?=` with a `'-'` aggregate whose length a generic sets: it matches anything in

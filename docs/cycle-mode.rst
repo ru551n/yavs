@@ -410,7 +410,8 @@ A cycle-based process computes with ``0`` and ``1`` only.
     and integer values print the region's own value). One that fires on the region's own set only (a choice on a
     ``'U'`` that the second set takes the other way, ``if s = '0'`` with ``s`` ``'U'``) prints the region's own
     values, ``0`` for a ``'U'``, where the normal mode does not fire; one that fires on the second set only is not
-    made. After the second set ends a message prints ``0`` and ``1`` again. A process whose assert or report reads
+    made, so a combinational process makes no message for the change from a ``'U'`` start to ``0``. After the
+    second set ends a message prints ``0`` and ``1`` again. A process whose assert or report reads
     a signal the region does not drive alone stays in the event simulation (:ref:`cycle-reports`): the second set
     would show the testbench's ``'Z'`` as ``X`` and ``'H'`` or ``'L'`` as ``1`` or ``0``, and none of its
     metavalues after it ends.

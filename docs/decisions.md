@@ -17915,9 +17915,16 @@ the parked retune package.
   metavalue to fire does not, and a combinational member's notes run on two-state changes (`'1'` to `'H'` is none).
   Under `--cycle-exact-meta` a member with notes that reads a signal the region does not drive alone stays out
   (E4140; the top-level unit's E4136 rule for every member), so the kernel's metavalues reach its asserts exactly;
-  what members drive is still two-state there (a register's `'U'` start reads 0, also for the top-level unit's
-  checkers on main before this work). The exact gate found the two-state values wrong under its contract
-  (14 corpus tests, 2026-11-21).
+  what members drive was still two-state there (a register's `'U'` start read 0, also for the top-level unit's
+  checkers on main before this work; fixed by the next entry). The exact gate found the two-state values wrong
+  under its contract (14 corpus tests, 2026-11-21).
+- **Notes read the second image** (A59 follow-up, 2026-11-22): under `--cycle-exact-meta` a run's notes wait for
+  the second image's run of the same function; a note that fired on every image shows `'U'` or `'X'` where they
+  differ, as the outputs do (`std_ulogic` pieces only: `Piece::Logic`, `Piece::Bits::logic`, store FORMAT 11);
+  one that fired on the region's image only keeps its two-state text, one that fired on the second only is not
+  made (owner: accepted, a rail-only firing may or may not be the normal mode's). The E4140 exact rule above stays:
+  the second image does not follow the kernel's `'Z'`, `'H'`, `'L'`, nor metavalues after it ends. Candidate later:
+  outside leaves of types without metavalues need not trigger it. Cost: ac701 boot exact neutral (counted).
 - **What cycle mode cannot evaluate keeps the process out** (E4140, an error below the top under `--cycle-strict`,
   A57(3)): a message of another form, a run-time severity, the reset branch, a condition with an edge test of
   another form than `not (<edge> and ...)`, a sensitivity list naming a leaf the process does not read.

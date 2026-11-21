@@ -1859,7 +1859,7 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             // also what the clocked members of the classes that had one may have changed.
             // While the rail runs, every clocked body runs and the classes' cones are marked;
             // else only dirty bodies run and the cones of those that changed something (`Skip`).
-            let dynamic = !R && edge;
+            let dynamic = !R && edge && !self.skip.tracks.is_empty();
             if edge {
                 for (k, &(_, _, w)) in self.clocks.iter().enumerate() {
                     if self.img[w] != 0 {

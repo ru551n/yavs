@@ -886,7 +886,29 @@ struct IntElem {
     lo: i64,
     hi: i64,
     down: bool,
-    place: Option<(SubtypeId, DeclId)>,
+    place: Option<Place>,
+}
+
+/// What an assignment to a place is checked against.
+#[derive(Clone, Copy, Debug)]
+enum Place {
+    /// The declared subtype of an object (and the object, for the message).
+    Obj(SubtypeId, DeclId),
+    /// A scalar `out` or `inout` signal formal, which denotes its actual (`Lx::sigs`).
+    Sig(u32),
+}
+
+/// A scalar `out` or `inout` signal formal bound to its actual: a value driven through it
+/// belongs to the formal's subtype, and in a checked call (`act`, the actual's bounds as the
+/// normal mode passes them) to the actual's (LRM 14.7.3, #1181).
+#[derive(Clone, Copy, Debug)]
+struct SigFormal {
+    decl: DeclId,
+    sub: SubtypeId,
+    lo: i64,
+    hi: i64,
+    down: bool,
+    act: Option<(i64, i64)>,
 }
 
 /// The index range of the bits of one word: the innermost range of an array of integers.
@@ -904,8 +926,8 @@ struct IntV {
     lo: i64,
     hi: i64,
     down: bool,
-    /// A place: its declared subtype and object, for the range check of an assignment.
-    place: Option<(SubtypeId, DeclId)>,
+    /// A place: what an assignment to it is checked against.
+    place: Option<Place>,
     fresh: bool,
     leaf: Option<LeafId>,
 }
@@ -1011,6 +1033,18 @@ enum Bind {
     /// A scalar known during elaboration.
     Const(ConstValue),
     Val(Val),
+}
+
+/// A scalar `out` or `inout` variable actual passed through a temporary (`Lx::var_formal`):
+/// copied back after the call, checked first against the actual's subtype when that may not hold
+/// the formal's values (LRM 4.2.2.2, #1175).
+struct Back {
+    tmp: Ref,
+    actual: Val,
+    /// The values the temporary can hold once checked.
+    lo: i64,
+    hi: i64,
+    check: Option<Check>,
 }
 
 /// Where a `return` (of the call at that depth), `exit` or `next` (of that loop) goes.
@@ -1124,6 +1158,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         lits: Vec::new(),
         lit_cmp: BTreeSet::new(),
         bounds: false,
+        sigs: Vec::new(),
         loud: Default::default(),
         probing: Default::default(),
     };
@@ -1172,6 +1207,8 @@ struct Lx<'a> {
     /// A name is being looked at for its index range only (`name_bounds`): a constant may be
     /// named as if it were a target.
     bounds: bool,
+    /// The signal formals of the calls inlined so far (`Place::Sig`).
+    sigs: Vec<SigFormal>,
     db: &'a Db,
     e: &'a Elaborated,
     p: &'a ProcInst,
@@ -2252,6 +2289,7 @@ impl Lx<'_> {
     /// The bounds of a scalar subtype, or the index range of a one-dimensional array subtype.
     fn subtype_bounds(&mut self, st: SubtypeId) -> R<Bounds> {
         let db = self.db;
+        self.declared_range(st)?;
         let r = match &db.subtypes[st].constraint {
             Constraint::Range(r) => r.clone(),
             Constraint::Array { dims: Some(d), .. } if d.len() == 1 => d[0].clone(),
@@ -2267,6 +2305,22 @@ impl Lx<'_> {
             }
         };
         Ok(self.static_range(&r)?.0)
+    }
+
+    /// A named subtype whose range reads a variable: the value at its declaration (#612, #1174),
+    /// which evaluating it here may not see.
+    fn declared_range(&self, st: SubtypeId) -> R<()> {
+        let db = self.db;
+        match &db.subtypes[st].name {
+            Some(n) if reads_variable(db, st, None) => {
+                let n = n.text.as_str();
+                Err(format!(
+                    "the subtype `{n}`, whose range reads a variable (its value where `{n}` is \
+                     declared)"
+                ))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// The index range of the array object or value `x` names, without reading it.
@@ -2698,22 +2752,24 @@ impl Lx<'_> {
                     self.known.remove(&w);
                 }
                 // The subtype of the target: checked unless the value cannot leave it.
-                if (s.lo < d.lo || s.hi > d.hi)
-                    && let Some((sub, obj)) = d.place
-                {
-                    let site = self.site(Check::Range {
-                        ty: subtype_name(self.db, sub),
-                        lo: d.lo,
-                        hi: d.hi,
-                        down: d.down,
-                        what: obj_desc(self.db, obj),
-                    });
-                    self.ops.push(Op::Range {
-                        a: s.r,
-                        lo: d.lo,
-                        hi: d.hi,
-                        site,
-                    });
+                match d.place {
+                    Some(Place::Sig(f)) => self.sig_checks(self.sigs[f as usize], s),
+                    Some(Place::Obj(sub, obj)) if s.lo < d.lo || s.hi > d.hi => {
+                        let site = self.site(Check::Range {
+                            ty: subtype_name(self.db, sub),
+                            lo: d.lo,
+                            hi: d.hi,
+                            down: d.down,
+                            what: obj_desc(self.db, obj),
+                        });
+                        self.ops.push(Op::Range {
+                            a: s.r,
+                            lo: d.lo,
+                            hi: d.hi,
+                            site,
+                        });
+                    }
+                    _ => {}
                 }
                 if same_place(d.r, s.r) || self.retarget(s.fresh, s.r, d.r) {
                     return Ok(());
@@ -2810,27 +2866,68 @@ impl Lx<'_> {
     /// The word of integer `s` for an element of an array of integers, checked against the
     /// element's subtype unless it cannot leave it.
     fn elem_word(&mut self, s: IntV, e: IntElem) -> Part {
-        if (s.lo < e.lo || s.hi > e.hi)
-            && let Some((sub, obj)) = e.place
-        {
-            let site = self.site(Check::Range {
-                ty: subtype_name(self.db, sub),
-                lo: e.lo,
-                hi: e.hi,
-                down: e.down,
-                what: obj_desc(self.db, obj),
-            });
-            self.ops.push(Op::Range {
-                a: s.r,
-                lo: e.lo,
-                hi: e.hi,
-                site,
-            });
+        match e.place {
+            Some(Place::Sig(f)) => self.sig_checks(self.sigs[f as usize], s),
+            Some(Place::Obj(sub, obj)) if s.lo < e.lo || s.hi > e.hi => {
+                let site = self.site(Check::Range {
+                    ty: subtype_name(self.db, sub),
+                    lo: e.lo,
+                    hi: e.hi,
+                    down: e.down,
+                    what: obj_desc(self.db, obj),
+                });
+                self.ops.push(Op::Range {
+                    a: s.r,
+                    lo: e.lo,
+                    hi: e.hi,
+                    site,
+                });
+            }
+            _ => {}
         }
         // Fresh only if the integer is: `retarget` must not take over the write of a variable.
         Part {
             fresh: s.fresh,
             ..part_of(s.r, 64)
+        }
+    }
+
+    /// The checks of value `s` driven through signal formal `f`: its subtype, then the bounds of
+    /// its actual in a checked call, with the normal mode's messages (#1181).
+    fn sig_checks(&mut self, f: SigFormal, s: IntV) {
+        let db = self.db;
+        let name = db.decls[f.decl].name.to_string().to_ascii_uppercase();
+        if s.lo < f.lo || s.hi > f.hi {
+            let site = self.site(Check::Range {
+                ty: subtype_name(db, f.sub),
+                lo: f.lo,
+                hi: f.hi,
+                down: f.down,
+                what: format!("parameter {name}"),
+            });
+            self.ops.push(Op::Range {
+                a: s.r,
+                lo: f.lo,
+                hi: f.hi,
+                site,
+            });
+        }
+        if let Some((lo, hi)) = f.act
+            && (s.lo.max(f.lo) < lo || s.hi.min(f.hi) > hi)
+        {
+            let site = self.site(Check::Range {
+                ty: (db.types[db.base(f.sub)].name.text.as_str()).to_ascii_uppercase(),
+                lo,
+                hi,
+                down: false,
+                what: format!("actual of signal parameter {name}"),
+            });
+            self.ops.push(Op::Range {
+                a: s.r,
+                lo,
+                hi,
+                site,
+            });
         }
     }
 
@@ -3635,7 +3732,7 @@ impl Lx<'_> {
                     lo,
                     hi,
                     down: b.dir == Direction::Downto,
-                    place: Some((*sub, d)),
+                    place: Some(Place::Obj(*sub, d)),
                     fresh: false,
                     leaf: None,
                 }))
@@ -3812,7 +3909,7 @@ impl Lx<'_> {
                 lo,
                 hi,
                 down: r.dir == Direction::Downto,
-                place: Some((*sub, d)),
+                place: Some(Place::Obj(*sub, d)),
             }),
         }))
     }
@@ -6885,7 +6982,7 @@ impl Lx<'_> {
                     Some(_) => false,
                 }
             });
-        let mut binds = self.formals(callee, sp, args, !pure)?;
+        let (mut binds, backs) = self.formals(callee, sp, args, !pure)?;
         let mut vals = HashMap::new();
         for a in args {
             if let (Actual::Expr(x), Some(p)) = (&a.actual, sp.params.get(usize::from(a.formal)))
@@ -6968,50 +7065,97 @@ impl Lx<'_> {
                 decl.name
             ));
         }
+        for b in backs {
+            self.copy_back(b)?;
+        }
         Ok(frame.ret)
     }
 
     /// The formals of a call (`copy`: scalar `in` values are copied, since the callee may change
-    /// their actual).
+    /// their actual), and the actuals to copy back after the body.
     fn formals(
         &mut self,
         callee: DeclId,
         sp: &yavs_sem::decl::Subprogram,
         args: &[yavs_sem::hir::Arg],
         copy: bool,
-    ) -> R<HashMap<DeclId, Bind>> {
+    ) -> R<(HashMap<DeclId, Bind>, Vec<Back>)> {
         use yavs_sem::decl::ObjClass;
         use yavs_sem::hir::Mode;
         let db = self.db;
         let name = &db.decls[callee].name;
-        let mut binds = HashMap::new();
+        let mut xs = Vec::new();
         // `out` variables that start at their subtype's default, set once every actual is
         // evaluated (LRM 4.2.2.2, 14.6 b) 5), #1184).
         let (mut defaults, mut defaults_of) = (Vec::new(), Vec::new());
         for (i, p) in sp.params.iter().enumerate() {
+            let what = format!("parameter {}", p.name.text.as_str().to_ascii_uppercase());
+            xs.push(
+                match args
+                    .iter()
+                    .find(|a| usize::from(a.formal) == i)
+                    .map(|a| &a.actual)
+                {
+                    Some(Actual::Expr(x)) => *x,
+                    None | Some(Actual::Default) => p.default.ok_or_else(|| {
+                        format!("a call of `{name}` without a value for its {what}")
+                    })?,
+                    Some(_) => {
+                        return Err("a call with an open, converted or individual actual".into());
+                    }
+                },
+            );
+        }
+        // The normal mode's checked body: a scalar `out` or `inout` signal formal whose actual
+        // may not hold every value of its subtype, or that is a checked formal (#1181).
+        let sig_out = |p: &yavs_sem::decl::Param| {
+            p.class == ObjClass::Signal
+                && p.mode != Mode::In
+                && db.types[db.base(p.subtype)].kind.is_scalar()
+        };
+        let checked = !nests(db, &sp.body)
+            && (sp.params.iter().zip(&xs)).any(|(p, &x)| {
+                sig_out(p)
+                    && (self.sig_formal_of(x).is_some_and(|f| f.act.is_some())
+                        || !object_within(db, p.subtype, db.exprs[x].subtype))
+            });
+        let mut binds = HashMap::new();
+        let mut backs = Vec::new();
+        for (p, &x) in sp.params.iter().zip(&xs) {
             let d = p
                 .decl
                 .ok_or_else(|| bug("a parameter without a declaration"))?;
             let what = format!("parameter {}", p.name.text.as_str().to_ascii_uppercase());
-            let x = match args
-                .iter()
-                .find(|a| usize::from(a.formal) == i)
-                .map(|a| &a.actual)
-            {
-                Some(Actual::Expr(x)) => *x,
-                None | Some(Actual::Default) => p
-                    .default
-                    .ok_or_else(|| format!("a call of `{name}` without a value for its {what}"))?,
-                Some(_) => {
-                    return Err("a call with an open, converted or individual actual".into());
-                }
-            };
+            if reads_variable(db, p.subtype, Some(sp)) {
+                return Err(format!(
+                    "the {what} of `{name}`, whose range reads a variable (its value where \
+                     `{name}` is declared)"
+                ));
+            }
             let b = if p.class == ObjClass::Signal {
                 let v = self.name(x, p.mode != Mode::In)?;
                 if !self.signal_rooted(&v) {
                     return Err(bug("a signal parameter whose actual is not a signal"));
                 }
-                Bind::Val(self.formal_val(v, p.subtype, Some(d), &what)?)
+                // A scalar signal formal denotes its actual (LRM 4.2.2.3): read unchecked, as in
+                // the normal mode; what is driven through it is checked (`sig_checks`).
+                let sig = match sig_out(p) {
+                    true => {
+                        let f = self.sig_formal(p, d, x, &v, checked)?;
+                        self.sigs.push(f);
+                        Some(Place::Sig(self.sigs.len() as u32 - 1))
+                    }
+                    false => None,
+                };
+                Bind::Val(match v {
+                    Val::Int(i) => Val::Int(IntV { place: sig, ..i }),
+                    Val::Part(q) if q.dims.n == 1 && q.int.is_some() => {
+                        let mut q = self.fixed_at(q);
+                        q.int = q.int.map(|e| IntElem { place: sig, ..e });
+                        Val::Part(q)
+                    }
+                    v => self.formal_val(v, p.subtype, Some(d), &what)?,
+                })
             } else if p.mode == Mode::In {
                 match self.fold(x) {
                     Some(c @ (ConstValue::Int(_) | ConstValue::Enum(_))) => {
@@ -7030,29 +7174,11 @@ impl Lx<'_> {
                     }
                 }
             } else {
-                // `out` and `inout` variables by reference, as the normal mode passes them: the
-                // formal's subtype checks what the callee writes.
                 let place = self.name(x, true)?;
                 if self.signal_rooted(&place) {
                     return Err(bug("a variable parameter whose actual is a signal"));
                 }
-                // ponytail: an integer formal claims its own range for what it reads, which an
-                // `out` actual of a wider subtype may not hold (an erroneous call); a separate
-                // check range in `IntV` would make reads exact.
-                Bind::Val(unfresh(match place {
-                    Val::Int(a) => {
-                        let b = self.subtype_bounds(p.subtype)?;
-                        let (lo, hi) = b.low_high();
-                        Val::Int(IntV {
-                            lo,
-                            hi,
-                            down: b.dir == Direction::Downto,
-                            place: Some((p.subtype, d)),
-                            ..a
-                        })
-                    }
-                    v => self.formal_val(v, p.subtype, Some(d), &what)?,
-                }))
+                self.var_formal(p, sp, d, x, place, &what, &mut backs)?
             };
             if p.class != ObjClass::Signal
                 && p.mode == Mode::Out
@@ -7127,7 +7253,202 @@ impl Lx<'_> {
             self.start(&t);
             self.assign(&v, t)?;
         }
-        Ok(binds)
+        Ok((binds, backs))
+    }
+
+    /// The signal formal bound to `x` when it names one (a formal passed on).
+    fn sig_formal_of(&self, x: ExprId) -> Option<SigFormal> {
+        let ExprKind::Obj(d) = self.db.exprs[x].kind else {
+            return None;
+        };
+        match self.bound(d)? {
+            Bind::Val(Val::Int(IntV {
+                place: Some(Place::Sig(f)),
+                ..
+            })) => Some(self.sigs[f as usize]),
+            Bind::Val(Val::Part(Part {
+                int:
+                    Some(IntElem {
+                        place: Some(Place::Sig(f)),
+                        ..
+                    }),
+                ..
+            })) => Some(self.sigs[f as usize]),
+            _ => None,
+        }
+    }
+
+    /// Scalar `out` or `inout` signal formal `p` (object `d`) with actual `x` of value `v`; in a
+    /// checked call the bounds its drives are checked against, as the normal mode passes them
+    /// (`sig_actual_bounds`): a formal passed on gives its own, narrowed to its subtype when the
+    /// formal it is passed to is wider.
+    fn sig_formal(
+        &mut self,
+        p: &yavs_sem::decl::Param,
+        d: DeclId,
+        x: ExprId,
+        v: &Val,
+        checked: bool,
+    ) -> R<SigFormal> {
+        let db = self.db;
+        let b = self.subtype_bounds(p.subtype)?;
+        let (lo, hi) = b.low_high();
+        let act = match (checked, self.sig_formal_of(x)) {
+            (false, _) => None,
+            (true, Some(f)) => Some(match f.act {
+                Some(c) if object_within(db, p.subtype, db.exprs[x].subtype) => c,
+                Some((alo, ahi)) => (alo.max(f.lo), ahi.min(f.hi)),
+                None => (f.lo, f.hi),
+            }),
+            (true, None) => Some(match v {
+                Val::Int(i) => (i.lo, i.hi),
+                Val::Part(Part { int: Some(e), .. }) => (e.lo, e.hi),
+                _ => return Err(bug("a scalar signal actual that is not an integer")),
+            }),
+        };
+        Ok(SigFormal {
+            decl: d,
+            sub: p.subtype,
+            lo,
+            hi,
+            down: b.dir == Direction::Downto,
+            act,
+        })
+    }
+
+    /// Scalar `out` or `inout` variable formal `p` (object `d`) with actual `x` at `place`, as
+    /// the normal mode passes it (#1175): an `inout` actual checked against the formal's subtype;
+    /// one that may not hold every value of the formal's, or an element of an array of integers
+    /// (its place fixed at the call), through a temporary copied back after the call; any
+    /// other by reference.
+    #[allow(clippy::too_many_arguments)]
+    fn var_formal(
+        &mut self,
+        p: &yavs_sem::decl::Param,
+        sp: &yavs_sem::decl::Subprogram,
+        d: DeclId,
+        x: ExprId,
+        place: Val,
+        what: &str,
+        backs: &mut Vec<Back>,
+    ) -> R<Bind> {
+        let db = self.db;
+        let (a, actual) = match place {
+            Val::Int(a) => (a, Val::Int(a)),
+            Val::Part(q) if q.dims.n == 1 && q.int.is_some() => {
+                let q = self.fixed_at(q);
+                let Val::Int(a) = self.int_elem(q) else {
+                    return Err(bug("an element of an array of integers"));
+                };
+                (a, Val::Part(q))
+            }
+            v => {
+                return Ok(Bind::Val(unfresh(self.formal_val(
+                    v,
+                    p.subtype,
+                    Some(d),
+                    what,
+                )?)));
+            }
+        };
+        let b = self.subtype_bounds(p.subtype)?;
+        let (lo, hi) = b.low_high();
+        let down = b.dir == Direction::Downto;
+        if p.mode == yavs_sem::hir::Mode::Inout
+            && (a.lo < lo || a.hi > hi)
+            && !range_reads_formal(db, p.subtype, sp)
+        {
+            let site = self.site(Check::Range {
+                ty: subtype_name(db, p.subtype),
+                lo,
+                hi,
+                down,
+                what: what.into(),
+            });
+            self.ops.push(Op::Range {
+                a: a.r,
+                lo,
+                hi,
+                site,
+            });
+        }
+        let formal = IntV {
+            r: a.r,
+            lo,
+            hi,
+            down,
+            place: Some(Place::Obj(p.subtype, d)),
+            fresh: false,
+            leaf: None,
+        };
+        let narrow = lo < a.lo || hi > a.hi;
+        // ponytail: an `out` formal claims its own range for what it reads, which an actual of
+        // a wider subtype may not hold (an erroneous call).
+        if !narrow && matches!(actual, Val::Int(_)) {
+            return Ok(Bind::Val(Val::Int(formal)));
+        }
+        let t = self.loc(1);
+        self.ops.push(Op::Copy {
+            dst: t,
+            src: a.r,
+            len: 64,
+        });
+        let st = db.exprs[x].subtype;
+        backs.push(Back {
+            tmp: t,
+            actual,
+            lo: lo.max(a.lo),
+            hi: hi.min(a.hi),
+            check: narrow.then(|| Check::Range {
+                ty: subtype_name(db, st),
+                lo: a.lo,
+                hi: a.hi,
+                down: a.down,
+                what: format!("actual of {what}"),
+            }),
+        });
+        Ok(Bind::Val(Val::Int(IntV { r: t, ..formal })))
+    }
+
+    /// `p` with the index of an element chosen at run time copied: its place is the one at the
+    /// call, whatever the callee changes (#1182).
+    fn fixed_at(&mut self, mut p: Part) -> Part {
+        if let Some((ix, b, w, off)) = p.at {
+            let t = self.loc(1);
+            self.ops.push(Op::Copy {
+                dst: t,
+                src: ix,
+                len: 64,
+            });
+            p.at = Some((t, b, w, off));
+        }
+        p
+    }
+
+    /// Copies `b` back to its actual after the call, checked first when needed.
+    fn copy_back(&mut self, b: Back) -> R<()> {
+        if let Some(c) = b.check {
+            let Check::Range { lo, hi, .. } = c else {
+                return Err(bug("a copy-back check that is not a range"));
+            };
+            let site = self.site(c);
+            self.ops.push(Op::Range {
+                a: b.tmp,
+                lo,
+                hi,
+                site,
+            });
+        }
+        let v = IntV {
+            r: b.tmp,
+            lo: b.lo,
+            hi: b.hi,
+            down: false,
+            place: None,
+            fresh: false,
+            leaf: None,
+        };
+        self.assign(&b.actual, Val::Int(v))
     }
 
     /// A scalar value copied into a temporary of its own (an `in` parameter of a procedure).
@@ -7221,6 +7542,7 @@ impl Lx<'_> {
     /// (its length checked during elaboration), an open one leaves the value's.
     fn rebound(&mut self, mut p: Part, st: SubtypeId) -> R<Part> {
         let db = self.db;
+        self.declared_range(st)?;
         let t = db.base(st);
         let c = &db.subtypes[st].constraint;
         if !matches!(db.types[t].kind, TypeKind::Array { .. }) || self.open_array(t, c) {
@@ -7289,6 +7611,7 @@ impl Lx<'_> {
     /// A fresh place of subtype `st` for object `d` (a local of an inlined call).
     fn layout(&mut self, st: SubtypeId, d: DeclId) -> R<Val> {
         let db = self.db;
+        self.declared_range(st)?;
         let t = db.base(st);
         match &db.types[t].kind {
             TypeKind::Enum { lits } if yavs_elab::elem_of(db, t) == yavs_kernel::Elem::Logic => {
@@ -7307,7 +7630,7 @@ impl Lx<'_> {
                     lo,
                     hi,
                     down: b.dir == Direction::Downto,
-                    place: Some((st, d)),
+                    place: Some(Place::Obj(st, d)),
                     fresh: false,
                     leaf: None,
                 }))
@@ -7384,7 +7707,7 @@ impl Lx<'_> {
                         lo,
                         hi,
                         down,
-                        place: Some((st, d)),
+                        place: Some(Place::Obj(st, d)),
                     }),
                 )
             }
@@ -7661,6 +7984,95 @@ fn set_bits(w: &mut [u64], lo: u32, len: u32) {
         let b = (lo + len).min(k * 64 + 64);
         w[k as usize] |= mask(b - a) << (a - k * 64);
         a = b;
+    }
+}
+
+/// Every value of subtype `from` belongs to `to` as the normal mode decides it for a call (a
+/// type mark `from` derives from, or static bounds inside): it picks the body a call takes.
+fn object_within(db: &Db, from: SubtypeId, to: SubtypeId) -> bool {
+    let mut up = Some(from);
+    while let Some(f) = up {
+        if f == to {
+            return true;
+        }
+        up = db.subtypes[f].parent;
+    }
+    if !matches!(
+        db.types[db.base(to)].kind,
+        TypeKind::Enum { .. } | TypeKind::Integer | TypeKind::Physical { .. } | TypeKind::Floating
+    ) {
+        return true;
+    }
+    let low_high = |(l, d, r): (ConstValue, Direction, ConstValue)| {
+        let (l, r) = (l.as_int()?, r.as_int()?);
+        Some(if d == Direction::To { (l, r) } else { (r, l) })
+    };
+    match (
+        db.static_bounds(from).and_then(low_high),
+        db.static_bounds(to).and_then(low_high),
+    ) {
+        (Some((flo, fhi)), Some((tlo, thi))) => flo > fhi || (tlo <= flo && fhi <= thi),
+        _ => false,
+    }
+}
+
+/// A body that declares subprograms, packages or protected types: the normal mode calls its
+/// plain body for every call, which checks no actual's bounds (#1181).
+fn nests(db: &Db, body: &yavs_sem::decl::Body) -> bool {
+    use yavs_sem::decl::DeclKind;
+    let yavs_sem::decl::Body::Hir { scope, .. } = body else {
+        return false;
+    };
+    db.scopes[*scope]
+        .order
+        .iter()
+        .any(|&x| match &db.decls[x].kind {
+            DeclKind::Subprogram(_)
+            | DeclKind::GenericSubprogram(_)
+            | DeclKind::Package { .. }
+            | DeclKind::PackageInst(_) => true,
+            DeclKind::Type(t) => matches!(db.types[*t].kind, TypeKind::Protected { .. }),
+            _ => false,
+        })
+}
+
+/// A range of subtype `st` reads a variable (not a formal of `sp`): elaboration of its
+/// declaration fixed its value (LRM 14.4.2.1), which region code evaluating it again may not see.
+fn reads_variable(db: &Db, st: SubtypeId, sp: Option<&yavs_sem::decl::Subprogram>) -> bool {
+    use yavs_sem::decl::{DeclKind, ObjClass};
+    db.subtype_ranges(st).into_iter().any(|r| {
+        let RangeC::Explicit { left, right, .. } = *r else {
+            return false;
+        };
+        db.dynamic_range(r).is_some()
+            && [left, right].into_iter().any(|e| {
+                let mut hit = false;
+                db.walk_expr(e, &mut |y| {
+                    hit |= matches!(db.exprs[y].kind, ExprKind::Obj(o)
+                        if matches!(&db.decls[o].kind, DeclKind::Object(ob)
+                            if ob.class == ObjClass::Variable)
+                        && !sp.is_some_and(|sp| sp.params.iter().any(|q| q.decl == Some(o))));
+                });
+                hit
+            })
+    })
+}
+
+/// The range of formal subtype `st` reads a formal of `sp` (2019): the normal mode does not
+/// check an `inout` actual against it at the call.
+fn range_reads_formal(db: &Db, st: SubtypeId, sp: &yavs_sem::decl::Subprogram) -> bool {
+    let reads = |e: ExprId| {
+        let mut hit = false;
+        db.walk_expr(e, &mut |y| {
+            hit |= matches!(db.exprs[y].kind, ExprKind::Obj(o)
+                if sp.params.iter().any(|q| q.decl == Some(o)));
+        });
+        hit
+    };
+    match db.scalar_range(st) {
+        Some(RangeC::Explicit { left, right, .. }) => reads(left) || reads(right),
+        Some(RangeC::Record(e)) => reads(e),
+        _ => false,
     }
 }
 

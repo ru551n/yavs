@@ -7374,3 +7374,125 @@ fn an_out_parameter_starts_at_its_default_in_cycle_mode() {
         assert!(!err.contains("`both`") && !err.contains("`pk2`"), "{err}");
     }
 }
+
+/// Scalar `out` and `inout` formals of procedures that members call are checked as in the
+/// normal mode (#1181, #1175): a value driven through a signal formal against the formal's
+/// subtype, then (a checked call) the actual's, a formal passed on narrowed to its subtype, a
+/// procedure that declares a subprogram not against the actual; a signal actual never at the
+/// call; a variable `inout` actual at the call and an `out` one when copied back, an element's
+/// place fixed at the call (#1182). A formal or subtype range that reads a variable keeps the
+/// caller out: its value is the one at the declaration. Scalars only, so no widths.
+#[test]
+fn parameter_ranges_are_checked_as_in_the_normal_mode() {
+    let dir = tempdir("cycle-sigrange");
+    analyze(&dir, "sigrange.vhd", include_str!("cycle/sigrange.vhd"));
+    let act = "value 10 outside of INTEGER range 0 to 9 for actual of signal parameter O";
+    for (top, msg, members) in [
+        ("sr_sig", act, "1 of 2"),
+        ("sr_sigconc", act, "1 of 2"),
+        ("sr_sigelem", act, "1 of 2"),
+        ("sr_sigfield", act, "1 of 2"),
+        ("sr_sigclk", act, "1 of 3"),
+        (
+            "sr_sigf",
+            "value -1 outside of NATURAL range 0 to 2147483647 for parameter O",
+            "1 of 2",
+        ),
+        (
+            "sr_sigenum",
+            "value 2 outside of ST range 0 to 1 for actual of signal parameter O",
+            "2 of 3",
+        ),
+        (
+            "sr_fwd",
+            "value 5 outside of INTEGER range 10 to 15 for actual of signal parameter O",
+            "1 of 3",
+        ),
+        (
+            "sr_varout",
+            "value 10 outside of INTEGER range 0 to 9 for actual of parameter O",
+            "1 of 2",
+        ),
+        (
+            "sr_varenum",
+            "value 2 outside of SUB range 0 to 1 for actual of parameter O",
+            "1 of 2",
+        ),
+        (
+            "sr_inout",
+            "value -5 outside of NATURAL range 0 to 2147483647 for parameter O",
+            "1 of 2",
+        ),
+        (
+            "sr_frange",
+            "value 7 outside of INTEGER range 0 to 5 for parameter X",
+            "0 of 2",
+        ),
+        (
+            "sr_subrange",
+            "value 8 outside of T range 0 to 5 for variable Z",
+            "0 of 2",
+        ),
+    ] {
+        let msg = format!("error[E3009]: {msg}");
+        let note = format!("at 1 ns, delta 1, in process {top}.c");
+        let mut shown = Vec::new();
+        for mode in MODES {
+            let mut args = vec!["run", "--work=work:lib", "--no-cache", "--tier=interp"];
+            args.extend(mode);
+            args.push(top);
+            let o = yavs(&dir, &args);
+            let err = String::from_utf8_lossy(&o.stderr);
+            assert_eq!(o.status.code(), Some(1), "{top} {mode:?}: {err}");
+            // A region that is empty runs nothing cycle-based: the normal mode's message.
+            let want = if mode.len() == 1 && members != "0 of 2" {
+                bare(&msg)
+            } else {
+                msg.clone()
+            };
+            assert!(
+                err.contains(&want) && err.contains(&note),
+                "{top} {mode:?}: {err}"
+            );
+            shown.push(err[err.find("error[").expect("an error")..].to_string());
+            if !mode.is_empty() {
+                assert!(
+                    err.contains(&format!("cycle mode: {members} processes run cycle-based")),
+                    "{top}: {err}"
+                );
+            }
+        }
+        assert_eq!(shown[0], shown[2], "{top}");
+    }
+    // The reason of a range read where it was not declared.
+    let report = with_report(&dir, &["--cycle"], "sr_frange", String::new());
+    assert!(report.contains("whose range reads a variable"), "{report}");
+    let report = with_report(&dir, &["--cycle"], "sr_subrange", String::new());
+    assert!(
+        report.contains("the subtype `t`, whose range reads a variable"),
+        "{report}"
+    );
+    // In range, or a check the normal mode does not make.
+    for (top, last) in [
+        ("sr_sigok", "s=4"),
+        ("sr_sigin", "s=-1"),
+        ("sr_fin", "s=-1"),
+        ("sr_nested", "s=10"),
+        ("sr_twice", "s=4"),
+        ("sr_index", "s=70"),
+    ] {
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, top);
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), top);
+            assert!(
+                normal.len() == 2 && normal[1].ends_with(last),
+                "{top} {normal:?}"
+            );
+            assert_eq!(cycle, normal, "{top} {t:?}\n{err}");
+            assert!(
+                err.contains("cycle mode: 1 of 2 processes run cycle-based"),
+                "{top}: {err}"
+            );
+        }
+    }
+}

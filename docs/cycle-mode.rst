@@ -717,7 +717,11 @@ process. The message says what failed (the operator of an overflow, the subtype 
 range of an index), but not the values: a failed check stores nothing, so each check is less code. With
 ``--cycle-exact-meta`` the checks keep the values and the message is the normal mode's. A division by zero and a
 quotient too large for its type are one message. A check inside a function or procedure that was inlined also lists the statements it was called from, as the
-normal mode does. With several clocks, the processes of each clock edge run together, one clock after the other:
+normal mode does. The parameters of a called procedure are checked as in the normal mode: a value driven through a
+scalar signal parameter against the parameter's subtype and the actual signal's, an ``inout`` variable at the call
+and the value copied back to a variable against the variable's subtype. A parameter or a subtype whose range reads a
+variable keeps its process in the event kernel (E4101): the range has the value of the variable where it is declared,
+which cycle-based code does not keep. With several clocks, the processes of each clock edge run together, one clock after the other:
 when checks of two clocks fail at the same edge, the run stops with that of the clock that runs first, which need
 not be the one the normal mode reports. In the same way a message of a top-level checker on one clock can come before
 the failure of a process on another clock at that edge. ``overflow.vhd`` counts an integer past its largest value:

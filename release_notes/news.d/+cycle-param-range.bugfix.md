@@ -1,0 +1,1 @@
+Cycle mode: the parameters of procedures that cycle-based processes call are now checked as in the normal mode, so a value outside the subtype of the actual signal or variable stops the run, and a value the normal mode accepts no longer does; a process whose subprogram parameter or subtype range reads a variable stays in the event kernel.

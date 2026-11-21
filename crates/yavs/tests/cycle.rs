@@ -1284,6 +1284,39 @@ end architecture;
 /// contract (`--cycle-exact-meta`: the normal mode's message).
 const MODES: [&[&str]; 3] = [&[], &["--cycle"], &["--cycle", "--cycle-exact-meta"]];
 
+/// `top` fails with error `msg` and `note` in the normal mode and in cycle mode, with one of its
+/// two processes in the region: the same diagnostic, with the place of the statement and of the
+/// calls around it; plain `--cycle` without the operands' values (A34).
+fn same_failure(dir: &Path, top: &str, msg: &str, note: &str) {
+    let mut shown = Vec::new();
+    for mode in MODES {
+        let mut args = vec!["run", "--work=work:lib", "--no-cache", "--tier=interp"];
+        args.extend(mode);
+        args.push(top);
+        let o = yavs(dir, &args);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "{top} {mode:?}: {err}");
+        let want = if mode.len() == 1 {
+            bare(msg)
+        } else {
+            msg.into()
+        };
+        assert!(
+            err.contains(&want) && err.contains(note),
+            "{top} {mode:?}: {err}"
+        );
+        shown.push(err[err.find("error[").expect("an error")..].to_string());
+        if !mode.is_empty() {
+            assert!(
+                err.contains("cycle mode: 1 of 2 processes run cycle-based"),
+                "{err}"
+            );
+        }
+    }
+    assert_eq!(shown[0], shown[2], "{top}");
+    assert_eq!(bare(&shown[0]), shown[1], "{top}");
+}
+
 #[test]
 fn failed_checks_in_region_code_stop_the_run_as_in_the_normal_mode() {
     let dir = tempdir("cycle-checks");
@@ -1326,35 +1359,7 @@ fn failed_checks_in_region_code_stop_the_run_as_in_the_normal_mode() {
             "at 80 ns, delta 1, in process cycle_ramidx.reg",
         ),
     ] {
-        let mut shown = Vec::new();
-        for mode in MODES {
-            let mut args = vec!["run", "--work=work:lib", "--no-cache", "--tier=interp"];
-            args.extend(mode);
-            args.push(top);
-            let o = yavs(&dir, &args);
-            let err = String::from_utf8_lossy(&o.stderr);
-            assert_eq!(o.status.code(), Some(1), "{top} {mode:?}: {err}");
-            let want = if mode.len() == 1 {
-                bare(msg)
-            } else {
-                msg.into()
-            };
-            assert!(
-                err.contains(&want) && err.contains(note),
-                "{top} {mode:?}: {err}"
-            );
-            shown.push(err[err.find("error[").expect("an error")..].to_string());
-            if !mode.is_empty() {
-                assert!(
-                    err.contains("cycle mode: 1 of 2 processes run cycle-based"),
-                    "{err}"
-                );
-            }
-        }
-        // The same diagnostic, with the place of the statement and of the calls around it; plain
-        // `--cycle` without the operands' values (A34).
-        assert_eq!(shown[0], shown[2], "{top}");
-        assert_eq!(bare(&shown[0]), shown[1], "{top}");
+        same_failure(&dir, top, msg, note);
     }
     // With the compilation cache: code compiled without the values is never reused under
     // `--cycle-exact-meta`, nor the other way round.
@@ -1651,35 +1656,297 @@ fn failed_checks_in_inlined_calls_stop_the_run_as_in_the_normal_mode() {
             "at 30 ns, delta 1, in process cycle_eslice.reg",
         ),
     ] {
-        let mut shown = Vec::new();
-        for mode in MODES {
-            let mut args = vec!["run", "--work=work:lib", "--no-cache", "--tier=interp"];
-            args.extend(mode);
-            args.push(top);
-            let o = yavs(&dir, &args);
-            let err = String::from_utf8_lossy(&o.stderr);
-            assert_eq!(o.status.code(), Some(1), "{top} {mode:?}: {err}");
-            let want = if mode.len() == 1 {
-                bare(msg)
-            } else {
-                msg.into()
-            };
-            assert!(
-                err.contains(&want) && err.contains(note),
-                "{top} {mode:?}: {err}"
-            );
-            shown.push(err[err.find("error[").expect("an error")..].to_string());
-            if !mode.is_empty() {
-                assert!(
-                    err.contains("cycle mode: 1 of 2 processes run cycle-based"),
-                    "{err}"
-                );
-            }
-        }
-        // The same diagnostic, with the place of the statement and of the calls around it; plain
-        // `--cycle` without the operands' values (A34).
-        assert_eq!(shown[0], shown[2], "{top}");
-        assert_eq!(bare(&shown[0]), shown[1], "{top}");
+        same_failure(&dir, top, msg, note);
+    }
+}
+
+const SIG_CHECKS: &str = "\
+entity cycle_sigact is
+end entity;
+architecture a of cycle_sigact is
+  signal clk : bit := '0';
+  signal n : integer := 0;
+  signal s : integer range 0 to 9 := 0;
+  procedure drv(signal o : out integer; v : integer) is
+  begin
+    o <= v;
+  end procedure;
+begin
+  clk <= not clk after 5 ns when now < 200 ns;
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      n <= n + 1;
+      drv(s, n + 5);
+    end if;
+  end process;
+end architecture;
+
+entity cycle_sigfml is
+end entity;
+architecture a of cycle_sigfml is
+  signal clk : bit := '0';
+  signal n : integer := 0;
+  signal s : integer := 0;
+  procedure drv(signal o : out integer range 0 to 5; v : integer) is
+  begin
+    o <= v;
+  end procedure;
+begin
+  clk <= not clk after 5 ns when now < 200 ns;
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      n <= n + 1;
+      drv(s, n);
+    end if;
+  end process;
+end architecture;
+
+entity cycle_sigfwd is
+end entity;
+architecture a of cycle_sigfwd is
+  signal clk : bit := '0';
+  signal n : integer := 0;
+  signal s : integer := 0;
+  procedure p3(signal p : out integer; v : integer) is
+  begin
+    p <= v;
+  end procedure;
+  procedure p2(signal o : inout integer; v : integer) is
+  begin
+    p3(o, v);
+  end procedure;
+  procedure p1(signal o2 : inout integer range 0 to 30; v : integer) is
+  begin
+    p2(o2, v);
+  end procedure;
+begin
+  clk <= not clk after 5 ns when now < 200 ns;
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      n <= n + 1;
+      p1(s, n * 5);
+    end if;
+  end process;
+end architecture;
+
+entity cycle_sigelem is
+end entity;
+architecture a of cycle_sigelem is
+  signal clk : bit := '0';
+  signal n : integer := 0;
+  type arr is array (0 to 3) of integer range 0 to 9;
+  signal s : arr := (others => 0);
+  procedure drv(signal o : out integer; v : integer) is
+  begin
+    o <= v;
+  end procedure;
+begin
+  clk <= not clk after 5 ns when now < 200 ns;
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      n <= n + 1;
+      drv(s(2), n + 5);
+    end if;
+  end process;
+end architecture;
+
+entity cycle_sigfield is
+end entity;
+architecture a of cycle_sigfield is
+  signal clk : bit := '0';
+  signal n : integer := 0;
+  type rec is record
+    a : integer range 0 to 9;
+    b : integer;
+  end record;
+  signal s : rec := (0, 0);
+  procedure drv(signal o : out integer; v : integer) is
+  begin
+    o <= v;
+  end procedure;
+begin
+  clk <= not clk after 5 ns when now < 200 ns;
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      n <= n + 1;
+      drv(s.a, n + 5);
+    end if;
+  end process;
+end architecture;
+
+entity cycle_sigcond is
+end entity;
+architecture a of cycle_sigcond is
+  signal clk : bit := '0';
+  signal n : integer := 0;
+  signal s : integer range 0 to 9 := 0;
+  procedure drv(signal o : out integer; v : integer) is
+  begin
+    o <= v when v > 2 else 1;
+  end procedure;
+begin
+  clk <= not clk after 5 ns when now < 200 ns;
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      n <= n + 1;
+      drv(s, n + 5);
+    end if;
+  end process;
+end architecture;
+
+package cycle_sigpk is
+  procedure drv(signal o : out integer; v : integer);
+end package;
+package body cycle_sigpk is
+  procedure drv(signal o : out integer; v : integer) is
+  begin
+    o <= v;
+  end procedure;
+end package body;
+
+use work.cycle_sigpk.all;
+entity cycle_sigpkg is
+end entity;
+architecture a of cycle_sigpkg is
+  signal clk : bit := '0';
+  signal n : integer := 0;
+  signal s : integer range 0 to 9 := 0;
+
+begin
+  clk <= not clk after 5 ns when now < 200 ns;
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      n <= n + 1;
+      drv(s, n + 5);
+    end if;
+  end process;
+end architecture;
+
+entity cycle_sigin is
+end entity;
+architecture a of cycle_sigin is
+  signal clk : bit := '0';
+  signal n : integer := 0;
+  signal o : integer := 0;
+  procedure rd(signal v : in integer range 0 to 5; signal q : out integer) is
+  begin
+    q <= v;
+  end procedure;
+begin
+  clk <= not clk after 5 ns when now < 200 ns;
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      n <= n + 1;
+      rd(n, o);
+      report \"o=\" & integer'image(o);
+    end if;
+  end process;
+end architecture;
+
+entity cycle_signest is
+end entity;
+architecture a of cycle_signest is
+  signal clk : bit := '0';
+  signal n : integer := 0;
+  signal s : integer range 0 to 9 := 0;
+  procedure drv(signal o : out integer; v : integer) is
+    function same(x : integer) return integer is
+    begin
+      return x;
+    end function;
+  begin
+    o <= same(v);
+  end procedure;
+begin
+  clk <= not clk after 5 ns when now < 200 ns;
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      n <= n + 1;
+      drv(s, n + 5);
+      report \"s=\" & integer'image(s);
+    end if;
+  end process;
+end architecture;
+
+";
+
+/// A value driven through a scalar signal formal is checked against the formal's subtype, then
+/// against its actual's (LRM 14.7.3, #1186), with the normal mode's messages: through a formal
+/// passed on twice, an element or field actual, a conditional waveform and a package procedure.
+/// Nothing is checked at the call: an `in` formal narrower than its actual's value is not an
+/// error in either mode. A procedure that declares a subprogram is not checked against its
+/// actual in either mode yet (the normal mode makes no checked body for it).
+#[test]
+fn values_driven_through_signal_formals_are_checked_as_in_the_normal_mode() {
+    let dir = tempdir("cycle-sig-checks");
+    analyze(&dir, "checks.vhd", SIG_CHECKS);
+    let act =
+        "error[E3009]: value 10 outside of INTEGER range 0 to 9 for actual of signal parameter O";
+    for (top, msg, note) in [
+        (
+            "cycle_sigact",
+            act,
+            "at 55 ns, delta 0, in process cycle_sigact.reg",
+        ),
+        (
+            "cycle_sigfml",
+            "error[E3009]: value 6 outside of INTEGER range 0 to 5 for parameter O",
+            "at 65 ns, delta 0, in process cycle_sigfml.reg",
+        ),
+        (
+            "cycle_sigfwd",
+            "error[E3009]: value 35 outside of INTEGER range 0 to 30 for actual of signal parameter P",
+            "at 75 ns, delta 0, in process cycle_sigfwd.reg",
+        ),
+        (
+            "cycle_sigelem",
+            act,
+            "at 55 ns, delta 0, in process cycle_sigelem.reg",
+        ),
+        (
+            "cycle_sigfield",
+            act,
+            "at 55 ns, delta 0, in process cycle_sigfield.reg",
+        ),
+        (
+            "cycle_sigcond",
+            act,
+            "at 55 ns, delta 0, in process cycle_sigcond.reg",
+        ),
+        (
+            "cycle_sigpkg",
+            act,
+            "at 55 ns, delta 0, in process cycle_sigpkg.reg",
+        ),
+    ] {
+        same_failure(&dir, top, msg, note);
+    }
+    let base = run(&dir, &[], "cycle_sigin");
+    for mode in &MODES[1..] {
+        let (out, err) = run(&dir, mode, "cycle_sigin");
+        assert_eq!(out, base.0, "{mode:?}");
+        assert!(
+            err.contains("cycle mode: 1 of 2 processes run cycle-based"),
+            "{err}"
+        );
+    }
+    let base = run(&dir, &[], "cycle_signest");
+    for mode in &MODES[1..] {
+        let (out, err) = run(&dir, mode, "cycle_signest");
+        assert_eq!(out, base.0, "{mode:?}");
+        assert!(
+            err.contains("cycle mode: 1 of 2 processes run cycle-based"),
+            "{err}"
+        );
     }
 }
 

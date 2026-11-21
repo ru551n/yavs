@@ -1960,8 +1960,9 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                 self.frozen = probe.is_some_and(|p| p.1);
                 self.adapt_start();
                 plain = self.skip.noclass.iter().all(|&w| w == 0)
-                    && (self.clocks.iter().zip(&self.adapt))
-                        .all(|(c, a)| self.img[c.2] == 0 || a.plain);
+                    && (self.tracked == 0
+                        || (self.clocks.iter().zip(&self.adapt))
+                            .all(|(c, a)| self.img[c.2] == 0 || a.plain));
                 dynamic = !plain;
             }
             if edge {

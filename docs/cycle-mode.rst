@@ -37,7 +37,9 @@ clock costs what that clock's part of the design costs. A small region whose las
 input changed since, skips the next edge of the same clocks, as the event simulation skips an idle process. Inside a
 busy region a clocked process whose last edge changed none of its registers, with nothing it reads changed since, is not
 run at the next edge, and the logic after the registers of a clock runs only where an edge changed one, so a block
-that waits while the rest of the design works (an accelerator while the processor boots) costs almost nothing. An event of
+that waits while the rest of the design works (an accelerator while the processor boots) costs little. yavs watches
+each clock for this and stops watching a clock where it does not pay (a processor busy at every edge), looking again
+now and then. An event of
 a clock that is not an edge the region uses does not wake it, also when the region waits on data inputs as well.
 
 Which processes join is decided by yavs, per process (:ref:`cycle-selection`). You do not mark anything in the

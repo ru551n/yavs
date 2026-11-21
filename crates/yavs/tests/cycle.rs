@@ -4960,8 +4960,8 @@ fn a_clocked_body_whose_inputs_did_not_change_is_skipped() {
             assert_eq!(normal.len(), 320, "{w} {t:?} {normal:?}");
             let modes: [&[&str]; 3] = [
                 &["--cycle"],
-                &["--cycle-exact-meta"],
-                &["--cycle-exact-meta"],
+                &["--cycle", "--cycle-exact-meta"],
+                &["--cycle", "--cycle-exact-meta"],
             ];
             for (m, flags) in modes.iter().enumerate() {
                 for env in envs {

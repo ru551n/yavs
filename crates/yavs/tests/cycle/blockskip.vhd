@@ -9,7 +9,8 @@
 -- it an edge later, with no input moved in between);
 -- `mem` is a memory written at `wa` while `we` holds. On `cb`: `rq` loads `trig`, `z` loads
 -- `q xor sat` (registers of the other clock), `mq` reads `mem` at `ra`.
--- The settle: `y` from `q` and `x`, `mo` from `mem`.
+-- The settle: `y` from `q` and `x`, `mo` from `mem`, `ce` from `e2`, an input changed in the
+-- delta of an edge that `qe` sees through it an edge later.
 -- The stimulus holds everything for stretches, then moves each input once or twice: between
 -- edges, in the delta of an edge of `ca` (`en`, `dd`), `arst` and `trig` as pulses between two
 -- edges of `ca`.
@@ -20,7 +21,7 @@ entity cycle_blockskip is
 end entity;
 architecture a of cycle_blockskip is
   type mem_t is array (0 to 15) of std_ulogic_vector(W - 1 downto 0);
-  signal ca, cb, en, dd, go, arst, trig, rq, we : std_ulogic := '0';
+  signal ca, cb, en, dd, e2, ce, qe, go, arst, trig, rq, we : std_ulogic := '0';
   signal din, q, w2, z, y, mo, mq, accq : std_ulogic_vector(W - 1 downto 0) := (others => '0');
   signal v, vq : std_ulogic_vector(W - 1 downto 0) := (others => '0');
   signal cnt, sat, c2, r2 : unsigned(W - 1 downto 0) := (others => '0');
@@ -89,6 +90,14 @@ begin
     end if;
   end process;
 
+  pe : process (ca)
+  begin
+    if rising_edge(ca) then
+      qe <= ce;
+    end if;
+  end process;
+  ce <= not e2;
+
   pc : process (ca)
   begin
     if rising_edge(ca) then
@@ -152,6 +161,9 @@ begin
       if i = 120 then
         dd <= '1';
       end if;
+      if i = 125 then
+        e2 <= '1';
+      end if;
       wait for 5 ns;
       ca <= '0';
       if i mod 3 = 2 then
@@ -201,7 +213,7 @@ begin
       report "t=" & time'image(now) & " cnt=" & to_hstring(cnt) & " sat=" & to_hstring(sat)
         & " q=" & to_hstring(q) & " w2=" & to_hstring(w2) & " rr=" & to_string(rr)
         & " x=" & to_string(x) & " acc=" & to_hstring(accq) & " v=" & to_hstring(v)
-        & " vq=" & to_hstring(vq) & " r2=" & to_hstring(r2) & " z=" & to_hstring(z) & " y=" & to_hstring(y) & " mo=" & to_hstring(mo)
+        & " vq=" & to_hstring(vq) & " r2=" & to_hstring(r2) & " qe=" & to_string(qe) & " z=" & to_hstring(z) & " y=" & to_hstring(y) & " mo=" & to_hstring(mo)
         & " mq=" & to_hstring(mq);
     end if;
   end process;

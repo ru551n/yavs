@@ -357,6 +357,8 @@ pub(crate) struct RegionProc<const RAIL: bool> {
     pub skip: Arc<Skip>,
     pub dirty: Vec<u64>,
     pub go: Vec<u64>,
+    /// Dirty again after this edge: the readers of inputs read since the last edge.
+    pub later: Vec<u64>,
     /// Per edge class: whether its tracking pays ([`Adapt`]); not changed in this run.
     pub adapt: Vec<Adapt>,
     pub frozen: bool,
@@ -898,7 +900,10 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                     *m |= c;
                 }
                 if let Some(&h) = self.skip.chunk.get(c) {
+                    // A reader sees the input at the next edge and, through the settle it
+                    // reaches, at the one after (an input of an edge's delta).
                     or_into(&mut self.dirty, &self.skip.reach[h as usize]);
+                    or_into(&mut self.later, &self.skip.reach[h as usize]);
                 }
                 or_into(&mut self.touched, &self.chunk_spans[c]);
                 if self.stats {
@@ -2062,6 +2067,9 @@ impl<const RAIL: bool> RegionProc<RAIL> {
     /// After the edge's own steps: run words back to 0; the cones of the members that changed a
     /// word marked, what they reach dirty.
     fn skip_end(&mut self) {
+        for (d, l) in self.dirty.iter_mut().zip(&mut self.later) {
+            *d |= std::mem::take(l);
+        }
         let s = &*self.skip;
         let (cs, hs, now) = &mut self.ored;
         *now = now.wrapping_add(1);

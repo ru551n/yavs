@@ -2561,6 +2561,7 @@ fn finish(
                     adapt: vec![rt::Adapt::default(); skip.modes.len()],
                     frozen: false,
                     go: vec![0; skip.always.len()],
+                    later: vec![0; skip.always.len()],
                     skip: skip.clone(),
                     cones: cones.clone(),
                     chunk_cone: chunk_cone.clone(),

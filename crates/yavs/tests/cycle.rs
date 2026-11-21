@@ -4957,13 +4957,23 @@ fn a_clocked_body_whose_inputs_did_not_change_is_skipped() {
             }
             // Off: every body at each edge, the same values.
             let env = [("YAVS_CYCLE_BLOCKSKIP", "off"), ("YAVS_CYCLE_STATS", "1")];
-            let (cycle, err) =
-                run_vars(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_blockskip", &env);
+            let (cycle, err) = run_vars(
+                &dir,
+                &[&t[..], &["--cycle"]].concat(),
+                "cycle_blockskip",
+                &env,
+            );
             assert_eq!(cycle, normal, "width {w} {t:?} off\n{err}");
             assert!(err.contains("clocked bodies skipped as idle: 0\n"), "{err}");
         }
     }
-    let args = ["run", "--work=work:lib", "--no-cache", "--cycle", "cycle_blockskip"];
+    let args = [
+        "run",
+        "--work=work:lib",
+        "--no-cache",
+        "--cycle",
+        "cycle_blockskip",
+    ];
     let o = yavs_env(&dir, &args, &[("YAVS_CYCLE_BLOCKSKIP", "of")]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(!o.status.success() && o.stdout.is_empty(), "{err}");

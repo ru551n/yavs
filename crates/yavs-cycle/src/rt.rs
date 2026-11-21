@@ -345,6 +345,9 @@ pub(crate) struct RegionProc<const RAIL: bool> {
     pub skip: Arc<Skip>,
     pub dirty: Vec<u64>,
     pub go: Vec<u64>,
+    /// The edge each cone and reach of `skip` was last ORed in, and this edge: many members that
+    /// changed share one.
+    pub ored: (Vec<u32>, Vec<u32>, u32),
     /// Per input chunk (`chunk_cone`, an index into `cones`): the steps of the settle a change of
     /// it can reach; `mark`, those of the chunks the last import read.
     pub cones: Arc<Vec<Box<[u64]>>>,
@@ -408,7 +411,8 @@ pub(crate) struct Skip {
     /// all); those that always run.
     pub classes: Vec<Box<[u64]>>,
     pub always: Box<[u64]>,
-    /// Steps of the settle; members of `tracks` (bits) a change makes dirty.
+    /// Steps of the settle; members of `tracks` (bits) a change makes dirty (a member that
+    /// changed is dirty itself too).
     pub cones: Vec<Sparse>,
     pub reach: Vec<Sparse>,
     /// Per input cone (`RegionProc::cones`): its reach.
@@ -1988,17 +1992,30 @@ impl<const RAIL: bool> RegionProc<RAIL> {
     /// word marked, what they reach dirty.
     fn skip_end(&mut self) {
         let s = &*self.skip;
+        let (cs, hs, now) = &mut self.ored;
+        *now = now.wrapping_add(1);
+        if *now == 0 {
+            cs.fill(0);
+            hs.fill(0);
+            *now = 1;
+        }
         for j in 0..self.go.len() {
             let mut m = self.go[j];
             while m != 0 {
-                let (r, f, c, h) = s.tracks[64 * j + m.trailing_zeros() as usize];
+                let t = m.trailing_zeros();
+                let (r, f, c, h) = s.tracks[64 * j + t as usize];
                 m &= m - 1;
                 if r != u32::MAX {
                     self.img[r as usize] = 0;
                 }
                 if self.img[f as usize] != 0 {
-                    or_into(&mut self.mark, &s.cones[c as usize]);
-                    or_into(&mut self.dirty, &s.reach[h as usize]);
+                    self.dirty[j] |= 1 << t;
+                    if std::mem::replace(&mut cs[c as usize], *now) != *now {
+                        or_into(&mut self.mark, &s.cones[c as usize]);
+                    }
+                    if std::mem::replace(&mut hs[h as usize], *now) != *now {
+                        or_into(&mut self.dirty, &s.reach[h as usize]);
+                    }
                     if self.stats {
                         self.ex[21] += 1;
                     }

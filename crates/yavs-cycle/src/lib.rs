@@ -1867,7 +1867,7 @@ fn built(
     let (cone, class_cones, class_members, clocked_cones) =
         cones(sel, nets, &code.settle_units, &named);
     // `rt::Skip`: per clocked member its words, its cone and the clocked members its writes reach
-    // (those reading what it or a member of its cone writes, and itself).
+    // (those reading what it or a member of its cone writes).
     let clocked: Vec<usize> = (0..sel.members.len())
         .filter(|&k| sel.members[k].1.kind == Kind::Clocked && track_at[k].is_some())
         .collect();
@@ -1945,10 +1945,12 @@ fn built(
             None => skip.classes.iter_mut().for_each(|c| bit(c, ci)),
         }
         let (st, ms) = cone_of[ci];
-        let mut own = member_cr[k].clone();
-        bit(&mut own, ci);
         let c = intern(sparse(st), &mut seen_cone, &mut skip.cones);
-        let h = intern(sparse(&reach_of(own, ms)), &mut seen_reach, &mut skip.reach);
+        let h = intern(
+            sparse(&reach_of(member_cr[k].clone(), ms)),
+            &mut seen_reach,
+            &mut skip.reach,
+        );
         skip.tracks.push((run, base + t, c, h));
     }
     if stats {
@@ -2495,6 +2497,7 @@ fn finish(
                         ..Default::default()
                     },
                     dirty: vec![!0; skip.always.len()],
+                    ored: (vec![0; skip.cones.len()], vec![0; skip.reach.len()], 0),
                     go: vec![0; skip.always.len()],
                     skip: skip.clone(),
                     cones: cones.clone(),

@@ -318,7 +318,7 @@ pub mod codes {
             ASSERT,
             "an assert or report cycle mode cannot evaluate",
             "cycle mode evaluates the assert and report statements of its processes in compiled code, which takes only some forms of them, and under `--cycle-exact-meta` only on values the region makes",
-            "write the message with string literals, `&`, `'image` and `to_string`, `to_hstring` or `to_ostring` of its values, give the severity as a literal, move the check out of the reset branch, write an edge test as `assert not (rising_edge(clk) and ...)`, name only what the process reads in its sensitivity list, or run with `--no-asserts` to drop the asserts and reports below the top-level unit",
+            "write the message with string literals, `&`, `'image` and `to_string`, `to_hstring` or `to_ostring` of its values, give the severity as a literal, move the check out of the reset branch, write an edge test as `assert not (rising_edge(clk) and ...)`, name only what the process reads in its sensitivity list, run without `--cycle-exact-meta` for one that reads a signal from outside the region, or run with `--no-asserts` to drop the asserts and reports below the top-level unit",
             true,
         ),
         (

@@ -1040,8 +1040,9 @@ fn a_combinational_report_in_a_loop_group_reports_settled_values_only() {
 }
 
 /// A52: a concurrent `assert not (<edge> and a and b)` runs on the kernel's edge trigger and joins
-/// as a clocked member checking `a and b` on the values before the edge; `c` set in the delta of
-/// the edge is seen as by the normal mode's process. The `or` form stays out (E4140).
+/// as a clocked member checking `a and b` on the values before the edge (one of the testbench
+/// reading a member's output too); `d` set in the delta of the edge is seen as by the normal mode's
+/// process. The `or` form stays out (E4140).
 #[test]
 fn an_edge_tested_concurrent_assert_is_a_check_at_the_edge() {
     for w in [1, 63, 64, 65, 128] {
@@ -1061,7 +1062,7 @@ fn an_edge_tested_concurrent_assert_is_a_check_at_the_edge() {
         };
         let normal = go(&[]);
         let want = report_set(&normal);
-        assert_eq!(want.len(), if w == 1 { 26 } else { 6 }, "{w}: {normal}");
+        assert_eq!(want.len(), if w == 1 { 32 } else { 7 }, "{w}: {normal}");
         for t in tiers() {
             assert_eq!(
                 report_set(&go(&[&t[..], &["--cycle"]].concat())),
@@ -1071,11 +1072,11 @@ fn an_edge_tested_concurrent_assert_is_a_check_at_the_edge() {
         }
         let err = with_report(&dir, &["--cycle"], "cycle_edgeassert", String::new());
         assert!(
-            err.contains("cycle mode: 3 of 5 processes run cycle-based")
-                && [22, 25].iter().all(|l| err.lines().any(|x| {
-                    x.contains(&format!("dut.assert (edgeassert.vhd:{l})")) && x.ends_with(" clocked")
+            err.contains("cycle mode: 5 of 7 processes run cycle-based")
+                && [23, 26, 48].iter().all(|l| err.lines().any(|x| {
+                    x.contains(&format!("assert (edgeassert.vhd:{l})")) && x.ends_with(" clocked")
                 }))
-                && err.contains("E4140 an assert or report of this form: a call of `rising_edge` (edgeassert.vhd:28)"),
+                && err.contains("E4140 an assert or report of this form: a call of `rising_edge` (edgeassert.vhd:29)"),
             "{w}: {err}"
         );
     }

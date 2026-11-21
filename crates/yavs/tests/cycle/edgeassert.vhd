@@ -1,12 +1,13 @@
 -- Concurrent asserts that test a clock edge (`assert not (rising_edge(clk) and a and b)`): checks at the
 -- edge on the values before it, as their equivalent processes in the normal mode; `d` changing
--- between edges, and in the delta of the edge, fires only where the normal mode fires.
+-- between edges, and in the delta of the edge, fires only where the normal mode fires. One of the
+-- testbench reading a member's output joins too.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
 entity cycle_edgeassert_dut is
-  port (clk : in std_ulogic; v : in std_ulogic; d : in unsigned(W - 1 downto 0));
+  port (clk : in std_ulogic; v : in std_ulogic; d : in unsigned(W - 1 downto 0); q : out unsigned(W - 1 downto 0));
 end entity;
 
 architecture rtl of cycle_edgeassert_dut is
@@ -26,6 +27,8 @@ begin
     report "n is 3 at the falling edge" severity note;
 
   assert not rising_edge(clk) or n /= 9 report "not the edge form" severity note;
+
+  q <= n;
 end architecture;
 
 library ieee;
@@ -37,9 +40,12 @@ end entity;
 
 architecture tb of cycle_edgeassert is
   signal clk, v : std_ulogic := '0';
-  signal d : unsigned(W - 1 downto 0) := (others => '0');
+  signal d, q : unsigned(W - 1 downto 0) := (others => '0');
 begin
-  dut : entity work.cycle_edgeassert_dut port map (clk => clk, v => v, d => d);
+  dut : entity work.cycle_edgeassert_dut port map (clk => clk, v => v, d => d, q => q);
+
+  -- Of the top-level unit, reading only what members drive: a clocked member too.
+  assert not (rising_edge(clk) and q = to_unsigned(1, W)) report "tb sees 1" severity note;
 
   main : process
   begin

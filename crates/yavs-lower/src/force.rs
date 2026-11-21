@@ -134,6 +134,15 @@ impl Fx<'_, '_> {
                 let (tid, _, w) = self.scalar(st, span)?;
                 let r = self.scalar_expr(e)?;
                 self.check_scalar(r, Some(db.exprs[e].subtype), st, "", span)?;
+                // A force through a checked signal formal (#1181) sets its actual.
+                if let Some(f) = target
+                    .lsps
+                    .first()
+                    .and_then(|l| self.cx.root_decl(db, l.root))
+                    .filter(|d| self.sig_bounds.contains_key(d))
+                {
+                    self.check_actual(f, r);
+                }
                 let logic = Ty::logic_leaf(self.fb.program().types(), tid).is_some();
                 let buf = self.alloc_n(if logic { 32 } else { 8 });
                 if logic {

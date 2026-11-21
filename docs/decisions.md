@@ -2004,7 +2004,7 @@ which tools/difftest parses.
   checked formal passed on as an actual, calls the procedure's checked body
   (`func::checked_func_of`): a second lowering of the same body whose scalar `out`/`inout`
   signal formals take two more cells, the low and high bound of the actual's subtype, checked
-  at each drive through the formal. It counts into the plain body's coverage items.
+  at each drive and force through the formal (protected methods too). It counts into the plain body's coverage items.
 - **Not covered (ponytail):** a procedure that declares subprograms or protected types keeps
   its plain body for every call (its nested functions would take the checked body's frame);
   the reading through an `in` or `inout` signal formal of a value outside the formal's

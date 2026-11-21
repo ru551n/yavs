@@ -335,6 +335,15 @@ impl Fx<'_, '_> {
         };
         let mut cells = self.cells(sp, args, span, Conv::Body)?;
         self.named_return_cells(callee, scope, res, span, &mut cells)?;
+        // A signal actual narrower than its formal: the checked body (#1181).
+        let mut f = f;
+        if self.sig_actuals_narrow(sp, args)
+            && let Some(c) =
+                crate::func::checked_func_of(db, self.fb.program(), self.cx, callee, span)?
+        {
+            f = c;
+            self.sig_actual_bounds(sp, args, span, &mut cells)?;
+        }
         let args = self.fb.regs(&cells);
         let Some(ret) = sp.ret else {
             self.emit(Inst::CallProt {

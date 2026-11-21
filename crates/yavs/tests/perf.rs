@@ -202,6 +202,9 @@ case!(slice_call_len, "acc=20", &[], [("ops", Max(3850))]);
 // `0 to x'length - 1` and `x'length - 1 downto 0` of a parameter read in registers: the length is
 // `x'length`, so the copies into them check no length.
 case!(len_reg_bounds, "acc=398", &[], [("ops", Max(7930))]);
+// Signal formals whose actual holds every value of the formal's subtype take the plain body: no
+// bound cells, no check per drive (#1181).
+case!(sig_param_plain, "sum=1500", &[], [("ops", Max(1980))]);
 // A function of 120 vectors with run-time bounds: the pass that reads descriptors in registers
 // looks at each instruction a few times, not once per vector (a scan per vector made the
 // optimiser cost grow with the square of the function).

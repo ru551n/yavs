@@ -2682,7 +2682,7 @@ impl Fx<'_, '_> {
     /// In a checked body (`func::checked_func_of`, #1181): value `v` driven through scalar
     /// signal formal `formal` belongs to the subtype of its actual, whose bounds the caller
     /// passed (LRM 14.7.3: the formal denotes the actual, so `v` becomes its driving value).
-    fn check_actual(&mut self, formal: yavs_sem::DeclId, v: Reg) {
+    pub(crate) fn check_actual(&mut self, formal: yavs_sem::DeclId, v: Reg) {
         let Some(&off) = self.sig_bounds.get(&formal) else {
             return;
         };

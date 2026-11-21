@@ -3736,7 +3736,7 @@ impl<'a> Fx<'a, '_> {
     /// The actual of a scalar `out` or `inout` signal formal of `sp` in `args` may not hold
     /// every value of the formal's subtype, or is such a formal of this checked body: the call
     /// takes the checked body (`func::checked_func_of`, #1181).
-    fn sig_actuals_narrow(&self, sp: &Subprogram, args: &[Arg]) -> bool {
+    pub(crate) fn sig_actuals_narrow(&self, sp: &Subprogram, args: &[Arg]) -> bool {
         let db = self.db;
         args.iter().any(|a| {
             let (Some(p), Actual::Expr(e)) = (sp.params.get(a.formal as usize), &a.actual) else {
@@ -3760,7 +3760,7 @@ impl<'a> Fx<'a, '_> {
     /// `inout` signal formal, in order, the low and high bound of its actual's subtype; for a
     /// checked formal of this body passed on, its own bounds, narrowed to its subtype when the
     /// callee's formal is wider.
-    fn sig_actual_bounds(
+    pub(crate) fn sig_actual_bounds(
         &mut self,
         sp: &Subprogram,
         args: &[Arg],

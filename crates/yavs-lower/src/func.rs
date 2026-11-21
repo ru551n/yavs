@@ -193,7 +193,7 @@ pub(crate) fn checked_func_of(
     let depth = parent.map_or(0, |p| p.1 + 1);
     let f = pb.declare(
         &db.decls[d].name.to_string(),
-        FuncKind::Procedure,
+        crate::func_kind(db, d),
         parent.map(|p| p.0),
     );
     cx.checked_funcs.insert(d, f);

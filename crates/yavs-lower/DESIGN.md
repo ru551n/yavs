@@ -75,7 +75,10 @@ a call into your module in a small commit.
   `out`/`inout` variable (a frame temporary written back after the call for logic elements and
   slices); four cells (data, left, right, dir) per array parameter of a type `Ty::flat_array` allows, the frame's slots after the data cell being the descriptor (`Cx::flat_params`), else two cells (data, dope). Signal parameters: the signal reference
   (two cells), then the caller's driver slot for `out`/`inout`, then the actual's descriptor for
-  arrays; assignments to an `out` signal parameter use `DriveSlot`. A signal parameter with
+  arrays; assignments to an `out` signal parameter use `DriveSlot`. A call whose scalar
+  `out`/`inout` signal actual is narrower than the formal calls the procedure's checked body,
+  which takes the low and high bound of each such actual in two more cells after all others and
+  checks every value driven through the formal (#1181, `func::checked_func_of`). A signal parameter with
   records in its type (`RecParam`) is one reference per leaf of the formal, then the driver
   slot of the first leaf (`out`/`inout`; leaf `k` uses that slot plus `k`), then the actual's
   descriptor when the type needs one (#215). A formal with a mode view (#254) passes each leaf

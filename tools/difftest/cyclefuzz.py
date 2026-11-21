@@ -33,7 +33,9 @@ BIG = 1 << 30
 FEATS = ["rtslice", "md", "bigmem", "ucon", "alias", "while", "caseq", "impure", "sigparam", "ifgen", "cgen",
          "gwidth", "assert", "zpass", "inout", "dclk", "xout", "view"]
 NOT93 = {"ucon", "caseq"}  # VHDL-2008 only
-MSG = "fzmsg"  # the text of the region's asserts and reports, filtered from both outputs (cycle mode drops them)
+MSG = "fzmsg"  # the text of combinational processes' asserts and reports, filtered from both outputs: the normal mode
+# reports values of single deltas a settled region never shows (A52)
+MSGC = "fzclk"  # of clocked processes: evaluated at the edge in cycle mode, compared
 
 
 # ---------------------------------------------------------------- types
@@ -161,6 +163,7 @@ class Gen:
     def __init__(s, seed, scale=1.0, feat=None, std=None):
         s.rng = random.Random(seed)
         s.seed, s.scale = seed, scale
+        s.tag = MSG  # the message text of the asserts of the process being made
         s.feat = {f for f in FEATS if f != "view" and s.rng.random() < 0.3} if feat is None else set(feat)
         r = s.rng.random()
         s.std = std or ("1993" if r < 0.1 else "2019" if r < 0.2 else "2008")
@@ -920,9 +923,9 @@ class Gen:
             return St(rng.choice(["exit", "next"]), s.cond())
         if d > 0 and "while" in s.feat and r < 0.36:
             return s.while_stmt(d, var_only)
-        if "assert" in s.feat and not s.in_func and r < 0.37:  # dropped in cycle-based processes; filtered (MSG)
+        if "assert" in s.feat and not s.in_func and r < 0.37:  # combinational ones filtered (MSG)
             s.used.add("assert")
-            msg = Ex(f'"{MSG}{s.fresh("")}"', T("str"))
+            msg = Ex(f'"{s.tag}{s.fresh("")}"', T("str"))
             if s.chance(0.5):
                 msg = Ex(msg.f + " & integer'image({})", T("str"), [s.int_raw()]) if s.chance(0.5) else Ex(msg.f + " & std_ulogic'image({})", T("str"), [s.sl()])
             sev = rng.choice(["note", "warning"])
@@ -1397,6 +1400,7 @@ class Gen:
 
     def comb_proc(s, ent, outs):
         rng = s.rng
+        s.tag = MSG
         lc = s.local_consts()
         vs = [Obj(s.fresh("v"), s.any_type(), "var") for _ in range(rng.randint(0, 2))]
         s.write = outs + vs
@@ -1417,6 +1421,7 @@ class Gen:
         """A process cycle mode must leave in the event kernel, with the normal result: a latch, a
         variable keeping state, an incomplete sensitivity list, or waits in time."""
         rng = s.rng
+        s.tag = MSG
         s.write, s.loopv, s.depth = outs, [], 2
         o = outs[0]
         k = rng.choice(["latch", "state", "sens", "sens", "wait"])
@@ -1489,6 +1494,7 @@ class Gen:
 
     def clocked(s, ent, regs, mems):
         rng = s.rng
+        s.tag = MSGC
         clk = s.clock()
         edge = rng.choice(["rising_edge({c})", "rising_edge({c})", "falling_edge({c})", "{c}'event and {c} = '1'", "{c} = '1' and {c}'event"]).format(c=clk)
         reset = rng.choice(["sync", "sync", "async", "none"])
@@ -2203,16 +2209,28 @@ T0_META = re.compile(r"^\*\* Warning: 0fs\+\d+: NUMERIC_STD\.\S+: metavalue dete
 def norm(out):
     """stdout without the metavalue warnings of time 0 (an expression actual of a port is 'U'
     until its equivalent process first runs, and cycle-based processes give no ieee warnings),
-    and without the reports of the design's own asserts (dropped in cycle-based processes)."""
+    and without the reports of the design's combinational asserts (on settled values in cycle mode, A52)."""
     lines, keep = out.splitlines(), []
     i = 0
     while i < len(lines):
+        n = 2 if i + 1 < len(lines) and lines[i + 1].startswith("    Process ") else 1
         if T0_META.match(lines[i]) or (MSG in lines[i] and lines[i].startswith("** ")):
-            i += 2 if i + 1 < len(lines) and lines[i + 1].startswith("    Process ") else 1
+            i += n
             continue
-        keep.append(lines[i])
-        i += 1
-    return "\n".join(keep)
+        keep.append(lines[i:i + n])
+        i += n
+    # The reports of one delta by process, each process's in its order: the region's come where its wake
+    # runs among the kernel's processes (docs "Delta and order").
+    stamp = lambda r: re.match(r"\*\* \w+: (\S+):", r[0])
+    out, k = [], 0
+    while k < len(keep):
+        j = k + 1
+        if stamp(keep[k]):
+            while j < len(keep) and stamp(keep[j]) and stamp(keep[j]).group(1) == stamp(keep[k]).group(1):
+                j += 1
+        out += sorted(keep[k:j], key=lambda r: r[1:])
+        k = j
+    return "\n".join(l for r in out for l in r)
 
 
 def strip(err):
@@ -2300,7 +2318,9 @@ def explained(ref, got, d, rep, src=None):
         if cl2 == nl:
             return True, cls + (["metavalues read as 0 or 1"] if k else [])
     if nl != cl and not CONTRACT["exact"] and src and (v := src()) is not None:
-        vl = G.drop_down(v[1], down)[0].splitlines()
+        # The variant's lines move, so a report's process is compared without its place.
+        place = lambda ls: [re.sub(r" \(d\.vhd:\d+\)$", "", l) if l.startswith("    Process ") else l for l in ls]
+        vl, cl = place(G.drop_down(v[1], down)[0].splitlines()), place(cl)
         cl2, k = G.meta_align(vl, cl) if meta else (cl, 0)
         if v[0] == ref[0] and cl2 == vl:
             return True, cls + ["a copied clock is its source"] + (["metavalues read as 0 or 1"] if k else [])

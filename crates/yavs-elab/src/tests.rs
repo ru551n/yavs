@@ -2530,6 +2530,8 @@ fn clocked_processes_get_edge_triggers() {
         p41 : process begin wait until falling_edge(ul); q <= '1'; end process;
         p42 : process begin wait until rising_edge(clk) or rst = '1'; q <= '1'; end process;
         p43 : process begin wait until bt'event and bt = '1' and rst = '1'; q <= '1'; end process;
+        a44 : assert not (falling_edge(clk) and en = '1' and rst = '0') report \"x\";
+        a45 : assert not rising_edge(clk) or en = '1' report \"x\";
       end;";
     let (_, e) = elab("edges", src, "t", &[]);
     let t: Vec<_> = e
@@ -2596,6 +2598,8 @@ fn clocked_processes_get_edge_triggers() {
             x(false, 0, (true, false), None),
             None,
             x(true, 0, (true, true), None),
+            x(false, 0, edge, None),
+            None,
         ]
     );
 }

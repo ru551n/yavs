@@ -95,6 +95,23 @@ class CycleOption(Option):
         )
 
 
+class NoAssertsOption(Option):
+    """
+    Must be True (yavs run --no-asserts) or False (the default)
+    """
+
+    def validate(self, value):
+        if isinstance(value, bool):
+            return
+        words = {"true": True, "on": True, "yes": True, "1": True, "false": False, "off": False, "no": False, "0": False}
+        guess = words.get(str(value).strip().lower())
+        hint = f" Did you mean {guess!r}?" if guess is not None else ""
+        raise ValueError(
+            f"Option {self.name!r} must be True (yavs run --no-asserts: the asserts and reports below the "
+            f"top-level unit are not evaluated) or False (the default). Got {value!r}.{hint}"
+        )
+
+
 def _debug_port(text):
     """argparse type of --yavs-debug: a TCP port, 0 for a free one"""
     if not text.isdigit() or int(text) > 65535:
@@ -300,6 +317,7 @@ class YavsInterface(SimulatorInterface):
         ThreadsOption("yavs.max_threads"),
         TierCompileOption("yavs.tier_compile"),
         CycleOption("yavs.cycle"),
+        NoAssertsOption("yavs.no_asserts"),
         ListOfStringOption("yavs.cov_kind"),
         BooleanOption("yavs.cov_embed_sources"),
         # Files of console commands, sourced at the points VUnit sources its init files
@@ -858,6 +876,9 @@ class YavsInterface(SimulatorInterface):
         # Cycle mode, before the raw flags too (a --cycle in yavs.sim_flags is the simulator's to judge)
         if cycle != "off" and not elaborate_only:
             cmd += [CYCLE_FLAGS[cycle]]
+
+        if config.sim_options.get("yavs.no_asserts", False) and not elaborate_only:
+            cmd += ["--no-asserts"]
 
         if not elaborate_only and (self._coverage.enabled or config.sim_options.get("enable_coverage", False)):
             if debug:

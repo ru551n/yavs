@@ -224,14 +224,22 @@ pub struct RunArgs {
     /// point is missing).
     #[arg(long, value_name = "LIB[:ENTRY]")]
     vhpi: Vec<String>,
+    /// Drop the `assert` and `report` statements of the processes below the top-level design unit
+    /// (the design, and the verification components and checkers the testbench instantiates), for
+    /// speed, in the normal mode and in cycle mode alike. The processes of the top-level unit keep
+    /// theirs, and the statements inside subprograms run wherever they are called from (the check
+    /// and logging calls of a test library among them). The start of the run says how many
+    /// statements are dropped.
+    #[arg(long)]
+    no_asserts: bool,
     /// Cycle mode, experimental (its options and results may change in a later release): the
     /// processes that can run cycle-based (clocked and combinational ones in what it supports) run
     /// as one region on a static schedule with compiled code; the rest stays in the event kernel.
     /// One line on standard error says how many processes joined; `--cycle-report` lists them all,
-    /// with reasons. The asserts and reports of cycle-based processes below the top-level unit are
-    /// not evaluated; those of the top-level unit are, at the clock edge in compiled code or with
-    /// their process in the event kernel, so the checks of a testbench run as in the normal mode (a
-    /// checker entity instantiated below the top joins and loses them). Not with a debug session,
+    /// with reasons. Cycle-based processes evaluate their asserts and reports, a clocked one at its
+    /// clock edge, a combinational one once its inputs are settled, with the normal mode's text,
+    /// severity, time and process; one cycle mode cannot evaluate keeps its process in the event
+    /// kernel (`--no-asserts` drops those below the top-level unit). Not with a debug session,
     /// `--wave`, `--cov`, `--vhpi`, `--surfer` or `--activity` (E4102). The strict form is
     /// `--cycle-strict`, given instead of this option.
     #[arg(long, conflicts_with = "cycle_strict")]
@@ -1548,6 +1556,7 @@ fn prepare(
         cov_expression: kind(CovKindArg::Expression),
         cov_combination: kind(CovKindArg::Combination),
         cov_directives: a.common.coverage_directives == DirectivesArg::Apply,
+        no_asserts: a.no_asserts,
         ..yavs_elab::LowerOptions::default()
     };
     let libs = match install_foreign(&a.common.load) {
@@ -1747,6 +1756,9 @@ fn prepare(
     };
     if let Some(seed) = a.shuffle {
         out.emit(&none, &shuffle_note(seed));
+    }
+    if a.no_asserts {
+        out.emit(&none, &no_asserts_note(&db, &e));
     }
     let stop = match &a.stop_time {
         None => yavs_kernel::Time::MAX,
@@ -2057,6 +2069,7 @@ fn run_design(
                 .map(|p| p as std::sync::Arc<dyn yavs_kernel::Tokens>),
         );
         yavs_cycle::set_exact_meta(a.cycle_exact_meta);
+        yavs_cycle::set_no_asserts(a.no_asserts);
         match yavs_cycle::plan(&db, &e, mode) {
             Ok(plan) => {
                 if mode == yavs_cycle::Mode::Report {
@@ -2077,9 +2090,6 @@ fn run_design(
                     return out.finish(0);
                 }
                 eprint!("{}", plan.summary);
-                if let Some(d) = &plan.warning {
-                    out.emit(&db.sources, d);
-                }
                 e.region = plan.region;
                 cycle_metas = Some(plan.metas);
                 cycle_reporter = Some(plan.reporter);
@@ -2756,6 +2766,52 @@ fn shuffle_note(seed: u64) -> Diagnostic {
         yavs_diag::Severity::Note,
         "",
         format!("process order is shuffled with seed {seed}; replay it with `--shuffle={seed}`"),
+    )
+}
+
+/// What `--no-asserts` drops, at the start of the run: the assert and report statements of the
+/// processes below the top-level unit (each process instance counts its own), as the lowering
+/// drops them.
+fn no_asserts_note(db: &Db, e: &yavs_elab::Elaborated) -> Diagnostic {
+    use yavs_sem::hir::StmtKind;
+    let (mut stmts, mut procs) = (0usize, 0usize);
+    for p in &e.procs {
+        let yavs_elab::ScopeKind::Instance { arch, .. } = e.hier.scope(e.instance_of(p.scope)).kind
+        else {
+            continue;
+        };
+        if arch == e.top.arch {
+            continue;
+        }
+        let n = match &db.stmts[p.stmt].kind {
+            StmtKind::ConcAssert { .. } => 1,
+            StmtKind::Process { body, .. } => {
+                let mut all = Vec::new();
+                yavs_elab::reach::deep(db, body, &mut all);
+                (all.iter())
+                    .filter(|&&s| {
+                        matches!(
+                            db.stmts[s].kind,
+                            StmtKind::Assert { .. } | StmtKind::Report { .. }
+                        )
+                    })
+                    .count()
+            }
+            _ => 0,
+        };
+        stmts += n;
+        procs += usize::from(n > 0);
+    }
+    let s = |n: usize| if n == 1 { "" } else { "s" };
+    Diagnostic::new(
+        yavs_diag::Severity::Note,
+        "",
+        format!(
+            "`--no-asserts`: {stmts} assert and report statement{} in {procs} process{} below the \
+             top-level unit are not evaluated",
+            s(stmts),
+            if procs == 1 { "" } else { "es" }
+        ),
     )
 }
 

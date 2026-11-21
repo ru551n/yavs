@@ -732,7 +732,13 @@ impl Elaborated {
             // Package objects first (#183), in dependency order: a package after those its
             // declaration and body use (LRM 14.4.2, `run_time_packages`).
             None => {
-                let (l, u) = crate::pkgcall::package_lowerer(db, packages, opts)?;
+                // Packages hold no process: one stored image serves runs with and without
+                // `--no-asserts`.
+                let plain = LowerOptions {
+                    no_asserts: false,
+                    ..opts
+                };
+                let (l, u) = crate::pkgcall::package_lowerer(db, packages, plain)?;
                 lib = u;
                 l
             }
@@ -793,10 +799,13 @@ impl Elaborated {
         let mut of_arch = Vec::new();
         for &a in archs {
             let first = l.funcs();
+            // `--no-asserts` (A54): the processes below the top-level unit lose theirs.
+            l.drop_asserts(opts.no_asserts && a != self.top.arch);
             let u = l.architecture(a)?;
             idx.push(u);
             of_arch.push((first..l.funcs(), u));
         }
+        l.drop_asserts(false);
         let var_slots = l.var_slots()?;
         let mut resolvers = Vec::new();
         let mut res_types = Vec::new();
@@ -852,6 +861,10 @@ impl Elaborated {
         // Everything `lower_cold` hands to the lowerer, in the order it does: the same requests
         // on the same analysis give the same program, ids and all.
         let mut p = vec![opts.no_native_ieee as u8];
+        // `--no-asserts` drops what it drops by the top-level architecture.
+        if opts.no_asserts {
+            ids(&mut p, b't', &mut std::iter::once(self.top.arch.index()));
+        }
         fn ids(p: &mut Vec<u8>, tag: u8, it: &mut dyn Iterator<Item = usize>) {
             p.push(tag);
             let v: Vec<usize> = it.collect();

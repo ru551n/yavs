@@ -500,7 +500,7 @@ fn cycle_mode_page() {
     for (top, normal, cycle) in [
         ("tb_counter", 0, 0),
         ("tb_left_out", 0, 0),
-        ("tb_rtl_failure", 1, 0),
+        ("tb_rtl_failure", 1, 1),
         ("tb_delta", 0, 0),
         ("tb_metavalue", 0, 0),
     ] {
@@ -515,6 +515,16 @@ fn cycle_mode_page() {
                 on_page(page, &err);
             }
         }
+    }
+    // `--no-asserts`, both modes: the design's failure is dropped.
+    for flags in [&["--no-asserts"][..], &["--no-asserts", "--cycle"]] {
+        let mut args = vec!["run", WORK];
+        args.extend(flags);
+        args.push("tb_rtl_failure");
+        let (code, out, err) = e.yavs(&args);
+        assert_eq!(code, 0, "{flags:?}\n{out}\n{err}");
+        on_page(page, &out);
+        on_page(page, &err);
     }
     // The report and the strict errors.
     let (code, _, err) = e.yavs(&["run", "--cycle-report", WORK, "tb_left_out"]);

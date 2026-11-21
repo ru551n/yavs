@@ -220,9 +220,13 @@ YAVS_UNLABELLED = re.compile(r"\(\S+:\d+(:\d+)?\)\s*$")
 SIM1_UNLABELLED = re.compile(r":_p\d+$")
 
 
-def process_path(line, trace, yavs):
+def process_path(line, trace, yavs, names=False):
+    """`names` (both runs yavs): an unlabelled process by its path and place, not `-`."""
     if yavs:
-        return "-" if YAVS_UNLABELLED.search(line) else lrm_path(trace.group(2))
+        m = YAVS_UNLABELLED.search(line)
+        if m and names:
+            return lrm_path(trace.group(2)) + " " + m.group(0).strip()
+        return "-" if m else lrm_path(trace.group(2))
     return trace.group(2)
 
 
@@ -252,7 +256,7 @@ def norm_msg(m):
     return "Assertion violation" if m == "Assertion violation." else m  # sim1 adds a full stop
 
 
-def normalise(rc, out, err, yavs=False):
+def normalise(rc, out, err, yavs=False, names=False):
     """Return canonical lines: exit, diag events, stdout lines.
     Event line: diag TAB sev TAB time_fs TAB delta TAB path TAB msg ('-' = absent)."""
     diags, outl = [], []
@@ -319,7 +323,7 @@ def normalise(rc, out, err, yavs=False):
                 t = FMT1_TRACE.match(line)
                 if t:
                     if t.group(1) == "Process" and cur[3] == "-":
-                        cur[3] = process_path(line, t, True)
+                        cur[3] = process_path(line, t, True, names)
                     flush()
                 else:
                     cur[4] += "\n" + line
@@ -328,7 +332,7 @@ def normalise(rc, out, err, yavs=False):
                 t = FMT1_TRACE.match(line)
                 if t:
                     if t.group(1) == "Process" and cur[3] == "-":
-                        cur[3] = process_path(line, t, yavs)
+                        cur[3] = process_path(line, t, yavs, names)
                 elif not FMT1_SNIP.match(line):
                     cur[4] += "\n" + line
                 continue

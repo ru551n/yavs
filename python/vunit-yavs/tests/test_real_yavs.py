@@ -1203,11 +1203,12 @@ class TestRealYavs(unittest.TestCase):
             self.skipTest("this yavs has no cycle mode")
         project = self.tempdir / "project"
         project.mkdir()
-        # A failure assert in the design, dropped in cycle mode: its warning (W4101) is ordinary output
-        dropped = COUNTER.replace("  q <= cnt;", '  assert cnt = cnt report "never fails" severity failure;\n  q <= cnt;')
-        (project / "counter.vhd").write_text(dropped, encoding="utf-8")
+        # A note of the design, evaluated in cycle mode; the other test drops it with yavs.no_asserts
+        noted = COUNTER.replace("if rst = '1'", 'assert cnt /= 3 report "cnt reached 3" severity note;\n      if rst = \'1\'')
+        (project / "counter.vhd").write_text(noted, encoding="utf-8")
         (project / "tb_counter.vhd").write_text(COUNTER_TESTBENCH, encoding="utf-8")
-        (project / "run.py").write_text(CYCLE_RUN, encoding="utf-8")
+        dropping = 'LIB.test_bench("tb_counter").test("counts_again").set_sim_option("yavs.no_asserts", True)\nVU.main()'
+        (project / "run.py").write_text(CYCLE_RUN.replace("VU.main()", dropping), encoding="utf-8")
         proc = subprocess.run(
             [sys.executable, str(project / "run.py"), "-v", "--no-color"]
             + ["-o", str(self.tempdir / "out"), "-x", str(self.xml)],
@@ -1224,7 +1225,9 @@ class TestRealYavs(unittest.TestCase):
         lines = re.findall(r"cycle mode: \d+ of \d+ processes run cycle-based", proc.stdout)
         self.assertEqual(len(lines), 1, proc.stdout)
         self.assertRegex(proc.stdout, r"(?s)cycle mode: \d+ of \d+.*pass .*counts \(")
-        self.assertEqual(proc.stdout.count("warning[W4101]"), 1, proc.stdout)
+        self.assertEqual(proc.stdout.count("cnt reached 3"), 1, proc.stdout)
+        self.assertEqual(proc.stdout.count("`--no-asserts`: 1 assert and report statement in 1 process"), 1, proc.stdout)
+        self.assertRegex(proc.stdout, r"(?s)cnt reached 3.*pass .*counts \(.*--no-asserts.*pass .*counts_again \(")
 
     def test_the_letters_are_those_of_yavs(self):
         yavs = str(Path(os.environ["VUNIT_YAVS_PATH"]) / "yavs") if "VUNIT_YAVS_PATH" in os.environ else "yavs"

@@ -51,6 +51,8 @@ pub(crate) struct Fit {
     pub dropped: u32,
     /// Every signal element it reads (over-approximated).
     pub reads: ESet,
+    /// A combinational process: its wait set, the elements whose events run it.
+    pub wait: ESet,
 }
 
 /// Why a process stays out: its code, the statement that causes it, the text, and the other
@@ -298,6 +300,22 @@ fn scalar_fits(db: &Db, st: SubtypeId, v: &ConstValue) -> bool {
         (l, r)
     };
     (lo..=hi).contains(&v)
+}
+
+/// `x` of `not x`, the predefined `not` of BOOLEAN (the condition of an edge-tested assert).
+pub(crate) fn not_operand(db: &Db, c: ExprId) -> Option<ExprId> {
+    let ExprKind::Call { callee, args, .. } = &db.exprs[c].kind else {
+        return None;
+    };
+    let d = &db.decls[*callee];
+    let boolean = Some(db.base(db.exprs[c].subtype)) == db.well_known.boolean;
+    match &args[..] {
+        [a] if d.implicit && boolean && d.name.key().as_str() == "\"not\"" => match a.actual {
+            Actual::Expr(x) => Some(x),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 pub(crate) fn named(k: &ExprKind) -> bool {
@@ -558,8 +576,8 @@ struct Cx<'a> {
     /// Where each signal leaf is first read (for messages).
     read_at: HashMap<u64, Span>,
     dropped: u32,
-    /// A process of the top-level unit: its asserts and reports are evaluated (A19), so what
-    /// they read counts.
+    /// Its asserts and reports are evaluated (A19, A52; all but those `--no-asserts` drops below
+    /// the top-level unit), so what they read counts.
     top: bool,
     budget: usize,
     enumerating: u32,
@@ -598,7 +616,7 @@ impl<'a> Cx<'a> {
             sig_any: ESet::default(),
             read_at: HashMap::new(),
             dropped: 0,
-            top: crate::region::in_top_scope(e, p.scope),
+            top: crate::region::asserts_kept(e, p.scope),
             budget: BUDGET,
             enumerating: 0,
             lost: Vec::new(),
@@ -690,6 +708,7 @@ impl Cx<'_> {
                         outs: Vec::new(),
                         dropped: 0,
                         reads: ESet::default(),
+                        wait: ESet::default(),
                     });
                 }
                 self.comb = true;
@@ -702,14 +721,47 @@ impl Cx<'_> {
                 self.lsps_into(&lsps, &mut wait);
                 self.finish_comb(st, wait)
             }
-            StmtKind::ConcAssert { .. } => Ok(Fit {
-                form: Form::Comb,
-                clock: None,
-                reset: Vec::new(),
-                outs: Vec::new(),
-                dropped: 1,
-                reads: ESet::default(),
-            }),
+            StmtKind::ConcAssert { cond, .. } => {
+                // Evaluated (A52): it runs on an event of what it reads, as its equivalent process.
+                let mut wait = ESet::default();
+                if self.top {
+                    let mut lsps = Vec::new();
+                    db.stmt_reads(p.stmt, &mut lsps);
+                    self.lsps_into(&lsps, &mut wait);
+                    self.reads.union(&wait);
+                }
+                // `assert not (<edge> and c)` on the kernel's edge trigger: a check at the edge.
+                if self.top
+                    && self.p.trigger.is_some()
+                    && let Some((edge, extras)) =
+                        not_operand(db, *cond).and_then(|x| self.edge_head(x))
+                {
+                    let (leaf, el) = self.clock_elem(edge.sig)?;
+                    self.clock = Some((leaf, el));
+                    let st = St::default();
+                    for x in extras {
+                        self.expr(x, &st)?;
+                    }
+                    return Ok(Fit {
+                        form: Form::Clocked,
+                        clock: Some((leaf, el, edge.rising)),
+                        reset: Vec::new(),
+                        outs: Vec::new(),
+                        dropped: 1,
+                        reads: ESet::default(),
+                        wait: ESet::default(),
+                    });
+                }
+                Ok(Fit {
+                    form: Form::Comb,
+                    clock: None,
+                    reset: Vec::new(),
+                    outs: Vec::new(),
+                    dropped: 1,
+                    reads: ESet::default(),
+                    wait,
+                })
+            }
             StmtKind::ConcProcCall { call, .. } => {
                 let c = self.callee(call.callee);
                 if c.waits {
@@ -970,6 +1022,7 @@ impl Cx<'_> {
             outs: Vec::new(),
             dropped: self.dropped,
             reads: ESet::default(),
+            wait: ESet::default(),
         })
     }
 
@@ -1003,6 +1056,7 @@ impl Cx<'_> {
             outs: Vec::new(),
             dropped: 0,
             reads: ESet::default(),
+            wait: ESet::default(),
         };
         // A reset branch elaboration found never runs (`rst = '1' and G`, `G` false): the edge alone.
         let reset = reset.filter(|_| self.p.trigger.is_none_or(|t| t.reset.is_some()));
@@ -1150,6 +1204,7 @@ impl Cx<'_> {
             outs,
             dropped: self.dropped,
             reads: ESet::default(),
+            wait,
         })
     }
 

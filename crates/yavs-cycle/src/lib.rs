@@ -22,7 +22,7 @@ use yavs_sem::Db;
 
 pub use codegen::{set_cache, set_threads};
 use lower::{Kind, Op, Ref};
-pub use region::set_exact_meta;
+pub use region::{set_exact_meta, set_no_asserts};
 pub use store::analysis_cache;
 
 /// Codes of cycle mode. Under `--cycle-strict` every reason a process below the top-level unit
@@ -36,7 +36,9 @@ pub mod codes {
     pub const REPORT_FILE: &str = "E4103";
     /// An environment variable of cycle mode with a value it does not take.
     pub const ENV_VALUE: &str = "E4104";
-    /// Asserts and reports of severity error or failure that cycle-based processes drop (A41).
+    /// Retired (A52): asserts and reports of severity error or failure that cycle-based processes
+    /// dropped (A41). No longer given, since members evaluate theirs; `-Werror=W4101` is still
+    /// accepted.
     pub const DROPPED_STOPS: &str = "W4101";
     /// A wait other than the one `wait until <edge>;` of a clocked process.
     pub const WAIT: &str = "E4110";
@@ -104,6 +106,11 @@ pub mod codes {
     /// A loop without bounds known during elaboration, too large, or with a jump out of an
     /// outer loop.
     pub const LOOP_BOUND: &str = "E4139";
+    /// An assert or report region code cannot evaluate (A52): a message of another form, a
+    /// severity known only at run time, the reset branch, a sensitivity list naming more than the
+    /// process reads (a limitation); under `--cycle-exact-meta` one reading a signal the region
+    /// does not drive alone.
+    pub const ASSERT: &str = "E4140";
     /// A reason no design can reach (the analysis or an earlier check rules it out): a bug in
     /// yavs, kept as a reason so the process stays in the event kernel (`check::bug`, `lower::bug`).
     pub const INTERNAL: &str = "E9999";
@@ -308,6 +315,13 @@ pub mod codes {
             true,
         ),
         (
+            ASSERT,
+            "an assert or report cycle mode cannot evaluate",
+            "cycle mode evaluates the assert and report statements of its processes in compiled code, which takes only some forms of them, and under `--cycle-exact-meta` only on values the region makes",
+            "write the message with string literals, `&`, `'image` and `to_string`, `to_hstring` or `to_ostring` of its values, give the severity as a literal, move the check out of the reset branch, write an edge test as `assert not (rising_edge(clk) and ...)`, name only what the process reads in its sensitivity list, or run with `--no-asserts` to drop the asserts and reports below the top-level unit",
+            true,
+        ),
+        (
             CHECK_OUTSIDE,
             "an assert reading a signal the region does not drive alone",
             "the assert must see the event simulation's values of that signal, so its process stays where those values are",
@@ -363,9 +377,6 @@ pub struct Plan {
     pub report: String,
     /// One line for `--cycle`: how many processes joined (ends with a newline).
     pub summary: String,
-    /// `--cycle` and `--cycle-strict`: the warning that asserts and reports of severity error or
-    /// failure are dropped (W4101), printed once after the summary.
-    pub warning: Option<Diagnostic>,
     /// None under [`Mode::Report`] and when no process joined.
     pub region: Option<Region>,
     /// What the region read as 0 for a metavalue, for [`Metas::summary`] after the run.
@@ -562,7 +573,6 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
             return Ok(Plan {
                 report: String::new(),
                 summary: std::mem::take(&mut b.summary),
-                warning: b.warning.take().map(warning),
                 region: Some(finish(
                     e,
                     b,
@@ -637,13 +647,11 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
                 _ => String::new(),
             },
             summary,
-            warning: None,
             region: None,
             metas,
             reporter: Reporter::default(),
         });
     }
-    let warning = dropped_warning(db, e, &sel).map(warning);
     let reporter = Reporter::default();
     let region = build(db, e, sel, &summary, metas.clone(), reporter.clone()).map_err(|m| {
         vec![
@@ -658,7 +666,6 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
     Ok(Plan {
         report: String::new(),
         summary,
-        warning,
         region: Some(region),
         metas,
         reporter,
@@ -693,71 +700,6 @@ fn drops(db: &Db, e: &Elaborated, sel: &region::Selection) -> Vec<(&'static str,
             (name, at, who)
         })
         .collect()
-}
-
-/// W4101 (A41) from its headline and notes ([`dropped_warning`], kept so in `Built`).
-fn warning((head, notes): (String, Vec<String>)) -> Diagnostic {
-    let d = Diagnostic::warning(codes::DROPPED_STOPS, head);
-    (notes.into_iter().fold(d, Diagnostic::with_note)).with_help(
-        "these do not stop the simulation in cycle mode; run without `--cycle` to evaluate them, \
-         or with `--cycle-report` instead to list every assert and report cycle mode drops",
-    )
-}
-
-/// The headline and notes of W4101 (A41): the asserts and reports of severity error or failure
-/// (or one known only at run time) that cycle-based processes drop, the first few with where
-/// they are.
-fn dropped_warning(
-    db: &Db,
-    e: &Elaborated,
-    sel: &region::Selection,
-) -> Option<(String, Vec<String>)> {
-    const SHOWN: usize = 5;
-    let stops: Vec<_> = (drops(db, e, sel).into_iter())
-        .filter(|d| matches!(d.0, "failure" | "error" | "run-time"))
-        .collect();
-    if stops.is_empty() {
-        return None;
-    }
-    let sev = |s: &str| match s {
-        "run-time" => "a severity known only at run time".to_string(),
-        s => format!("severity {s}"),
-    };
-    let n = stops.len();
-    let head = if n == 1 {
-        format!(
-            "1 assert or report of {} is not evaluated in cycle mode",
-            sev(stops[0].0)
-        )
-    } else {
-        let by: Vec<String> = ["failure", "error", "run-time"]
-            .iter()
-            .map(|s| (stops.iter().filter(|d| d.0 == *s).count(), *s))
-            .filter(|c| c.0 > 0)
-            .map(|(c, s)| {
-                format!(
-                    "{c} {}",
-                    if s == "run-time" {
-                        "known at run time"
-                    } else {
-                        s
-                    }
-                )
-            })
-            .collect();
-        format!(
-            "{n} asserts and reports of severity error or failure are not evaluated in cycle mode ({})",
-            by.join(", ")
-        )
-    };
-    let mut notes = Vec::new();
-    for (s, at, who) in stops.iter().take(SHOWN) {
-        notes.push(format!("{at}: {}, in {who}", sev(s)));
-    }
-    if n > SHOWN {
-        notes.push(format!("and {} more", n - SHOWN));
-    }
-    Some((head, notes))
 }
 
 /// The region report of `sel` (`--cycle-report`): what joined and what stays in the event kernel,
@@ -860,10 +802,10 @@ fn report(
             let _ = writeln!(report, "    {n}");
         }
     }
-    // Asserts and reports in members are compiled to nothing.
+    // The asserts and reports `--no-asserts` drops from members, once per statement.
     let held: Vec<(String, u32)> = (sel.members.iter())
-        .filter(|(_, b)| b.dropped > 0)
-        .map(|(pi, b)| (region::where_(db, e, *pi), b.dropped))
+        .filter(|(_, b)| !b.drops.is_empty())
+        .map(|(pi, b)| (region::where_(db, e, *pi), b.drops.len() as u32))
         .collect();
     if !held.is_empty() {
         let _ = writeln!(
@@ -905,10 +847,14 @@ fn report(
             "  cycle-based processes give no warnings of the ieee libraries (numeric_std \
              metavalue and compare warnings)\n",
         );
-        report.push_str(
-            "  asserts and reports of processes of the top-level unit are evaluated: at the \
-             clock edge in region code, else the process stays in the event kernel\n",
-        );
+        report.push_str(if region::no_asserts() {
+            "  asserts and reports of processes of the top-level unit are evaluated: at the clock \
+             edge or after the settle in region code, else the process stays in the event kernel; \
+             those below it are dropped (--no-asserts)\n"
+        } else {
+            "  asserts and reports are evaluated: at the clock edge or after the settle in region \
+             code, else the process stays in the event kernel\n"
+        });
     }
     let _ = writeln!(
         report,
@@ -1231,6 +1177,8 @@ fn built(
         if clocked {
             state.extend(b.vars.iter().map(|&(w, c)| (base + w, c)));
         }
+        // What a combinational member's notes compare with (`Body::fresh`).
+        state.extend(b.snaps.iter().map(|&(w, c)| (base + w, c)));
         // The second image's tables, only where it can run (the default keeps none).
         if clocked && region::exact_meta() {
             useed.extend(b.useed.iter().map(|&(w, c)| (base + w, c)));
@@ -1272,8 +1220,11 @@ fn built(
     let looped: std::collections::BTreeSet<usize> = (sel.loops.iter())
         .flat_map(|l| sel.settle[l.at.clone()].iter().copied())
         .collect();
-    let piece = |k: usize, snap: &BTreeMap<u32, u32>| -> Result<Vec<Op>, String> {
+    // `fresh`: with the start of a combinational member's body that decides whether its notes
+    // run (`Body::fresh`); a loop group's runs before its last have neither.
+    let piece = |k: usize, snap: &BTreeMap<u32, u32>, fresh: bool| -> Result<Vec<Op>, String> {
         let (_, b) = &sel.members[k];
+        let skip = if fresh { 0 } else { b.fresh_len as usize };
         let mut ops: Vec<Op> = (snap.iter())
             .map(|(&s, &w)| Op::Copy {
                 dst: Ref::Loc(w),
@@ -1292,7 +1243,7 @@ fn built(
             let piece = region::reset_piece(&b.ops).ok_or("a reset branch of another shape")?;
             ops.extend(piece.iter().map(|op| r.op(op)));
         } else {
-            ops.extend(b.ops.iter().map(|op| r.op(op)));
+            ops.extend(b.ops[skip..].iter().map(|op| r.op(op)));
         }
         Ok(ops)
     };
@@ -1431,7 +1382,7 @@ fn built(
         let step = if b.kind != Kind::Clocked && shared.contains_key(&k) {
             (call(k), weight(&b.ops))
         } else {
-            let ops = piece(k, &none)?;
+            let ops = piece(k, &none, true)?;
             let w = weight(&ops);
             (codegen::Step::Ops(ops), w)
         };
@@ -1496,11 +1447,17 @@ fn built(
                     n - codegen::words(klen(ksig(l)))
                 });
             }
-            let ops = piece(k, &snap)?;
-            let early = (steps.iter().filter(|&&s| s == k).count() > 1).then(|| {
-                bodies.push((ops.clone(), false));
-                bodies.len() - 1
-            });
+            let ops = piece(k, &snap, true)?;
+            // Also the body the debug pass below runs: no note is made twice.
+            let early = if b.fresh.is_some() {
+                bodies.push((piece(k, &snap, false)?, false));
+                Some(bodies.len() - 1)
+            } else {
+                (steps.iter().filter(|&&s| s == k).count() > 1).then(|| {
+                    bodies.push((ops.clone(), false));
+                    bodies.len() - 1
+                })
+            };
             bodies.push((ops, true));
             body.insert(k, (bodies.len() - 1, early));
         }
@@ -1564,7 +1521,10 @@ fn built(
         if confirm {
             let g = groups.len();
             settle.push((codegen::Step::Save(g), u32::MAX));
-            settle.extend(body.values().map(|b| (codegen::Step::Call(b.0), u32::MAX)));
+            settle.extend(body.iter().map(|(&k, b)| {
+                let quiet = sel.members[k].1.fresh.and(b.1).unwrap_or(b.0);
+                (codegen::Step::Call(quiet), u32::MAX)
+            }));
             settle.push((codegen::Step::Same(g), u32::MAX));
         }
         groups.push((words, 0));
@@ -1574,8 +1534,7 @@ fn built(
     }
     // The edge: the clocked bodies of the classes whose edge happened, each class behind one gate
     // (with one class only at its edge, so behind none), the commit; then the settle's functions.
-    // By class, in member order within one; in member order alone when members of two classes log
-    // notes (their order in a delta where both have an edge).
+    // By class, in member order within one.
     for (k, (_, b)) in sel.members.iter().enumerate() {
         let r = &rs[k];
         init_fn.push(codegen::Step::Ops(
@@ -1587,13 +1546,9 @@ fn built(
     let mut clocked: Vec<usize> = (0..sel.members.len())
         .filter(|&k| sel.members[k].1.kind == Kind::Clocked)
         .collect();
-    let noted: BTreeSet<Vec<u32>> = (clocked.iter())
-        .filter(|&&k| sel.members[k].1.notes > 0)
-        .map(|&k| gate_of(k))
-        .collect();
-    if noted.len() < 2 {
-        clocked.sort_by_key(|&k| gate_of(k));
-    }
+    // By class: the notes are reported in elaboration order whatever order they were made in
+    // (`rt::RegionProc::notes`).
+    clocked.sort_by_key(|&k| gate_of(k));
     let mut gate: Vec<u32> = Vec::new();
     for k in clocked {
         let (r, b) = (&rs[k], &sel.members[k].1);
@@ -2075,7 +2030,6 @@ fn built(
         trigger,
         quiet,
         summary: summary.to_string(),
-        warning: dropped_warning(db, e, sel),
         code: plan,
         outputs: sel.outputs.clone(),
         decls,
@@ -2132,8 +2086,6 @@ pub(crate) struct Built {
     quiet: Vec<u32>,
     /// The summary line of `--cycle` ([`Plan::summary`]).
     summary: String,
-    /// W4101's headline and notes ([`Plan::warning`]).
-    warning: Option<(String, Vec<String>)>,
     pub(crate) code: codegen::CodePlan,
     outputs: BTreeSet<LeafId>,
     decls: Vec<LeafId>,
@@ -2341,7 +2293,7 @@ fn finish(
                     buf: Vec::new(),
                     read_now: Vec::new(),
                     idle: rt::Idle {
-                        on: words <= rt::IDLE_WORDS && log.1 == 0 && clocks.len() <= 64,
+                        on: words <= rt::IDLE_WORDS && clocks.len() <= 64,
                         ..Default::default()
                     },
                     cones: cones.clone(),

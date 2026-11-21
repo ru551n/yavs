@@ -17862,3 +17862,41 @@ the parked retune package.
   check site keeps the enumeration or physical type it needs (`Check::Range`/`Index` `show`, an
   index's subtype carried in `Part::at`), so `--cycle-exact-meta` gives the normal mode's message
   and plain `--cycle` its bounds as literals.
+
+## Cycle mode evaluates asserts and reports; `--no-asserts` (yavs-cycle, yavs-lower, A52, A54, A57, 2026-11-21)
+
+- **Evaluated by default** (user A52(2), supersedes A6, A12, A21, A41): every cycle-based process evaluates its
+  `assert` and `report` statements with the normal mode's text, severity, time, process and effect on the run. A
+  clocked member at its clock edge; a combinational member once its inputs are settled, and only when an element
+  of its wait set changed since its last run (the normal mode's event; a snapshot of the wait set in the member's
+  slots). Rationale: a design that ends its own test (Microwatt CoreMark) must end in cycle mode too.
+- **Settled values only:** a combinational member with notes gets a dependence element of its own on everything it
+  reads, so it runs after what makes any of it; when that depends on its own output it is in a loop group, whose
+  passes before the last make no note and leave the snapshot alone. A normal-mode report of a value that lasts one
+  delta, or a second report in one time step, has no counterpart; the messages of the region carry the wake's delta
+  and come in elaboration order, clocked members' first. Documented in `docs/cycle-mode.rst`.
+- **Two-state contract:** below the top-level unit an assert sees what the region computes: an assert that needs a
+  metavalue to fire does not, and a combinational member's notes run on two-state changes (`'1'` to `'H'` is none).
+  Under `--cycle-exact-meta` a member with notes that reads a signal the region does not drive alone stays out
+  (E4140; the top-level unit's E4136 rule for every member), so the kernel's metavalues reach its asserts exactly;
+  what members drive is still two-state there (a register's `'U'` start reads 0, also for the top-level unit's
+  checkers on main before this work). The exact gate found the two-state values wrong under its contract
+  (14 corpus tests, 2026-11-21).
+- **What cycle mode cannot evaluate keeps the process out** (E4140, an error below the top under `--cycle-strict`,
+  A57(3)): a message of another form, a run-time severity, the reset branch, a condition with an edge test of
+  another form than `not (<edge> and ...)`, a sensitivity list naming a leaf the process does not read.
+- **`assert not (<edge> and a and b)`** (concurrent): elaboration gives it the kernel's edge trigger
+  (`walk.rs` `edge_trigger`, both modes: its process does nothing between edges, the operands after the edge are
+  not evaluated there), and cycle mode takes it as a clocked member checking `a`, `b` in order at the edge. The 9 such
+  asserts of the ac701 board design stayed out and cost about 2 percent of its run.
+- **An assert that holds by known values is no code** (in any call, no longer only in calls of constants): a width
+  check of a called function on its constant arguments made every input of its combinational process settle at once
+  (`at_once`, a check reached); 2 percent of the ac701 board run, the whole cost of `--no-asserts` there.
+- **`--no-asserts`** (user A54, replaces the planned `--cycle-no-asserts`): drops the statements of the processes
+  below the top-level unit in both modes; subprograms keep theirs, so the check and logging calls of verification
+  components run and both modes agree on what is dropped. "Below the top" is: not in the architecture of the
+  top-level entity (its blocks and generates included), in the normal mode by architecture (`Lowerer::drop_asserts`,
+  `FuncKind::Process` bodies), in cycle mode by instance (`region::in_top_scope`); they differ only for a top entity
+  instantiated inside itself. vunit-yavs: sim option `yavs.no_asserts` (`True`/`False`, checked when set).
+- **W4101 retired:** nothing is dropped by default, so there is nothing to warn about; the code stays in `--explain`
+  so that `-Werror=W4101` keeps working as a no-op.

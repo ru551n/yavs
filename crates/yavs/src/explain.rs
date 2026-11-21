@@ -556,7 +556,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "W4101",
-        "Cycle-based processes below the top-level design unit hold `assert` or `report` statements of severity error or failure (or a severity known only at run time), which cycle mode (`yavs run --cycle` or `--cycle-strict`) does not evaluate: they never print and never stop the simulation, so a design that ends its own test with such an assert below the top runs on until `--stop-time` or the testbench ends it. The warning counts them by severity and names the first five (where the statement is and the process), then how many more. Run without `--cycle` to evaluate them, or run with `--cycle-report` instead to list every assert and report cycle mode drops, warnings and notes included. Asserts and reports of processes of the top-level unit, the testbench, are evaluated and are not counted here.",
+        "Retired: cycle mode no longer gives this warning. It said that cycle-based processes below the top-level design unit held `assert` or `report` statements of severity error or failure that cycle mode did not evaluate. Cycle mode now evaluates the asserts and reports of its processes (a process with one it cannot evaluate stays in the event kernel, E4140), and `--no-asserts` drops those below the top-level unit on request, in both modes, with a note at the start of the run that counts them. `-Werror=W4101` and `-Wno-W4101` are still accepted and change nothing.",
     ),
     (
         "E4110",
@@ -677,6 +677,10 @@ const EXPLAIN: &[(&str, &str)] = &[
     (
         "E4139",
         "A loop cycle mode cannot unroll. Cycle-based code unrolls every loop, so a loop needs bounds known during elaboration (constants, generics), its process at most 65 536 statement runs of loops, and `exit` and `next` of the innermost loop only. A loop without an exit cannot run in a process that must finish each run. Give the loop static bounds, split a very large loop, and jump only out of the innermost loop.",
+    ),
+    (
+        "E4140",
+        "An assert or report statement that cycle mode cannot evaluate in its compiled code keeps its process in the event kernel, so that it runs as in the normal mode. Cycle mode evaluates a clocked process's asserts and reports at its clock edge and a combinational process's once its inputs are settled, and takes a message made of string literals, `&`, `'image` and `to_string` of integers, enumerations, `std_ulogic` and `boolean` values, and `to_string`, `to_hstring` and `to_ostring` of vectors, with a severity known during elaboration. It does not take one in the asynchronous reset branch of a clocked process, or in a combinational process whose sensitivity list names a signal the process does not read. Write the message in that form, move the check out of the reset branch or into the testbench, or run with `--no-asserts` to drop the asserts and reports below the top-level unit.",
     ),
     // every stage
     (

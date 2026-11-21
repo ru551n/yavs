@@ -297,6 +297,15 @@ class TestPackage(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, f"yavs.cycle.*\"off\".*\"on\".*\"strict\".*{hint}"):
                 self.factory.check_sim_option("yavs.cycle", value)
 
+    def test_no_asserts_option_is_validated(self):
+        self._vunit().get_simulator_name()
+        for value in (True, False):
+            self.factory.check_sim_option("yavs.no_asserts", value)
+        wrong = (("on", "Did you mean True"), ("false", "Did you mean False"), (1, "Did you mean True"), ("maybe", ""))
+        for value, hint in wrong:
+            with self.assertRaisesRegex(ValueError, f"yavs.no_asserts.*must be True.*or False.*{hint}"):
+                self.factory.check_sim_option("yavs.no_asserts", value)
+
 
 class TestYavsInterface(unittest.TestCase):
     """
@@ -797,6 +806,17 @@ class TestYavsInterface(unittest.TestCase):
         )
         _, cmd, _ = self._simulate(make_config())
         self.assertFalse(any(arg.startswith("--tier-compile") for arg in cmd))
+
+    def test_no_asserts_flag(self):
+        config = make_config(sim_options={"yavs.no_asserts": True, "yavs.sim_flags": ["--stop-time=1ms"]})
+        _, cmd, _ = self._simulate(config)
+        self.assertEqual(cmd.count("--no-asserts"), 1)
+        self.assertLess(cmd.index("--no-asserts"), cmd.index("--stop-time=1ms"))
+        _, cmd, _ = self._simulate(config, elaborate_only=True)
+        self.assertNotIn("--no-asserts", cmd)
+        for options in ({}, {"yavs.no_asserts": False}):
+            _, cmd, _ = self._simulate(make_config(sim_options=options))
+            self.assertNotIn("--no-asserts", cmd)
 
     def test_cycle_mode_flags(self):
         for value, flag in (("on", "--cycle"), ("strict", "--cycle-strict")):

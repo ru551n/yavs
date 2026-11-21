@@ -497,9 +497,13 @@ Arguments:
 
    May be repeated.
 
+.. option:: --no-asserts
+
+   Drop the ``assert`` and ``report`` statements of the processes below the top-level design unit (the design, and the verification components and checkers the testbench instantiates), for speed, in the normal mode and in cycle mode alike. The processes of the top-level unit keep theirs, and the statements inside subprograms run wherever they are called from (the check and logging calls of a test library among them). The start of the run says how many statements are dropped.
+
 .. option:: --cycle
 
-   Cycle mode, experimental (its options and results may change in a later release): the processes that can run cycle-based (clocked and combinational ones in what it supports) run as one region on a static schedule with compiled code; the rest stays in the event kernel. One line on standard error says how many processes joined; ``--cycle-report`` lists them all, with reasons. The asserts and reports of cycle-based processes below the top-level unit are not evaluated; those of the top-level unit are, at the clock edge in compiled code or with their process in the event kernel, so the checks of a testbench run as in the normal mode (a checker entity instantiated below the top joins and loses them). Not with a debug session, ``--wave``, ``--cov``, ``--vhpi``, ``--surfer`` or ``--activity`` (E4102). The strict form is ``--cycle-strict``, given instead of this option.
+   Cycle mode, experimental (its options and results may change in a later release): the processes that can run cycle-based (clocked and combinational ones in what it supports) run as one region on a static schedule with compiled code; the rest stays in the event kernel. One line on standard error says how many processes joined; ``--cycle-report`` lists them all, with reasons. Cycle-based processes evaluate their asserts and reports, a clocked one at its clock edge, a combinational one once its inputs are settled, with the normal mode's text, severity, time and process; one cycle mode cannot evaluate keeps its process in the event kernel (``--no-asserts`` drops those below the top-level unit). Not with a debug session, ``--wave``, ``--cov``, ``--vhpi``, ``--surfer`` or ``--activity`` (E4102). The strict form is ``--cycle-strict``, given instead of this option.
 
    Cannot be combined with ``--cycle-strict``.
 

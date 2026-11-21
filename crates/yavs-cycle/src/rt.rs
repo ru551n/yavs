@@ -357,8 +357,9 @@ pub(crate) struct RegionProc<const RAIL: bool> {
     pub skip: Arc<Skip>,
     pub dirty: Vec<u64>,
     pub go: Vec<u64>,
-    /// Dirty again after this edge: the readers of inputs read since the last edge.
+    /// Dirty again after this edge: the readers of inputs read in its delta (`in_edge`).
     pub later: Vec<u64>,
+    pub in_edge: bool,
     /// Per edge class: whether its tracking pays ([`Adapt`]); not changed in this run.
     pub adapt: Vec<Adapt>,
     pub frozen: bool,
@@ -478,8 +479,10 @@ pub(crate) struct Adapt {
 const WATCH: u32 = 16;
 const REST: u32 = 256;
 const REST_MAX: u32 = 4096;
-// ponytail: a fixed cost model (measured on NEORV32 and ac701 boot: about 50 instructions per
-// tracked body run and one per operation saved); a per-design calibration if it misjudges one.
+// ponytail: a fixed cost model (measured on NEORV32, ac701 boot and a small bus bench: about 500
+// instructions per tracked edge of a class and 50 per tracked body run, one per operation saved); a
+// per-design calibration if it misjudges one.
+const COST_EDGE: u64 = 500;
 const COST_RUN: u64 = 50;
 
 pub(crate) fn skip_knob() -> Result<Knob, String> {
@@ -900,10 +903,12 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                     *m |= c;
                 }
                 if let Some(&h) = self.skip.chunk.get(c) {
-                    // A reader sees the input at the next edge and, through the settle it
-                    // reaches, at the one after (an input of an edge's delta).
+                    // A reader sees the input at the next edge; one read in an edge's delta it
+                    // sees through the settle it reaches only at the edge after.
                     or_into(&mut self.dirty, &self.skip.reach[h as usize]);
-                    or_into(&mut self.later, &self.skip.reach[h as usize]);
+                    if self.in_edge {
+                        or_into(&mut self.later, &self.skip.reach[h as usize]);
+                    }
                 }
                 or_into(&mut self.touched, &self.chunk_spans[c]);
                 if self.stats {
@@ -1018,6 +1023,18 @@ impl<const RAIL: bool> RegionProc<RAIL> {
     /// The idle rule after an edge run of the classes `m`: whether it changed the image; with
     /// `known` (`YAVS_CYCLE_SKIP_CHECK=full` ran a run the rule skips) it must not have.
     fn idle_end(&mut self, ctx: &Ctx<'_>, m: u64, known: bool) -> Result<(), SimError> {
+        // The words of the skip of clocked bodies (flags, run and mode words) say how the run
+        // went, not what it changed.
+        let s = &*self.skip;
+        for (r, f, _, _) in &s.tracks {
+            if *r != u32::MAX {
+                self.idle.snap[*r as usize] = self.img[*r as usize];
+            }
+            self.idle.snap[*f as usize] = self.img[*f as usize];
+        }
+        for &w in &s.modes {
+            self.idle.snap[w as usize] = self.img[w as usize];
+        }
         let same = self.idle.snap == self.img;
         if known && !same {
             return Err(ctx.error(ErrorKind::Internal(
@@ -1891,6 +1908,7 @@ impl<const RAIL: bool> RegionProc<RAIL> {
         if self.stats {
             self.read_now.clear();
         }
+        self.in_edge = edge;
         let (any, now) = self.import::<R>(ctx, rail.as_deref_mut())?;
         if any || R {
             self.idle.masks.clear();
@@ -1927,7 +1945,20 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             // also what the clocked members of the classes that had one may have changed.
             // While the rail runs, every clocked body runs and the classes' cones are marked;
             // else only dirty bodies run and the cones of those that changed something (`Skip`).
-            let dynamic = !R && edge && !self.skip.tracks.is_empty();
+            let mut dynamic = !R && edge && !self.skip.tracks.is_empty();
+            // When every class that had an edge runs untracked (and none tests the edges
+            // itself), the edge runs as with nothing tracked: one call, the classes' cones.
+            let mut plain = false;
+            if dynamic {
+                // A run the idle rule would have skipped (the skip check runs it) leaves the
+                // classes' modes as a skip would: it must change no word of the image.
+                self.frozen = probe.is_some_and(|p| p.1);
+                self.adapt_start();
+                plain = self.skip.noclass.iter().all(|&w| w == 0)
+                    && (self.clocks.iter().zip(&self.adapt))
+                        .all(|(c, a)| self.img[c.2] == 0 || a.plain);
+                dynamic = !plain;
+            }
             if edge {
                 for (k, &(_, _, w)) in self.clocks.iter().enumerate() {
                     if self.img[w] != 0 {
@@ -1936,14 +1967,17 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                                 .zip(&self.class_cones[k][..])
                                 .for_each(|(m, c)| *m |= c);
                         }
+                        if plain {
+                            or_into(&mut self.dirty, &self.skip.class_reach[k]);
+                            if self.stats {
+                                self.ex[22] += 1;
+                            }
+                        }
                         or_into(&mut self.touched, &self.class_spans[k]);
                     }
                 }
             }
             if dynamic {
-                // A run the idle rule would have skipped (the skip check runs it) leaves the
-                // classes' modes as a skip would: it must change no word of the image.
-                self.frozen = probe.is_some_and(|p| p.1);
                 self.skip_go();
             }
             if self.stats
@@ -2029,7 +2063,6 @@ impl<const RAIL: bool> RegionProc<RAIL> {
     /// The clocked members that run at this edge ([`Skip`]): of the classes that had one, those
     /// dirty and those that always run; their run words set.
     fn skip_go(&mut self) {
-        self.adapt_start();
         let s = &*self.skip;
         self.go.fill(0);
         for (k, &(_, _, w)) in self.clocks.iter().enumerate() {
@@ -2190,7 +2223,7 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                 }
             }
             a.saved += s.class_ops[k].saturating_sub(ran_ops) + unmarked;
-            a.cost += COST_RUN * ran + ran_ops / 2;
+            a.cost += COST_EDGE + COST_RUN * ran + ran_ops / 2;
             a.watched += 1;
             let flip = s.knob == Knob::Flip;
             if a.watched < if flip { 2 } else { WATCH } {

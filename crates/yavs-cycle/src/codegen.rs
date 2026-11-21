@@ -433,7 +433,7 @@ impl Code {
     /// row it did not skip (bits 32 to 39) and, after [`GUARD_MISSES`] of them, the runs left
     /// (bits 40 to 55) of [`GUARD_OFF`] it runs without a compare (an active member costs no
     /// more than a few instructions a run).
-    #[inline]
+    #[inline(always)]
     fn guard(&self, img: &mut [u64], g: usize, checked: bool) -> bool {
         let gd = &self.guards[g];
         let (flag, n) = (gd.flag as usize, gd.ins.len());

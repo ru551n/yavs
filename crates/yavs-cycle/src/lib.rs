@@ -2562,6 +2562,7 @@ fn finish(
                     frozen: false,
                     go: vec![0; skip.always.len()],
                     later: vec![0; skip.always.len()],
+                    in_edge: false,
                     skip: skip.clone(),
                     cones: cones.clone(),
                     chunk_cone: chunk_cone.clone(),

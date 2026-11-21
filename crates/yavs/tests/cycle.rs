@@ -7381,7 +7381,8 @@ fn an_out_parameter_starts_at_its_default_in_cycle_mode() {
 /// procedure that declares a subprogram not against the actual; a signal actual never at the
 /// call; a variable `inout` actual at the call and an `out` one when copied back, an element's
 /// place fixed at the call (#1182). A formal or subtype range that reads a variable keeps the
-/// caller out: its value is the one at the declaration. Scalars only, so no widths.
+/// caller out: its value is the one at the declaration. An enumeration value or index shows as
+/// its literal (#1178). Scalars only, so no widths.
 #[test]
 fn parameter_ranges_are_checked_as_in_the_normal_mode() {
     let dir = tempdir("cycle-sigrange");
@@ -7400,7 +7401,7 @@ fn parameter_ranges_are_checked_as_in_the_normal_mode() {
         ),
         (
             "sr_sigenum",
-            "value 2 outside of ST range 0 to 1 for actual of signal parameter O",
+            "value S2 outside of ST range S0 to S1 for actual of signal parameter O",
             "2 of 3",
         ),
         (
@@ -7415,12 +7416,22 @@ fn parameter_ranges_are_checked_as_in_the_normal_mode() {
         ),
         (
             "sr_varenum",
-            "value 2 outside of SUB range 0 to 1 for actual of parameter O",
+            "value S2 outside of SUB range S0 to S1 for actual of parameter O",
             "1 of 2",
         ),
         (
             "sr_inout",
             "value -5 outside of NATURAL range 0 to 2147483647 for parameter O",
+            "1 of 2",
+        ),
+        (
+            "sr_enumvar",
+            "value WHITE outside of RGB range RED to BLUE for variable V",
+            "1 of 2",
+        ),
+        (
+            "sr_enumix",
+            "index WHITE outside of range RED to BLUE for t",
             "1 of 2",
         ),
         (

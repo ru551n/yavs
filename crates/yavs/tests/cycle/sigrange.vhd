@@ -429,3 +429,38 @@ begin
   end process;
   tb : entity work.sr_tb generic map (3, 7) port map (go, s);
 end architecture;
+
+-- An enumeration value and index outside their subtypes: the message shows literals (#1178).
+entity sr_enumvar is
+end entity;
+architecture a of sr_enumvar is
+  type color is (red, green, blue, white);
+  subtype rgb is color range red to blue;
+  signal s : integer := 0;
+  signal go : integer := 0;
+begin
+  c : process (go)
+    variable v : rgb;
+  begin
+    v := color'val(go);
+    s <= color'pos(v);
+  end process;
+  tb : entity work.sr_tb generic map (1, 3) port map (go, s);
+end architecture;
+
+entity sr_enumix is
+end entity;
+architecture a of sr_enumix is
+  type color is (red, green, blue, white);
+  subtype rgb is color range red to blue;
+  type tab is array (rgb) of integer;
+  constant t : tab := (10, 20, 30);
+  signal s : integer := 0;
+  signal go : integer := 0;
+begin
+  c : process (go)
+  begin
+    s <= t(color'val(go));
+  end process;
+  tb : entity work.sr_tb generic map (1, 3) port map (go, s);
+end architecture;

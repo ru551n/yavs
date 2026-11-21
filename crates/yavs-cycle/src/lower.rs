@@ -121,9 +121,16 @@ pub(crate) enum Check {
         hi: i64,
         down: bool,
         what: String,
+        /// The literals of an enumeration type, as the message shows its values.
+        lits: Option<Box<[Box<str>]>>,
     },
     /// `index V outside of range B for W`.
-    Index { b: Bounds, what: String },
+    Index {
+        b: Bounds,
+        what: String,
+        /// The literals of an enumeration index type, as the message shows its values.
+        lits: Option<Box<[Box<str>]>>,
+    },
     /// Not a check: an assert or report of a top-level member that fired (A19); its site is a
     /// check's, so a site names the member.
     Note(Box<Note>),
@@ -191,8 +198,14 @@ impl Note {
     }
 }
 
+/// Value `v` of a check message: an enumeration's literal, else the integer.
+fn shown(v: i64, lits: &Option<Box<[Box<str>]>>) -> String {
+    let lit = lits.as_ref().and_then(|l| l.get(usize::try_from(v).ok()?));
+    lit.map_or_else(|| v.to_string(), |l| l.to_string())
+}
+
 /// `lo to hi` or `hi downto lo`.
-fn range(lo: i64, hi: i64, down: bool) -> String {
+fn range(lo: impl std::fmt::Display, hi: impl std::fmt::Display, down: bool) -> String {
     if down {
         format!("{hi} downto {lo}")
     } else {
@@ -230,24 +243,24 @@ impl Check {
                 hi,
                 down,
                 what,
-            } if what.is_empty() => {
-                format!("value {a} outside of {ty} range {}", range(*lo, *hi, *down))
+                lits,
+            } => {
+                let (a, b) = (
+                    shown(a, lits),
+                    range(shown(*lo, lits), shown(*hi, lits), *down),
+                );
+                if what.is_empty() {
+                    format!("value {a} outside of {ty} range {b}")
+                } else {
+                    format!("value {a} outside of {ty} range {b} for {what}")
+                }
             }
-            Check::Range {
-                ty,
-                lo,
-                hi,
-                down,
-                what,
-            } => format!(
-                "value {a} outside of {ty} range {} for {what}",
-                range(*lo, *hi, *down)
-            ),
-            Check::Index { b: x, what } => {
+            Check::Index { b: x, what, lits } => {
                 let (lo, hi) = x.low_high();
                 format!(
-                    "index {a} outside of range {} for {what}",
-                    range(lo, hi, x.dir == Direction::Downto)
+                    "index {} outside of range {} for {what}",
+                    shown(a, lits),
+                    range(shown(lo, lits), shown(hi, lits), x.dir == Direction::Downto)
                 )
             }
             Check::Note(_) => "an assert or report fired".into(),
@@ -286,16 +299,21 @@ impl Check {
                 hi,
                 down,
                 what: w,
+                lits,
             } => format!(
                 "value outside of {ty} range {}{}{HINT}",
-                range(*lo, *hi, *down),
+                range(shown(*lo, lits), shown(*hi, lits), *down),
                 what(w)
             ),
-            Check::Index { b: x, what: w } => {
+            Check::Index {
+                b: x,
+                what: w,
+                lits,
+            } => {
                 let (lo, hi) = x.low_high();
                 format!(
                     "index outside of range {}{}{HINT}",
-                    range(lo, hi, x.dir == Direction::Downto),
+                    range(shown(lo, lits), shown(hi, lits), x.dir == Direction::Downto),
                     what(w)
                 )
             }
@@ -2761,6 +2779,7 @@ impl Lx<'_> {
                             hi: d.hi,
                             down: d.down,
                             what: obj_desc(self.db, obj),
+                            lits: enum_lits(self.db, sub),
                         });
                         self.ops.push(Op::Range {
                             a: s.r,
@@ -2838,10 +2857,25 @@ impl Lx<'_> {
     }
 
     fn index_site(&mut self, p: &Part, b: Bounds) -> u32 {
+        let db = self.db;
         let what = p
             .obj
-            .map_or(String::new(), |d| self.db.decls[d].name.to_string());
-        self.site(Check::Index { b, what })
+            .map_or(String::new(), |d| db.decls[d].name.to_string());
+        // The index type of an object that is a one-dimensional array of scalars, the only
+        // index such a name has. ponytail: nested arrays show an enumeration index as its
+        // position; the index subtype in `Part::at` would name it.
+        let lits = p.obj.and_then(|d| match &db.decls[d].kind {
+            yavs_sem::decl::DeclKind::Object(o) => match &db.types[db.base(o.subtype)].kind {
+                TypeKind::Array { indexes, elem }
+                    if indexes.len() == 1 && db.types[db.base(*elem)].kind.is_scalar() =>
+                {
+                    enum_lits(db, indexes[0])
+                }
+                _ => None,
+            },
+            _ => None,
+        });
+        self.site(Check::Index { b, what, lits })
     }
 
     /// An element of an array of integers as the integer it is; any other part as it is.
@@ -2875,6 +2909,7 @@ impl Lx<'_> {
                     hi: e.hi,
                     down: e.down,
                     what: obj_desc(self.db, obj),
+                    lits: enum_lits(self.db, sub),
                 });
                 self.ops.push(Op::Range {
                     a: s.r,
@@ -2904,6 +2939,7 @@ impl Lx<'_> {
                 hi: f.hi,
                 down: f.down,
                 what: format!("parameter {name}"),
+                lits: enum_lits(db, f.sub),
             });
             self.ops.push(Op::Range {
                 a: s.r,
@@ -2921,6 +2957,7 @@ impl Lx<'_> {
                 hi,
                 down: false,
                 what: format!("actual of signal parameter {name}"),
+                lits: enum_lits(db, f.sub),
             });
             self.ops.push(Op::Range {
                 a: s.r,
@@ -3213,6 +3250,7 @@ impl Lx<'_> {
             hi: d,
             down: false,
             what: "the length of a slice chosen at run time".into(),
+            lits: None,
         });
         self.ops.push(Op::Range {
             a: diff.r,
@@ -4439,6 +4477,7 @@ impl Lx<'_> {
                         hi,
                         down: false,
                         what: String::new(),
+                        lits: None,
                     });
                     self.ops.push(Op::Range {
                         a: i.r,
@@ -4480,6 +4519,7 @@ impl Lx<'_> {
                         hi,
                         down: false,
                         what: String::new(),
+                        lits: None,
                     });
                     self.ops.push(Op::Range {
                         a: i.r,
@@ -4543,6 +4583,7 @@ impl Lx<'_> {
                     hi,
                     down: false,
                     what: "conversion".into(),
+                    lits: None,
                 });
                 self.ops.push(Op::Range {
                     a: i.r,
@@ -5201,6 +5242,7 @@ impl Lx<'_> {
             hi,
             down: false,
             what: "a parameter".into(),
+            lits: None,
         });
         self.ops.push(Op::Range {
             a: i.r,
@@ -5393,6 +5435,7 @@ impl Lx<'_> {
                 right: 0,
             },
             what: String::new(),
+            lits: None,
         });
         self.ops.push(Op::IndexRead {
             dst: t.r,
@@ -6110,6 +6153,7 @@ impl Lx<'_> {
                                 hi: h,
                                 down: false,
                                 what: "the result of `to_integer`".into(),
+                                lits: None,
                             });
                             self.ops.push(Op::Range {
                                 a: t.r,
@@ -7364,6 +7408,7 @@ impl Lx<'_> {
                 hi,
                 down,
                 what: what.into(),
+                lits: enum_lits(db, p.subtype),
             });
             self.ops.push(Op::Range {
                 a: a.r,
@@ -7405,6 +7450,7 @@ impl Lx<'_> {
                 hi: a.hi,
                 down: a.down,
                 what: format!("actual of {what}"),
+                lits: enum_lits(db, st),
             }),
         });
         Ok(Bind::Val(Val::Int(IntV { r: t, ..formal })))
@@ -7496,6 +7542,7 @@ impl Lx<'_> {
                         hi,
                         down: b.dir == Direction::Downto,
                         what: what.into(),
+                        lits: enum_lits(self.db, st),
                     });
                     self.ops.push(Op::Range {
                         a: i.r,
@@ -8084,6 +8131,26 @@ fn subtype_name(db: &Db, st: SubtypeId) -> String {
         Some(n) => n.text.as_str().to_ascii_uppercase(),
         None => db.types[s.base].name.text.as_str().to_ascii_uppercase(),
     }
+}
+
+/// The literals of enumeration subtype `st` as a check message shows them (upper case, a
+/// character literal quoted); `None` for any other type.
+fn enum_lits(db: &Db, st: SubtypeId) -> Option<Box<[Box<str>]>> {
+    let TypeKind::Enum { lits } = &db.types[db.base(st)].kind else {
+        return None;
+    };
+    let name = |d: DeclId| match db.decls[d].name {
+        yavs_sem::decl::Designator::Char(c) => format!("'{c}'"),
+        n => {
+            let n = n.to_string();
+            if n.starts_with('\\') {
+                n
+            } else {
+                n.to_ascii_uppercase()
+            }
+        }
+    };
+    Some(lits.iter().map(|&d| name(d).into()).collect())
 }
 
 /// An object as check messages name it: `variable P`, `signal S`.

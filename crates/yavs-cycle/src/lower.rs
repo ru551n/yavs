@@ -1160,6 +1160,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         return Err("a postponed process".into());
     }
     let mut lx = Lx {
+        reach: Default::default(),
         shared: Default::default(),
         shared_check: Default::default(),
         db,
@@ -1245,6 +1246,8 @@ struct Lx<'a> {
     /// A name is being looked at for its index range only (`name_bounds`): a constant may be
     /// named as if it were a target.
     bounds: bool,
+    /// What `Db::call_reaches` found of the subprograms, for every call inlined (#1187).
+    reach: yavs_sem::stmt::ReachMemo,
     /// The signal formals of the calls inlined so far (`Place::Sig`).
     sigs: Vec<SigFormal>,
     db: &'a Db,
@@ -7225,7 +7228,7 @@ impl Lx<'_> {
         let mut xs = Vec::new();
         // `out` variables that start at their subtype's default, set once every actual is
         // evaluated (LRM 4.2.2.2, 14.6 b) 5), #1184).
-        let (mut defaults, mut defaults_of) = (Vec::new(), Vec::new());
+        let mut defaults = Vec::new();
         for (i, p) in sp.params.iter().enumerate() {
             let what = format!("parameter {}", p.name.text.as_str().to_ascii_uppercase());
             xs.push(
@@ -7259,7 +7262,7 @@ impl Lx<'_> {
             });
         let mut binds = HashMap::new();
         let mut backs = Vec::new();
-        for (p, &x) in sp.params.iter().zip(&xs) {
+        for (i, (p, &x)) in sp.params.iter().zip(&xs).enumerate() {
             let d = p
                 .decl
                 .ok_or_else(|| bug("a parameter without a declaration"))?;
@@ -7318,68 +7321,29 @@ impl Lx<'_> {
                 }
                 self.var_formal(p, sp, d, x, place, &what, &mut backs)?
             };
-            if p.class != ObjClass::Signal
-                && p.mode == Mode::Out
+            if p.class == ObjClass::Variable
+                && p.mode != Mode::In
                 && db.types[db.base(p.subtype)].kind.is_scalar()
-                && !db.assigns_first(sp, p)
             {
-                // By reference, so a body that can name the actual would see the default early.
-                let mut s = sp.scope.and_then(|s| db.scopes[s].parent);
-                while let Some(x) = s {
-                    if matches!(
-                        db.scopes[x].kind,
-                        yavs_sem::scope::ScopeKind::Process
-                            | yavs_sem::scope::ScopeKind::Subprogram
-                            | yavs_sem::scope::ScopeKind::SeqBlock
-                    ) {
-                        return Err(format!(
-                            "an `out` {what} not assigned first, of `{name}` declared inside a \
-                             process or subprogram"
-                        ));
-                    }
-                    s = db.scopes[x].parent;
+                // By reference, where the LRM copies (4.2.2.2): a body or another actual that
+                // reaches the actual would see the new value early (#1187).
+                if let Some(a) = args.iter().find(|a| usize::from(a.formal) == i)
+                    && db.call_reaches(&mut self.reach, sp, args, a, x)
+                {
+                    return Err(format!(
+                        "an `{}` {what} of `{name}` whose actual the call also reaches by \
+                         another name",
+                        if p.mode == Mode::Out { "out" } else { "inout" }
+                    ));
                 }
-                if let Bind::Val(v) = &b {
+                if p.mode == Mode::Out
+                    && !db.assigns_first(sp, p)
+                    && let Bind::Val(v) = &b
+                {
                     defaults.push(v.clone());
-                    defaults_of.push(p.decl);
                 }
             }
             binds.insert(d, b);
-        }
-        // An array or record `in` formal is bound to its actual's words: one naming an object of
-        // an `out` actual would see the default early (`p(a(i), a)`).
-        let names = |x: ExprId| {
-            let mut o = Vec::new();
-            db.walk_expr(x, &mut |y| {
-                if let ExprKind::Obj(d) = db.exprs[y].kind {
-                    o.push(d);
-                }
-            });
-            o
-        };
-        let actual = |q: usize| match args.iter().find(|a| usize::from(a.formal) == q) {
-            Some(yavs_sem::hir::Arg {
-                actual: Actual::Expr(x),
-                ..
-            }) => Some(*x),
-            _ => None,
-        };
-        let outs: Vec<DeclId> = (sp.params.iter().enumerate())
-            .filter(|(_, q)| defaults_of.contains(&q.decl))
-            .filter_map(|(k, _)| actual(k))
-            .flat_map(names)
-            .collect();
-        let seen = (sp.params.iter().enumerate()).any(|(k, q)| {
-            q.mode == Mode::In
-                && q.class != ObjClass::Signal
-                && !db.types[db.base(q.subtype)].kind.is_scalar()
-                && actual(k).is_some_and(|x| names(x).iter().any(|d| outs.contains(d)))
-        });
-        if seen {
-            return Err(format!(
-                "an `out` parameter of `{name}` not assigned first, whose actual an array or \
-                 record `in` parameter also names"
-            ));
         }
         for v in defaults {
             if matches!(&v, Val::Part(p) if p.int.is_some()) {

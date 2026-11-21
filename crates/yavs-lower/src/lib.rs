@@ -546,6 +546,10 @@ pub(crate) struct Cx {
     /// The thunks that create the object of a captured shared variable ([`Lowerer::region_var_init`]).
     #[serde(skip)]
     pub region_inits: HashMap<DeclId, FuncId>,
+    /// What `Db::call_reaches` found of the subprograms of the `Db` that is the key (as
+    /// `named_entities`), for every call lowered (#1187).
+    #[serde(skip)]
+    pub reach: Option<((usize, usize, u64), yavs_sem::stmt::ReachMemo)>,
 }
 
 /// A constant or generic of an enclosing region that a function called during elaboration
@@ -899,6 +903,7 @@ impl<'a> Lowerer<'a> {
                 free_objs: Vec::new(),
                 free_readers: Vec::new(),
                 region_inits: HashMap::default(),
+                reach: None,
             },
             packages: Vec::new(),
             units: Vec::new(),
@@ -1364,6 +1369,7 @@ impl<'a> Lowerer<'a> {
         let mut cx = s.cx;
         // (The `Db` may have grown or changed since: what was found in it goes.)
         cx.named_entities = None;
+        cx.reach = None;
         Lowerer {
             db,
             pb: s.pb,

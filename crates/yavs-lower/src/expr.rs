@@ -4013,109 +4013,124 @@ impl<'a> Fx<'a, '_> {
                     self.check_scalar(v, Some(db.exprs[e].subtype), p.subtype, &param_what(p), es)?;
                     cells.push(v);
                 }
-                Shape::Ref => match self.place(e)? {
-                    // An actual whose subtype may not hold every value of the formal's, that
-                    // nothing but the formal reaches during the call: by reference, its value
-                    // checked against its subtype after the call (LRM 4.2.2.2, #1175).
-                    Place::Scalar { addr, w, st }
-                        if w == self.scalar(p.subtype, es)?.2
-                            && !self.object_within(p.subtype, st)
-                            && self.checked_after(sp, args, a, e) =>
-                    {
-                        if self.out_default(sp, p) {
-                            defaults.push((addr, w, p.subtype, es));
-                        }
-                        if p.mode == yavs_sem::hir::Mode::Inout {
-                            let (_, rt, _) = self.scalar(p.subtype, es)?;
-                            let v = self.load(addr, w, rt);
-                            self.check_inout(v, st, p, sp, es)?;
-                        }
-                        cells.push(addr);
-                        self.writeback.push((
-                            0,
-                            Kept::Check(e),
-                            p.subtype,
-                            format!("actual of {}", param_what(p)),
-                        ));
-                    }
-                    // A narrow array element (4 bytes), or an actual whose subtype may not
-                    // hold every value of the formal's: copy-in/copy-out through a frame
-                    // temporary of the formal's width, as for a logic element below; the
-                    // write-back checks the value against the actual's subtype (LRM 4.2.2.2,
-                    // #1175). So is an `out` actual taking the formal's default that the body
-                    // may reach by another path, which must not see that value (#1184).
-                    Place::Scalar { addr, w, st }
-                        if w != self.scalar(p.subtype, es)?.2
-                            || !self.object_within(p.subtype, st)
-                            || (self.out_default(sp, p) && !self.checked_after(sp, args, a, e)) =>
-                    {
-                        let (_, rt, fw) = self.scalar(p.subtype, es)?;
-                        let off = self.fb.slot(8, 8);
-                        let t = self.addr(Space::Frame(self.depth), off);
-                        if self.out_default(sp, p) {
-                            let v = self.formal_default(p.subtype, es)?;
-                            self.store(t, v, fw);
-                        } else if !self.db.assigns_first(sp, p) {
-                            let v = self.load(addr, w, rt);
-                            self.check_inout(v, st, p, sp, es)?;
-                            self.store(t, v, fw);
-                        }
-                        cells.push(t);
-                        let kept = self.keep(e, Place::Scalar { addr, w, st });
-                        self.writeback.push((
-                            off,
-                            kept,
-                            p.subtype,
-                            format!("actual of {}", param_what(p)),
-                        ));
-                    }
-                    Place::Scalar { addr, w, st } => {
-                        if self.out_default(sp, p) {
-                            defaults.push((addr, w, p.subtype, es));
-                        }
-                        if p.mode == yavs_sem::hir::Mode::Inout
-                            && !self.object_within(st, p.subtype)
+                Shape::Ref => {
+                    // Scalars and access values are passed by copy (LRM 4.2.2.2): by reference
+                    // only where the call reaches the actual through this formal alone (#1187).
+                    let reached =
+                        p.class == ObjClass::Variable && self.call_reaches(sp, args, a, e);
+                    match self.place(e)? {
+                        // An actual whose subtype may not hold every value of the formal's, that
+                        // nothing but the formal reaches during the call: by reference, its value
+                        // checked against its subtype after the call (LRM 4.2.2.2, #1175).
+                        Place::Scalar { addr, w, st }
+                            if w == self.scalar(p.subtype, es)?.2
+                                && !self.object_within(p.subtype, st)
+                                && !reached
+                                && self.checked_after(sp, e) =>
                         {
-                            let (_, rt, _) = self.scalar(p.subtype, es)?;
-                            let v = self.load(addr, w, rt);
-                            self.check_inout(v, st, p, sp, es)?;
+                            if self.out_default(sp, p) {
+                                defaults.push((addr, w, p.subtype, es));
+                            }
+                            if p.mode == yavs_sem::hir::Mode::Inout {
+                                let (_, rt, _) = self.scalar(p.subtype, es)?;
+                                let v = self.load(addr, w, rt);
+                                self.check_inout(v, st, p, sp, es)?;
+                            }
+                            cells.push(addr);
+                            self.writeback.push((
+                                0,
+                                Kept::Check(e),
+                                p.subtype,
+                                format!("actual of {}", param_what(p)),
+                            ));
                         }
-                        cells.push(addr);
-                    }
-                    Place::Logic { data, idx, st } => {
-                        // Copy-in/copy-out through a frame temporary (LRM 6.5.6.2 allows it
-                        // for scalars); the actual is written back after the call.
-                        let off = self.fb.slot(8, 8);
-                        let t = self.addr(Space::Frame(self.depth), off);
-                        if self.out_default(sp, p) {
-                            let v = self.formal_default(p.subtype, es)?;
-                            let (_, _, w) = self.scalar(p.subtype, es)?;
-                            self.store(t, v, w);
-                        } else if !self.db.assigns_first(sp, p) {
-                            let code = self.reg(RegTy::I64);
-                            self.emit(Inst::LGet {
-                                dst: code,
-                                base: data,
-                                idx,
-                            });
-                            let tid = self.ty(db.base(st), es)?;
-                            let bias = self.code_bias(tid);
-                            let v = self.dec(code, bias);
-                            self.check_inout(v, st, p, sp, es)?;
-                            let (_, _, w) = self.scalar(p.subtype, es)?;
-                            self.store(t, v, w);
+                        // A narrow array element (4 bytes), or an actual whose subtype may not
+                        // hold every value of the formal's: copy-in/copy-out through a frame
+                        // temporary of the formal's width, as for a logic element below; the
+                        // write-back checks the value against the actual's subtype (LRM 4.2.2.2,
+                        // #1175). So is an actual the call also reaches by another path, which must
+                        // keep its value until the call returns (#1184, #1187).
+                        Place::Scalar { addr, w, st }
+                            if w != self.scalar(p.subtype, es)?.2
+                                || !self.object_within(p.subtype, st)
+                                || reached
+                                || (self.out_default(sp, p) && !self.checked_after(sp, e)) =>
+                        {
+                            let (_, rt, fw) = self.scalar(p.subtype, es)?;
+                            let off = self.fb.slot(8, 8);
+                            let t = self.addr(Space::Frame(self.depth), off);
+                            if self.out_default(sp, p) {
+                                let v = self.formal_default(p.subtype, es)?;
+                                self.store(t, v, fw);
+                            } else if !self.db.assigns_first(sp, p) {
+                                let v = self.load(addr, w, rt);
+                                self.check_inout(v, st, p, sp, es)?;
+                                self.store(t, v, fw);
+                            } else if rt == RegTy::Handle {
+                                let v = self.int(0);
+                                self.store(t, v, fw);
+                            }
+                            if rt == RegTy::Handle {
+                                // The callee's slot holds only the address: the handle is a root here.
+                                self.fb.root(off, yavs_ir::RootKind::Handle);
+                            }
+                            cells.push(t);
+                            let kept = self.keep(e, Place::Scalar { addr, w, st });
+                            self.writeback.push((
+                                off,
+                                kept,
+                                p.subtype,
+                                format!("actual of {}", param_what(p)),
+                            ));
                         }
-                        cells.push(t);
-                        let kept = self.keep(e, Place::Logic { data, idx, st });
-                        self.writeback.push((
-                            off,
-                            kept,
-                            p.subtype,
-                            format!("actual of {}", param_what(p)),
-                        ));
+                        Place::Scalar { addr, w, st } => {
+                            if self.out_default(sp, p) {
+                                defaults.push((addr, w, p.subtype, es));
+                            }
+                            if p.mode == yavs_sem::hir::Mode::Inout
+                                && !self.object_within(st, p.subtype)
+                            {
+                                let (_, rt, _) = self.scalar(p.subtype, es)?;
+                                let v = self.load(addr, w, rt);
+                                self.check_inout(v, st, p, sp, es)?;
+                            }
+                            cells.push(addr);
+                        }
+                        Place::Logic { data, idx, st } => {
+                            // Copy-in/copy-out through a frame temporary (LRM 6.5.6.2 allows it
+                            // for scalars); the actual is written back after the call.
+                            let off = self.fb.slot(8, 8);
+                            let t = self.addr(Space::Frame(self.depth), off);
+                            if self.out_default(sp, p) {
+                                let v = self.formal_default(p.subtype, es)?;
+                                let (_, _, w) = self.scalar(p.subtype, es)?;
+                                self.store(t, v, w);
+                            } else if !self.db.assigns_first(sp, p) {
+                                let code = self.reg(RegTy::I64);
+                                self.emit(Inst::LGet {
+                                    dst: code,
+                                    base: data,
+                                    idx,
+                                });
+                                let tid = self.ty(db.base(st), es)?;
+                                let bias = self.code_bias(tid);
+                                let v = self.dec(code, bias);
+                                self.check_inout(v, st, p, sp, es)?;
+                                let (_, _, w) = self.scalar(p.subtype, es)?;
+                                self.store(t, v, w);
+                            }
+                            cells.push(t);
+                            let kept = self.keep(e, Place::Logic { data, idx, st });
+                            self.writeback.push((
+                                off,
+                                kept,
+                                p.subtype,
+                                format!("actual of {}", param_what(p)),
+                            ));
+                        }
+                        _ => return Err(self.cx.ice(es, "array place for a scalar parameter")),
                     }
-                    _ => return Err(self.cx.ice(es, "array place for a scalar parameter")),
-                },
+                }
                 Shape::Sig => {
                     let (_, sref, dope) = self.sig_name(e)?;
                     cells.push(sref);
@@ -4278,12 +4293,26 @@ impl<'a> Fx<'a, '_> {
         self.check_scalar(v, Some(st), p.subtype, &param_what(p), span)
     }
 
-    /// Whether `out`/`inout` actual `e` (of argument `arg`) of a call of `sp` can be passed by
-    /// reference and its value checked after the call: nothing but the formal reaches it while
-    /// the call runs, so the value it holds before the check is never seen (#1175). `e` is a
-    /// static name of a variable of a process or subprogram; the callee is declared outside that
-    /// region and does not wait; no other actual of the call names a variable or an alias.
-    fn checked_after(&self, sp: &Subprogram, args: &[Arg], arg: &Arg, e: ExprId) -> bool {
+    /// `Db::call_reaches` with the answers kept for the whole lowering (`Cx::reach`).
+    fn call_reaches(&mut self, sp: &Subprogram, args: &[Arg], arg: &Arg, e: ExprId) -> bool {
+        let db = self.db;
+        let key = (
+            std::ptr::from_ref(db) as usize,
+            db.exprs.len(),
+            db.exprs.version(),
+        );
+        let memo = match &mut self.cx.reach {
+            Some((k, m)) if *k == key => m,
+            r => &mut r.insert((key, Default::default())).1,
+        };
+        db.call_reaches(memo, sp, args, arg, e)
+    }
+
+    /// Whether `out`/`inout` actual `e` of a call of `sp`, which the call reaches through its
+    /// formal alone (`Db::call_reaches`), can be passed by reference and its value checked after
+    /// the call: the value it holds before the check is never seen (#1175). `e` is a static name
+    /// of a variable of a process or subprogram and the callee does not wait.
+    fn checked_after(&self, sp: &Subprogram, e: ExprId) -> bool {
         let db = self.db;
         let Some(yavs_sem::hir::Lsp {
             root: yavs_sem::hir::ObjRoot::Decl(d),
@@ -4292,44 +4321,21 @@ impl<'a> Fx<'a, '_> {
         else {
             return false;
         };
-        let region = db.decls[d].scope;
         let local = matches!(&db.decls[d].kind, DeclKind::Object(o)
             if o.class == ObjClass::Variable && o.role == ObjRole::Plain)
             && matches!(
-                db.scopes[region].kind,
+                db.scopes[db.decls[d].scope].kind,
                 ScopeKind::Process | ScopeKind::Subprogram | ScopeKind::SeqBlock
             );
-        let quiet = match &sp.body {
-            Body::Hir { .. } => sp
-                .scope
-                .and_then(|s| db.scopes[s].owner)
-                .is_some_and(|o| db.procedure_waits(o).is_none()),
-            Body::Native(_) | Body::Implicit(_) => true,
-            _ => false,
-        };
-        if !local || !quiet {
-            return false;
-        }
-        let mut s = sp.scope;
-        while let Some(x) = s {
-            if x == region {
-                return false;
+        local
+            && match &sp.body {
+                Body::Hir { .. } => sp
+                    .scope
+                    .and_then(|s| db.scopes[s].owner)
+                    .is_some_and(|o| db.procedure_waits(o).is_none()),
+                Body::Native(_) | Body::Implicit(_) => true,
+                _ => false,
             }
-            s = db.scopes[x].parent;
-        }
-        args.iter().all(|b| match &b.actual {
-            _ if std::ptr::eq(b, arg) => true,
-            Actual::Expr(x) => {
-                let mut hit = false;
-                db.walk_expr(*x, &mut |y| {
-                    hit |= matches!(db.exprs[y].kind, ExprKind::Obj(o)
-                        if o == d || matches!(db.decls[o].kind, DeclKind::Alias(_)));
-                });
-                !hit
-            }
-            Actual::Default | Actual::Open => true,
-            _ => false,
-        })
     }
 
     /// Whether scalar `out` formal `p` of `sp` starts at its subtype's default value, not

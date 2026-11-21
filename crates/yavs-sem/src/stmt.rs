@@ -35,6 +35,15 @@ use crate::lsp::NameRoot;
 use crate::scope::ScopeKind;
 use crate::types::{BoundsFrom, RangeC, Resolution};
 
+/// The answers of [`Db::call_reaches`] that do not depend on the call: kept by a lowering for
+/// all its calls, since a library's call graph is walked again at every call otherwise.
+#[derive(Default)]
+pub struct ReachMemo {
+    names: rustc_hash::FxHashMap<(DeclId, DeclId), bool>,
+    closed: rustc_hash::FxHashMap<DeclId, bool>,
+    into: rustc_hash::FxHashMap<(DeclId, ScopeId), bool>,
+}
+
 /// What contains the sequential statements being analyzed.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Owner {
@@ -672,6 +681,522 @@ impl Db {
         self.scopes[*scope].order.iter().all(
             |&d| matches!(&self.decls[d].kind, DeclKind::Object(o) if o.role == ObjRole::Param),
         ) && self.definitely_assigns(stmts, f) == Some(true)
+    }
+
+    /// Whether a call of `sp` with `args` may reach the object at the root of `e`, the actual of
+    /// the `out` or `inout` variable argument `arg`, other than through that formal: another
+    /// actual passed by reference names it, or a body the call can run names it. Passing `e` by
+    /// reference would then show the body a value the LRM's copy keeps from the actual until the
+    /// call returns (4.2.2.2: scalars and access values are passed by copy; #1187). Only a body
+    /// declared inside the region of a variable (or scalar parameter) of a process or subprogram
+    /// can name it; any other root, a shared variable, a dereference or an external name, is
+    /// reached by every body. Native, predefined and foreign bodies name nothing. True for what
+    /// is not analysed.
+    pub fn call_reaches(
+        &self,
+        memo: &mut ReachMemo,
+        sp: &crate::decl::Subprogram,
+        args: &[Arg],
+        arg: &Arg,
+        e: ExprId,
+    ) -> bool {
+        let root = match self.name_root(e) {
+            Some(NameRoot::Obj(ObjRoot::Decl(d))) => Some(d),
+            _ => None,
+        };
+        // A name reaches the part of its root object its longest static prefix may denote
+        // (`t.a` does not reach `t.b`); a name through a dereference reaches the designated
+        // object, not the access variable (`write(l, l.all)`); a conversion or qualified
+        // expression may pass its operand on; any other expression (`l.all & "x"`) is a new
+        // value made before the call.
+        let mine = self.lsp(e);
+        let names = |mut x: ExprId| {
+            while let ExprKind::Conv { operand, .. }
+            | ExprKind::ImplicitConv { operand }
+            | ExprKind::Qualified { operand, .. } = &self.exprs[x].kind
+            {
+                x = *operand;
+            }
+            root.is_some_and(|d| {
+                self.name_root(x) == Some(NameRoot::Obj(ObjRoot::Decl(d)))
+                    && match (&mine, self.lsp(x)) {
+                        (Some(a), Some(b)) => self.overlap(a, &b) != crate::lsp::Overlap::No,
+                        _ => true,
+                    }
+            })
+        };
+        // An `out` formal the body assigns on every path before naming it takes no value in:
+        // the actual may be read, by any name, until the body assigns the formal (#1187).
+        let early = sp
+            .params
+            .get(usize::from(arg.formal))
+            .and_then(|p| self.assigns_first(sp, p).then_some(p.decl).flatten());
+        // The composite `in` formals whose actual overlaps this one: they may be read only
+        // before that, too.
+        let mut via = Vec::new();
+        let other = args.iter().filter(|b| !std::ptr::eq(*b, arg)).any(|b| {
+            let Some(q) = sp.params.get(usize::from(b.formal)) else {
+                return true;
+            };
+            // A scalar or access `in` value is taken before the body runs; a signal is not a
+            // variable.
+            if q.class == ObjClass::Signal
+                || (q.mode == Mode::In
+                    && !matches!(
+                        self.types[self.base(q.subtype)].kind,
+                        crate::types::TypeKind::Array { .. }
+                            | crate::types::TypeKind::Record { .. }
+                    ))
+            {
+                return false;
+            }
+            let hit = match &b.actual {
+                crate::hir::Actual::Expr(x) => names(*x),
+                crate::hir::Actual::Default => q.default.is_some_and(names),
+                crate::hir::Actual::Open => false,
+                _ => true,
+            };
+            match (hit, early, q.mode, q.decl) {
+                (true, Some(_), Mode::In, Some(v)) => {
+                    via.push(v);
+                    false
+                }
+                _ => hit,
+            }
+        });
+        if other {
+            return true;
+        }
+        let crate::decl::Body::Hir { scope, .. } = &sp.body else {
+            // A foreign body is outside the LRM's rule ("a nonforeign subprogram") and names
+            // no VHDL object.
+            return !matches!(
+                sp.body,
+                crate::decl::Body::Native(_)
+                    | crate::decl::Body::Implicit(_)
+                    | crate::decl::Body::Foreign(_)
+            );
+        };
+        let Some(d) = root else { return true };
+        let Some(callee) = self.scopes[*scope].owner else {
+            return true;
+        };
+        let local = match &self.decls[d].kind {
+            DeclKind::Object(o) => {
+                o.class == ObjClass::Variable
+                    && (o.role == ObjRole::Plain
+                        || (o.role == ObjRole::Param
+                            && !matches!(
+                                self.types[self.base(o.subtype)].kind,
+                                crate::types::TypeKind::Array { .. }
+                                    | crate::types::TypeKind::Record { .. }
+                            )))
+            }
+            _ => false,
+        };
+        let region = self.decls[d].scope;
+        // Whether an argument has a type of `kinds`: a protected object can lead to the state
+        // of its type, an access value to an object a parameter may stand for.
+        let takes = |access: bool| {
+            args.iter().any(|b| {
+                sp.params.get(usize::from(b.formal)).is_none_or(|q| {
+                    match self.types[self.base(q.subtype)].kind {
+                        crate::types::TypeKind::Protected { .. } => true,
+                        crate::types::TypeKind::Access { .. } => access,
+                        _ => false,
+                    }
+                })
+            })
+        };
+        let plain = matches!(&self.decls[d].kind, DeclKind::Object(o)
+            if o.class == ObjClass::Variable && o.role == ObjRole::Plain);
+        // The region of a protected type's declaration, with its body inside.
+        let protected = self.scopes[region]
+            .parent
+            .filter(|&p| self.scopes[p].kind == ScopeKind::Protected);
+        // A variable of a process, subprogram or sequential block (or a scalar parameter) is
+        // named only inside its region; the state of a protected type is named only inside the
+        // type, and reached from outside only through a call of one of its methods.
+        let (region, outside) = match (self.scopes[region].kind, protected) {
+            (ScopeKind::Process | ScopeKind::Subprogram | ScopeKind::SeqBlock, _) if local => {
+                (region, false)
+            }
+            (ScopeKind::ProtectedBody, Some(p)) if plain => (p, true),
+            _ => {
+                // Any other object (a part of an array or record parameter, a shared variable)
+                // is reached unless the call names nothing outside its own bodies, does not wait
+                // (another process could read a shared variable) and takes no access value or
+                // protected object that could lead to it.
+                return !via.is_empty()
+                    || takes(true)
+                    || self.procedure_waits(callee).is_some()
+                    || !self.closed_memo(memo, callee);
+            }
+        };
+        let seen = &mut FxHashSet::default();
+        match (early, &sp.body) {
+            (Some(f), crate::decl::Body::Hir { stmts, .. }) => {
+                !self.read_first(memo, stmts, f, d, &via, (region, outside), &mut false, seen)
+            }
+            _ => match memo.names.get(&(callee, d)) {
+                Some(&r) => r,
+                None => {
+                    let r = self.body_names(memo, callee, d, (region, outside), seen);
+                    memo.names.insert((callee, d), r);
+                    r
+                }
+            },
+        }
+    }
+
+    /// The expressions a call of `sp` can evaluate (statements, declarations and their
+    /// constraints, alias targets, parameter defaults) and the subprograms its statements call
+    /// by procedure call statements; `None` for a body or declaration not analysed (not a VHDL
+    /// body, a nested package, a protected type).
+    fn body_exprs(&self, sp: &crate::decl::Subprogram) -> Option<(Vec<ExprId>, Vec<DeclId>)> {
+        let crate::decl::Body::Hir { scope, stmts } = &sp.body else {
+            return None;
+        };
+        let mut exprs: Vec<ExprId> = sp.params.iter().filter_map(|p| p.default).collect();
+        let mut scopes = vec![*scope];
+        let mut calls = Vec::new();
+        let mut stack = stmts.to_vec();
+        while let Some(s) = stack.pop() {
+            self.stmt_exprs(s, &mut |x, _| exprs.push(x));
+            match &self.stmts[s].kind {
+                StmtKind::ProcCall(c) => calls.push(c.callee),
+                StmtKind::SeqBlock { scope, .. } => scopes.push(*scope),
+                _ => {}
+            }
+            stack.extend(self.stmt_children(s));
+        }
+        for sc in scopes {
+            for &x in &self.scopes[sc].order {
+                let sub = |st: SubtypeId, out: &mut Vec<ExprId>| {
+                    self.subtype_exprs(st, &mut |x| out.push(x))
+                };
+                match &self.decls[x].kind {
+                    DeclKind::Object(o) => {
+                        exprs.extend(o.default);
+                        if let Some((a, b)) = o.file_open {
+                            exprs.extend(a);
+                            exprs.push(b);
+                        }
+                        sub(o.subtype, &mut exprs);
+                    }
+                    DeclKind::Alias(crate::decl::Alias::Object { target, .. }) => {
+                        exprs.push(*target)
+                    }
+                    DeclKind::Subtype(st) => sub(*st, &mut exprs),
+                    DeclKind::Type(t) => {
+                        let td = &self.types[*t];
+                        sub(td.first_subtype, &mut exprs);
+                        match &td.kind {
+                            crate::types::TypeKind::Array { indexes, elem } => {
+                                indexes.iter().for_each(|&i| sub(i, &mut exprs));
+                                sub(*elem, &mut exprs);
+                            }
+                            crate::types::TypeKind::Record { elems } => {
+                                elems.iter().for_each(|r| sub(r.subtype, &mut exprs));
+                            }
+                            crate::types::TypeKind::Protected { .. }
+                            | crate::types::TypeKind::Incomplete { .. }
+                            | crate::types::TypeKind::Generic { .. }
+                            | crate::types::TypeKind::Error => return None,
+                            _ => {}
+                        }
+                    }
+                    DeclKind::Package { .. }
+                    | DeclKind::PackageInst(_)
+                    | DeclKind::GenericPackage(_)
+                    | DeclKind::Library(_)
+                    | DeclKind::Unit(_)
+                    | DeclKind::Error => return None,
+                    _ => {}
+                }
+            }
+        }
+        Some((exprs, calls))
+    }
+
+    /// Whether a call of `f` names no variable outside its own bodies: not in `f` or a
+    /// subprogram it calls, through an alias, an external name or a 2019 private variable. A
+    /// pure function names none (LRM 4.1), unless it is a method, which reads its object's state;
+    /// native and predefined bodies name none.
+    fn closed(&self, f: DeclId, seen: &mut FxHashSet<DeclId>) -> bool {
+        let f = self.entity(f);
+        if !seen.insert(f) {
+            return true;
+        }
+        let Some(sp) = self.decls[f].kind.subprogram() else {
+            return false;
+        };
+        if matches!(
+            sp.body,
+            crate::decl::Body::Native(_) | crate::decl::Body::Implicit(_)
+        ) || (matches!(sp.kind, SubprogramKind::Function { pure: true })
+            && !sp.impure_reads
+            && !matches!(
+                self.scopes[self.decls[f].scope].kind,
+                ScopeKind::Protected | ScopeKind::ProtectedBody
+            ))
+        {
+            return true;
+        }
+        let (Some((exprs, mut calls)), crate::decl::Body::Hir { scope: body, .. }) =
+            (self.body_exprs(sp), &sp.body)
+        else {
+            return false;
+        };
+        // The body's region, or the region of the parameters of a separate declaration.
+        let inside = |mut x: ScopeId| loop {
+            if x == *body || Some(x) == sp.scope {
+                return true;
+            }
+            match self.scopes[x].parent {
+                Some(p) => x = p,
+                None => return false,
+            }
+        };
+        let mut open = false;
+        for x in exprs {
+            self.walk_expr(x, &mut |y| match &self.exprs[y].kind {
+                ExprKind::Obj(_) | ExprKind::External(_) => {
+                    open |= match self.name_root(y) {
+                        Some(NameRoot::Obj(ObjRoot::Decl(o))) => {
+                            matches!(&self.decls[o].kind, DeclKind::Object(ob)
+                                if matches!(ob.class, ObjClass::Variable | ObjClass::SharedVariable))
+                                && !inside(self.decls[o].scope)
+                        }
+                        Some(NameRoot::Obj(ObjRoot::External(_))) => true,
+                        _ => false,
+                    }
+                }
+                ExprKind::PrivateVar { .. } => open = true,
+                ExprKind::Call { callee, .. } => calls.push(*callee),
+                _ => {}
+            });
+            if open {
+                return false;
+            }
+        }
+        calls.into_iter().all(|c| self.closed(c, seen))
+    }
+
+    /// Whether `stmts` reach variable `d` of `region` (or read a formal of `via`) only before
+    /// they assign `out` formal `f` whole (`assigned` once they did on some path): the body of
+    /// an `assigns_first` procedure, whose actual keeps its value until then. A loop or any
+    /// other statement around an assignment of `f` is taken as reaching it.
+    #[allow(clippy::too_many_arguments)]
+    fn read_first(
+        &self,
+        memo: &mut ReachMemo,
+        stmts: &[StmtId],
+        f: DeclId,
+        d: DeclId,
+        via: &[DeclId],
+        region: (ScopeId, bool),
+        assigned: &mut bool,
+        seen: &mut FxHashSet<DeclId>,
+    ) -> bool {
+        for &s in stmts {
+            if *assigned {
+                if self.stmt_reaches(memo, s, d, via, region, seen) {
+                    return false;
+                }
+                continue;
+            }
+            let mut branches = |bodies: &mut dyn Iterator<Item = &[StmtId]>| {
+                let mut any = false;
+                for b in bodies {
+                    let mut a = false;
+                    if !self.read_first(memo, b, f, d, via, region, &mut a, seen) {
+                        return None;
+                    }
+                    any |= a;
+                }
+                Some(any)
+            };
+            let any = match &self.stmts[s].kind {
+                StmtKind::VarAssign { target, .. } if self.is_obj(target.expr, f) => Some(true),
+                StmtKind::If {
+                    branches: bs,
+                    else_,
+                } => branches(&mut bs.iter().map(|(_, b)| &b[..]).chain(else_.as_deref())),
+                StmtKind::Case { alts, .. } => branches(&mut alts.iter().map(|(_, b)| &b[..])),
+                _ => {
+                    // Nothing below may assign `f`: a loop that does is not followed.
+                    let mut stack = self.stmt_children(s);
+                    let mut hit = false;
+                    while let Some(x) = stack.pop() {
+                        hit |= matches!(&self.stmts[x].kind,
+                            StmtKind::VarAssign { target, .. } if self.is_obj(target.expr, f));
+                        stack.extend(self.stmt_children(x));
+                    }
+                    (!hit).then_some(false)
+                }
+            };
+            match any {
+                None => return false,
+                Some(a) => *assigned |= a,
+            }
+        }
+        true
+    }
+
+    /// Whether statement `s` (with what it contains) names variable `d` or a formal of `via`, or
+    /// calls a subprogram of `region` that names `d`.
+    fn stmt_reaches(
+        &self,
+        memo: &mut ReachMemo,
+        s: StmtId,
+        d: DeclId,
+        via: &[DeclId],
+        region: (ScopeId, bool),
+        seen: &mut FxHashSet<DeclId>,
+    ) -> bool {
+        let mut stack = vec![s];
+        let (mut hit, mut calls) = (false, Vec::new());
+        while let Some(x) = stack.pop() {
+            if let StmtKind::ProcCall(c) = &self.stmts[x].kind {
+                calls.push(c.callee);
+            }
+            hit |= matches!(self.stmts[x].kind, StmtKind::SeqBlock { .. });
+            self.stmt_exprs(x, &mut |e, _| {
+                self.walk_expr(e, &mut |y| {
+                    hit |= self.names_obj(y, d) || via.iter().any(|&v| self.names_obj(y, v));
+                    if let ExprKind::Call { callee, .. } = &self.exprs[y].kind {
+                        calls.push(*callee);
+                    }
+                })
+            });
+            stack.extend(self.stmt_children(x));
+        }
+        hit || calls
+            .into_iter()
+            .any(|c| self.body_names(memo, c, d, region, seen))
+    }
+
+    /// Whether subprogram `f`, or a subprogram it calls, names variable `d` of `region` (also
+    /// through an alias): only one declared inside `region` can. True for a body or declaration
+    /// it does not analyse (an instance, a formal subprogram, a nested package, a protected type).
+    fn body_names(
+        &self,
+        memo: &mut ReachMemo,
+        f: DeclId,
+        d: DeclId,
+        (region, outside): (ScopeId, bool),
+        seen: &mut FxHashSet<DeclId>,
+    ) -> bool {
+        let f = self.entity(f);
+        let mut s = Some(self.decls[f].scope);
+        while s.is_some_and(|x| x != region) {
+            s = s.and_then(|x| self.scopes[x].parent);
+        }
+        if !seen.insert(f) {
+            return false;
+        }
+        if s.is_none() {
+            // Declared outside: it cannot name `d`; with `outside` (protected state) it must not
+            // call back into the type either.
+            return outside && self.calls_into_memo(memo, f, region);
+        }
+        let Some(sp) = self.decls[f].kind.subprogram() else {
+            return true;
+        };
+        if matches!(
+            sp.body,
+            crate::decl::Body::Native(_) | crate::decl::Body::Implicit(_)
+        ) {
+            return false;
+        }
+        let Some((exprs, mut calls)) = self.body_exprs(sp) else {
+            return true;
+        };
+        let mut hit = false;
+        for x in exprs {
+            self.walk_expr(x, &mut |y| {
+                hit |= self.names_obj(y, d);
+                if let ExprKind::Call { callee, .. } = &self.exprs[y].kind {
+                    calls.push(*callee);
+                }
+            });
+            if hit {
+                return true;
+            }
+        }
+        calls
+            .into_iter()
+            .any(|c| self.body_names(memo, c, d, (region, outside), seen))
+    }
+
+    /// [`Db::closed`] of `f` on its own, kept in `memo`.
+    fn closed_memo(&self, memo: &mut ReachMemo, f: DeclId) -> bool {
+        if let Some(&r) = memo.closed.get(&f) {
+            return r;
+        }
+        let r = self.closed(f, &mut FxHashSet::default());
+        memo.closed.insert(f, r);
+        r
+    }
+
+    /// [`Db::calls_into`] of `f` on its own, kept in `memo`.
+    fn calls_into_memo(&self, memo: &mut ReachMemo, f: DeclId, region: ScopeId) -> bool {
+        if let Some(&r) = memo.into.get(&(f, region)) {
+            return r;
+        }
+        let r = self.calls_into(f, region, &mut FxHashSet::default());
+        memo.into.insert((f, region), r);
+        r
+    }
+
+    /// Whether a call of `f` may call a subprogram declared inside `region` (a method of a
+    /// protected type), through any body it reaches. True for a body it does not analyse.
+    fn calls_into(&self, f: DeclId, region: ScopeId, seen: &mut FxHashSet<DeclId>) -> bool {
+        let f = self.entity(f);
+        let mut s = Some(self.decls[f].scope);
+        while let Some(x) = s {
+            if x == region {
+                return true;
+            }
+            s = self.scopes[x].parent;
+        }
+        if !seen.insert(f) {
+            return false;
+        }
+        let Some(sp) = self.decls[f].kind.subprogram() else {
+            return true;
+        };
+        if matches!(
+            sp.body,
+            crate::decl::Body::Native(_) | crate::decl::Body::Implicit(_)
+        ) {
+            return false;
+        }
+        let Some((exprs, mut calls)) = self.body_exprs(sp) else {
+            return true;
+        };
+        for x in exprs {
+            self.walk_expr(x, &mut |y| {
+                if let ExprKind::Call { callee, .. } = &self.exprs[y].kind {
+                    calls.push(*callee);
+                }
+            });
+        }
+        calls.into_iter().any(|c| self.calls_into(c, region, seen))
+    }
+
+    /// Whether expression node `y` names object `d`: the object, an alias of a part of it, or
+    /// an attribute of it.
+    fn names_obj(&self, y: ExprId, d: DeclId) -> bool {
+        match &self.exprs[y].kind {
+            ExprKind::Obj(_) => self.name_root(y) == Some(NameRoot::Obj(ObjRoot::Decl(d))),
+            ExprKind::Attr {
+                prefix: crate::hir::AttrPrefix::Entity(o),
+                ..
+            } => *o == d,
+            _ => false,
+        }
     }
 
     /// Conservative definite assignment of variable `f` through `stmts`: `Some(true)` when every

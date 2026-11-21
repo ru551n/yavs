@@ -1,0 +1,37 @@
+exit	0
+diag	note	0	0	:scalar_param_copy:_p0	first v=5
+diag	note	0	0	:scalar_param_copy:_p0	after first v=1
+diag	note	0	0	:scalar_param_copy:_p0	paths v=1
+diag	note	0	0	:scalar_param_copy:_p0	after paths v=2
+diag	note	0	0	:scalar_param_copy:_p0	incr v=2
+diag	note	0	0	:scalar_param_copy:_p0	after incr v=12
+diag	note	0	0	:scalar_param_copy:_p0	by_proc v=12
+diag	note	0	0	:scalar_param_copy:_p0	after by_proc v=20
+diag	note	0	0	:scalar_param_copy:_p0	by_func v=20
+diag	note	0	0	:scalar_param_copy:_p0	after by_func v=21
+diag	note	0	0	:scalar_param_copy:_p0	by_decl v=21
+diag	note	0	0	:scalar_param_copy:_p0	after by_decl v=22
+diag	note	0	0	:scalar_param_copy:_p0	by_default v=22
+diag	note	0	0	:scalar_param_copy:_p0	after by_default v=23
+diag	note	0	0	:scalar_param_copy:_p0	by_alias v=23
+diag	note	0	0	:scalar_param_copy:_p0	after by_alias v=24
+diag	note	0	0	:scalar_param_copy:_p0	through_array arr(0)=2
+diag	note	0	0	:scalar_param_copy:_p0	after through_array r(0)=1
+diag	note	0	0	:scalar_param_copy:_p0	elem r(i)=3
+diag	note	0	0	:scalar_param_copy:_p0	after elem r(i)=9
+diag	note	0	0	:scalar_param_copy:_p0	deref p.all=29
+diag	note	0	0	:scalar_param_copy:_p0	after deref p.all=30
+diag	note	0	0	:scalar_param_copy:_p0	acc q.all=40
+diag	note	0	0	:scalar_param_copy:_p0	after acc q.all=41
+diag	note	0	0	:scalar_param_copy:_p0	inner lv=50
+diag	note	0	0	:scalar_param_copy:_p0	after inner lv=51
+diag	note	0	0	:scalar_param_copy:_p0	inner2 y=60
+diag	note	0	0	:scalar_param_copy:_p0	after inner2 y=61
+diag	note	0	0	:scalar_param_copy:_p0	after pass_on v=61
+diag	note	0	0	:scalar_param_copy:_p0	after plain v=62
+diag	note	0	0	:scalar_param_copy:_p0	range_after k=62
+diag	note	0	0	:scalar_param_copy:_p0	case_after old v
+diag	note	0	0	:scalar_param_copy:_p0	after read_before v=72
+diag	note	0	0	:scalar_param_copy:_p0	rec inner r.a=70
+diag	note	0	0	:scalar_param_copy:_p0	rec after inner r.a=75
+diag	note	0	0	:scalar_param_copy:_p0	rec after two r.a=76 r.b=73

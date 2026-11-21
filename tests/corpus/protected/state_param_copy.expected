@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:state_param_copy:_p0	add n=1
+diag	note	0	0	:state_param_copy:_p0	after add n=2
+diag	note	0	0	:state_param_copy:_p0	helper peek=1
+diag	note	0	0	:state_param_copy:_p0	after helper n=101
+diag	note	0	0	:state_param_copy:_p0	after add_only n=1101

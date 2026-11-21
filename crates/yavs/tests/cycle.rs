@@ -8077,9 +8077,10 @@ fn the_rail_knob_names_its_values() {
 }
 
 /// A scalar `out` variable parameter starts at its subtype's `'left` in cycle mode as in the
-/// normal mode (#1184); one of a procedure declared in the process, which can name the actual
-/// and must see its old value, or whose actual an array `in` parameter also names, keeps that
-/// process in the event kernel, unless the body assigns it on every path before reading it.
+/// normal mode (#1184). A scalar `out` or `inout` actual that the body names (a procedure
+/// declared in the process) or that an array `in` actual also names keeps the process in the
+/// event kernel, since cycle mode binds it by reference and the LRM copies it (#1187), unless
+/// the body assigns the `out` formal on every path and reaches the actual only before that.
 #[test]
 fn an_out_parameter_starts_at_its_default_in_cycle_mode() {
     let dir = tempdir("cycle-out-default");
@@ -8093,7 +8094,7 @@ fn an_out_parameter_starts_at_its_default_in_cycle_mode() {
          \x20   if a(0) = '1' then x := '1'; end if;\n  end procedure;\n\
          \x20 procedure pk2 (x : out std_ulogic; a : in std_ulogic_vector) is\n  begin\n\
          \x20   if a(0) = '1' then x := '1'; else x := '0'; end if;\n  end procedure;\n\
-         \x20 signal clk : std_ulogic := '0';\n  signal o1, o2, o4 : natural;\n  signal o3, o5 : std_ulogic;\nbegin\n\
+         \x20 signal clk : std_ulogic := '0';\n  signal o1, o2, o4, o6, o7 : natural;\n  signal o3, o5 : std_ulogic;\nbegin\n\
          \x20 p : process (clk)\n    variable v : natural := 5;\n  begin\n\
          \x20   if rising_edge(clk) then\n      v := 5;\n      none(v);\n      o1 <= v;\n\
          \x20   end if;\n  end process;\n\
@@ -8112,12 +8113,23 @@ fn an_out_parameter_starts_at_its_default_in_cycle_mode() {
          \x20   if rising_edge(clk) then\n      z := 5;\n      both(z);\n      o4 <= z;\n\
          \x20     brr := \"11\";\n      pk2(brr(0), brr);\n      o5 <= brr(0);\n\
          \x20   end if;\n  end process;\n\
+         \x20 s : process (clk)\n    variable m, seen_m : natural := 5;\n\
+         \x20   procedure bump (x : inout natural) is\n    begin\n\
+         \x20     x := x + 1;\n      seen_m := m;\n    end procedure;\n  begin\n\
+         \x20   if rising_edge(clk) then\n      m := 5;\n      bump(m);\n      o6 <= seen_m;\n\
+         \x20   end if;\n  end process;\n\
+         \x20 t : process (clk)\n    variable n, seen_n : natural := 5;\n\
+         \x20   procedure late (x : out natural) is\n    begin\n\
+         \x20     x := 1;\n      seen_n := n;\n    end procedure;\n  begin\n\
+         \x20   if rising_edge(clk) then\n      n := 5;\n      late(n);\n      o7 <= seen_n;\n\
+         \x20   end if;\n  end process;\n\
          \x20 tb : process\n  begin\n\
          \x20   for i in 1 to 2 loop\n      clk <= '1';\n      wait for 5 ns;\n\
          \x20     clk <= '0';\n      wait for 5 ns;\n\
          \x20     report \"o1=\" & integer'image(o1) & \" o2=\" & integer'image(o2)\n\
          \x20       & \" o3=\" & std_ulogic'image(o3) & \" o4=\" & integer'image(o4)\n\
-         \x20       & \" o5=\" & std_ulogic'image(o5);\n\
+         \x20       & \" o5=\" & std_ulogic'image(o5) & \" o6=\" & integer'image(o6)\n\
+         \x20       & \" o7=\" & integer'image(o7);\n\
          \x20   end loop;\n    wait;\n  end process;\nend architecture;\n",
     );
     for t in tiers() {
@@ -8125,16 +8137,24 @@ fn an_out_parameter_starts_at_its_default_in_cycle_mode() {
         let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_outdef");
         assert_eq!(normal.len(), 2, "{t:?} {normal:?}");
         assert!(
-            normal[1].ends_with("o1=0 o2=1 o3='1' o4=1 o5='1'"),
+            normal[1].ends_with("o1=0 o2=1 o3='1' o4=1 o5='1' o6=5 o7=5"),
             "{t:?} {normal:?}"
         );
         assert_eq!(cycle, normal, "{t:?}\n{err}");
         assert!(
-            err.contains("E4101 an `out` parameter X not assigned first, of `seen` declared"),
+            err.contains("E4101 an `out` parameter X of `seen` whose actual the call also"),
             "{err}"
         );
         assert!(
-            err.contains("E4101 an `out` parameter of `pk` not assigned first, whose actual"),
+            err.contains("E4101 an `out` parameter X of `pk` whose actual the call also"),
+            "{err}"
+        );
+        assert!(
+            err.contains("E4101 an `inout` parameter X of `bump` whose actual the call also"),
+            "{err}"
+        );
+        assert!(
+            err.contains("E4101 an `out` parameter X of `late` whose actual the call also"),
             "{err}"
         );
         assert!(!err.contains("`both`") && !err.contains("`pk2`"), "{err}");

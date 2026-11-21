@@ -67,6 +67,13 @@ yavs, with what to do about each.
      - Assign every ``out`` parameter on every path, or make it ``inout`` if the procedure needs
        the value passed in. A design that passed on another simulator may have relied on the
        parameter keeping the variable's value.
+   * - A procedure that assigns a scalar ``out`` or ``inout`` variable parameter and then reads
+       the variable passed to it by its own name (a procedure declared in the same process or
+       subprogram, or through a procedure, function or alias that names it)
+     - The variable keeps its old value until the call returns, as the standard says: scalar and
+       access parameters are passed by copy.
+     - Read the parameter, not the variable, to see the new value. A design that passed on
+       another simulator may have seen the new value early.
    * - A procedure that drives a value outside the subtype of the signal passed to it through an
        ``out`` or ``inout`` signal parameter: ``o <= 10`` with a signal of ``integer range 0 to 9``
      - Error ``E3009`` at the assignment in the procedure: the formal stands for the signal, so

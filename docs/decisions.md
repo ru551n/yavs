@@ -2018,16 +2018,52 @@ which tools/difftest parses.
   conversion already started at `'left`. `Db::assigns_first` (yavs-sem) is the one test of a
   body that assigns first, used by both modes.
 - **Cycle mode** (`yavs-cycle`, `Lx::formals`): the formal is still bound by reference and
-  takes the default once every actual is evaluated. A procedure declared inside a process or
-  subprogram, which can name the actual, keeps the calling process in the event kernel (`E4101`
-  "an `out` parameter X not assigned first, of `p` declared inside a process or subprogram"), and
-  so does a call where an array or record `in` actual names an object of such an `out` actual
-  (`p(a(i), a)`), which is bound to the same words.
+  takes the default once every actual is evaluated. A call that reaches the actual by another
+  name keeps the calling process in the event kernel (#1187 below).
 - **Not changed:** array and record `out` formals keep the actual's value on entry, as both
   reference simulators do. 4.2.2.2 lets them pass by reference ("every use of the formal
   parameter (to read or update its value) be treated as a use of the associated actual
   parameter") and makes a description erroneous "if its effect depends on which mechanism is
   selected", while NOTE 2 initializes them by type: open for the maintainer.
+
+## A scalar `out` or `inout` actual the call reaches by another name is copied (agent, 2026-11-21, #1187)
+
+- **Decision:** follow the LRM. 4.2.2.2: "For a nonforeign subprogram having a parameter whose
+  type is a scalar type or an access type, the parameter is passed by copy", so a body that reads
+  the actual by its own name (a procedure declared in the process), through a procedure or
+  function it calls, an alias or another actual sees the old value until the call returns. sim2
+  agrees; sim1 passes these by reference (catalogue `scalar-param-copy-observed`, lrm-checks L193).
+- **How:** `Db::call_reaches` (yavs-sem, beside `Db::assigns_first`) is the one test, used by the
+  lowering (`Fx::cells`, every tier) and cycle mode. By reference only where the actual's root is
+  a variable, or a scalar parameter, of a process, subprogram or sequential block; no other actual
+  passed by reference (composite, `out`, `inout`) names it; and no body the call can run names
+  it: only a subprogram declared inside that region can, so the walk starts only for such a
+  callee and follows only calls of such subprograms (statements, declarations, constraints,
+  alias targets, parameter defaults). An instance, a formal subprogram, a nested package or a
+  protected type there counts as naming it. A native or predefined callee needs only the actual
+  test (a name through a dereference reaches the designated object, not the access variable:
+  `write(l, l.all)` keeps its address; a value made from it, `l.all & "x"`, is no name). The
+  state of a protected type is named only inside the type and reached from outside only through
+  a call of one of its methods: by reference unless a subprogram of the type the call runs names
+  it, or a subprogram declared outside calls back into the type (`Db::calls_into`, through every
+  body it reaches); a state seed given to a random procedure of the package keeps its address.
+  Another root (a part of an array or record parameter, a shared variable) is passed by
+  reference only to a callee that names no variable outside its own bodies through everything
+  it calls (`Db::closed`; a pure function that is not a protected method names none, LRM 4.1),
+  does not wait and takes no access value or protected object: the timing checks of the VITAL
+  package body keep their addresses. Everything else goes
+  through the frame temporary (an access value's temporary is a collector root of the frame,
+  which #1184 had left out: #1189). The common call (a procedure declared outside the process, or
+  one that never names the actual) keeps its address.
+- **Cycle mode:** binds by reference, so a call that reaches the actual by another name keeps the
+  process in the event kernel (`E4101` "an `out` parameter X of `p` whose actual the call also
+  reaches by another name"); this replaces the #1184 tests (a procedure declared in a process
+  or subprogram, an array `in` actual naming the object) and covers `inout` too.
+- An `out` formal the body assigns on every path before naming it (`Db::assigns_first`) takes
+  nothing in, so the actual may be read by any name, and an overlapping composite `in` actual
+  through its formal, until the body assigns the formal (`Db::read_first`: through `if` and
+  `case`; a loop around an assignment counts as reaching it): `if v = 5 then x := 1; else x :=
+  2; end if;` keeps its address, in cycle mode too.
 
 ## A value driven through a signal parameter belongs to the actual's subtype (user, 2026-11-21, #1181)
 

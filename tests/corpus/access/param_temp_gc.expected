@@ -1,0 +1,9 @@
+exit	0
+diag	note	0	0	:param_temp_gc:_p0	mk q null=true x.all=42
+diag	note	0	0	:param_temp_gc:_p0	after mk q.all=42
+diag	note	0	0	:param_temp_gc:_p0	mk_first q.all=42 x.all=43
+diag	note	0	0	:param_temp_gc:_p0	after mk_first q.all=43
+diag	note	0	0	:param_temp_gc:_p0	acc q.all=43 x.all=44
+diag	note	0	0	:param_temp_gc:_p0	after acc q.all=44
+diag	note	0	0	:param_temp_gc:_p0	mkw lq null=true x.all=45
+diag	note	0	0	:param_temp_gc:_p0	after mkw lq.all=45

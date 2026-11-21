@@ -455,3 +455,30 @@ fn a_two_state_region_compares_with_init_x_bits() {
     let r = report(&["--cycle-exact-meta"]);
     assert!(r.contains("a comparison with a metavalue literal"), "{r}");
 }
+
+#[test]
+fn a_testbench_checker_keeps_its_metavalue_compares() {
+    let dir = tempdir("topmeta");
+    analyze(&dir, "topmeta.vhd");
+    for t in tiers() {
+        for x in [None, Some("--init-x=0"), Some("--init-x=1")] {
+            let mut f = vec!["--no-cache", "--cycle"];
+            f.extend(&t);
+            f.extend(x);
+            let mut a = vec!["run", "--work=work:lib"];
+            a.extend(&f);
+            a.push("topmeta");
+            let o = yavs(&dir, &a);
+            let (out, err) = (
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr),
+            );
+            // The checkers stay in the event kernel and never fail; the design joins.
+            assert!(
+                o.status.success() && !out.contains("Error"),
+                "{f:?}: {out}{err}"
+            );
+            assert!(err.contains("cycle mode: 15 of 22"), "{f:?}: {err}");
+        }
+    }
+}

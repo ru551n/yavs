@@ -67,7 +67,8 @@ as ``--name=value``.
        names the closest one. Not passed to ``elab``. A ``--init-unset`` in ``yavs.sim_flags`` wins.
    * - ``yavs.init_x``
      - ``yavs run --init-x=VALUE``: the value of the metavalue literals the design assigns (:ref:`start-values`), the
-       same values as ``yavs.init_unset``. Not passed to ``elab``. A ``--init-x`` in ``yavs.sim_flags`` wins.
+       same values as ``yavs.init_unset``; with ``yavs.cycle`` every metavalue literal of a cycle-based process below
+       the top-level unit takes it. Not passed to ``elab``. A ``--init-x`` in ``yavs.sim_flags`` wins.
    * - ``yavs.cov_embed_sources``
      - ``yavs run --cov-embed-sources``: store the source text in the database, so the HTML report needs no
        checkout. The source text then travels with the database (:doc:`coverage`).

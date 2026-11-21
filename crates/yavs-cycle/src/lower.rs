@@ -2242,7 +2242,7 @@ impl Lx<'_> {
         let n = codes.len();
         let mut val = vec![0u64; words(n as u32) as usize];
         let mut care = vec![0u64; val.len()];
-        let two = crate::region::two_state();
+        let two = self.meta_joins();
         for (k, &c) in codes.iter().enumerate() {
             let el = n - 1 - k;
             let (bit, keep) = match c {
@@ -3837,6 +3837,14 @@ impl Lx<'_> {
         self.known = known;
         self.init_ops.extend(made?);
         Ok(v)
+    }
+
+    /// Whether a metavalue literal of this body takes the bits of `--init-x` instead of keeping
+    /// the process out (A57): in a two-state region, below the top-level unit. A process of the
+    /// top-level unit keeps the rule before A57, so a testbench's `assert q /= 'X'` checks as in
+    /// the normal mode.
+    fn meta_joins(&self) -> bool {
+        crate::region::two_state() && !self.top
     }
 
     /// `--init-unset`: the `std_ulogic` leaves of variable `d` (of elaborated shape `shape`, placed
@@ -5570,7 +5578,7 @@ impl Lx<'_> {
         let mut val = vec![0u64; words(n) as usize];
         let mut meta = false;
         // A two-state region gives a metavalue the bits of `--init-x` (A57), 0 without it.
-        let (two, fill) = (crate::region::two_state(), crate::region::meta_fill());
+        let (two, fill) = (self.meta_joins(), crate::region::meta_fill());
         let salt = match (two, fill, self.lit_at) {
             (true, yavs_logic::start::Fill::Random(_), Some(at)) => lit_salt(self.db, at),
             _ => 0,
@@ -5706,7 +5714,7 @@ impl Lx<'_> {
         let (a, b) = (self.arg(a)?, self.arg(b)?);
         for v in [&a, &b] {
             if let Val::Part(Part { lit: Some(_), .. }) = v
-                && !crate::region::two_state()
+                && !self.meta_joins()
             {
                 return Err(META_CMP.into());
             }
@@ -6383,10 +6391,7 @@ impl Lx<'_> {
                             let (a, b) = (self.part(a)?, self.part(b)?);
                             let n = a.len.max(b.len);
                             let lit = a.lit.is_some() || b.lit.is_some();
-                            if a.len.min(b.len) != 1
-                                || n < 1
-                                || (lit && !crate::region::two_state())
-                            {
+                            if a.len.min(b.len) != 1 || n < 1 || (lit && !self.meta_joins()) {
                                 return not_yet();
                             }
                             let (a, b) = (self.ext(a, n, false), self.ext(b, n, false));
@@ -6489,7 +6494,7 @@ impl Lx<'_> {
                         let (a, b, m) = if form == Form::Vv {
                             let (a, b) = two(self)?;
                             let (a, b) = (self.part(a)?, self.part(b)?);
-                            if (a.lit.is_some() || b.lit.is_some()) && !crate::region::two_state() {
+                            if (a.lit.is_some() || b.lit.is_some()) && !self.meta_joins() {
                                 return Err(META_CMP.into());
                             }
                             let m = a.len + b.len;
@@ -6994,7 +6999,7 @@ impl Lx<'_> {
         }
         match b.lit.or(a.lit) {
             // An aggregate of a metavalue literal and other values: its codes are not kept.
-            Some(LIT_MIXED) if matching || !crate::region::two_state() => {
+            Some(LIT_MIXED) if matching || !self.meta_joins() => {
                 return Err(META_CMP.into());
             }
             Some(LIT_MIXED) | None => {}
@@ -7214,7 +7219,7 @@ impl Lx<'_> {
         let (a, b) = (self.arg(a)?, self.arg(b)?);
         for v in [&a, &b] {
             if let Val::Part(Part { lit: Some(_), .. }) = v
-                && !crate::region::two_state()
+                && !self.meta_joins()
             {
                 return Err(META_CMP.into());
             }
@@ -7309,7 +7314,7 @@ impl Lx<'_> {
         let (a, b) = (self.arg(a)?, self.arg(b)?);
         let vec = if form == Form::Vi { &a } else { &b };
         if let Val::Part(Part { lit: Some(_), .. }) = vec
-            && !crate::region::two_state()
+            && !self.meta_joins()
         {
             return Err(META_CMP.into());
         }

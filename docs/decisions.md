@@ -18056,7 +18056,7 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
   only then); the natives read the value at run time. Cycle mode's analysis key holds the kind of `--init-unset`
   and the whole `--init-x` (its literals are compiled into region code), so a `random` `--init-x` without a seed
   misses that cache in every run.
-- **Scope.** Signals, ports and process variables; not subprogram locals (elaboration-time calls, library code),
+- **Scope (as the normal mode applies them; a two-state region goes further, next bullets).** Signals, ports and process variables; not subprogram locals (elaboration-time calls, library code),
   shared and protected variables or allocated objects; integers and enumerations keep `'left`, and an element whose
   subtype starts elsewhere keeps it. `--init-x`: `'U'`, `'X'`, `'W'` as the value of an assignment, `'-'` only in a
   default branch, alone, qualified or as the one `others` choice of an aggregate, in processes and concurrent
@@ -18069,7 +18069,9 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
   every cycle run but `--cycle-exact-meta`, `region::two_state`; step 4 ties it to `--two-state`) a metavalue
   literal in an assignment, a comparison, a `case` choice or a `numeric_std` operator no longer keeps its process
   out: it takes the bits of `--init-x`, `0` without it (A58: as the default contract read it before), counted per
-  process in the region report. `'-'` in a matching comparison still matches anything; `'Z'` still keeps the
+  process in the region report. Only below the top-level unit (`Lx::meta_joins`): a process of the top-level unit
+  that compares with one stays in the event kernel as before, since a testbench checker such as `assert q /= 'X'`
+  would otherwise fail on every 0 the region gives it (found by the gate review, `tests/cycle/topmeta.vhd`). `'-'` in a matching comparison still matches anything; `'Z'` still keeps the
   process out. Supersedes the stay-out rule of A9 and the A30 strict loss.
 - **A `'-'` aggregate of a generic length** (`std_match(d, (d'range => '-'))`) keeps its codes when the region
   spreads one element over the vector (`Op::Splat`); an aggregate of a metavalue literal and other values is marked

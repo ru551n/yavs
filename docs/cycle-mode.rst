@@ -469,7 +469,9 @@ A cycle-based process computes with ``0`` and ``1`` only.
   ``--init-x`` (:ref:`start-values`), ``0`` without it, as do values computed from it; the region report counts these
   literals per process. So ``if d = "1X"`` tests ``d = "10"`` there, and a ``case`` choice ``"0X"`` is the choice
   ``"00"`` (the first alternative that matches is taken). A ``'-'`` in ``std_match``, ``?=`` or a ``case?`` choice
-  still matches anything.
+  still matches anything. This holds below the top-level unit: a process of the top-level unit that compares with a
+  metavalue literal (a checker's ``assert q /= 'X'``) stays in the event kernel, where a two-state value never equals
+  the literal, so its checks give the normal mode's results.
 * With ``--cycle-exact-meta`` the testbench sees what the normal mode gives it in those two cases: a process that
   assigns a metavalue literal to a signal the testbench reads (a process of the top-level unit, or a behavioural
   one) stays out, and so does one that passes on to such a signal a signal a process outside sets to ``'Z'`` in its

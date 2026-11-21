@@ -107,14 +107,17 @@ draws a new one. The run prints what it chose at the start, so that a failing ru
 
 .. code-block:: text
 
-    note: `--init-unset=random:418277391`: 12 signal and port elements without an initial value start at the chosen value, and so do the variables of processes; repeat the run with `--init-unset=random:418277391`
+    note: `--init-unset=random:513994796`: 5181 signal and port elements without an initial value start at the chosen value, and so do the variables of processes; repeat the run with `--init-unset=random:513994796`
 
 Without the options nothing changes.
 
-In cycle mode (:doc:`cycle-mode`) both options give the cycle-based processes the values the normal mode gives:
-the signals' start values come from the same elaboration, a clocked variable gets the bits of the normal mode (an
-array of records may get others), and ``--init-x`` replaces the literals cycle mode would read as ``0``.
-``--cycle-report`` lists the registers ``--init-unset`` changes.
+In cycle mode (:doc:`cycle-mode`) ``--init-unset`` gives the cycle-based processes the values the normal mode
+gives: the signals' start values come from the same elaboration, and a clocked variable gets the bits of the normal
+mode (an array of records may get others). ``--init-x`` gives the literals above the normal mode's value too, and
+goes further there: cycle-based processes compute with ``0`` and ``1`` only, so every metavalue literal of one below
+the top-level unit, also one that is compared (``if d = "1X"``), a ``case`` choice or a string, reads as the value of
+``--init-x``, ``0`` without it. The processes of the top-level unit keep their literals' meaning, as in the normal
+mode. ``--cycle-report`` lists the registers ``--init-unset`` changes and counts the literals per process.
 
 Read the output
 ---------------

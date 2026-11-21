@@ -196,6 +196,37 @@ type Types = IdVec<TyId, Ty>;
 type Consts = IdVec<ConstId, ConstData>;
 
 impl Ty {
+    /// Scalar `v` of this type as a check message shows it: an enumeration literal (upper case, a
+    /// character literal quoted), a physical value in the largest unit that divides it (`20 NS`),
+    /// otherwise the integer. The normal mode and cycle mode share it.
+    pub fn value_text(&self, v: i64) -> String {
+        let shown = |n: &str| {
+            if n.starts_with(['\\', '\'']) {
+                n.to_string()
+            } else {
+                n.to_ascii_uppercase()
+            }
+        };
+        match self {
+            Ty::Enum { lits, .. } => usize::try_from(v)
+                .ok()
+                .and_then(|p| lits.get(p))
+                .map_or_else(|| v.to_string(), |l| shown(l)),
+            Ty::Physical { units, .. } => {
+                let u = units
+                    .iter()
+                    .filter(|(_, s)| *s > 0 && v % s == 0)
+                    .max_by_key(|(_, s)| *s)
+                    .or(units.first());
+                u.map_or_else(
+                    || v.to_string(),
+                    |(n, s)| format!("{} {}", v / s.max(&1), shown(n)),
+                )
+            }
+            _ => v.to_string(),
+        }
+    }
+
     /// Size of a scalar (or handle) value; `None` for arrays and records.
     pub fn scalar_size(&self) -> Option<u64> {
         Some(match self {

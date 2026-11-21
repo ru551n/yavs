@@ -114,23 +114,18 @@ pub(crate) enum ShiftK {
 pub(crate) enum Check {
     /// `result of X op Y cannot be represented as T`, or `division by zero`.
     Arith { op: Arith, ty: String },
-    /// `value V outside of T range B for W`.
+    /// `value V outside of T range B for W`; `show`: the type of an enumeration or physical
+    /// value, whose values print as literals or with units (`Ty::value_text`).
     Range {
         ty: String,
         lo: i64,
         hi: i64,
         down: bool,
         what: String,
-        /// The literals of an enumeration type, as the message shows its values.
-        lits: Option<Box<[Box<str>]>>,
+        show: Show,
     },
     /// `index V outside of range B for W`.
-    Index {
-        b: Bounds,
-        what: String,
-        /// The literals of an enumeration index type, as the message shows its values.
-        lits: Option<Box<[Box<str>]>>,
-    },
+    Index { b: Bounds, what: String, show: Show },
     /// Not a check: an assert or report of a top-level member that fired (A19); its site is a
     /// check's, so a site names the member.
     Note(Box<Note>),
@@ -198,10 +193,33 @@ impl Note {
     }
 }
 
-/// Value `v` of a check message: an enumeration's literal, else the integer.
-fn shown(v: i64, lits: &Option<Box<[Box<str>]>>) -> String {
-    let lit = lits.as_ref().and_then(|l| l.get(usize::try_from(v).ok()?));
-    lit.map_or_else(|| v.to_string(), |l| l.to_string())
+/// The type of a checked scalar whose values a message shows as the normal mode does: an
+/// enumeration's literals or a physical type's units. ponytail: each site keeps its type's
+/// names (CHARACTER's 256 in a site of a character subtype); intern them per region if such
+/// sites grow the cache.
+pub(crate) type Show = Option<Box<yavs_ir::Ty>>;
+
+/// Value `v` of a check message, through the normal mode's formatter.
+fn text(show: &Show, v: i64) -> String {
+    show.as_ref()
+        .map_or_else(|| v.to_string(), |t| t.value_text(v))
+}
+
+/// The [`Show`] of the values of subtype `st`.
+fn shown(db: &Db, st: SubtypeId) -> Show {
+    let name = |d: DeclId| db.decls[d].name.to_string();
+    match &db.types[db.base(st)].kind {
+        TypeKind::Enum { lits } => Some(Box::new(yavs_ir::Ty::Enum {
+            lits: lits.iter().map(|&d| name(d)).collect(),
+            logic: None,
+        })),
+        TypeKind::Physical { units } => Some(Box::new(yavs_ir::Ty::Physical {
+            lo: 0,
+            hi: 0,
+            units: units.iter().map(|u| (name(u.decl), u.scale)).collect(),
+        })),
+        _ => None,
+    }
 }
 
 /// `lo to hi` or `hi downto lo`.
@@ -243,11 +261,11 @@ impl Check {
                 hi,
                 down,
                 what,
-                lits,
+                show,
             } => {
                 let (a, b) = (
-                    shown(a, lits),
-                    range(shown(*lo, lits), shown(*hi, lits), *down),
+                    text(show, a),
+                    range(text(show, *lo), text(show, *hi), *down),
                 );
                 if what.is_empty() {
                     format!("value {a} outside of {ty} range {b}")
@@ -255,12 +273,12 @@ impl Check {
                     format!("value {a} outside of {ty} range {b} for {what}")
                 }
             }
-            Check::Index { b: x, what, lits } => {
+            Check::Index { b: x, what, show } => {
                 let (lo, hi) = x.low_high();
                 format!(
                     "index {} outside of range {} for {what}",
-                    shown(a, lits),
-                    range(shown(lo, lits), shown(hi, lits), x.dir == Direction::Downto)
+                    text(show, a),
+                    range(text(show, lo), text(show, hi), x.dir == Direction::Downto)
                 )
             }
             Check::Note(_) => "an assert or report fired".into(),
@@ -299,21 +317,21 @@ impl Check {
                 hi,
                 down,
                 what: w,
-                lits,
+                show,
             } => format!(
                 "value outside of {ty} range {}{}{HINT}",
-                range(shown(*lo, lits), shown(*hi, lits), *down),
+                range(text(show, *lo), text(show, *hi), *down),
                 what(w)
             ),
             Check::Index {
                 b: x,
                 what: w,
-                lits,
+                show,
             } => {
                 let (lo, hi) = x.low_high();
                 format!(
                     "index outside of range {}{}{HINT}",
-                    range(shown(lo, lits), shown(hi, lits), x.dir == Direction::Downto),
+                    range(text(show, lo), text(show, hi), x.dir == Direction::Downto),
                     what(w)
                 )
             }
@@ -885,8 +903,9 @@ struct Part {
     leaf: Option<LeafId>,
     /// Elements of the array from element `lo`, chosen at run time: the index of the first (the
     /// rightmost of a slice), the array's index range, the width of one of its elements, and where
-    /// in that element the part starts (a field or slice of the element); the part is `len` wide.
-    at: Option<(Ref, Bounds, u32, u32)>,
+    /// in that element the part starts (a field or slice of the element); the part is `len` wide;
+    /// and the index's subtype, for the message of its check.
+    at: Option<(Ref, Bounds, u32, u32, Option<SubtypeId>)>,
     /// The object a name starts from (messages of index checks).
     obj: Option<DeclId>,
     /// A literal with a metavalue element: its `std_ulogic` codes (`Lx::lits`), since no
@@ -2707,11 +2726,11 @@ impl Lx<'_> {
                 if let Some(l) = d.leaf {
                     self.writes.insert(l);
                 }
-                if let Some((idx, b, stride, _)) = d.at {
+                if let Some((idx, b, stride, _, ix)) = d.at {
                     // A memory (a big signal written here) is the region's to judge
                     // (`region::ram_rule`, `build`'s pending writes).
                     let s = self.whole(s);
-                    let site = self.index_site(d, b);
+                    let site = self.index_site(d, b, ix);
                     self.ops.push(Op::IndexWrite {
                         dst: d.r,
                         src: s,
@@ -2779,7 +2798,7 @@ impl Lx<'_> {
                             hi: d.hi,
                             down: d.down,
                             what: obj_desc(self.db, obj),
-                            lits: enum_lits(self.db, sub),
+                            show: shown(self.db, sub),
                         });
                         self.ops.push(Op::Range {
                             a: s.r,
@@ -2856,26 +2875,13 @@ impl Lx<'_> {
         }
     }
 
-    fn index_site(&mut self, p: &Part, b: Bounds) -> u32 {
-        let db = self.db;
+    /// The site of the check of an index of subtype `ix` into part `p` of index range `b`.
+    fn index_site(&mut self, p: &Part, b: Bounds, ix: Option<SubtypeId>) -> u32 {
         let what = p
             .obj
-            .map_or(String::new(), |d| db.decls[d].name.to_string());
-        // The index type of an object that is a one-dimensional array of scalars, the only
-        // index such a name has. ponytail: nested arrays show an enumeration index as its
-        // position; the index subtype in `Part::at` would name it.
-        let lits = p.obj.and_then(|d| match &db.decls[d].kind {
-            yavs_sem::decl::DeclKind::Object(o) => match &db.types[db.base(o.subtype)].kind {
-                TypeKind::Array { indexes, elem }
-                    if indexes.len() == 1 && db.types[db.base(*elem)].kind.is_scalar() =>
-                {
-                    enum_lits(db, indexes[0])
-                }
-                _ => None,
-            },
-            _ => None,
-        });
-        self.site(Check::Index { b, what, lits })
+            .map_or(String::new(), |d| self.db.decls[d].name.to_string());
+        let show = ix.and_then(|t| shown(self.db, t));
+        self.site(Check::Index { b, what, show })
     }
 
     /// An element of an array of integers as the integer it is; any other part as it is.
@@ -2909,7 +2915,7 @@ impl Lx<'_> {
                     hi: e.hi,
                     down: e.down,
                     what: obj_desc(self.db, obj),
-                    lits: enum_lits(self.db, sub),
+                    show: shown(self.db, sub),
                 });
                 self.ops.push(Op::Range {
                     a: s.r,
@@ -2939,7 +2945,7 @@ impl Lx<'_> {
                 hi: f.hi,
                 down: f.down,
                 what: format!("parameter {name}"),
-                lits: enum_lits(db, f.sub),
+                show: shown(db, f.sub),
             });
             self.ops.push(Op::Range {
                 a: s.r,
@@ -2957,7 +2963,7 @@ impl Lx<'_> {
                 hi,
                 down: false,
                 what: format!("actual of signal parameter {name}"),
-                lits: enum_lits(db, f.sub),
+                show: shown(db, f.sub),
             });
             self.ops.push(Op::Range {
                 a: s.r,
@@ -2970,10 +2976,10 @@ impl Lx<'_> {
 
     /// A dynamic element read into a temporary; any other part as it is.
     fn materialise(&mut self, p: Part) -> Part {
-        let Some((idx, b, stride, _)) = p.at else {
+        let Some((idx, b, stride, _, ix)) = p.at else {
             return p;
         };
-        let site = self.index_site(&p, b);
+        let site = self.index_site(&p, b, ix);
         let mut t = self.tmp(p.len);
         (t.dims, t.int) = (p.dims, p.int);
         self.ops.push(Op::IndexRead {
@@ -3064,7 +3070,7 @@ impl Lx<'_> {
                     && let (Err(rj), Val::Part(p)) = (ix, &v)
                     && p.at.is_some()
                 {
-                    return self.index_twice(*p, rj, b);
+                    return self.index_twice(*p, rj, b, db.exprs[*i].subtype);
                 }
                 let v = if ix.is_err() {
                     self.no_at(v, target)?
@@ -3080,7 +3086,7 @@ impl Lx<'_> {
                                 at.3 += el * ew;
                             }
                         }
-                        Err(r) => p.at = Some((r, b, ew, 0)),
+                        Err(r) => p.at = Some((r, b, ew, 0, Some(db.exprs[*i].subtype))),
                     }
                     p.len = ew;
                     p.dims = p.dims.rest();
@@ -3133,17 +3139,17 @@ impl Lx<'_> {
     /// element at an index of its own over the array's elements of `p`'s element width: element
     /// positions `p1` of the outer array (`k` such elements in each of its elements) and `p2` of
     /// `p` give `p1 * k + p2 + k - len(p)` from the left. Both indices checked first, in order.
-    fn index_twice(&mut self, mut p: Part, j: Ref, b2: Bounds) -> R<Val> {
-        let (i, b1, s1, off) = p.at.expect("chosen at run time");
+    fn index_twice(&mut self, mut p: Part, j: Ref, b2: Bounds, jt: SubtypeId) -> R<Val> {
+        let (i, b1, s1, off, it) = p.at.expect("chosen at run time");
         let ew = p.dims.elem_len();
         if ew == 0 || s1 % ew != 0 || !matches!(p.r, Ref::Sig(_) | Ref::Loc(_)) {
             return Err("an index or slice of an element chosen at run time".into());
         }
         let k = i64::from(s1 / ew);
         let mut pos = Vec::new();
-        for (x, b) in [(i, b1), (j, b2)] {
+        for (x, b, t) in [(i, b1, it), (j, b2, Some(jt))] {
             let (lo, hi) = b.low_high();
-            let site = self.index_site(&p, b);
+            let site = self.index_site(&p, b, t);
             self.ops.push(Op::Range { a: x, lo, hi, site });
             // The position from the left.
             let l = self.int_lit(b.left).r;
@@ -3168,6 +3174,7 @@ impl Lx<'_> {
             },
             ew,
             off,
+            None,
         ));
         p.len = ew;
         p.dims = p.dims.rest();
@@ -3250,7 +3257,7 @@ impl Lx<'_> {
             hi: d,
             down: false,
             what: "the length of a slice chosen at run time".into(),
-            lits: None,
+            show: None,
         });
         self.ops.push(Op::Range {
             a: diff.r,
@@ -3258,7 +3265,7 @@ impl Lx<'_> {
             hi: d,
             site,
         });
-        p.at = Some((r.r, b, ew, 0));
+        p.at = Some((r.r, b, ew, 0, Some(self.db.exprs[*left].subtype)));
         p.len = (d as u32 + 1) * ew;
         // Its index range is the bounds' at run time: no index or slice of it is taken.
         p.dims = Dims::NONE;
@@ -3711,7 +3718,7 @@ impl Lx<'_> {
                     let base = nets.loc[l.index()].base;
                     // An element chosen at run time: the whole array it is of.
                     let (lo, n) = match p.at {
-                        Some((_, b, stride, off)) => (p.lo - off, stride * b.len() as u32),
+                        Some((_, b, stride, off, _)) => (p.lo - off, stride * b.len() as u32),
                         None => (p.lo, p.len),
                     };
                     self.reads.insert(l);
@@ -4477,7 +4484,7 @@ impl Lx<'_> {
                         hi,
                         down: false,
                         what: String::new(),
-                        lits: None,
+                        show: None,
                     });
                     self.ops.push(Op::Range {
                         a: i.r,
@@ -4519,7 +4526,7 @@ impl Lx<'_> {
                         hi,
                         down: false,
                         what: String::new(),
-                        lits: None,
+                        show: None,
                     });
                     self.ops.push(Op::Range {
                         a: i.r,
@@ -4583,7 +4590,7 @@ impl Lx<'_> {
                     hi,
                     down: false,
                     what: "conversion".into(),
-                    lits: None,
+                    show: None,
                 });
                 self.ops.push(Op::Range {
                     a: i.r,
@@ -5242,7 +5249,7 @@ impl Lx<'_> {
             hi,
             down: false,
             what: "a parameter".into(),
-            lits: None,
+            show: None,
         });
         self.ops.push(Op::Range {
             a: i.r,
@@ -5435,7 +5442,7 @@ impl Lx<'_> {
                 right: 0,
             },
             what: String::new(),
-            lits: None,
+            show: None,
         });
         self.ops.push(Op::IndexRead {
             dst: t.r,
@@ -6153,7 +6160,7 @@ impl Lx<'_> {
                                 hi: h,
                                 down: false,
                                 what: "the result of `to_integer`".into(),
-                                lits: None,
+                                show: None,
                             });
                             self.ops.push(Op::Range {
                                 a: t.r,
@@ -7408,7 +7415,7 @@ impl Lx<'_> {
                 hi,
                 down,
                 what: what.into(),
-                lits: enum_lits(db, p.subtype),
+                show: shown(db, p.subtype),
             });
             self.ops.push(Op::Range {
                 a: a.r,
@@ -7450,7 +7457,7 @@ impl Lx<'_> {
                 hi: a.hi,
                 down: a.down,
                 what: format!("actual of {what}"),
-                lits: enum_lits(db, st),
+                show: shown(db, st),
             }),
         });
         Ok(Bind::Val(Val::Int(IntV { r: t, ..formal })))
@@ -7459,14 +7466,14 @@ impl Lx<'_> {
     /// `p` with the index of an element chosen at run time copied: its place is the one at the
     /// call, whatever the callee changes (#1182).
     fn fixed_at(&mut self, mut p: Part) -> Part {
-        if let Some((ix, b, w, off)) = p.at {
+        if let Some((ix, b, w, off, st)) = p.at {
             let t = self.loc(1);
             self.ops.push(Op::Copy {
                 dst: t,
                 src: ix,
                 len: 64,
             });
-            p.at = Some((t, b, w, off));
+            p.at = Some((t, b, w, off, st));
         }
         p
     }
@@ -7542,7 +7549,7 @@ impl Lx<'_> {
                         hi,
                         down: b.dir == Direction::Downto,
                         what: what.into(),
-                        lits: enum_lits(self.db, st),
+                        show: shown(self.db, st),
                     });
                     self.ops.push(Op::Range {
                         a: i.r,
@@ -8131,26 +8138,6 @@ fn subtype_name(db: &Db, st: SubtypeId) -> String {
         Some(n) => n.text.as_str().to_ascii_uppercase(),
         None => db.types[s.base].name.text.as_str().to_ascii_uppercase(),
     }
-}
-
-/// The literals of enumeration subtype `st` as a check message shows them (upper case, a
-/// character literal quoted); `None` for any other type.
-fn enum_lits(db: &Db, st: SubtypeId) -> Option<Box<[Box<str>]>> {
-    let TypeKind::Enum { lits } = &db.types[db.base(st)].kind else {
-        return None;
-    };
-    let name = |d: DeclId| match db.decls[d].name {
-        yavs_sem::decl::Designator::Char(c) => format!("'{c}'"),
-        n => {
-            let n = n.to_string();
-            if n.starts_with('\\') {
-                n
-            } else {
-                n.to_ascii_uppercase()
-            }
-        }
-    };
-    Some(lits.iter().map(|&d| name(d).into()).collect())
 }
 
 /// An object as check messages name it: `variable P`, `signal S`.

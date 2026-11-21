@@ -1950,6 +1950,346 @@ fn values_driven_through_signal_formals_are_checked_as_in_the_normal_mode() {
     }
 }
 
+const MSG_CHECKS: &str = "\
+entity cycle_menum is
+end entity;
+architecture a of cycle_menum is
+  type color is (red, green, blue, white);
+  subtype rgb is color range red to blue;
+  subtype rev is color range blue downto green;
+  subtype lc is character range 'a' to 'c';
+  subtype short is time range 1 ns to 10 ns;
+  type tab is array (rgb) of integer;
+  type ctab is array (lc) of integer;
+  signal clk : bit := '0';
+  signal n : integer := 0;
+  signal r : integer := 0;
+begin
+  clk <= not clk after 5 ns when now < 200 ns;
+  reg : process (clk)
+    variable v : rgb;
+  begin
+    if clk'event and clk = '1' then
+      n <= n + 1;
+      v := color'val(n mod 4);
+      r <= color'pos(v);
+    end if;
+  end process;
+end architecture;
+
+entity cycle_mrev is
+end entity;
+architecture a of cycle_mrev is
+  type color is (red, green, blue, white);
+  subtype rgb is color range red to blue;
+  subtype rev is color range blue downto green;
+  subtype lc is character range 'a' to 'c';
+  subtype short is time range 1 ns to 10 ns;
+  type tab is array (rgb) of integer;
+  type ctab is array (lc) of integer;
+  signal clk : bit := '0';
+  signal n : integer := 0;
+  signal r : integer := 0;
+begin
+  clk <= not clk after 5 ns when now < 200 ns;
+  reg : process (clk)
+    variable v : rev;
+  begin
+    if clk'event and clk = '1' then
+      n <= n + 1;
+      v := color'val(3 - n mod 4);
+      r <= color'pos(v);
+    end if;
+  end process;
+end architecture;
+
+entity cycle_msig is
+end entity;
+architecture a of cycle_msig is
+  type color is (red, green, blue, white);
+  subtype rgb is color range red to blue;
+  subtype rev is color range blue downto green;
+  subtype lc is character range 'a' to 'c';
+  subtype short is time range 1 ns to 10 ns;
+  type tab is array (rgb) of integer;
+  type ctab is array (lc) of integer;
+  signal clk : bit := '0';
+  signal n : integer := 0;
+  signal r : integer := 0;
+  signal s : rgb := red;
+begin
+  clk <= not clk after 5 ns when now < 200 ns;
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      n <= n + 1;
+      s <= color'val(n mod 4);
+    end if;
+  end process;
+end architecture;
+
+entity cycle_mval is
+end entity;
+architecture a of cycle_mval is
+  type color is (red, green, blue, white);
+  subtype rgb is color range red to blue;
+  subtype rev is color range blue downto green;
+  subtype lc is character range 'a' to 'c';
+  subtype short is time range 1 ns to 10 ns;
+  type tab is array (rgb) of integer;
+  type ctab is array (lc) of integer;
+  signal clk : bit := '0';
+  signal n : integer := 0;
+  signal r : integer := 0;
+begin
+  clk <= not clk after 5 ns when now < 200 ns;
+  reg : process (clk)
+    variable v : color;
+  begin
+    if clk'event and clk = '1' then
+      n <= n + 1;
+      v := color'val(n);
+      r <= color'pos(v);
+    end if;
+  end process;
+end architecture;
+
+entity cycle_mchar is
+end entity;
+architecture a of cycle_mchar is
+  type color is (red, green, blue, white);
+  subtype rgb is color range red to blue;
+  subtype rev is color range blue downto green;
+  subtype lc is character range 'a' to 'c';
+  subtype short is time range 1 ns to 10 ns;
+  type tab is array (rgb) of integer;
+  type ctab is array (lc) of integer;
+  signal clk : bit := '0';
+  signal n : integer := 0;
+  signal r : integer := 0;
+begin
+  clk <= not clk after 5 ns when now < 200 ns;
+  reg : process (clk)
+    variable c : lc;
+  begin
+    if clk'event and clk = '1' then
+      n <= n + 1;
+      c := character'val(97 + n);
+      r <= character'pos(c);
+    end if;
+  end process;
+end architecture;
+
+entity cycle_mindex is
+end entity;
+architecture a of cycle_mindex is
+  type color is (red, green, blue, white);
+  subtype rgb is color range red to blue;
+  subtype rev is color range blue downto green;
+  subtype lc is character range 'a' to 'c';
+  subtype short is time range 1 ns to 10 ns;
+  type tab is array (rgb) of integer;
+  type ctab is array (lc) of integer;
+  signal clk : bit := '0';
+  signal n : integer := 0;
+  signal r : integer := 0;
+begin
+  clk <= not clk after 5 ns when now < 200 ns;
+  reg : process (clk)
+    variable t : tab := (others => 0);
+  begin
+    if clk'event and clk = '1' then
+      n <= n + 1;
+      t(color'val(n mod 4)) := n;
+      r <= t(red);
+    end if;
+  end process;
+end architecture;
+
+entity cycle_mcindex is
+end entity;
+architecture a of cycle_mcindex is
+  type color is (red, green, blue, white);
+  subtype rgb is color range red to blue;
+  subtype rev is color range blue downto green;
+  subtype lc is character range 'a' to 'c';
+  subtype short is time range 1 ns to 10 ns;
+  type tab is array (rgb) of integer;
+  type ctab is array (lc) of integer;
+  signal clk : bit := '0';
+  signal n : integer := 0;
+  signal r : integer := 0;
+begin
+  clk <= not clk after 5 ns when now < 200 ns;
+  reg : process (clk)
+    variable t : ctab := (others => 0);
+  begin
+    if clk'event and clk = '1' then
+      n <= n + 1;
+      t(character'val(97 + n)) := n;
+      r <= t('a');
+    end if;
+  end process;
+end architecture;
+
+entity cycle_mnested is
+end entity;
+architecture a of cycle_mnested is
+  type color is (red, green, blue, white);
+  subtype rgb is color range red to blue;
+  type vtab is array (rgb) of bit_vector(3 downto 0);
+  signal clk : bit := '0';
+  signal n : integer := 0;
+  signal r : bit_vector(3 downto 0);
+begin
+  clk <= not clk after 5 ns when now < 200 ns;
+  reg : process (clk)
+    variable m : vtab;
+  begin
+    if clk'event and clk = '1' then
+      n <= n + 1;
+      m(color'val(n mod 4)) := \"0101\";
+      r <= m(red);
+    end if;
+  end process;
+end architecture;
+
+entity cycle_mformal is
+end entity;
+architecture a of cycle_mformal is
+  type color is (red, green, blue, white);
+  subtype rgb is color range red to blue;
+  subtype rev is color range blue downto green;
+  subtype lc is character range 'a' to 'c';
+  subtype short is time range 1 ns to 10 ns;
+  type tab is array (rgb) of integer;
+  type ctab is array (lc) of integer;
+  signal clk : bit := '0';
+  signal n : integer := 0;
+  signal r : integer := 0;
+  signal s : rgb := red;
+  procedure drv(signal o : out color; v : color) is
+  begin
+    o <= v;
+  end procedure;
+begin
+  clk <= not clk after 5 ns when now < 200 ns;
+  reg : process (clk)
+  begin
+    if clk'event and clk = '1' then
+      n <= n + 1;
+      drv(s, color'val(n mod 4));
+    end if;
+  end process;
+end architecture;
+
+entity cycle_mphys is
+end entity;
+architecture a of cycle_mphys is
+  type color is (red, green, blue, white);
+  subtype rgb is color range red to blue;
+  subtype rev is color range blue downto green;
+  subtype lc is character range 'a' to 'c';
+  subtype short is time range 1 ns to 10 ns;
+  type tab is array (rgb) of integer;
+  type ctab is array (lc) of integer;
+  signal clk : bit := '0';
+  signal n : integer := 0;
+  signal r : integer := 0;
+begin
+  clk <= not clk after 5 ns when now < 200 ns;
+  reg : process (clk)
+    variable t : short := 1 ns;
+  begin
+    if clk'event and clk = '1' then
+      n <= n + 1;
+      t := (n + 1) * 1 ns;
+      r <= t / 1 ns;
+    end if;
+  end process;
+end architecture;
+
+";
+
+/// A failed range or index check of an enumeration, a character or a physical value shows its
+/// values as the normal mode does (#1188): literals (a descending subtype `downto`, an index of
+/// an array of vectors) and units;
+/// `T'val` outside its type keeps positions in both modes. A physical value keeps its process
+/// in the event kernel.
+#[test]
+fn range_and_index_messages_show_literals_as_in_the_normal_mode() {
+    let dir = tempdir("cycle-msg-checks");
+    analyze(&dir, "checks.vhd", MSG_CHECKS);
+    for (top, msg, at) in [
+        (
+            "cycle_menum",
+            "value WHITE outside of RGB range RED to BLUE for variable V",
+            35,
+        ),
+        (
+            "cycle_mrev",
+            "value WHITE outside of REV range BLUE downto GREEN for variable V",
+            5,
+        ),
+        (
+            "cycle_msig",
+            "value WHITE outside of RGB range RED to BLUE for signal S",
+            35,
+        ),
+        ("cycle_mval", "value 4 outside of COLOR range 0 to 3", 45),
+        (
+            "cycle_mchar",
+            "value 'd' outside of LC range 'a' to 'c' for variable C",
+            35,
+        ),
+        (
+            "cycle_mindex",
+            "index WHITE outside of range RED to BLUE for t",
+            35,
+        ),
+        (
+            "cycle_mcindex",
+            "index 'd' outside of range 'a' to 'c' for t",
+            35,
+        ),
+        (
+            "cycle_mnested",
+            "index WHITE outside of range RED to BLUE for m",
+            35,
+        ),
+        (
+            "cycle_mformal",
+            "value WHITE outside of COLOR range RED to BLUE for actual of signal parameter O",
+            35,
+        ),
+    ] {
+        let note = format!("at {at} ns, delta 0, in process {top}.reg");
+        same_failure(&dir, top, &format!("error[E3009]: {msg}"), &note);
+    }
+    let msg = "error[E3009]: value 11 NS outside of SHORT range 1 NS to 10 NS for variable T";
+    for mode in MODES {
+        let mut args = vec!["run", "--work=work:lib", "--no-cache", "--tier=interp"];
+        args.extend(mode);
+        args.push("cycle_mphys");
+        let o = yavs(&dir, &args);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "{mode:?}: {err}");
+        assert!(err.contains(msg), "{mode:?}: {err}");
+    }
+    // A failed check of code from the compilation cache: its site keeps the type too.
+    let msg = "error[E3009]: value WHITE outside of RGB range RED to BLUE for variable V";
+    for exact in [false, true, false, true] {
+        let mut args = vec!["run", "--work=work:lib", "--tier=interp", "--cycle"];
+        args.extend(exact.then_some("--cycle-exact-meta"));
+        args.push("cycle_menum");
+        let o = yavs(&dir, &args);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "{exact}: {err}");
+        let want = if exact { msg.into() } else { bare(msg) };
+        assert!(err.contains(&want), "{exact}: {err}");
+    }
+}
+
 /// A call whose constant actual lies outside its formal's subtype stays in the event kernel,
 /// which fails the check as the normal mode does.
 #[test]

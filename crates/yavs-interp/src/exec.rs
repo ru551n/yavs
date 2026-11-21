@@ -4190,35 +4190,11 @@ impl Machine {
             })
     }
 
-    /// A scalar of a check message as VHDL shows it: an enumeration literal (upper case, a
-    /// character literal quoted), a physical value in the largest unit that divides it (`20 NS`),
-    /// otherwise the integer. Only runs when a check fails.
+    /// A scalar of a check message as VHDL shows it (`Ty::value_text`). Only runs when a check
+    /// fails.
     fn msg_val(&self, m: &yavs_ir::CheckMsg, v: i64) -> String {
-        let shown = |n: &str| {
-            if n.starts_with(['\\', '\'']) {
-                n.to_string()
-            } else {
-                n.to_ascii_uppercase()
-            }
-        };
-        match m.ty.and_then(|t| self.rt.prog.types.get(t)) {
-            Some(Ty::Enum { lits, .. }) => usize::try_from(v)
-                .ok()
-                .and_then(|p| lits.get(p))
-                .map_or_else(|| v.to_string(), |l| shown(l)),
-            Some(Ty::Physical { units, .. }) => {
-                let u = units
-                    .iter()
-                    .filter(|(_, s)| *s > 0 && v % s == 0)
-                    .max_by_key(|(_, s)| *s)
-                    .or(units.first());
-                u.map_or_else(
-                    || v.to_string(),
-                    |(n, s)| format!("{} {}", v / s.max(&1), shown(n)),
-                )
-            }
-            _ => v.to_string(),
-        }
+        m.ty.and_then(|t| self.rt.prog.types.get(t))
+            .map_or_else(|| v.to_string(), |t| t.value_text(v))
     }
 
     fn check_msg(&self, m: yavs_ir::CheckMsgId) -> (&str, Dir) {

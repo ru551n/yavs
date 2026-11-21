@@ -138,7 +138,8 @@ through lowering and the interpreter (`crates/yavs-lower/tests/corpus.rs`):
    running to its next suspension, so `report/failure_exit` prints a report the reference simulator never reaches.
 4. **reference-simulator-compatible check texts** (difftest is strict for yavs): range checks read
    `value 101 outside of PCT range 0 to 100 for variable P` (subtype name, then the object;
-   enumeration values as literals, physical values with their unit, from `CheckMsg::ty`),
+   enumeration values as literals, physical values with their unit, from `CheckMsg::ty`, by
+   `Ty::value_text`, which cycle mode's messages use too),
    real to integer `value 30000000000 outside of INTEGER range ...`, integer overflow
    `result of 2147483647 + 1 cannot be represented as INTEGER`, division `division by zero`.
    The overflow text needs the operands and the type in the instruction: a checked `Bin` with a

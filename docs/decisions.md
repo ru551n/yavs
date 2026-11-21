@@ -17851,4 +17851,9 @@ the parked retune package.
   their checks and the optimiser's view of them are unchanged. The text is built only when the
   check fails, in `Machine::check_val` of the interpreter, which compiled code reaches because
   it leaves to the interpreter at a failed check. Not covered: the operands of `result of A * B
-  cannot be represented as T`, and cycle mode (its messages carry positions).
+  cannot be represented as T`.
+- **Cycle mode** (2026-11-21, #1188): its range and index messages print the same text through
+  the same formatter, `yavs_ir::Ty::value_text` (the interpreter's `msg_val` calls it too); a
+  check site keeps the enumeration or physical type it needs (`Check::Range`/`Index` `show`, an
+  index's subtype carried in `Part::at`), so `--cycle-exact-meta` gives the normal mode's message
+  and plain `--cycle` its bounds as literals.

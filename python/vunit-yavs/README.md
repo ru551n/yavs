@@ -33,6 +33,8 @@ or later (`pip install vunit-yavs` installs it, a pre-release) and yavs 0.21.2 o
 | `yavs.max_threads` (integer, at least 1, or `"auto"`) | `yavs run --threads=N`, the most threads of one simulation; `"auto"` is `--threads=auto`, more threads only while they make the run faster |
 | `yavs.tier_compile` (`"wait"` or `"background"`) | `yavs run --tier-compile=MODE`: `wait` (yavs's default) makes a simulation wait while a function compiles, `background` compiles alongside it on a thread at the lowest system priority |
 | `yavs.cycle` (`"off"`, `"on"` or `"strict"`) | `yavs run --cycle` for `"on"`, `--cycle-strict` for `"strict"` (cycle mode, below); default `"off"`. Not passed to `elab` |
+| `yavs.init_unset` (`"0"`, `"1"`, `"random"` or `"random:SEED"`) | `yavs run --init-unset=VALUE`: the start value of `std_ulogic` elements of signals and process variables without an initial value (default `'U'`); a wrong value fails when it is set, naming the closest one. Not passed to `elab` |
+| `yavs.init_x` (the same values) | `yavs run --init-x=VALUE`: the value of the metavalue literals the design assigns. Not passed to `elab` |
 | `enable_coverage` (VUnit's option) | `yavs run --cov-file=<test output>/yavs/coverage.ycov --cov-test=<test name>` with the kinds below (coverage, below) |
 | `yavs.cov_kind` (list of strings) | `yavs run --cov-kind=LIST`: `statement`, `branch`, `toggle`, `condition`, `assert`, `expression`, `combination`, `fsm`. No kind is on by default |
 | `yavs.init_files.after_load` | Console command files sourced after each `vunit_load` |

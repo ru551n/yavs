@@ -120,6 +120,10 @@ fn implemented(symbol: &str, family: Option<&str>, attr: Option<&str>) -> Option
         (_, _, Some("image")) => image_attr,
         ("yavs.env.resolution_limit.void.r_delay_length", _, _) => resolution_limit,
         ("yavs.prot.name_set", _, _) => prot_name_set,
+        ("yavs.init.unset", _, _) => init_unset,
+        ("yavs.init.unset_code", _, _) => init_unset_code,
+        ("yavs.init.x", _, _) => init_x,
+        ("yavs.init.x_code", _, _) => init_x_code,
         ("yavs.prot.name_get", _, _) => prot_name_get,
         ("yavs.env.getenv.string.r_string", _, _) => getenv_string,
         ("yavs.env.getenv.string.r_line", _, _) => getenv_line,
@@ -1005,6 +1009,105 @@ fn resolution_limit(
     _: &[u64],
 ) -> R<Option<u64>> {
     Ok(Some(env::resolution_limit(m.rt.resolution) as u64))
+}
+
+/// The value of `--init-unset` or `--init-x`; a call without one is a bug of the lowering.
+fn start_fill(x: bool) -> R<yavs_logic::start::Fill> {
+    let f = if x {
+        yavs_logic::start::x()
+    } else {
+        yavs_logic::start::unset()
+    };
+    f.ok_or_else(|| ice("a start value native called without its option"))
+}
+
+/// The codes a fill replaces: `'U'` for `--init-unset`; `'U'`, `'X'`, `'W'`, `'-'` for `--init-x`.
+fn replaced(x: bool, code: u64) -> bool {
+    if x {
+        matches!(code, 0 | 1 | 5 | 8)
+    } else {
+        code == 0
+    }
+}
+
+/// The salt of a variable of `--init-unset` in the running process instance, of a literal of
+/// `--init-x` as given.
+fn run_salt(ctx: &Option<&mut Ctx<'_>>, salt: u64, x: bool) -> R<u64> {
+    if x {
+        return Ok(salt);
+    }
+    match ctx {
+        Some(c) => Ok(yavs_logic::start::inst_salt(salt, c.process_name())),
+        None => Err(ice("a process variable's start value outside a process")),
+    }
+}
+
+/// `(data, n, salt)`: the replaced elements of `n` logic elements in planes at `data` get the
+/// option's values (element 0 is the rightmost).
+fn start_planes(m: &mut Machine, ctx: &Option<&mut Ctx<'_>>, a: &[u64], x: bool) -> R<Option<u64>> {
+    let f = start_fill(x)?;
+    let (data, n) = (targ(a, 0)?, targ(a, 1)?);
+    let salt = run_salt(ctx, targ(a, 2)?, x)?;
+    if n == 0 {
+        return Ok(None);
+    }
+    let v = m.wr(data, n.div_ceil(64) * 32)?;
+    for i in 0..n {
+        if replaced(x, plane_get(v, i)) {
+            plane_set(v, i, u64::from(f.code(salt, i)));
+        }
+    }
+    Ok(None)
+}
+
+/// `(code, salt)`: a scalar's code, replaced as by [`start_planes`].
+fn start_code(ctx: &Option<&mut Ctx<'_>>, a: &[u64], x: bool) -> R<Option<u64>> {
+    let code = targ(a, 0)?;
+    if !replaced(x, code) {
+        return Ok(Some(code));
+    }
+    let salt = run_salt(ctx, targ(a, 1)?, x)?;
+    Ok(Some(u64::from(start_fill(x)?.code(salt, 0))))
+}
+
+/// `yavs.init.unset (data, n, salt)`: `--init-unset` on a variable's planes.
+fn init_unset(
+    m: &mut Machine,
+    ctx: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    start_planes(m, ctx, a, false)
+}
+
+/// `yavs.init.unset_code (code, salt)`: `--init-unset` on a scalar variable's code.
+fn init_unset_code(
+    _: &mut Machine,
+    ctx: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    start_code(ctx, a, false)
+}
+
+/// `yavs.init.x (data, n, salt)`: `--init-x` on the planes of a literal's value.
+fn init_x(
+    m: &mut Machine,
+    ctx: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    start_planes(m, ctx, a, true)
+}
+
+/// `yavs.init.x_code (code, salt)`: `--init-x` on a scalar literal.
+fn init_x_code(
+    _: &mut Machine,
+    ctx: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    start_code(ctx, a, true)
 }
 
 /// `yavs.prot.name_set (object, path, instance)`: the names of a protected object (#916).

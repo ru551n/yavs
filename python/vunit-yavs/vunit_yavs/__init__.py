@@ -95,6 +95,30 @@ class CycleOption(Option):
         )
 
 
+class InitOption(Option):
+    """
+    Must be "0", "1", "random" or "random:SEED" (yavs run --init-unset, --init-x); 0 and 1 may be integers
+    """
+
+    def validate(self, value):
+        text = str(value) if isinstance(value, int) and not isinstance(value, bool) else value
+        if isinstance(text, str):
+            if text in ("0", "1", "random"):
+                return
+            seed = text.removeprefix("random:")
+            if seed != text and seed.isdigit() and int(seed) < 2**64:
+                return
+        if isinstance(value, bool):
+            hint = f" Did you mean {str(int(value))!r}?"
+        else:
+            close = difflib.get_close_matches(str(value), ("0", "1", "random"), 1)
+            hint = f" Did you mean {close[0]!r}?" if close else ""
+        raise ValueError(
+            f"Option {self.name!r} must be \"0\", \"1\", \"random\" or \"random:SEED\" (SEED a whole number "
+            f"from 0 to 2**64 - 1). Got {value!r}.{hint}"
+        )
+
+
 def _debug_port(text):
     """argparse type of --yavs-debug: a TCP port, 0 for a free one"""
     if not text.isdigit() or int(text) > 65535:
@@ -300,6 +324,8 @@ class YavsInterface(SimulatorInterface):
         ThreadsOption("yavs.max_threads"),
         TierCompileOption("yavs.tier_compile"),
         CycleOption("yavs.cycle"),
+        InitOption("yavs.init_unset"),
+        InitOption("yavs.init_x"),
         ListOfStringOption("yavs.cov_kind"),
         BooleanOption("yavs.cov_embed_sources"),
         # Files of console commands, sourced at the points VUnit sources its init files
@@ -854,6 +880,12 @@ class YavsInterface(SimulatorInterface):
         tier_compile = config.sim_options.get("yavs.tier_compile")
         if tier_compile is not None and not elaborate_only:
             cmd += [f"--tier-compile={tier_compile}"]
+
+        # Start values, before the raw flags too.
+        for option, flag in (("yavs.init_unset", "--init-unset"), ("yavs.init_x", "--init-x")):
+            value = config.sim_options.get(option)
+            if value is not None and not elaborate_only:
+                cmd += [f"{flag}={value}"]
 
         # Cycle mode, before the raw flags too (a --cycle in yavs.sim_flags is the simulator's to judge)
         if cycle != "off" and not elaborate_only:

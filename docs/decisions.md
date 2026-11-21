@@ -17825,3 +17825,30 @@ the parked retune package.
   check fails, in `Machine::check_val` of the interpreter, which compiled code reaches because
   it leaves to the interpreter at a failed check. Not covered: the operands of `result of A * B
   cannot be represented as T`, and cycle mode (its messages carry positions).
+
+## Start values: `--init-unset` and `--init-x` (yavs-logic `start.rs`, yavs-elab, yavs-lower, yavs-interp, yavs-cycle; user decisions A52, A53, 2026-11-21)
+
+- **Decision.** `--init-unset=0|1|random[:SEED]` gives the `std_ulogic` elements that start at `'U'` because no
+  initial value is given a value: signals and ports (elaboration, `walk.rs` `unset_starts`, through
+  `ElabConfig::init_unset`), variables of processes (the natives `yavs.init.unset` and `yavs.init.unset_code`, emitted
+  only under `LowerOptions::init_unset`) and the clocked variables of cycle mode (`Body::unset`, set at the region's
+  initialisation). `--init-x` gives the metavalue literals of `yavs-elab` `xsites.rs` a value (`yavs.init.x`,
+  `yavs.init.x_code`; cycle mode's `Lx::logic_lit`). Supersedes A17 ("no start-value option") and the zero-only D3.
+- **One value function.** A bit is `Fill::bit(salt, element)`, element 0 the rightmost: a pure function of the seed,
+  the object (a signal's lowercase instance path and leaf, a variable's file, name and place, a literal's file and
+  place) and the element. No stream of random numbers, so the order of evaluation, the tier, `--threads` and cycle
+  mode do not change a bit. The cycle region reads signals from the kernel at initialisation, so it holds what the
+  event kernel holds.
+- **The seed is in no cache key.** The IR stage key holds whether each option is on (the lowering emits the natives
+  only then); the natives read the value at run time. Cycle mode's analysis key holds the kind of `--init-unset`
+  and the whole `--init-x` (its literals are compiled into region code), so a `random` `--init-x` without a seed
+  misses that cache in every run.
+- **Scope.** Signals, ports and process variables; not subprogram locals (elaboration-time calls, library code),
+  shared and protected variables or allocated objects; integers and enumerations keep `'left`, and an element whose
+  subtype starts elsewhere keeps it. `--init-x`: `'U'`, `'X'`, `'W'` as the value of an assignment, `'-'` only in a
+  default branch, alone, qualified or as the one `others` choice of an aggregate, in processes and concurrent
+  assignments below the top-level unit; a statement holding one runs as lowered code, never as a kernel copy, gate,
+  mux or program. Comparisons, calls (a `std_match` mask), strings, initial values, subprograms and the top-level unit
+  are untouched, so the checks of a testbench keep their literals.
+- **`random` without a seed** draws one from the time and the process id and prints it, so a failure can be
+  repeated with `random:SEED`.

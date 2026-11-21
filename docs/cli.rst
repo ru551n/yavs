@@ -66,11 +66,55 @@ Control a run
   changed most often, with ``--activity=FILE`` also as JSON. ``--profile`` measures time instead.
 * A testbench that may depend on process order: ``--shuffle`` runs the processes in a random order and prints the
   seed, so the run can be repeated with ``--shuffle=SEED``.
+* A design that may depend on the start value of a register without reset, or on what a "don't care" literal
+  becomes: ``--init-unset`` and ``--init-x`` (:ref:`start-values`).
 
 ``--assert-summary`` and ``--activity`` need 0.12.0 or later.
 
 Waves, coverage and debugging are options of ``run`` too: :doc:`waveforms`, :doc:`coverage`, :doc:`debugging`,
 :doc:`interactive`. Plugins are in :doc:`vhpi`, and speed in :doc:`running-faster`.
+
+.. _start-values:
+
+Start values and metavalue literals
+-----------------------------------
+
+VHDL starts a ``std_ulogic`` signal or variable that has no initial value at ``'U'``. A register that has neither a
+reset nor an initial value keeps the ``'U'`` (or the ``'X'`` it turns into) until something assigns it, and a test
+of such a design fails in the normal mode where real hardware would start at some 0 or 1. Two options of ``run``
+choose a value instead, to find out whether a design depends on one:
+
+* ``--init-unset=VALUE`` sets the start value of every ``std_ulogic`` element (of vectors, records and arrays of
+  them too) of signals, ports and process variables that have no initial value. Integers and enumerations keep their
+  ``'left``, and an element whose subtype starts elsewhere (``X01`` starts at ``'X'``) keeps that value. Variables of
+  subprograms, protected types and allocated objects, and shared variables, are not changed.
+* ``--init-x=VALUE`` sets the value of the metavalue literals the design assigns, as a "don't care" that becomes a
+  concrete value: a ``'U'``, ``'X'`` or ``'W'`` literal that is the value of a signal or variable assignment, and a
+  ``'-'`` literal that is the value of such an assignment whose innermost branch is a default one (the ``others``
+  choice of a ``case`` or a selected assignment, the last ``else`` of an ``if`` or a conditional assignment; a
+  ``then`` branch inside an ``else`` is not). The literal may be
+  qualified (``std_logic'('X')``) or the one ``others`` choice of an aggregate, nested too (``(others => 'X')``,
+  ``(others => (others => '-'))``). It applies to the processes and concurrent assignments of the design below
+  the top-level unit. Literals in conditions, comparisons and calls (``std_match(a, "1--0")``, ``if x = 'X'``),
+  string literals, initial values, subprogram bodies and the statements of the top-level unit stay as written, so a
+  ``'-'`` mask outside a default branch keeps its meaning, and so do the checks of a testbench. Verification
+  components instantiated below the top-level unit are part of the design for this rule.
+
+VALUE is ``0``, ``1``, ``random`` or ``random:SEED``. With ``random`` every element gets a bit of its own, drawn
+from SEED, the object (a signal's instance path, a variable's or literal's place in the source) and the element:
+the same seed gives the same bits in every tier, at every ``--threads`` and in cycle mode. Without SEED each run
+draws a new one. The run prints what it chose at the start, so that a failing run can be repeated:
+
+.. code-block:: text
+
+    note: `--init-unset=random:418277391`: 12 signal and port elements without an initial value start at the chosen value, and so do the variables of processes; repeat the run with `--init-unset=random:418277391`
+
+Without the options nothing changes.
+
+In cycle mode (:doc:`cycle-mode`) both options give the cycle-based processes the values the normal mode gives:
+the signals' start values come from the same elaboration, a clocked variable gets the bits of the normal mode (an
+array of records may get others), and ``--init-x`` replaces the literals cycle mode would read as ``0``.
+``--cycle-report`` lists the registers ``--init-unset`` changes.
 
 Read the output
 ---------------

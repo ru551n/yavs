@@ -787,6 +787,14 @@ pub(crate) struct Body {
     /// The process variables among those (first word, elements): the second image of
     /// `--cycle-exact-meta` starts them at 1 (`rt::Rail`).
     pub useed: Vec<(u32, u32)>,
+    /// The `std_ulogic` leaves of clocked variables without an initial value (first word,
+    /// elements, the salt of the variable): `--init-unset` sets them at initialisation
+    /// (`rt::RegionProc::unset`).
+    #[serde(default)]
+    pub unset: Vec<(u32, u32, u64)>,
+    /// The names of those variables, for `--cycle-report`.
+    #[serde(default)]
+    pub unset_names: Vec<String>,
     /// Under `--cycle-exact-meta`: a comparison or conversion of logic values the code cannot
     /// give the normal mode's result on a metavalue (`Lx::differs`): the second image may take
     /// another branch, so its registers keep the region's values where only it changed them
@@ -1169,6 +1177,9 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         metas: 0,
         uninit: 0,
         useed: Vec::new(),
+        unset: Vec::new(),
+        unset_names: Vec::new(),
+        x: None,
         sure: HashSet::new(),
         checks: Vec::new(),
         at: db.stmts[p.stmt].span,
@@ -1265,6 +1276,10 @@ struct Lx<'a> {
     metas: u32,
     uninit: u64,
     useed: Vec<(u32, u32)>,
+    unset: Vec<(u32, u32, u64)>,
+    unset_names: Vec<String>,
+    /// While an `--init-x` literal is lowered: the option and the literal's salt.
+    x: Option<(yavs_logic::start::Fill, u64)>,
     /// Under `--cycle-exact-meta`: booleans computed from the region's values on every image
     /// (`Lx::other`), for `Body::keep`.
     sure: HashSet<Ref>,
@@ -1331,6 +1346,8 @@ impl Lx<'_> {
             meta_out: self.metas - self.lit_cmp.len() as u32,
             uninit: self.uninit,
             useed: self.useed,
+            unset: self.unset,
+            unset_names: self.unset_names,
             keep,
             checks: self.checks,
         }
@@ -1408,6 +1425,8 @@ impl Lx<'_> {
         // A combinational variable is assigned before any read: its start value is never seen.
         self.uninit = 0;
         self.useed.clear();
+        self.unset.clear();
+        self.unset_names.clear();
         self.init_ops.clear();
         Ok(self.body(Kind::Comb, None, None))
     }
@@ -3429,6 +3448,9 @@ impl Lx<'_> {
                     .tree(shape, d, &mut |_| Ref::Loc(u32::MAX))
                     .map_err(|w| format!("{w} (variable `{}`)", decl.name))?;
                 let v = self.place_vars(v, o.default.is_some());
+                if o.default.is_none() {
+                    self.unset_leaves(&v, shape, d)?;
+                }
                 self.vars.insert(d, v.clone());
                 // The initial value, once at initialisation (a combinational process assigns
                 // before it reads, so it never sees it): evaluated where the run starts, so the
@@ -3539,6 +3561,56 @@ impl Lx<'_> {
         self.known = known;
         self.init_ops.extend(made?);
         Ok(v)
+    }
+
+    /// `--init-unset`: the `std_ulogic` leaves of variable `d` (of elaborated shape `shape`, placed
+    /// in `v` in the order of its leaves) for `Body::unset`, with the normal mode's salt; a variable
+    /// whose leaves do not match its shape keeps its process out.
+    fn unset_leaves(&mut self, v: &Val, shape: &Shape, d: DeclId) -> R<()> {
+        fn parts<'a>(v: &'a Val, out: &mut Vec<Option<&'a Part>>) {
+            match v {
+                Val::Part(p) => out.push(Some(p)),
+                Val::Int(_) => out.push(None),
+                Val::Rec(fs) => fs.iter().for_each(|f| parts(f, out)),
+                Val::Null(_) => out.push(None),
+            }
+        }
+        let db = self.db;
+        let mut ps = Vec::new();
+        parts(v, &mut ps);
+        let leaves = shape.leaves();
+        if ps.len() != leaves.len() && yavs_logic::start::unset().is_none() {
+            return Ok(());
+        }
+        if ps.len() != leaves.len() {
+            return Err(format!(
+                "a start value of `--init-unset`: the leaves of the variable `{}` are not one per \
+                 field",
+                db.decls[d].name
+            ));
+        }
+        let decl = &db.decls[d];
+        let salt = yavs_logic::start::inst_salt(
+            yavs_logic::start::var_salt(
+                &db.sources.get(decl.span.file).path,
+                &decl.name.to_string(),
+                decl.span.start,
+            ),
+            &self.e.proc_label(self.p),
+        );
+        for (p, (_, leaf, _)) in ps.into_iter().zip(&leaves) {
+            if let (Some(p), Shape::Scalar { ty, .. }) = (p, leaf)
+                && p.int.is_none()
+                && db.is_std_ulogic(*ty)
+                && let Ref::Loc(w) = p.r
+            {
+                self.unset.push((w, p.full, salt));
+            }
+        }
+        if self.unset.last().is_some_and(|u| u.2 == salt) {
+            self.unset_names.push(decl.name.to_string());
+        }
+        Ok(())
     }
 
     /// Give a variable's leaves their slots: a logic leaf starts at 0 (its `'U'`, counted, unless
@@ -4347,6 +4419,44 @@ impl Lx<'_> {
 
     /// Expression `x`; `hint`: the place it is assigned to, whose shape an aggregate takes.
     fn expr_h(&mut self, x: ExprId, hint: Option<&Val>) -> R<Val> {
+        // An `--init-x` literal: its metavalues get the option's bits, as `yavs.init.x` gives them.
+        if self.x.is_none()
+            && let Some(f) = yavs_logic::start::x()
+            && self.e.x_sites.contains(&x)
+        {
+            let db = self.db;
+            let span = db.exprs[x].span;
+            let salt = yavs_logic::start::salt(&[
+                b"x",
+                db.sources.get(span.file).path.as_bytes(),
+                &span.start.to_le_bytes(),
+            ]);
+            self.x = Some((f, salt));
+            let r = self.expr_in(x, hint);
+            self.x = None;
+            // Every element of an aggregate site is a metavalue: a bit of its own each, also where
+            // the lowering fills the vector with one element's value.
+            return match r? {
+                Val::Part(p) if p.int.is_none() && p.len > 1 => {
+                    let mut val = vec![0u64; words(p.len) as usize];
+                    for el in 0..p.len {
+                        val[el as usize / 64] |= u64::from(f.bit(salt, u64::from(el))) << (el % 64);
+                    }
+                    let mut t = self.tmp(p.len);
+                    self.ops.push(Op::Lit {
+                        dst: t.r,
+                        val: val.into(),
+                    });
+                    t.dims = p.dims;
+                    Ok(Val::Part(t))
+                }
+                v => Ok(v),
+            };
+        }
+        self.expr_in(x, hint)
+    }
+
+    fn expr_in(&mut self, x: ExprId, hint: Option<&Val>) -> R<Val> {
         let db = self.db;
         let ex = &db.exprs[x];
         if let Some(h) = hint
@@ -5148,17 +5258,20 @@ impl Lx<'_> {
         let mut val = vec![0u64; words(n) as usize];
         let mut meta = false;
         for (p, &code) in codes.iter().enumerate() {
-            let bit = match code {
-                2 | 6 => 0,
-                3 | 7 => 1,
-                4 => return Err("a `'Z'` literal: two-state values have no high impedance".into()),
+            // Row-major element `p` from the left is element `n - 1 - p`.
+            let el = n as usize - 1 - p;
+            let bit = match (code, self.x) {
+                (2 | 6, _) => 0,
+                (3 | 7, _) => 1,
+                (4, _) => {
+                    return Err("a `'Z'` literal: two-state values have no high impedance".into());
+                }
+                (0 | 1 | 5 | 8, Some((f, salt))) => u64::from(f.bit(salt, el as u64)),
                 _ => {
                     meta = true;
                     0
                 }
             };
-            // Row-major element `p` from the left is element `n - 1 - p`.
-            let el = n as usize - 1 - p;
             val[el / 64] |= bit << (el % 64);
         }
         if meta {

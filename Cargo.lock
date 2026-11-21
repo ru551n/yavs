@@ -1944,6 +1944,7 @@ dependencies = [
  "yavs-kernel",
  "yavs-lib",
  "yavs-lint",
+ "yavs-logic",
  "yavs-rt",
  "yavs-sem",
  "yavs-std",
@@ -2011,6 +2012,7 @@ dependencies = [
  "yavs-ir",
  "yavs-kernel",
  "yavs-lib",
+ "yavs-logic",
  "yavs-rt",
  "yavs-sem",
  "yavs-std",
@@ -2157,6 +2159,7 @@ dependencies = [
  "yavs-ir",
  "yavs-kernel",
  "yavs-lint",
+ "yavs-logic",
  "yavs-sem",
  "yavs-syntax",
 ]

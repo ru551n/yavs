@@ -275,7 +275,10 @@ impl<'a> Fx<'a, '_> {
             return Ok(v);
         }
         let spine = self.chain_ahead(id)?;
-        let v = self.expr_value(id)?;
+        let mut v = self.expr_value(id)?;
+        if self.cx.opts.init_x && self.cx.x_sites.contains(&id) {
+            v = self.x_value(id, v)?;
+        }
         if spine.iter().any(|x| self.ahead.remove(x).is_some()) {
             return Err(self
                 .cx
@@ -285,6 +288,43 @@ impl<'a> Fx<'a, '_> {
             self.cov_input(id, v);
         }
         Ok(v)
+    }
+
+    /// `--init-x`: the value `v` of the literal `id` with its metavalues replaced by
+    /// `yavs.init.x` (an array in a copy of its own), bits drawn per literal and element.
+    fn x_value(&mut self, id: ExprId, v: V) -> R<V> {
+        let db = self.db;
+        let e = &db.exprs[id];
+        let salt = yavs_logic::start::salt(&[
+            b"x",
+            db.sources.get(e.span.file).path.as_bytes(),
+            &e.span.start.to_le_bytes(),
+        ]);
+        let salt = self.int(salt as i64);
+        match v {
+            V::S(code) => match self.native(
+                "yavs.init.x_code",
+                None,
+                &[code, salt],
+                Some(e.subtype),
+                e.span,
+            )? {
+                Some(v @ V::S(_)) => Ok(v),
+                _ => Err(self.cx.ice(e.span, "a start value that is no scalar")),
+            },
+            V::A(data, desc) => {
+                let tid = self.ty(db.base(e.subtype), e.span)?;
+                let (size, count) = self.layout(tid, desc);
+                let copy = self.alloc_val(size, tid, Some(desc));
+                self.emit(Inst::Copy {
+                    dst: copy,
+                    src: data,
+                    bytes: size,
+                });
+                self.native("yavs.init.x", None, &[copy, count, salt], None, e.span)?;
+                Ok(V::A(copy, desc))
+            }
+        }
     }
 
     fn expr_value(&mut self, id: ExprId) -> R<V> {

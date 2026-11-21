@@ -167,6 +167,11 @@ pub(crate) struct Elab<'d> {
     idle_cache: HashMap<StmtId, Option<Vec<PureRead>>>,
     /// `idle_parts` left out a read that no condition of the instance can meet.
     idle_dead: bool,
+    /// `--init-x`: its literals (`xsites`), the statements holding one (no kernel copy, gate,
+    /// mux or program for them) and the architectures looked at.
+    x_sites: std::collections::HashSet<ExprId>,
+    x_stmts: std::collections::HashSet<StmtId>,
+    x_archs: std::collections::HashSet<UnitId>,
     /// Processes whose drivers are rooted at external names: their drivers are elaborated
     /// once the whole hierarchy is (#93).
     deferred: Vec<(ProcIdx, ScopeId, Vec<Lsp>)>,
@@ -548,7 +553,10 @@ pub(crate) fn elaborate(
     let pkg_uses = package_externals(db)?;
     let mut e = Elab {
         db,
-        m: Model::default(),
+        m: Model {
+            init_unset: cfg.init_unset,
+            ..Model::default()
+        },
         procs: Vec::new(),
         foreign_archs: Vec::new(),
         errors: Vec::new(),
@@ -559,6 +567,9 @@ pub(crate) fn elaborate(
         untaken: Vec::new(),
         idle_cache: HashMap::new(),
         idle_dead: false,
+        x_sites: Default::default(),
+        x_stmts: Default::default(),
+        x_archs: Default::default(),
         deferred: Vec::new(),
         late_guards: Vec::new(),
         pkg_uses,
@@ -797,6 +808,8 @@ pub(crate) fn elaborate(
         elab_calls: std::mem::take(&mut e.m.session.log),
         elab_pkgs: std::mem::take(&mut e.m.session.order),
         elab_printed: e.m.session.init_printed,
+        unset_elems: e.m.unset_elems,
+        x_sites: e.x_sites,
     })
 }
 
@@ -993,6 +1006,10 @@ impl Elab<'_> {
             return Err(Box::new(ice(at, "architecture without HIR")));
         };
         let astmts = stmts.to_vec();
+        // The top-level unit's literals stay as written.
+        if self.cfg.init_x && self.m.hier.scope(s).parent.is_some() && self.x_archs.insert(arch) {
+            crate::xsites::collect(self.db, &astmts, &mut self.x_sites, &mut self.x_stmts);
+        }
         let mut counter = 0;
         self.stmts(s, &estmts, None, &mut counter, depth)?;
         self.stmts(s, &astmts, cfg.as_ref(), &mut counter, depth)?;
@@ -3137,15 +3154,18 @@ impl Elab<'_> {
             Some(_) => self.idle_reads(s, st),
             None => self.idle_comb_reads(s, st),
         };
-        let copy = self.copy_source(s, st);
-        let toggle = self.toggle_source(s, st);
-        let gate = self.gate_source(s, st);
-        let mux = self.mux_source(s, st);
-        let prog = if copy.is_none() && toggle.is_none() && gate.is_none() && mux.is_none() {
-            self.prog_source(s, st)
-        } else {
-            None
-        };
+        // A statement with an `--init-x` literal runs its lowered code, which gives it its value.
+        let native = !self.x_stmts.contains(&st);
+        let copy = self.copy_source(s, st).filter(|_| native);
+        let toggle = self.toggle_source(s, st).filter(|_| native);
+        let gate = self.gate_source(s, st).filter(|_| native);
+        let mux = self.mux_source(s, st).filter(|_| native);
+        let prog =
+            if native && copy.is_none() && toggle.is_none() && gate.is_none() && mux.is_none() {
+                self.prog_source(s, st)
+            } else {
+                None
+            };
         if let Some(p) = self.procs.last_mut() {
             p.idle = idle;
             p.trigger = trigger;
@@ -5499,6 +5519,40 @@ impl Model {
         Ok(())
     }
 
+    /// `--init-unset`: the `'U'` elements of the `std_ulogic` leaves of a signal without an
+    /// initial value get the chosen value, drawn per object path, leaf and element.
+    fn unset_starts(
+        &mut self,
+        db: &Db,
+        s: ScopeId,
+        decl: DeclId,
+        shape: &Shape,
+        vals: &mut [yavs_kernel::Value],
+        f: yavs_logic::start::Fill,
+    ) {
+        use yavs_logic::StdULogic;
+        let path = self.hier.path_name(s, crate::Case::Lrm)
+            + db.decls[decl].name.to_string().to_lowercase().as_str();
+        for (k, ((_, leaf, _), v)) in shape.leaves().iter().zip(vals.iter_mut()).enumerate() {
+            let (Shape::Scalar { ty, .. }, yavs_kernel::Value::Logic(lv)) = (leaf, v) else {
+                continue;
+            };
+            if !crate::eval::is_std_ulogic(db, *ty) {
+                continue;
+            }
+            let salt = yavs_logic::start::salt(&[path.as_bytes(), &(k as u64).to_le_bytes()]);
+            let n = (0..lv.len()).filter(|&i| lv.get(i) == StdULogic::U).count();
+            if n > 0 {
+                let new = yavs_logic::LogicVec::from_fn(lv.len(), |i| match lv.get(i) {
+                    StdULogic::U => StdULogic::from_code_pub(f.code(salt, i as u64)),
+                    c => c,
+                });
+                *lv = new;
+                self.unset_elems += n as u64;
+            }
+        }
+    }
+
     /// Create a signal object in `s` with its leaves.
     #[allow(clippy::too_many_arguments)]
     fn add_obj(
@@ -5526,6 +5580,12 @@ impl Model {
                 ),
             )
         })?;
+        let mut vals = vals;
+        if init.is_none()
+            && let Some(f) = self.init_unset
+        {
+            self.unset_starts(db, s, decl, &shape, &mut vals, f);
+        }
         // Composites resolved as a whole, the signal or its outermost resolved subelements:
         // their leaves are resolved together, resolution below them ignored (#193; LRM
         // 14.7.3.1: a subelement of a resolved signal is not a basic signal).

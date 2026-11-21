@@ -763,6 +763,38 @@ fn dropped_warning(
 /// The region report of `sel` (`--cycle-report`): what joined and what stays in the event kernel,
 /// with reasons; `head` its first line, `undriven` the inputs nothing drives that start with a
 /// metavalue.
+/// At most this many registers without a start value are named in the report.
+const UNSET_MAX: usize = 100;
+
+/// The registers `--init-unset` exercises, by name, sorted: the `std_ulogic` signal leaves the
+/// clocked members without an asynchronous reset write whose object has no initial value, and the
+/// variables of those members without one (`Body::unset_names`, `process: variable v`).
+fn unset_regs(db: &Db, e: &Elaborated, sel: &region::Selection) -> (Vec<String>, Vec<String>) {
+    use yavs_sem::decl::DeclKind;
+    let mut regs = BTreeSet::new();
+    let mut vars = BTreeSet::new();
+    for (pi, b) in &sel.members {
+        if b.kind != Kind::Clocked || b.reset.is_some() {
+            continue;
+        }
+        for &l in &b.writes {
+            let o = e.nets.obj(e.nets.leaf(l).obj);
+            let init = matches!(&db.decls[o.decl].kind, DeclKind::Object(x) if x.default.is_some());
+            let k = (l.0 - o.leaves.0.0) as usize;
+            let sul = (o.shape.leaves().get(k)).is_some_and(|(_, s, _)| {
+                matches!(s, yavs_elab::Shape::Scalar { ty, .. } if db.is_std_ulogic(*ty))
+            });
+            if !init && sul {
+                regs.insert(e.leaf_name(l));
+            }
+        }
+        for v in &b.unset_names {
+            vars.insert(format!("{}: variable {v}", region::where_(db, e, *pi)));
+        }
+    }
+    (regs.into_iter().collect(), vars.into_iter().collect())
+}
+
 fn report(
     db: &Db,
     e: &Elaborated,
@@ -858,6 +890,25 @@ fn report(
         );
         for n in &undriven {
             let _ = writeln!(report, "    {n}");
+        }
+    }
+    let (regs, vars) = unset_regs(db, e, sel);
+    if !regs.is_empty() || !vars.is_empty() {
+        let _ = writeln!(
+            report,
+            "  {} and {} start at 'U': no initial value, written by a cycle-based clocked \
+             process without an asynchronous reset branch (a synchronous reset is not looked \
+             for, processes in the event kernel are not listed); `--init-unset` sets their \
+             start value:",
+            plural(regs.len(), "register signal", "register signals"),
+            plural(vars.len(), "clocked variable", "clocked variables"),
+        );
+        let n = regs.len() + vars.len();
+        for r in regs.iter().chain(&vars).take(UNSET_MAX) {
+            let _ = writeln!(report, "    {r}");
+        }
+        if n > UNSET_MAX {
+            let _ = writeln!(report, "    and {} more", n - UNSET_MAX);
         }
     }
     // Asserts and reports in members are compiled to nothing.
@@ -1173,6 +1224,7 @@ fn built(
     let mut checks: Vec<(lower::Check, Vec<yavs_diag::Span>, usize)> = Vec::new();
     let mut uninit = 0u64;
     let mut useed: Vec<(u32, u32)> = Vec::new();
+    let mut unset: Vec<(u32, u32, u64)> = Vec::new();
     // The bits clocked members keep between edges (word, bits): their signals' elements, their
     // variables and their memory writes' words; only of members whose comparisons the second
     // image may decide otherwise than the normal mode (`Body::keep`).
@@ -1230,6 +1282,7 @@ fn built(
         let clocked = b.kind == Kind::Clocked;
         if clocked {
             state.extend(b.vars.iter().map(|&(w, c)| (base + w, c)));
+            unset.extend(b.unset.iter().map(|&(w, c, s)| (base + w, c, s)));
         }
         // The second image's tables, only where it can run (the default keeps none).
         if clocked && region::exact_meta() {
@@ -2103,6 +2156,7 @@ fn built(
         reports,
         uninit,
         useed,
+        unset,
         state,
         regs: reg_runs(regs),
         oth: region::exact_meta().then_some(oth as usize),
@@ -2168,6 +2222,9 @@ pub(crate) struct Built {
     /// The words of clocked variables without an initial value (first, elements), and the
     /// words that hold state (first, count): the second image of `--cycle-exact-meta`.
     useed: Vec<(u32, u32)>,
+    /// The `std_ulogic` leaves of clocked variables without an initial value (`Body::unset`).
+    #[serde(default)]
+    unset: Vec<(u32, u32, u64)>,
     state: Vec<(u32, u32)>,
     /// The bits clocked members keep between edges: runs of words (first, count, bits).
     regs: Vec<(u32, u32, u64)>,
@@ -2237,7 +2294,7 @@ fn finish(
     let waits = rt::held_waits(&clocks, &b.waits);
     let (words, init, clocks_only, err, log, uninit) =
         (b.words, b.init, b.clocks_only, b.err, b.log, b.uninit);
-    let (useed, state) = (Arc::new(b.useed), Arc::new(b.state));
+    let (useed, state, unset) = (Arc::new(b.useed), Arc::new(b.state), Arc::new(b.unset));
     let two_valued = b.two_valued;
     let regs = Arc::new(b.regs);
     // The second image of `--cycle-exact-meta` ('U' at start, A38): its region process is the
@@ -2356,6 +2413,7 @@ fn finish(
                     rail: None,
                     rail_cfg,
                     useed: useed.clone(),
+                    unset: unset.clone(),
                     state: state.clone(),
                     two: two.clone(),
                     regs: regs.clone(),

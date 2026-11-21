@@ -192,6 +192,19 @@ pub struct RunArgs {
     /// be replayed with `--shuffle=SEED`.
     #[arg(long, value_name = "SEED", num_args = 0..=1, require_equals = true, default_missing_value = "1")]
     shuffle: Option<u64>,
+    /// The start value of what VHDL leaves at `'U'` because no initial value is given: the
+    /// `std_ulogic` elements (vectors, records and arrays of them too) of signals, ports and
+    /// process variables without an initial value. `0`, `1`, or `random[:SEED]`: a bit per element
+    /// drawn from SEED (a new one each run when none is given; the seed is printed so that a run can
+    /// be repeated). Integers and enumerations keep `'left`. Default: `'U'`.
+    #[arg(long, value_name = "0|1|random[:SEED]", value_parser = parse_fill)]
+    init_unset: Option<yavs_logic::start::Fill>,
+    /// The value of the metavalue literals the design assigns (`'U'`, `'X'`, `'W'` anywhere,
+    /// `'-'` in a default branch, alone or as `(others => ...)`), in the processes below the
+    /// top-level unit: `0`, `1`, or `random[:SEED]` as for `--init-unset`. Literals in conditions,
+    /// comparisons, calls, subprograms and the top-level unit stay as written.
+    #[arg(long, value_name = "0|1|random[:SEED]", value_parser = parse_fill)]
+    init_x: Option<yavs_logic::start::Fill>,
     /// Count coverage and write the run's coverage database (`--cov-file`). LETTERS selects the
     /// kinds, in any order: `s` statement, `b` branch, `c` condition, `e` expression, `t` toggle,
     /// `f` fsm, `a` assert, `m` combination; for example `--cov=sbt`. No kind is on by default.
@@ -392,6 +405,40 @@ fn parse_size(s: &str) -> Result<u64, String> {
         Some(b) => Ok(b),
         None => Err(format!("`{s}` is too large")),
     }
+}
+
+/// `--init-unset`, `--init-x`: `0`, `1`, `random` (a seed of its own) or `random:SEED`.
+pub(crate) fn parse_fill(s: &str) -> Result<yavs_logic::start::Fill, String> {
+    use yavs_logic::start::Fill;
+    let t = s.trim();
+    match t {
+        "0" => return Ok(Fill::Zero),
+        "1" => return Ok(Fill::One),
+        "random" => return Ok(Fill::Random(fresh_seed())),
+        _ => {}
+    }
+    if let Some(n) = t.strip_prefix("random:") {
+        return n.parse().map(Fill::Random).map_err(|_| {
+            format!(
+                "`{n}` is not a seed: give a whole number from 0 to 2**64 - 1, such as `random:42`"
+            )
+        });
+    }
+    let hint =
+        yavs_diag::suggest::tail(&t.to_lowercase(), "value", ["0", "1", "random"].into_iter());
+    Err(format!(
+        "`{s}` is not a start value: give `0`, `1`, `random` or `random:SEED`{hint}"
+    ))
+}
+
+/// A seed for `random` without one: different in each run.
+fn fresh_seed() -> u64 {
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64);
+    let s = yavs_logic::start::salt(&[&t.to_le_bytes(), &std::process::id().to_le_bytes()]);
+    // Short enough to type again.
+    s % 1_000_000_000
 }
 
 /// `--threads`: a fixed number, or `auto` (`crate::threads`).
@@ -841,6 +888,8 @@ fn elaborate(
             packs: std::env::var("YAVS_PACKS").map_or(true, |v| v != "off"),
             keep_values,
             values,
+            init_unset: yavs_logic::start::unset(),
+            init_x: yavs_logic::start::x().is_some(),
             ..yavs_elab::ElabConfig::default()
         };
         yavs_elab::elaborate(&mut db, t, &c.generics, &cfg)
@@ -1548,8 +1597,12 @@ fn prepare(
         cov_expression: kind(CovKindArg::Expression),
         cov_combination: kind(CovKindArg::Combination),
         cov_directives: a.common.coverage_directives == DirectivesArg::Apply,
+        init_unset: a.init_unset.is_some(),
+        init_x: a.init_x.is_some(),
         ..yavs_elab::LowerOptions::default()
     };
+    // Read by elaboration, the lowering's natives and cycle mode.
+    yavs_logic::start::set(a.init_unset, a.init_x);
     let libs = match install_foreign(&a.common.load) {
         Ok(libs) => libs,
         Err(d) => {
@@ -1579,6 +1632,11 @@ fn prepare(
             a.plusargs,
             a.source_map,
             a.cycle_exact_meta,
+        ) + &format!(
+            "|{:?}|{:?}",
+            a.init_unset
+                .map(|f| f.text().split(':').next().map(str::to_string)),
+            a.init_x.map(|f| f.text()),
         );
         yavs_cycle::analysis_cache(
             (!c.no_cache && !work.is_empty()).then(|| std::path::Path::new(work)),
@@ -1747,6 +1805,9 @@ fn prepare(
     };
     if let Some(seed) = a.shuffle {
         out.emit(&none, &shuffle_note(seed));
+    }
+    for d in init_notes(a.init_unset, a.init_x, e.unset_elems) {
+        out.emit(&none, &d);
     }
     let stop = match &a.stop_time {
         None => yavs_kernel::Time::MAX,
@@ -2757,6 +2818,36 @@ fn shuffle_note(seed: u64) -> Diagnostic {
         "",
         format!("process order is shuffled with seed {seed}; replay it with `--shuffle={seed}`"),
     )
+}
+
+/// What `--init-unset` and `--init-x` chose, at the start of the run: the seed of `random`, so
+/// that the run can be repeated, and how many signal elements had no initial value.
+fn init_notes(
+    unset: Option<yavs_logic::start::Fill>,
+    x: Option<yavs_logic::start::Fill>,
+    elems: u64,
+) -> Vec<Diagnostic> {
+    let note = |t: String| Diagnostic::new(yavs_diag::Severity::Note, "", t);
+    let mut v = Vec::new();
+    if let Some(f) = unset {
+        let s = if elems == 1 { "" } else { "s" };
+        v.push(note(format!(
+            "`--init-unset={}`: {elems} signal and port element{s} without an initial value start \
+             at the chosen value, and so do the variables of processes; repeat the run with \
+             `--init-unset={}`",
+            f.text(),
+            f.text()
+        )));
+    }
+    if let Some(f) = x {
+        v.push(note(format!(
+            "`--init-x={}`: metavalue literals the design assigns take the chosen value; repeat \
+             the run with `--init-x={}`",
+            f.text(),
+            f.text()
+        )));
+    }
+    v
 }
 
 fn with_seed(d: Diagnostic, shuffle: Option<u64>) -> Diagnostic {

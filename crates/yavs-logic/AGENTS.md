@@ -22,6 +22,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `src/nibbles.rs` | `Nibbles`: 4-bit codes, table lookups (behind `--features nibbles` as the default alias) |
 | `src/vec.rs` | `Logic<R>`: the vector API used by the rest of yavs; `LogicVec = Logic<DefaultRepr>` in `lib.rs` |
 | `src/wide.rs` | Block-slice kernels over `[Block]` plus an element offset (copy, equality, `is_x`, `?=`, many-source resolution, `Lane`/`L4` four-blocks-at-a-time arithmetic); used by `Planes`, the kernel's `Buf` and the ieee natives |
+| `src/start.rs` | `Fill` (`--init-unset`, `--init-x`: `0`, `1`, bits drawn from a seed as a pure function of seed, salt and element), `salt`, the run's two choices (`set`, `unset`, `x`), read by elaboration, the lowering's natives and cycle mode |
 | `src/bitvec.rs` | `BitVec`: plain `u64` words for 0/1 vectors, arithmetic and conversions |
 | `tests/ieee_tables.rs` | Tables checked against the vendored `lib/ieee` std_logic_1164 body |
 | `tests/layouts.rs` | Both layouts vs a `Vec<StdULogic>` reference: exhaustive pairs/triples at every bit position, proptest |

@@ -52,6 +52,14 @@ as ``--name=value``.
        have no waves; what it changes is in :doc:`cycle-mode`, and the flags are in the :doc:`cli-reference` (``--cycle``). A test that also has coverage,
        ``--yavs-debug``, ``--yavs-interactive`` or ``--yavs-surfer`` fails before yavs starts, naming both. Not passed
        to ``elab``. To see what would join, set ``yavs.sim_flags`` to ``["--cycle-report"]`` for one test with ``yavs.cycle`` ``"off"``: yavs prints the report and does not simulate, so that test fails. ``yavs.sim_flags`` ``["--cycle-exact-meta"]`` with ``yavs.cycle`` ``"on"`` or ``"strict"`` keeps the exact metavalue rules for a test, and the values in the message of a failed check.
+   * - ``yavs.init_unset``
+     - ``yavs run --init-unset=VALUE``: the start value of ``std_ulogic`` elements of signals and process variables
+       without an initial value, ``"0"``, ``"1"``, ``"random"`` or ``"random:SEED"`` (``0`` and ``1`` may be integers);
+       by default they start at ``'U'`` (:ref:`start-values`). Checked when it is set: a wrong value fails at once and
+       names the closest one. Not passed to ``elab``. A ``--init-unset`` in ``yavs.sim_flags`` wins.
+   * - ``yavs.init_x``
+     - ``yavs run --init-x=VALUE``: the value of the metavalue literals the design assigns (:ref:`start-values`), the
+       same values as ``yavs.init_unset``. Not passed to ``elab``. A ``--init-x`` in ``yavs.sim_flags`` wins.
    * - ``yavs.cov_embed_sources``
      - ``yavs run --cov-embed-sources``: store the source text in the database, so the HTML report needs no
        checkout. The source text then travels with the database (:doc:`coverage`).

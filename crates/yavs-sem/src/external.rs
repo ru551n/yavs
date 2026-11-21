@@ -538,7 +538,7 @@ impl Db {
 
     /// The expressions of the constraint of subtype `st`: the bounds of a declared object can
     /// name an external object (#1099).
-    fn subtype_exprs(&self, st: crate::ids::SubtypeId, f: &mut dyn FnMut(ExprId)) {
+    pub(crate) fn subtype_exprs(&self, st: crate::ids::SubtypeId, f: &mut dyn FnMut(ExprId)) {
         fn go(c: &crate::types::Constraint, f: &mut dyn FnMut(ExprId)) {
             use crate::types::{Constraint, RangeC};
             match c {

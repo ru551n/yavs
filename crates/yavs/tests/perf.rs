@@ -953,6 +953,9 @@ case!(
         ("ops", Max(6323)),
     ]
 );
+// Scalar out formals assigned on every path before any read (if/else, case) take no default on
+// entry (#1184): with the default stored at each call the design runs 4948 ops.
+case!(out_paths, "s=", &[], [("ops", Max(4480))]);
 case!(
     inline_calls,
     "acc=",

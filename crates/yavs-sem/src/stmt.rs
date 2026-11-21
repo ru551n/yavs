@@ -659,32 +659,104 @@ impl Db {
         self.waits_below(self.entity(d), &mut FxHashSet::default(), false)
     }
 
-    /// Whether the body of `sp` assigns its `out` formal `p` whole before anything can read it,
-    /// so the formal's temporary needs no copy in: the first statement is `p := v` with `v` not
-    /// naming `p`, and the body declares nothing but the parameters.
+    /// Whether the body of `sp` assigns its `out` formal `p` whole on every path before anything
+    /// can read it, so the formal needs neither the actual's value nor its default on entry: the
+    /// body declares nothing but the parameters (no nested subprogram can see `p`) and
+    /// `definitely_assigns` holds for its statements.
     pub fn assigns_first(&self, sp: &crate::decl::Subprogram, p: &crate::decl::Param) -> bool {
-        let db = self;
-        let (crate::hir::Mode::Out, Some(f), crate::decl::Body::Hir { scope, stmts }) =
+        let (Mode::Out, Some(f), crate::decl::Body::Hir { scope, stmts }) =
             (p.mode, p.decl, &sp.body)
         else {
             return false;
         };
-        let Some(StmtKind::VarAssign {
-            target,
-            rhs: crate::hir::Rhs::Simple(v),
-        }) = stmts.first().map(|&s| &db.stmts[s].kind)
-        else {
-            return false;
+        self.scopes[*scope].order.iter().all(
+            |&d| matches!(&self.decls[d].kind, DeclKind::Object(o) if o.role == ObjRole::Param),
+        ) && self.definitely_assigns(stmts, f) == Some(true)
+    }
+
+    /// Conservative definite assignment of variable `f` through `stmts`: `Some(true)` when every
+    /// path assigns `f` whole before naming it, `Some(false)` when some path may name it or leave
+    /// first (`return`, `wait`, a loop that names it or returns, a block), `None` when no path
+    /// does either.
+    fn definitely_assigns(&self, stmts: &[StmtId], f: DeclId) -> Option<bool> {
+        let all = |bodies: &mut dyn Iterator<Item = &[StmtId]>| {
+            let mut every = true;
+            for b in bodies {
+                match self.definitely_assigns(b, f) {
+                    Some(false) => return Some(false),
+                    r => every &= r.is_some(),
+                }
+            }
+            every.then_some(true)
         };
-        let mut reads = false;
-        db.walk_expr(*v, &mut |y| {
-            reads |= matches!(db.exprs[y].kind, crate::hir::ExprKind::Obj(o) if o == f);
+        for &s in stmts {
+            let r = match &self.stmts[s].kind {
+                _ if self.names_in(s, f) => Some(false),
+                StmtKind::VarAssign { target, rhs } if self.is_obj(target.expr, f) => match rhs {
+                    Rhs::Conditional(alts) => {
+                        alts.last().and_then(|(_, c)| c.is_none().then_some(true))
+                    }
+                    _ => Some(true),
+                },
+                StmtKind::If { branches, else_ } => all(&mut branches
+                    .iter()
+                    .map(|(_, b)| &b[..])
+                    .chain(std::iter::once(else_.as_deref().unwrap_or(&[])))),
+                StmtKind::Case { alts, .. } => all(&mut alts.iter().map(|(_, b)| &b[..])),
+                StmtKind::Loop { .. } => {
+                    let mut stack = self.stmt_children(s);
+                    let mut bad = false;
+                    while let Some(x) = stack.pop() {
+                        bad |= self.names_in(x, f)
+                            || matches!(
+                                self.stmts[x].kind,
+                                StmtKind::Return(_) | StmtKind::SeqBlock { .. }
+                            );
+                        if bad {
+                            break;
+                        }
+                        stack.extend(self.stmt_children(x));
+                    }
+                    bad.then_some(false)
+                }
+                StmtKind::Return(_)
+                | StmtKind::Wait { .. }
+                | StmtKind::Next { .. }
+                | StmtKind::Exit { .. }
+                | StmtKind::SeqBlock { .. } => Some(false),
+                _ => None,
+            };
+            if r.is_some() {
+                return r;
+            }
+        }
+        None
+    }
+
+    /// Whether the expressions of statement `s` itself (not its child statements) name `f`,
+    /// other than as the whole target of a variable assignment.
+    fn names_in(&self, s: StmtId, f: DeclId) -> bool {
+        let whole = match &self.stmts[s].kind {
+            StmtKind::VarAssign { target, .. } if self.is_obj(target.expr, f) => Some(target.expr),
+            _ => None,
+        };
+        let mut hit = false;
+        self.stmt_exprs(s, &mut |e, _| {
+            if Some(e) != whole {
+                self.walk_expr(e, &mut |y| {
+                    hit |= self.is_obj(y, f)
+                        || matches!(
+                            self.exprs[y].kind,
+                            ExprKind::Attr { prefix: crate::hir::AttrPrefix::Entity(o), .. } if o == f
+                        );
+                });
+            }
         });
-        matches!(db.exprs[target.expr].kind, crate::hir::ExprKind::Obj(o) if o == f)
-            && !reads
-            && db.scopes[*scope].order.iter().all(
-                |&d| matches!(&db.decls[d].kind, DeclKind::Object(o) if o.role == ObjRole::Param),
-            )
+        hit
+    }
+
+    fn is_obj(&self, e: ExprId, f: DeclId) -> bool {
+        matches!(self.exprs[e].kind, ExprKind::Obj(o) if o == f)
     }
 
     fn waits_below(&self, d: DeclId, seen: &mut FxHashSet<DeclId>, here: bool) -> Option<Span> {

@@ -2008,9 +2008,13 @@ which tools/difftest parses.
   actual's value; an actual passed by reference takes it once every actual of the call is
   evaluated, and only where nothing else reaches it during the call (`Fx::checked_after`), else it
   goes through the temporary, so a body that reads the actual by another path still sees its old
-  value. Nothing is stored where the body's first statement assigns the whole formal
-  (`Fx::assigns_first`), nor for native and predefined bodies, which set their outs themselves
-  (TEXTIO READ leaves VALUE undefined on failure, 16.4, so the actual's value stays). A formal
+  value. Nothing is stored where the body assigns the whole formal on every path before naming it
+  (`Db::assigns_first`: a conservative definite assignment through `if`/`elsif`/`else`, `case`,
+  a conditional assignment with a final `else` and statements that do not name the formal; a
+  `return`, a loop that names it or returns, a block, or a body that declares anything, is not;
+  a read of the actual by another path before the assignment sees its old value, as the LRM's
+  copy would), nor for native and predefined bodies, which set their outs themselves (TEXTIO
+  READ leaves VALUE undefined on failure, 16.4, so the actual's value stays). A formal
   conversion already started at `'left`. `Db::assigns_first` (yavs-sem) is the one test of a
   body that assigns first, used by both modes.
 - **Cycle mode** (`yavs-cycle`, `Lx::formals`): the formal is still bound by reference and

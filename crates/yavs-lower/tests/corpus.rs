@@ -464,6 +464,7 @@ const PASS: &[&str] = &[
     "process/copy_back_range_shared",
     "process/copy_back_range_wait",
     "process/out_formal_entry",
+    "process/out_formal_paths",
     "process/copy_back_range_file",
     "process/copy_back_nested_calls",
     "process/copy_back_name_once",

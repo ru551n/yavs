@@ -3679,6 +3679,11 @@ fn loop_groups_run_in_the_region_and_give_the_same_result() {
             err.contains("cycle mode: 11 of 14 processes run cycle-based"),
             "{err}"
         );
+        // Without the skip check the settle under a mark is walked by its bits; with every check
+        // the confirm pass after each group (steps without units) runs among them.
+        let env = [("YAVS_CYCLE_SKIP_CHECK", ""), ("YAVS_CYCLE_CHECKS", "all")];
+        let (walked, err) = run_vars(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_loops", &env);
+        assert_eq!(walked, normal, "{t:?}\n{err}");
         let names = [
             "cycle_loops.pa",
             "cycle_loops.pb",
@@ -4939,7 +4944,7 @@ fn a_clocked_body_whose_inputs_did_not_change_is_skipped() {
                         run_vars(&dir, &[&t[..], flags].concat(), "cycle_blockskip", &env);
                     assert_eq!(cycle, normal, "width {w} {t:?} {flags:?} {env:?}\n{err}");
                     assert!(
-                        err.contains("cycle mode: 9 of 13 processes run cycle-based"),
+                        err.contains("cycle mode: 12 of 15 processes run cycle-based"),
                         "{w}: {err}"
                     );
                     let n = |what: &str| -> u64 {

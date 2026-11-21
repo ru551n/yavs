@@ -304,11 +304,15 @@ impl Code {
         mark: Option<&[u64]>,
         guards: bool,
     ) -> Result<(), u32> {
-        // The settle with a mark: only the steps it holds and those without units, found by
-        // their bits (a wake reaching few steps walks few).
+        // The settle with a mark that holds a quarter of the steps or fewer: only those and the
+        // steps without units, found by their bits (a wake reaching few steps walks few).
         if let (Some(m), Some(fx)) = (mark, &self.fixed)
             && !self.skip_check
             && rs.len() == self.settle_units.len()
+            && 4 * (m.iter().zip(&fx[..]))
+                .map(|(m, f)| (m | f).count_ones() as usize)
+                .sum::<usize>()
+                <= rs.len()
         {
             let mut i = 0;
             while i < rs.len() {

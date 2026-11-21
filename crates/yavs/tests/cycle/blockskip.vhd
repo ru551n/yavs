@@ -3,8 +3,10 @@
 -- register read by its writer and another body: next-state words); `q` loads `din xor dd`; `rr`
 -- counts to 3 with an asynchronous reset `arst` from outside; `x` counts to 3, cleared by `rq`, a
 -- register of `cb`; `acc` is a clocked variable adding `din` while `go` holds (`seen`, one starting
--- at 'U', runs the second image of the exact contract until then); `v(idx) <= din(0)` writes a
--- vector at a run-time index, `mv(idx) := din(0)` a variable at one (`vq` sees it an edge later);
+-- at 'U', runs the second image of the exact contract until then), `c2` counts in the same edges
+-- and only `r2` reads it (two bodies that change in one edge); `v(idx) <= din(0)` writes a
+-- vector at a run-time index, `mv(idx) := din(0)` a variable at one while `go` holds (`vq` sees
+-- it an edge later, with no input moved in between);
 -- `mem` is a memory written at `wa` while `we` holds. On `cb`: `rq` loads `trig`, `z` loads
 -- `q xor sat` (registers of the other clock), `mq` reads `mem` at `ra`.
 -- The settle: `y` from `q` and `x`, `mo` from `mem`.
@@ -21,7 +23,7 @@ architecture a of cycle_blockskip is
   signal ca, cb, en, dd, go, arst, trig, rq, we : std_ulogic := '0';
   signal din, q, w2, z, y, mo, mq, accq : std_ulogic_vector(W - 1 downto 0) := (others => '0');
   signal v, vq : std_ulogic_vector(W - 1 downto 0) := (others => '0');
-  signal cnt, sat : unsigned(W - 1 downto 0) := (others => '0');
+  signal cnt, sat, c2, r2 : unsigned(W - 1 downto 0) := (others => '0');
   signal rr, x : unsigned(1 downto 0) := "00";
   signal wa, ra : natural range 0 to 15 := 0;
   signal idx : natural range 0 to 255 := 0;
@@ -87,12 +89,28 @@ begin
     end if;
   end process;
 
+  pc : process (ca)
+  begin
+    if rising_edge(ca) then
+      if go = '1' then
+        c2 <= c2 + 1;
+      end if;
+    end if;
+  end process;
+
+  pd : process (ca)
+  begin
+    if rising_edge(ca) then
+      r2 <= c2;
+    end if;
+  end process;
+
   pz : process (ca)
-    variable mv : std_ulogic_vector(W - 1 downto 0) := (others => '1');
+    variable mv : std_ulogic_vector(W - 1 downto 0) := (others => '0');
   begin
     if rising_edge(ca) then
       vq <= mv;
-      if we = '1' and (idx mod W) = idx then
+      if go = '1' and (idx mod W) = idx then
         mv(idx) := din(0);
       end if;
     end if;
@@ -183,7 +201,7 @@ begin
       report "t=" & time'image(now) & " cnt=" & to_hstring(cnt) & " sat=" & to_hstring(sat)
         & " q=" & to_hstring(q) & " w2=" & to_hstring(w2) & " rr=" & to_string(rr)
         & " x=" & to_string(x) & " acc=" & to_hstring(accq) & " v=" & to_hstring(v)
-        & " vq=" & to_hstring(vq) & " z=" & to_hstring(z) & " y=" & to_hstring(y) & " mo=" & to_hstring(mo)
+        & " vq=" & to_hstring(vq) & " r2=" & to_hstring(r2) & " z=" & to_hstring(z) & " y=" & to_hstring(y) & " mo=" & to_hstring(mo)
         & " mq=" & to_hstring(mq);
     end if;
   end process;

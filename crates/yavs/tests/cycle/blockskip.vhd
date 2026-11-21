@@ -9,7 +9,7 @@
 -- it an edge later, with no input moved in between);
 -- `mem` is a memory written at `wa` while `we` holds. On `cb`: `rq` loads `trig`, `z` loads
 -- `q xor sat` (registers of the other clock), `zs` loads `sl`, which toggles at the edges of `ca`
--- where `en` or `go` holds, `zp` loads `sp`, which toggles at every seventh (one class
+-- where `en` or `go` holds, `zp` loads `sp`, which toggles at every 23rd (one class
 -- untracked while the other is not, at every phase of the turns), `mq` reads `mem` at `ra`.
 -- The settle: `y` from `q` and `x`, `mo` from `mem`, `ce` from `e2`, an input changed in the
 -- delta of every seventh edge late in the run, which `qe` sees through it an edge later.
@@ -24,7 +24,7 @@ end entity;
 architecture a of cycle_blockskip is
   type mem_t is array (0 to 15) of std_ulogic_vector(W - 1 downto 0);
   signal ca, cb, en, dd, e2, ce, qe, sl, zs, sp, zp, go, arst, trig, rq, we : std_ulogic := '0';
-  signal ic : natural range 0 to 6 := 0;
+  signal ic : natural range 0 to 22 := 0;
   signal din, q, w2, z, y, mo, mq, accq : std_ulogic_vector(W - 1 downto 0) := (others => '0');
   signal v, vq : std_ulogic_vector(W - 1 downto 0) := (others => '0');
   signal cnt, sat, c2, r2 : unsigned(W - 1 downto 0) := (others => '0');
@@ -106,7 +106,7 @@ begin
       if en = '1' or go = '1' then
         sl <= not sl;
       end if;
-      if ic = 6 then
+      if ic = 22 then
         ic <= 0;
         sp <= not sp;
       else

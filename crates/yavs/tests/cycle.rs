@@ -4974,7 +4974,7 @@ fn a_clocked_body_whose_inputs_did_not_change_is_skipped() {
                         run_vars(&dir, &[&t[..], flags].concat(), "cycle_blockskip", &env);
                     assert_eq!(cycle, normal, "width {w} {t:?} {flags:?} {env:?}\n{err}");
                     assert!(
-                        err.contains("cycle mode: 12 of 15 processes run cycle-based"),
+                        err.contains("cycle mode: 15 of 18 processes run cycle-based"),
                         "{w}: {err}"
                     );
                     let n = |what: &str| -> u64 {

@@ -8017,6 +8017,44 @@ fn the_second_image_keeps_every_word_of_a_wide_register() {
     }
 }
 
+/// Combinational choices on a 'U' never show a 'U' the normal mode does not have: where the
+/// region's image reads the 'U' as 0 and takes a branch the normal mode does not (`s = '0'`,
+/// `unsigned(ad) < 2`), the member's outputs take the region's values on the second image too;
+/// a 'U' that reaches an output without a choice still shows. Widths 1 to 128.
+#[test]
+fn combinational_choices_on_a_u_show_no_u_the_normal_mode_lacks() {
+    let dir = tempdir("cycle-railcomb");
+    analyze(&dir, "railcomb.vhd", include_str!("cycle/railcomb.vhd"));
+    for w in [1, 63, 64, 65, 128] {
+        let g = format!("-gW={w}");
+        for t in tiers() {
+            let t = [&t[..], &[&g[..]]].concat();
+            let notes = |l: Vec<String>| -> Vec<String> {
+                l.into_iter().filter(|x| x.contains(" yd=")).collect()
+            };
+            let (zero, u) = ("0".repeat(w), "U".repeat(w));
+            let want = format!("y0={zero} y1={zero} yn={zero} yl={zero} yd={u}");
+            let (normal, _) = run(&dir, &t, "cycle_railcomb");
+            let normal = notes(normal);
+            assert!(
+                normal.len() == 1 && normal[0].ends_with(&want),
+                "{normal:?}"
+            );
+            let exact = [&t[..], &["--cycle", "--cycle-exact-meta"]].concat();
+            let (cycle, err) = run(&dir, &exact, "cycle_railcomb");
+            let cycle = notes(cycle);
+            assert!(
+                cycle.len() == 1 && cycle[0].ends_with(&want),
+                "{w}: {cycle:?}\n{err}"
+            );
+            assert!(
+                err.contains("second image: still followed when the run ended"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
 /// `YAVS_CYCLE_RAIL` takes `off`, `no-reseed` and `cap=N`; another value is an error naming
 /// them, before the run.
 #[test]

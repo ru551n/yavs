@@ -392,11 +392,13 @@ A cycle-based process computes with ``0`` and ``1`` only.
   - choices and conversions on such a value in a combinational process: the second set takes the branch the
     region's own values take (``=``, ``/=``, ``if s then``, ``case``, ``std_match``, ``numeric_std``
     comparisons, ``to_integer`` as an index, ``to_01`` and ``to_bit``). Where the region's choice is the normal mode's (``s = '1'`` is false for a
-    ``'U'``, ``to_integer`` of a ``'U'`` address is 0 and reads element 0), the result is the normal mode's; the
-    second set never shows a ``'U'`` for a choice where the normal mode has a value. This holds where the value
-    compared is a signal (a register, a port, a field or slice of one); a comparison of a variable, of a value
-    computed first, or of an element chosen at run time takes the branch its own value gives (``?=`` too, which
-    gives ``'U'`` in the normal mode).
+    ``'U'``, ``to_integer`` of a ``'U'`` address is 0 and reads element 0), the result is the normal mode's.
+    When a value compared there is not the same on the second set (it depends on a ``'U'``), the region's choice
+    may not be the normal mode's, so everything the process drives takes the region's values on the second set
+    too: such a combinational process shows no ``'U'``, also where the normal mode has one. This holds where the
+    value compared is a signal (a register, a port, a field or slice of one); a comparison of a variable, of a
+    value computed first, or of an element chosen at run time takes the branch its own value gives (``?=`` too,
+    which gives ``'U'`` in the normal mode).
   - Integers have no ``'U'``: they start at ``'left`` in both sets of values, as in the normal mode.
 
   Where it still differs from the normal mode:
@@ -404,10 +406,12 @@ A cycle-based process computes with ``0`` and ``1`` only.
   - The region's own set of values reads a ``'U'`` as ``0``. Where that takes the branch the normal mode does not
     (``y <= a when s = '0' else b`` with ``s`` ``'U'``: the normal mode gives ``b``), the result is the region's
     (``a``), as without the second image.
-  - A clocked process makes its choices on each set's own values: a choice on a ``'U'`` gives ``'U'`` where
-    the two branches differ (``if s = '1'`` where the normal mode takes neither), and an index of a ``'U'``
-    address may fail its range check on the second set, which then ends (taking the region's choices there too
-    made a ``'U'`` in a CPU's cache the normal mode does not have; the cause is not found yet).
+  - A clocked process makes its choices on each set's own values: a choice on a ``'U'`` may show ``'U'``
+    where the normal mode has a value (``if s = '1' then q <= u; else q <= b; end if;`` with ``s`` and ``u``
+    ``'U'``: the normal mode gives ``b``), and an index of a ``'U'`` address may fail its range check on the
+    second set, which then ends. Taking the region's choices there instead keeps a ``'U'`` that comes from a
+    memory read at a ``'U'`` address (as the normal mode does), which then reaches such choices further on: in a
+    CPU this made a ``'U'`` in its cache the normal mode does not have.
   - A choice on a variable or a value computed first (not a signal) may differ between the two sets: then the
     bits it decides show ``'U'`` even where the normal mode has a value.
   - So a clocked process with a choice keeps a

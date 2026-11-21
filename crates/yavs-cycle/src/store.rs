@@ -22,7 +22,7 @@ const INDEX: &str = "cyc3i";
 /// megabytes each, per test case, and push the code its test cases share out of the store.
 const PER_DESIGN: usize = 16;
 /// Of the payload's encoding: changed with any type of `Selection` or `Built`.
-const FORMAT: &str = "8";
+const FORMAT: &str = "9";
 /// The payloads of `cyc3` and `cyc3c` entries, by a hash of their bytes: an entry holds the hex
 /// of its payload's key, so test cases whose analyses come out the same keep it once.
 const PAYLOAD: &str = "cyc3p";

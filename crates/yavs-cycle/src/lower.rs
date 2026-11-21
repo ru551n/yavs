@@ -1189,6 +1189,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         uninit: 0,
         useed: Vec::new(),
         sure: HashSet::new(),
+        unsure: None,
         checks: Vec::new(),
         at: db.stmts[p.stmt].span,
         unrolled: 0,
@@ -1287,6 +1288,9 @@ struct Lx<'a> {
     /// Under `--cycle-exact-meta`: booleans computed from the region's values on every image
     /// (`Lx::other`), for `Body::keep`.
     sure: HashSet<Ref>,
+    /// Under `--cycle-exact-meta`: a word set on the second image when an operand `Lx::other`
+    /// reads there differs from the region's (a combinational member, `Lx::body`).
+    unsure: Option<Ref>,
     checks: Vec<(Check, Vec<Span>)>,
     /// The place new check sites report: the statement being lowered.
     at: Span,
@@ -1310,8 +1314,8 @@ impl Lx<'_> {
     fn body(mut self, kind: Kind, clock: Option<Clock>, reset: Option<(LeafId, u32, u8)>) -> Body {
         // A combinational member that drives a signal it reads reads it as of its own run, which
         // the region's image no longer holds at the end of that run: its own value there.
-        // A clocked member reads its own image: taking the region's choices there made a 'U'
-        // the normal mode does not have (Microwatt's cache, 2026-11-19, cause not found yet);
+        // A clocked member reads its own image: taking the region's choices there kept a memory
+        // read's 'U' that then met clocked choices further on (Microwatt's cache, 2026-11-21);
         // so its conditions are none of `sure` and it keeps registers (`Body::keep`).
         if kind == Kind::Clocked {
             self.ops = all_own(std::mem::take(&mut self.ops));
@@ -1322,6 +1326,21 @@ impl Lx<'_> {
             sig_writes(&self.ops, &mut w);
             if !w.is_empty() {
                 self.ops = own_sigs(std::mem::take(&mut self.ops), &w);
+            }
+            if let Some(u) = self.unsure {
+                let collapse = self.collapse();
+                self.ops.insert(
+                    0,
+                    Op::Lit {
+                        dst: u,
+                        val: Box::new([0]),
+                    },
+                );
+                self.ops.push(Op::If {
+                    cond: u,
+                    then: collapse,
+                    else_: Vec::new(),
+                });
             }
         }
         let reports = (self.loud.borrow().iter())
@@ -6617,12 +6636,80 @@ impl Lx<'_> {
             len: p.full,
             oth: Ref::Oth,
         });
-        Some(Part {
+        let oth = Part {
             r: o,
             fresh: true,
             leaf: None,
             ..*p
-        })
+        };
+        if self.p.trigger.is_none() {
+            // The second image's own value differs: the region's choice may not be the normal
+            // mode's, so the member's outputs take the region's values (`Lx::body`).
+            let (a, b) = (self.whole(*p), self.whole(oth));
+            let t = self.tmp(1);
+            self.ops.push(Op::VecEq {
+                dst: t.r,
+                a,
+                b,
+                len: p.len,
+                ne: true,
+            });
+            let u = match self.unsure {
+                Some(u) => u,
+                None => {
+                    let u = self.loc(1);
+                    *self.unsure.insert(u)
+                }
+            };
+            self.ops.push(Op::Gate {
+                g: Gate::Or,
+                dst: u,
+                a: u,
+                b: t.r,
+                len: 1,
+            });
+        }
+        Some(oth)
+    }
+
+    /// Every element the member drives, set to the region's value (`Op::Other`): on the second
+    /// image after a choice on an operand whose value there differs from the region's, the
+    /// region's choice may not be the normal mode's, and a `'U'` it would show can be one the
+    /// normal mode does not have (`y <= u when s = '0' else b`, `s` and `u` 'U').
+    fn collapse(&mut self) -> Vec<Op> {
+        let nets = &self.e.nets;
+        let mut masks: std::collections::BTreeMap<u32, (u32, Vec<u64>)> = Default::default();
+        for &l in &self.writes {
+            let (leaf, at) = (nets.leaf(l), nets.loc[l.index()]);
+            let n = nets.signal_len(at.signal);
+            let logic = leaf.ty.elem == yavs_kernel::Elem::Logic;
+            let full = if logic { n } else { 64 * n };
+            let m = masks
+                .entry(at.signal.0)
+                .or_insert_with(|| (full, vec![0; words(full) as usize]));
+            let (lo, len) = if logic {
+                (at.base, leaf.ty.len)
+            } else {
+                (0, full)
+            };
+            set_bits(&mut m.1, lo, len);
+        }
+        let mut ops = Vec::new();
+        for (k, (full, mask)) in masks {
+            let t = self.loc(words(full));
+            ops.push(Op::Other {
+                dst: t,
+                src: Ref::Sig(k),
+                len: full,
+                oth: Ref::Oth,
+            });
+            ops.push(Op::Blend {
+                dst: Ref::Sig(k),
+                src: t,
+                mask: mask.into(),
+            });
+        }
+        ops
     }
 
     /// The integer `i` as the region's image holds it ([`Lx::other`]): a signal's, or a literal.

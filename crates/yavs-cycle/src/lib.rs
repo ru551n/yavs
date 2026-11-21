@@ -847,11 +847,19 @@ fn report(
                 Kind::Comb => "combinational",
             };
             let mut k = k.to_string();
+            // A two-state region reads them as `--init-x` gives them (A57).
+            let as_ = match region::two_state().then(region::meta_fill) {
+                Some(yavs_logic::start::Fill::One) => "1",
+                Some(yavs_logic::start::Fill::Random(_)) => "bits of the `--init-x` seed",
+                _ => "0",
+            };
             match b.metas {
                 0 => {}
-                1 => k.push_str(", 1 literal with a metavalue read as 0"),
+                1 => {
+                    let _ = write!(k, ", 1 literal with a metavalue read as {as_}");
+                }
                 n => {
-                    let _ = write!(k, ", {n} literals with a metavalue read as 0");
+                    let _ = write!(k, ", {n} literals with a metavalue read as {as_}");
                 }
             }
             (region::where_(db, e, *pi), k)

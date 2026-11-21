@@ -259,8 +259,8 @@ body. A signal needs one source: one process drives each element of it.
        run-time indices both, or read outside the region; or drives a signal a ``force`` or ``release`` of the design can change
        (every process, when the force names a signal parameter)
      - E4134, E4135, E4133, E4128: limitations of yavs.
-   * - Compares with a metavalue literal (``= 'U'``), has a ``while`` loop, or another construct cycle mode cannot
-       take *yet*
+   * - Has a ``while`` loop, or another construct cycle mode cannot take *yet* (with ``--cycle-exact-meta``: also
+       a comparison with a metavalue literal, ``= 'U'``)
      - E4101: in the subset, not implemented yet. This is the reason that is expected to shrink. E4126 is the same
        for a construct yavs does not follow far enough to show the process is logic.
 
@@ -439,7 +439,11 @@ A cycle-based process computes with ``0`` and ``1`` only.
 * Everything the region gives back to the kernel is ``'0'`` or ``'1'``. A testbench never sees ``'X'`` or ``'Z'``
   from a cycle-based process: a process that assigns a metavalue literal (``(others => 'X')`` on invalid data, say)
   gives ``'0'`` there, and so does one that copies a tri-state line some process outside sets to ``'Z'``. A metavalue
-  literal reads as ``0``, as do values computed from it.
+  literal (``'U'``, ``'X'``, ``'W'``, ``'-'``) of a cycle-based process, assigned or compared, reads as the value of
+  ``--init-x`` (:ref:`start-values`), ``0`` without it, as do values computed from it; the region report counts these
+  literals per process. So ``if d = "1X"`` tests ``d = "10"`` there, and a ``case`` choice ``"0X"`` is the choice
+  ``"00"`` (the first alternative that matches is taken). A ``'-'`` in ``std_match``, ``?=`` or a ``case?`` choice
+  still matches anything.
 * With ``--cycle-exact-meta`` the testbench sees what the normal mode gives it in those two cases: a process that
   assigns a metavalue literal to a signal the testbench reads (a process of the top-level unit, or a behavioural
   one) stays out, and so does one that passes on to such a signal a signal a process outside sets to ``'Z'`` in its
@@ -472,8 +476,8 @@ A cycle-based process computes with ``0`` and ``1`` only.
   An unused field of a record port that nothing drives is counted too; it changes nothing.
 * So a bug that shows as an ``'X'`` or a ``'U'`` in the normal mode (a register without reset, an
   unconnected input, a metavalue in a comparison) cannot show. A test that checks for it passes. Run such checks
-  in the normal mode. A process that compares with a metavalue literal stays out, because a two-state value never
-  equals it.
+  in the normal mode. A process that compares with a metavalue literal joins and compares with ``--init-x``'s bits
+  (above); with ``--cycle-exact-meta`` it stays out, because a two-state value never equals the literal.
 
 ``metavalue.vhd`` shows two of these: ``ticks`` has no initial value and an ``'X'`` reaches a comparison.
 

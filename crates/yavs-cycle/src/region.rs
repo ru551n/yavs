@@ -241,6 +241,17 @@ pub(crate) fn asserts_kept(e: &Elaborated, scope: yavs_elab::ScopeId) -> bool {
     !NO_ASSERTS.load(std::sync::atomic::Ordering::Relaxed) || in_top_scope(e, scope)
 }
 
+/// Whether the region is two-state (A57): today the default contract, every run but
+/// `--cycle-exact-meta`. A metavalue literal of region code then takes [`meta_fill`]'s bits.
+pub(crate) fn two_state() -> bool {
+    !exact_meta()
+}
+
+/// What a metavalue literal of a two-state region becomes: `--init-x`, else 0.
+pub(crate) fn meta_fill() -> yavs_logic::start::Fill {
+    yavs_logic::start::x().unwrap_or(yavs_logic::start::Fill::Zero)
+}
+
 /// `YAVS_CYCLE_EXACT_CLOCKS=1` (tests and gates only): a clock copied by assignment stays a
 /// clock of its own, as the normal mode's delta order has it (A32).
 pub(crate) fn exact_clocks() -> Result<bool, String> {

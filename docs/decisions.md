@@ -18065,3 +18065,13 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
   are untouched, so the checks of a testbench keep their literals.
 - **`random` without a seed** draws one from the time and the process id and prints it, so a failure can be
   repeated with `random:SEED`.
+- **Metavalue literals of a two-state region (user decisions A57, A58, 2026-11-21).** In a two-state region (today
+  every cycle run but `--cycle-exact-meta`, `region::two_state`; step 4 ties it to `--two-state`) a metavalue
+  literal in an assignment, a comparison, a `case` choice or a `numeric_std` operator no longer keeps its process
+  out: it takes the bits of `--init-x`, `0` without it (A58: as the default contract read it before), counted per
+  process in the region report. `'-'` in a matching comparison still matches anything; `'Z'` still keeps the
+  process out. Supersedes the stay-out rule of A9 and the A30 strict loss.
+- **A `'-'` aggregate of a generic length** (`std_match(d, (d'range => '-'))`) keeps its codes when the region
+  spreads one element over the vector (`Op::Splat`); an aggregate of a metavalue literal and other values is marked
+  (`LIT_MIXED`), and a matching comparison with it keeps its process out. Before, both were compared with `0`, a
+  wrong result of cycle mode (found 2026-11-21).

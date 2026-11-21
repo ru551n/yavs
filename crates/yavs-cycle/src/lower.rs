@@ -1207,12 +1207,21 @@ const NOTE_RESET: &str =
 const NOTE_COMB: &str = "an assert or report that runs outside a clock edge";
 
 /// `Part::lit` of an aggregate that holds a metavalue literal and other values: its codes are
-/// not kept, so any comparison with it keeps its process out.
+/// not kept, so a matching comparison with it (and any under `--cycle-exact-meta`) stays out.
 const LIT_MIXED: u32 = u32::MAX;
 
 /// Why a comparison or arithmetic with a literal holding a metavalue keeps its process out.
 const META_CMP: &str = "a comparison with a metavalue literal (`'U'`, `'X'`, `'-'`, ...), which two-state \
                         values never equal";
+
+/// The salt of the bits a metavalue literal of a two-state region takes at `span` (A57).
+fn lit_salt(db: &Db, span: yavs_diag::Span) -> u64 {
+    yavs_logic::start::salt(&[
+        b"lit",
+        db.sources.get(span.file).path.as_bytes(),
+        &span.start.to_le_bytes(),
+    ])
+}
 
 /// Most elements of a logic value: 2**26 (a megaword), so element offsets stay far inside `u32`
 /// (a run-time index scales them by an element's width in `i64`). A memory that large is not
@@ -1269,6 +1278,8 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         at: db.stmts[p.stmt].span,
         unrolled: 0,
         lits: Vec::new(),
+        lit_vals: Vec::new(),
+        lit_at: None,
         lit_cmp: BTreeSet::new(),
         bounds: false,
         sigs: Vec::new(),
@@ -1399,6 +1410,10 @@ struct Lx<'a> {
     unrolled: u32,
     /// The codes of the literals with a metavalue (`Part::lit`).
     lits: Vec<Vec<u8>>,
+    /// The bits each of `lits` holds (a metavalue's as a two-state region reads it), and the place
+    /// of the expression lowered last (`lit_salt`).
+    lit_vals: Vec<Box<[u64]>>,
+    lit_at: Option<yavs_diag::Span>,
     /// The literals of `lits` a comparison took.
     lit_cmp: BTreeSet<u32>,
     /// The calls folded from `Elaborated::region_calls` that reported (`Body::reports`).
@@ -2184,7 +2199,19 @@ impl Lx<'_> {
                     if codes.len() != p.len as usize {
                         return Err("a `case` choice of another length than the selector".into());
                     }
-                    self.match_codes(*p, &codes, matching)?
+                    // A metavalue of the choice takes the bits a literal there would.
+                    let fill = crate::region::meta_fill();
+                    let salt = match fill {
+                        yavs_logic::start::Fill::Random(_) => {
+                            lit_salt(self.db, self.db.exprs[*x].span)
+                        }
+                        _ => 0,
+                    };
+                    let mut bits = vec![0u64; words(codes.len() as u32) as usize];
+                    for el in 0..codes.len() {
+                        bits[el / 64] |= u64::from(fill.bit(salt, el as u64)) << (el % 64);
+                    }
+                    self.match_codes(*p, &codes, matching, &bits)?
                 }
                 _ => {
                     return Err("a `case` choice of this kind".into());
@@ -2211,16 +2238,19 @@ impl Lx<'_> {
     /// `p` against the `std_ulogic` codes of a literal (from the left): `'-'` matches anything
     /// in a matching comparison; any other metavalue keeps the process out (a two-state value
     /// is never one, while the normal mode can hold it).
-    fn match_codes(&mut self, p: Part, codes: &[u8], matching: bool) -> R<Ref> {
+    fn match_codes(&mut self, p: Part, codes: &[u8], matching: bool, bits: &[u64]) -> R<Ref> {
         let n = codes.len();
         let mut val = vec![0u64; words(n as u32) as usize];
         let mut care = vec![0u64; val.len()];
+        let two = crate::region::two_state();
         for (k, &c) in codes.iter().enumerate() {
             let el = n - 1 - k;
             let (bit, keep) = match c {
                 2 | 6 => (0, true),
                 3 | 7 => (1, true),
                 8 if matching => (0, false),
+                // A two-state region compares with the literal's bits (A57).
+                0 | 1 | 5 | 8 if two => ((bits[el / 64] >> (el % 64)) & 1, true),
                 _ => return Err(META_CMP.into()),
             };
             val[el / 64] |= bit << (el % 64);
@@ -4717,6 +4747,7 @@ impl Lx<'_> {
 
     fn expr_in(&mut self, x: ExprId, hint: Option<&Val>) -> R<Val> {
         let db = self.db;
+        self.lit_at = Some(db.exprs[x].span);
         let ex = &db.exprs[x];
         if let Some(h) = hint
             && all_null(h)
@@ -5215,10 +5246,18 @@ impl Lx<'_> {
                 a,
                 len: n,
             });
-            // `(others => '-')`: the literal's codes, every element (#1192).
+            // `(others => '-')`: the literal's codes and bits, every element.
             if let Some(k) = v.lit.filter(|&k| k != LIT_MIXED) {
-                let c = self.lits[k as usize][0];
+                let (c, b) = (self.lits[k as usize][0], self.lit_vals[k as usize][0] & 1);
                 self.lits.push(vec![c; count]);
+                let ones = (0..words(n)).map(|j| {
+                    if b == 1 {
+                        crate::codegen::mask((n - 64 * j).min(64))
+                    } else {
+                        0
+                    }
+                });
+                self.lit_vals.push(ones.collect());
                 t.lit = Some(self.lits.len() as u32 - 1);
             }
             return Ok(Val::Part(t));
@@ -5530,6 +5569,12 @@ impl Lx<'_> {
         }
         let mut val = vec![0u64; words(n) as usize];
         let mut meta = false;
+        // A two-state region gives a metavalue the bits of `--init-x` (A57), 0 without it.
+        let (two, fill) = (crate::region::two_state(), crate::region::meta_fill());
+        let salt = match (two, fill, self.lit_at) {
+            (true, yavs_logic::start::Fill::Random(_), Some(at)) => lit_salt(self.db, at),
+            _ => 0,
+        };
         for (p, &code) in codes.iter().enumerate() {
             // Row-major element `p` from the left is element `n - 1 - p`.
             let el = n as usize - 1 - p;
@@ -5542,7 +5587,11 @@ impl Lx<'_> {
                 (0 | 1 | 5 | 8, Some((f, salt))) => u64::from(f.bit(salt, el as u64)),
                 _ => {
                     meta = true;
-                    0
+                    if two {
+                        u64::from(fill.bit(salt, el as u64))
+                    } else {
+                        0
+                    }
                 }
             };
             val[el / 64] |= bit << (el % 64);
@@ -5551,13 +5600,15 @@ impl Lx<'_> {
             self.metas += 1;
         }
         let mut t = self.tmp(n);
+        let val: Box<[u64]> = val.into();
         self.ops.push(Op::Lit {
             dst: t.r,
-            val: val.into(),
+            val: val.clone(),
         });
         t.dims = dims;
         if meta {
             self.lits.push(codes);
+            self.lit_vals.push(val);
             t.lit = Some(self.lits.len() as u32 - 1);
         }
         Ok(Val::Part(t))
@@ -5654,7 +5705,9 @@ impl Lx<'_> {
         };
         let (a, b) = (self.arg(a)?, self.arg(b)?);
         for v in [&a, &b] {
-            if let Val::Part(Part { lit: Some(_), .. }) = v {
+            if let Val::Part(Part { lit: Some(_), .. }) = v
+                && !crate::region::two_state()
+            {
                 return Err(META_CMP.into());
             }
         }
@@ -6329,7 +6382,10 @@ impl Lx<'_> {
                             });
                             let (a, b) = (self.part(a)?, self.part(b)?);
                             let n = a.len.max(b.len);
-                            if a.len.min(b.len) != 1 || n < 1 || a.lit.is_some() || b.lit.is_some()
+                            let lit = a.lit.is_some() || b.lit.is_some();
+                            if a.len.min(b.len) != 1
+                                || n < 1
+                                || (lit && !crate::region::two_state())
                             {
                                 return not_yet();
                             }
@@ -6433,7 +6489,7 @@ impl Lx<'_> {
                         let (a, b, m) = if form == Form::Vv {
                             let (a, b) = two(self)?;
                             let (a, b) = (self.part(a)?, self.part(b)?);
-                            if a.lit.is_some() || b.lit.is_some() {
+                            if (a.lit.is_some() || b.lit.is_some()) && !crate::region::two_state() {
                                 return Err(META_CMP.into());
                             }
                             let m = a.len + b.len;
@@ -6936,24 +6992,28 @@ impl Lx<'_> {
             // Arrays of different lengths are never equal (LRM 9.2.3).
             return Ok(Val::Part(self.bool_lit(ne)));
         }
-        if let Some(LIT_MIXED) = b.lit.or(a.lit) {
+        match b.lit.or(a.lit) {
             // An aggregate of a metavalue literal and other values: its codes are not kept.
-            return Err(META_CMP.into());
-        }
-        if let Some(k) = b.lit.or(a.lit) {
-            // The literal's own codes decide (`'-'` as a mask when matching).
-            let v = if b.lit.is_some() { a } else { b };
-            self.lit_cmp.insert(k);
-            let codes = self.lits[k as usize].clone();
-            let ov = if nine && !ne { self.other(&v) } else { None };
-            let r = self.match_codes(ov.unwrap_or(v), &codes, matching)?;
-            if ov.is_some() {
-                self.sure.insert(r);
+            Some(LIT_MIXED) if matching || !crate::region::two_state() => {
+                return Err(META_CMP.into());
             }
-            if !ne {
-                return Ok(Val::Part(part_of(r, 1)));
+            Some(LIT_MIXED) | None => {}
+            Some(k) => {
+                // The literal's own codes decide (`'-'` as a mask when matching).
+                let v = if b.lit.is_some() { a } else { b };
+                self.lit_cmp.insert(k);
+                let codes = self.lits[k as usize].clone();
+                let ov = if nine && !ne { self.other(&v) } else { None };
+                let bits = self.lit_vals[k as usize].clone();
+                let r = self.match_codes(ov.unwrap_or(v), &codes, matching, &bits)?;
+                if ov.is_some() {
+                    self.sure.insert(r);
+                }
+                if !ne {
+                    return Ok(Val::Part(part_of(r, 1)));
+                }
+                return self.not(Val::Part(part_of(r, 1)));
             }
-            return self.not(Val::Part(part_of(r, 1)));
         }
         // Under `--cycle-exact-meta` every image compares the region's values: a choice on a
         // start value is the region's on the second image too (`Lx::other`).
@@ -7153,7 +7213,9 @@ impl Lx<'_> {
         };
         let (a, b) = (self.arg(a)?, self.arg(b)?);
         for v in [&a, &b] {
-            if let Val::Part(Part { lit: Some(_), .. }) = v {
+            if let Val::Part(Part { lit: Some(_), .. }) = v
+                && !crate::region::two_state()
+            {
                 return Err(META_CMP.into());
             }
         }
@@ -7246,7 +7308,9 @@ impl Lx<'_> {
         };
         let (a, b) = (self.arg(a)?, self.arg(b)?);
         let vec = if form == Form::Vi { &a } else { &b };
-        if let Val::Part(Part { lit: Some(_), .. }) = vec {
+        if let Val::Part(Part { lit: Some(_), .. }) = vec
+            && !crate::region::two_state()
+        {
             return Err(META_CMP.into());
         }
         let (v, i, swap) = match form {

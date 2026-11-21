@@ -3944,20 +3944,12 @@ fn bench_rtl_designs_give_the_same_output_in_cycle_mode() {
 /// Bench designs whose processes cannot join (yet), with the reason the report gives.
 #[test]
 fn bench_designs_cycle_mode_leaves_out_say_why() {
-    for (name, src, top, why) in [
-        (
-            "rtl_lfsr",
-            include_str!("../../../tools/bench/designs/rtl_lfsr.vhd"),
-            "bench_rtl_lfsr",
-            "a comparison with a metavalue literal",
-        ),
-        (
-            "rtl_bus",
-            include_str!("../../../tools/bench/designs/rtl_bus.vhd"),
-            "bench_rtl_bus",
-            "E4118 a `'Z'` value",
-        ),
-    ] {
+    for (name, src, top, why) in [(
+        "rtl_bus",
+        include_str!("../../../tools/bench/designs/rtl_bus.vhd"),
+        "bench_rtl_bus",
+        "E4118 a `'Z'` value",
+    )] {
         let dir = tempdir(&format!("cycle-out-{name}"));
         analyze(&dir, &format!("{name}.vhd"), src);
         let flags = ["--tier=interp", "-gCYC=20"];
@@ -3970,8 +3962,8 @@ fn bench_designs_cycle_mode_leaves_out_say_why() {
 }
 
 /// `std_match` and `?=` with a `'-'` aggregate whose length a generic sets: it matches anything in
-/// the region too (it was compared with 0 there, a wrong result, #1192); an aggregate of a `'-'` and other
-/// values keeps a matching comparison out, under both contracts.
+/// the region too (it was compared with 0 there, a wrong result, #1192); an aggregate of a `'-'`
+/// and other values keeps a matching comparison out, under both contracts.
 #[test]
 fn a_dont_care_aggregate_of_a_generic_length_matches_anything() {
     let dir = tempdir("cycle-matchagg");
@@ -3995,6 +3987,30 @@ fn a_dont_care_aggregate_of_a_generic_length_matches_anything() {
             assert!(err.contains("cycle mode: 5 of"), "{f:?}: {err}");
         }
     }
+}
+
+/// A bench design that compares with a metavalue literal joins in the two-state region (A57),
+/// with the normal mode's output; under `--cycle-exact-meta` it stays out.
+#[test]
+fn bench_design_comparing_with_a_metavalue_literal_joins() {
+    let dir = tempdir("cycle-lfsr-meta");
+    let src = include_str!("../../../tools/bench/designs/rtl_lfsr.vhd");
+    analyze(&dir, "rtl_lfsr.vhd", src);
+    let flags = ["--tier=interp", "-gCYC=20"];
+    let (normal, _) = run_text(&dir, &flags, "bench_rtl_lfsr");
+    let (cycle, err) = run_text(&dir, &[&flags[..], &["--cycle"]].concat(), "bench_rtl_lfsr");
+    assert_eq!(cycle, normal, "{err}");
+    assert!(err.contains("cycle mode: 512 of 514"), "{err}");
+    let (exact, err) = run_text(
+        &dir,
+        &[&flags[..], &["--cycle", "--cycle-exact-meta"]].concat(),
+        "bench_rtl_lfsr",
+    );
+    assert_eq!(exact, normal, "{err}");
+    assert!(
+        err.contains(" 0 of ") && err.contains("a comparison with a metavalue literal"),
+        "{err}"
+    );
 }
 
 /// A member that drives a null array (a pipeline of no stages under these generics): the region

@@ -406,3 +406,52 @@ fn init_x_gives_metavalue_literals_a_value() {
         }
     }
 }
+
+#[test]
+fn a_two_state_region_compares_with_init_x_bits() {
+    let dir = tempdir("metacmp");
+    analyze(&dir, "metacmp.vhd");
+    // The normal mode: a two-state value never equals a metavalue, '-' matches anything.
+    for g in ["-gONES=false", "-gONES=true"] {
+        let (lines, code, err) = run(&dir, &["--no-cache", g], "metacmp");
+        assert_eq!((code, lines.len()), (0, 5), "{err}");
+        assert!(
+            lines.iter().all(|l| l.ends_with(" hit='0' c='0' m='1'")),
+            "{lines:?}"
+        );
+    }
+    for t in tiers() {
+        for (x, g, hit) in [
+            (None, "-gONES=false", "'1'"),
+            (Some("--init-x=0"), "-gONES=false", "'1'"),
+            (Some("--init-x=1"), "-gONES=true", "'1'"),
+            (Some("--init-x=1"), "-gONES=false", "'0'"),
+        ] {
+            let mut f = vec!["--no-cache", "--cycle", g];
+            f.extend(&t);
+            f.extend(x);
+            let (lines, code, err) = run(&dir, &f, "metacmp");
+            assert_eq!((code, lines.len()), (0, 5), "{f:?}: {err}");
+            // Every process of the design joins; the literals read as `--init-x` gives them.
+            assert!(err.contains("cycle mode: 11 of 18"), "{f:?}: {err}");
+            for l in &lines {
+                assert!(
+                    l.ends_with(&format!(" hit={hit} c={hit} m='1'")),
+                    "{f:?}: {lines:?}"
+                );
+            }
+        }
+    }
+    // The report counts the literals; the exact contract keeps the process out.
+    let report = |flags: &[&str]| {
+        let mut a = vec!["run", "--work=work:lib", "--no-cache"];
+        a.extend(flags);
+        a.extend(["--cycle-report", "metacmp"]);
+        String::from_utf8_lossy(&yavs(&dir, &a).stderr).into_owned()
+    };
+    let r = report(&["--init-x=1"]);
+    assert!(r.contains("literals with a metavalue read as 1"), "{r}");
+    assert!(report(&[]).contains("literals with a metavalue read as 0"));
+    let r = report(&["--cycle-exact-meta"]);
+    assert!(r.contains("a comparison with a metavalue literal"), "{r}");
+}

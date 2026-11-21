@@ -17892,6 +17892,19 @@ the parked retune package.
 - **An assert that holds by known values is no code** (in any call, no longer only in calls of constants): a width
   check of a called function on its constant arguments made every input of its combinational process settle at once
   (`at_once`, a check reached); 2 percent of the ac701 board run, the whole cost of `--no-asserts` there.
+- **Membership under `--cycle-exact-meta`** (for the owner): the exact rule above keeps out every member with notes
+  that reads what the region does not drive alone, and what reads those then reads from outside too: ac701 boot 6905
+  to 6516 members, kv260 firmware 9250 to 9144, Microwatt 258 to 233 (2026-11-21); each a hard E4140 under
+  `--cycle-strict` with `--cycle-exact-meta`. The default contract is unchanged (ac701 6965, main 6966).
+- **Gate classes** (lukas-asserts2, coordinator-approved): the gate's settled comparison keys an unlabelled process
+  by its place (`difftest.normalise(names=True)`), so the reports of different processes may come in another order
+  within a time step (region notes come where the region's wake runs among the kernel's processes) while each
+  process's own last reports per time step must be equal; under the default contract `settled_meta` also pairs a
+  process's reports by `meta_pair` and takes a report only the normal run made when it is, letter by letter, the
+  two-state twin of the process's last cycle report (the region saw no change). `meta_pair` reads a `-` as `0` in a
+  run of `0`, `1` and `-` with a `-` after its first place (never an integer image); that rule changed two listed
+  default-contract checksums only. The fuzzer orders the reports of one delta by process (each process's own order
+  kept) and compares the copy-variant reference without report places (its lines move).
 - **`--no-asserts`** (user A54, replaces the planned `--cycle-no-asserts`): drops the statements of the processes
   below the top-level unit in both modes; subprograms keep theirs, so the check and logging calls of verification
   components run and both modes agree on what is dropped. "Below the top" is: not in the architecture of the

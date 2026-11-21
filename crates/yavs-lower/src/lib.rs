@@ -437,8 +437,25 @@ pub(crate) struct Cx {
     pub natives: HashMap<(String, Option<TyId>), NativeId>,
     pub foreigns: HashMap<DeclId, yavs_ir::ForeignId>,
     pub funcs: HashMap<DeclId, FuncId>,
-    /// Subprograms declared but not lowered yet, with their nesting depth.
-    pub queue: Vec<(DeclId, u8)>,
+    /// The checked body of a procedure with scalar `out` or `inout` signal formals
+    /// (`func::checked_func_of`, #1181): a call whose actual may not hold every value of the
+    /// formal's subtype passes the actual's bounds, and each drive through the formal checks them.
+    pub checked_funcs: HashMap<DeclId, FuncId>,
+    /// The coverage items and condition trees the plain body of a subprogram made, in order:
+    /// its checked body counts into the same ones (`Cx::cov_replay`).
+    pub cov_made: HashMap<DeclId, (Vec<CovItem>, Vec<u32>)>,
+    /// While a checked body is lowered: the plain body's items and trees still to hand out.
+    #[serde(skip)]
+    pub cov_replay: Option<(
+        std::collections::VecDeque<CovItem>,
+        std::collections::VecDeque<u32>,
+    )>,
+    /// While a plain body is lowered with coverage on: the items and trees it makes.
+    #[serde(skip)]
+    pub cov_record: Option<(Vec<CovItem>, Vec<u32>)>,
+    /// Subprograms declared but not lowered yet, with their nesting depth and whether it is
+    /// the checked body.
+    pub queue: Vec<(DeclId, u8, bool)>,
     /// Function and depth of each subprogram or process region.
     pub scope_func: HashMap<ScopeId, (FuncId, u8)>,
     /// Driver LSPs and slot bases of each process region: subprograms declared in a process
@@ -680,15 +697,63 @@ impl Cx {
         cond: Option<u32>,
         under: Option<CovItem>,
     ) -> CovItem {
-        pb.cov(CovInfo {
-            stmt,
-            kind,
-            row: Some(row),
-            arm: None,
-            cond,
-            under,
-            pos: None,
-        })
+        self.cov_item(
+            pb,
+            CovInfo {
+                stmt,
+                kind,
+                row: Some(row),
+                arm: None,
+                cond,
+                under,
+                pos: None,
+            },
+        )
+    }
+
+    /// A new coverage item, or while a checked body is lowered the plain body's next one: both
+    /// bodies count into the same items (#1181).
+    fn cov_item(&mut self, pb: &mut ProgramBuilder, info: CovInfo) -> CovItem {
+        if let Some((items, _)) = &mut self.cov_replay {
+            if let Some(i) = items.pop_front() {
+                return i;
+            }
+            self.ice(
+                Span::default(),
+                "checked body with more coverage items than its own",
+            );
+        }
+        let i = pb.cov(info);
+        if let Some((items, _)) = &mut self.cov_record {
+            items.push(i);
+        }
+        i
+    }
+
+    /// The index the next condition tree gets ([`Cx::cov_tree`]).
+    pub fn cov_tree_next(&self, pb: &ProgramBuilder) -> u32 {
+        match &self.cov_replay {
+            Some((_, trees)) => trees.front().copied().unwrap_or(u32::MAX),
+            None => pb.cov_conds_len(),
+        }
+    }
+
+    /// A condition tree for `Inst::CoverCond`, or the plain body's next one ([`Cx::cov_item`]).
+    pub fn cov_tree(&mut self, pb: &mut ProgramBuilder, c: yavs_ir::CovCond) -> u32 {
+        if let Some((_, trees)) = &mut self.cov_replay {
+            if let Some(t) = trees.pop_front() {
+                return t;
+            }
+            self.ice(
+                Span::default(),
+                "checked body with more condition trees than its own",
+            );
+        }
+        let t = pb.cov_cond(c);
+        if let Some((_, trees)) = &mut self.cov_record {
+            trees.push(t);
+        }
+        t
     }
 
     pub fn cover(
@@ -701,15 +766,18 @@ impl Cx {
         under: Option<CovItem>,
     ) -> Option<CovItem> {
         (self.opts.coverage && !self.cov_skip.contains(&span.file)).then(|| {
-            pb.cov(CovInfo {
-                stmt,
-                kind,
-                row: None,
-                arm: arm.map(|a| a.0),
-                cond: None,
-                under,
-                pos: arm.and_then(|a| a.1),
-            })
+            self.cov_item(
+                pb,
+                CovInfo {
+                    stmt,
+                    kind,
+                    row: None,
+                    arm: arm.map(|a| a.0),
+                    cond: None,
+                    under,
+                    pos: arm.and_then(|a| a.1),
+                },
+            )
         })
     }
 }
@@ -795,6 +863,10 @@ impl<'a> Lowerer<'a> {
                 natives: HashMap::default(),
                 foreigns: HashMap::default(),
                 funcs: HashMap::default(),
+                checked_funcs: HashMap::default(),
+                cov_made: HashMap::default(),
+                cov_replay: None,
+                cov_record: None,
                 queue: Vec::new(),
                 scope_func: HashMap::default(),
                 proc_drivers: HashMap::default(),
@@ -945,10 +1017,12 @@ impl<'a> Lowerer<'a> {
             .cx
             .funcs
             .iter()
+            .chain(&self.cx.checked_funcs)
             .filter(|(_, f)| tainted.contains(f))
             .map(|(d, _)| *d)
             .collect();
         out.sort_by_key(|d| yavs_sem::Id::index(*d));
+        out.dedup();
         out
     }
 
@@ -1211,15 +1285,19 @@ impl<'a> Lowerer<'a> {
     }
 
     fn drain(&mut self) {
-        while let Some((d, depth)) = self.cx.queue.pop() {
+        while let Some((d, depth, checked)) = self.cx.queue.pop() {
             if self.cx.stop_at_error && !self.cx.diags.is_empty() {
                 self.cx.queue.clear();
                 break;
             }
             LOWERED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             // Errors are collected in `cx.diags`.
-            if func::subprogram(self.db, &mut self.pb, &mut self.cx, d, depth).is_err()
-                && let Some(&f) = self.cx.funcs.get(&d)
+            if func::subprogram(self.db, &mut self.pb, &mut self.cx, d, depth, checked).is_err()
+                && let Some(&f) = if checked {
+                    self.cx.checked_funcs.get(&d)
+                } else {
+                    self.cx.funcs.get(&d)
+                }
             {
                 self.cx.context_funcs.push(f);
             }
@@ -1422,6 +1500,7 @@ fn forget_free_objects(pb: &mut yavs_ir::ProgramBuilder, cx: &mut Cx) {
         pb.callers_of(&seeds).into_iter().collect();
     tainted.extend(seeds);
     cx.funcs.retain(|_, f| !tainted.contains(f));
+    cx.checked_funcs.retain(|_, f| !tainted.contains(f));
     for o in std::mem::take(&mut cx.free_objs) {
         cx.objs.remove(&o.decl);
     }

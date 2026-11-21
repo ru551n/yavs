@@ -1,0 +1,2 @@
+exit	1
+diag	fatal	0	0	:sig_param_range_real:_p0	value 2 outside of REAL range 0 to 1 for actual of signal parameter O

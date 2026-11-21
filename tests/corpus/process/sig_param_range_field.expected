@@ -1,0 +1,2 @@
+exit	1
+diag	fatal	0	0	:sig_param_range_field:_p0	value -1 outside of INTEGER range 0 to 9 for actual of signal parameter O

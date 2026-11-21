@@ -405,7 +405,7 @@ impl Fx<'_, '_> {
                 first.get_or_insert(item);
             }
         }
-        let index = self.fb.program().cov_conds_len();
+        let index = self.cx.cov_tree_next(self.fb.program());
         let comb = match states {
             Some(states) => {
                 let mut first = None;
@@ -436,13 +436,16 @@ impl Fx<'_, '_> {
             }
             None => None,
         };
-        let cond = self.fb.program().cov_cond(CovCond {
-            first,
-            inputs: leaves.len() as u8,
-            consts,
-            nodes,
-            comb,
-        });
+        let cond = self.cx.cov_tree(
+            self.fb.program(),
+            CovCond {
+                first,
+                inputs: leaves.len() as u8,
+                consts,
+                nodes,
+                comb,
+            },
+        );
         debug_assert_eq!(cond, index);
         // The first input is always evaluated and starts the state (`Inst::CoverIn`, shift 0).
         let state = self.reg(yavs_ir::RegTy::I64);

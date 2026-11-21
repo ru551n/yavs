@@ -3683,9 +3683,16 @@ impl<'a> Fx<'a, '_> {
                 Ok(r)
             }
             Body::Hir { scope, .. } => {
-                let f = func_of(db, self.fb.program(), self.cx, callee, span)?;
+                let mut f = func_of(db, self.fb.program(), self.cx, callee, span)?;
                 let mut cells = self.cells(sp, args, span, Conv::Body)?;
                 self.named_return_cells(callee, *scope, res, span, &mut cells)?;
+                if self.sig_actuals_narrow(sp, args)
+                    && let Some(c) =
+                        crate::func::checked_func_of(db, self.fb.program(), self.cx, callee, span)?
+                {
+                    f = c;
+                    self.sig_actual_bounds(sp, args, span, &mut cells)?;
+                }
                 let args = self.fb.regs(&cells);
                 let Some(ret) = sp.ret else {
                     self.emit(Inst::Call {
@@ -3724,6 +3731,119 @@ impl<'a> Fx<'a, '_> {
                 .cx
                 .unsupported(span, "generic and instantiated subprograms")),
         }
+    }
+
+    /// The actual of a scalar `out` or `inout` signal formal of `sp` in `args` may not hold
+    /// every value of the formal's subtype, or is such a formal of this checked body: the call
+    /// takes the checked body (`func::checked_func_of`, #1181).
+    fn sig_actuals_narrow(&self, sp: &Subprogram, args: &[Arg]) -> bool {
+        let db = self.db;
+        args.iter().any(|a| {
+            let (Some(p), Actual::Expr(e)) = (sp.params.get(a.formal as usize), &a.actual) else {
+                return false;
+            };
+            if p.class != yavs_sem::decl::ObjClass::Signal
+                || !matches!(
+                    p.mode,
+                    yavs_sem::hir::Mode::Out | yavs_sem::hir::Mode::Inout
+                )
+                || !db.types[db.base(p.subtype)].kind.is_scalar()
+            {
+                return false;
+            }
+            matches!(db.exprs[*e].kind, ExprKind::Obj(d) if self.sig_bounds.contains_key(&d))
+                || !self.object_within(p.subtype, db.exprs[*e].subtype)
+        })
+    }
+
+    /// The cells of the checked body's bounds (`sig_actuals_narrow`): per scalar `out` or
+    /// `inout` signal formal, in order, the low and high bound of its actual's subtype; for a
+    /// checked formal of this body passed on, its own bounds, narrowed to its subtype when the
+    /// callee's formal is wider.
+    fn sig_actual_bounds(
+        &mut self,
+        sp: &Subprogram,
+        args: &[Arg],
+        span: Span,
+        cells: &mut Vec<Reg>,
+    ) -> R<()> {
+        let db = self.db;
+        for (k, p) in sp.params.iter().enumerate() {
+            if p.class != yavs_sem::decl::ObjClass::Signal
+                || !matches!(
+                    p.mode,
+                    yavs_sem::hir::Mode::Out | yavs_sem::hir::Mode::Inout
+                )
+                || !db.types[db.base(p.subtype)].kind.is_scalar()
+            {
+                continue;
+            }
+            let Some(Actual::Expr(e)) = args
+                .iter()
+                .find(|a| a.formal as usize == k)
+                .map(|a| &a.actual)
+            else {
+                return Err(self.cx.ice(span, "signal formal without a signal actual"));
+            };
+            let st = db.exprs[*e].subtype;
+            let real = ty::is_real(db, db.base(st));
+            let rt = if real { RegTy::F64 } else { RegTy::I64 };
+            let own = match db.exprs[*e].kind {
+                ExprKind::Obj(d) => self.sig_bounds.get(&d).copied(),
+                _ => None,
+            };
+            let (lo, hi) = match own {
+                Some(off) if self.object_within(p.subtype, st) => self.sig_bounds_of(off, rt),
+                Some(off) => {
+                    let (alo, ahi) = self.sig_bounds_of(off, rt);
+                    let r = self.scalar_bounds(st, span)?;
+                    let (flo, fhi) = if real {
+                        self.low_high_f(r)
+                    } else {
+                        self.low_high(r)
+                    };
+                    (self.max_of(alo, flo, rt), self.min_of(ahi, fhi, rt))
+                }
+                None => {
+                    let r = self.scalar_bounds(st, span)?;
+                    if real {
+                        self.low_high_f(r)
+                    } else {
+                        self.low_high(r)
+                    }
+                }
+            };
+            cells.extend([lo, hi]);
+        }
+        Ok(())
+    }
+
+    /// The two bound cells of a checked signal formal at frame offset `off` (`Fx::sig_bounds`).
+    pub(crate) fn sig_bounds_of(&mut self, off: u32, rt: RegTy) -> (Reg, Reg) {
+        let a = self.addr(Space::Frame(self.depth), off);
+        let lo = self.load(a, Width::B8, rt);
+        let b = self.addr(Space::Frame(self.depth), off + 8);
+        let hi = self.load(b, Width::B8, rt);
+        (lo, hi)
+    }
+
+    fn max_of(&mut self, a: Reg, b: Reg, rt: RegTy) -> Reg {
+        let c = self.cmp_of(CmpOp::Lt, a, b, rt);
+        self.select(c, b, a, rt)
+    }
+
+    fn min_of(&mut self, a: Reg, b: Reg, rt: RegTy) -> Reg {
+        let c = self.cmp_of(CmpOp::Lt, a, b, rt);
+        self.select(c, a, b, rt)
+    }
+
+    fn cmp_of(&mut self, op: CmpOp, a: Reg, b: Reg, rt: RegTy) -> Reg {
+        if rt != RegTy::F64 {
+            return self.cmp(op, a, b);
+        }
+        let dst = self.reg(RegTy::I64);
+        self.emit(Inst::FCmp { op, dst, a, b });
+        dst
     }
 
     /// A named return value (2019, 4.2.1): the result subtype `res`'s descriptor follows the

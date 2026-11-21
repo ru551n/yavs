@@ -6,6 +6,7 @@ use yavs_ir::{
     BlockId, CaseTable, CmpOp, Dir, DriveMode, Inst, IntOp, Reg, RegTy, StmtKind, Width,
 };
 use yavs_ir::{CheckKind, CovArm, Ty};
+use yavs_sem::decl::DeclKind;
 use yavs_sem::hir::{
     AttrPrefix, Choice, ChoiceSet, Delay, ExprKind, LoopScheme, Lsp, LspStep, ObjRoot, Rhs,
     StmtKind as H, Target, Waveform,
@@ -2649,8 +2650,15 @@ impl Fx<'_, '_> {
         let stride = if tlogic { 8 + 32 } else { 16 };
         let wave = self.alloc_n(stride * xs.len() as u32);
         let what = self.target_name(x);
+        let formal = self
+            .cx
+            .root_decl(db, lsp.root)
+            .filter(|d| self.sig_bounds.contains_key(d));
         for (j, &(at, v)) in xs.iter().enumerate() {
             self.check_scalar(v, Some(from), st, &what, span)?;
+            if let Some(f) = formal {
+                self.check_actual(f, v);
+            }
             let e = self.offset(wave, stride * j as u32);
             self.store(e, at, Width::B8);
             let va = self.offset(e, 8);
@@ -2669,6 +2677,43 @@ impl Fx<'_, '_> {
         let n = self.int(xs.len() as i64);
         self.emit_drive(drv, sref, wave, n, mode, reject);
         Ok(())
+    }
+
+    /// In a checked body (`func::checked_func_of`, #1181): value `v` driven through scalar
+    /// signal formal `formal` belongs to the subtype of its actual, whose bounds the caller
+    /// passed (LRM 14.7.3: the formal denotes the actual, so `v` becomes its driving value).
+    fn check_actual(&mut self, formal: yavs_sem::DeclId, v: Reg) {
+        let Some(&off) = self.sig_bounds.get(&formal) else {
+            return;
+        };
+        let db = self.db;
+        let DeclKind::Object(o) = &db.decls[formal].kind else {
+            return;
+        };
+        let t = db.base(o.subtype);
+        let rt = if ty::is_real(db, t) {
+            RegTy::F64
+        } else {
+            RegTy::I64
+        };
+        let (lo, hi) = self.sig_bounds_of(off, rt);
+        let what = format!(
+            "actual of signal parameter {}",
+            db.decls[formal].name.to_string().to_ascii_uppercase()
+        );
+        let tn = db.types[t].name.text.as_str().to_ascii_uppercase();
+        let what = self.fb.program().check_msg_for(&what, Dir::To, &tn);
+        if rt == RegTy::F64 {
+            self.emit(Inst::FCheck { v, lo, hi, what });
+        } else {
+            self.emit(Inst::Check {
+                kind: CheckKind::Range,
+                v,
+                lo,
+                hi,
+                what,
+            });
+        }
     }
 
     /// The caller's driver slot of signal parameter `root`, the target of `lsp`: for a record
@@ -2810,6 +2855,7 @@ impl Fx<'_, '_> {
         };
         let what = self.target_name(target.expr);
         let drv = param_slot.map_or(Ok(slot), Err);
+        let formal = self.sig_bounds.contains_key(&root).then_some(root);
         if elems.iter().any(|e| e.value.is_none()) {
             return self.drive_nulls(
                 elems,
@@ -2818,7 +2864,9 @@ impl Fx<'_, '_> {
                 |fx, one, d| {
                     let (mode, reject) = fx.drive_mode(d)?;
                     let (wave, n) = fx.with_target_dope(target.expr, tdope, |fx| {
-                        fx.wave_of(one, st, tid, tdope, size, stride, logic, &what, span)
+                        fx.wave_of(
+                            one, st, tid, tdope, size, stride, logic, &what, formal, span,
+                        )
                     })?;
                     fx.emit_drive(drv, sref, wave, n, mode, reject);
                     Ok(())
@@ -2830,7 +2878,9 @@ impl Fx<'_, '_> {
             );
         }
         let (wave, n) = self.with_target_dope(target.expr, tdope, |fx| {
-            fx.wave_of(elems, st, tid, tdope, size, stride, logic, &what, span)
+            fx.wave_of(
+                elems, st, tid, tdope, size, stride, logic, &what, formal, span,
+            )
         })?;
         let (mode, reject) = self.drive_mode(delay)?;
         self.emit_drive(drv, sref, wave, n, mode, reject);
@@ -2869,6 +2919,7 @@ impl Fx<'_, '_> {
         stride: Reg,
         logic: bool,
         what: &str,
+        formal: Option<yavs_sem::DeclId>,
         span: Span,
     ) -> R<(Reg, Reg)> {
         let db = self.db;
@@ -2908,6 +2959,9 @@ impl Fx<'_, '_> {
                     let (_, _, vw) = self.scalar(st, span)?;
                     let r = self.value_scalar(v)?;
                     self.check_scalar(r, Some(db.exprs[v].subtype), st, what, span)?;
+                    if let Some(f) = formal {
+                        self.check_actual(f, r);
+                    }
                     if logic {
                         let z = self.int(0);
                         let bias = self.code_bias(tid);

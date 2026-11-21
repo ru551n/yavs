@@ -123,13 +123,22 @@ pub(crate) fn func_of(
     if !matches!(sp.body, Body::Hir { .. }) {
         return Err(cx.ice(span, "lowering a subprogram without a VHDL body"));
     }
-    // The enclosing subprogram or process, for the static link.
-    let mut s = Some(decl.scope);
-    let mut parent = None;
+    let parent = parent_of(db, cx, d, span)?;
+    let kind = crate::func_kind(db, d);
+    let f = pb.declare(&decl.name.to_string(), kind, parent.map(|p| p.0));
+    let depth = parent.map_or(0, |p| p.1 + 1);
+    cx.funcs.insert(d, f);
+    cx.queue.push((d, depth, false));
+    Ok(f)
+}
+
+/// The function and depth of the subprogram or process enclosing subprogram `d`, for the
+/// static link.
+fn parent_of(db: &Db, cx: &mut Cx, d: DeclId, span: Span) -> R<Option<(FuncId, u8)>> {
+    let mut s = Some(db.decls[d].scope);
     while let Some(sc) = s {
         if let Some(&p) = cx.scope_func.get(&sc) {
-            parent = Some(p);
-            break;
+            return Ok(Some(p));
         }
         if matches!(
             db.scopes[sc].kind,
@@ -139,12 +148,58 @@ pub(crate) fn func_of(
         }
         s = db.scopes[sc].parent;
     }
-    let kind = crate::func_kind(db, d);
-    let f = pb.declare(&decl.name.to_string(), kind, parent.map(|p| p.0));
+    Ok(None)
+}
+
+/// The checked body of procedure `d` (#1181): its scalar `out` and `inout` signal formals take
+/// two more cells each, the bounds of the actual's subtype, which every drive through the
+/// formal checks. A call whose actual may not hold every value of the formal's subtype calls
+/// it; any other call keeps the plain body and pays nothing. Lowered after the plain body, and
+/// counting into its coverage items. `None` for a body that declares subprograms or protected
+/// types: they would take its frame for the plain body's.
+// ponytail: such a body is not checked; nested functions of their own checked body would cover it.
+pub(crate) fn checked_func_of(
+    db: &Db,
+    pb: &mut ProgramBuilder,
+    cx: &mut Cx,
+    d: DeclId,
+    span: Span,
+) -> R<Option<FuncId>> {
+    if let Some(&f) = cx.checked_funcs.get(&d) {
+        return Ok(Some(f));
+    }
+    func_of(db, pb, cx, d, span)?;
+    let Some(Body::Hir { scope, .. }) = db.decls[d].kind.subprogram().map(|s| &s.body) else {
+        return Err(cx.ice(span, "checked body of a subprogram without a VHDL body"));
+    };
+    let nests = db.scopes[*scope]
+        .order
+        .iter()
+        .any(|&x| match &db.decls[x].kind {
+            DeclKind::Subprogram(_)
+            | DeclKind::GenericSubprogram(_)
+            | DeclKind::Package { .. }
+            | DeclKind::PackageInst(_) => true,
+            DeclKind::Type(t) => matches!(
+                db.types[*t].kind,
+                yavs_sem::types::TypeKind::Protected { .. }
+            ),
+            _ => false,
+        });
+    if nests {
+        return Ok(None);
+    }
+    let parent = parent_of(db, cx, d, span)?;
     let depth = parent.map_or(0, |p| p.1 + 1);
-    cx.funcs.insert(d, f);
-    cx.queue.push((d, depth));
-    Ok(f)
+    let f = pb.declare(
+        &db.decls[d].name.to_string(),
+        FuncKind::Procedure,
+        parent.map(|p| p.0),
+    );
+    cx.checked_funcs.insert(d, f);
+    // Lowered last, after the plain body (`Cx::cov_replay`).
+    cx.queue.insert(0, (d, depth, true));
+    Ok(Some(f))
 }
 
 /// Give a native resolution function the same callable ABI as a VHDL body.
@@ -248,6 +303,9 @@ pub(crate) struct Fx<'a, 'b> {
     pub cur: Option<(yavs_ir::StmtId, Span)>,
     /// Emit coverage counters (off in the implicit processes of port actuals and guards).
     pub cov: bool,
+    /// In a checked body (`checked_func_of`): per scalar `out`/`inout` signal formal, the frame
+    /// offset of the two cells holding the low and high bound of its actual's subtype.
+    pub sig_bounds: rustc_hash::FxHashMap<DeclId, u32>,
     /// The branch arm around the statement being lowered, and the arm of that statement being
     /// lowered: what a nested statement is under.
     pub cov_parent: Option<yavs_ir::CovItem>,
@@ -327,6 +385,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             loops: Vec::new(),
             ret: None,
             ret_flat: false,
+            sig_bounds: Default::default(),
             name,
             drivers: Vec::new(),
             driver_base: Vec::new(),
@@ -1304,13 +1363,54 @@ impl<'a, 'b> Fx<'a, 'b> {
     }
 }
 
-/// Lower subprogram `d` (declared by `func_of`).
+/// Lower subprogram `d` (declared by `func_of`), or its checked body (`checked_func_of`).
 pub(crate) fn subprogram(
     db: &Db,
     pb: &mut ProgramBuilder,
     cx: &mut Cx,
     d: DeclId,
     depth: u8,
+    checked: bool,
+) -> R<()> {
+    // The checked body counts into the plain body's coverage items, in the order it made them.
+    cx.cov_record = None;
+    cx.cov_replay = None;
+    if cx.opts.any_coverage() {
+        if !checked {
+            cx.cov_record = Some(Default::default());
+        } else {
+            let Some((items, trees)) = cx.cov_made.get(&d) else {
+                return Err(cx.ice(db.decls[d].span, "checked body before its plain body"));
+            };
+            cx.cov_replay = Some((
+                items.iter().copied().collect(),
+                trees.iter().copied().collect(),
+            ));
+        }
+    }
+    let r = subprogram_body(db, pb, cx, d, depth, checked);
+    if let Some(made) = cx.cov_record.take() {
+        cx.cov_made.insert(d, made);
+    }
+    if let Some((items, trees)) = cx.cov_replay.take()
+        && r.is_ok()
+        && !(items.is_empty() && trees.is_empty())
+    {
+        return Err(cx.ice(
+            db.decls[d].span,
+            "checked body with fewer coverage items than its own",
+        ));
+    }
+    r
+}
+
+fn subprogram_body(
+    db: &Db,
+    pb: &mut ProgramBuilder,
+    cx: &mut Cx,
+    d: DeclId,
+    depth: u8,
+    checked: bool,
 ) -> R<()> {
     let decl = &db.decls[d];
     let Some(sp) = decl.kind.subprogram() else {
@@ -1319,7 +1419,12 @@ pub(crate) fn subprogram(
     let Body::Hir { scope, stmts } = &sp.body else {
         return Err(cx.ice(decl.span, "subprogram without a body"));
     };
-    let Some(&f) = cx.funcs.get(&d) else {
+    let funcs = if checked {
+        &cx.checked_funcs
+    } else {
+        &cx.funcs
+    };
+    let Some(&f) = funcs.get(&d) else {
         return Err(cx.ice(decl.span, "subprogram was not declared"));
     };
     cx.scope_func.insert(*scope, (f, depth));
@@ -1572,6 +1677,36 @@ pub(crate) fn subprogram(
             },
         );
     }
+    // The checked body: the bounds of each scalar `out`/`inout` signal formal's actual follow
+    // every other cell (`checked_func_of`).
+    if checked {
+        for (p, &pd) in sp.params.iter().zip(&body_params) {
+            if shape(db, fx.cx, p, decl.span)? != Shape::SigOut
+                || ty::is_array(db, db.base(p.subtype))
+            {
+                continue;
+            }
+            let name = p.name.text.to_string();
+            let lo = fx.fb.param(
+                &format!("{name}'low"),
+                Width::B8,
+                ParamClass::Value,
+                Mode::In,
+                None,
+            );
+            let hi = fx.fb.param(
+                &format!("{name}'high"),
+                Width::B8,
+                ParamClass::Value,
+                Mode::In,
+                None,
+            );
+            if hi != lo + 8 {
+                return Err(fx.cx.ice(decl.span, "signal parameter bounds not adjacent"));
+            }
+            fx.sig_bounds.insert(pd, lo);
+        }
+    }
     // An external name it uses that is not bound makes the call fail (LRM 8.7: the name is
     // evaluated when the subprogram runs, #255).
     let unbound = db
@@ -1662,8 +1797,8 @@ pub(crate) fn architecture(
     estmts.extend(stmts.iter().copied());
     ok &= region(db, pb, cx, &mut ir, &estmts, None).is_ok();
     // Subprograms declared in the architecture use its instance data too ('path_name).
-    while let Some((d, depth)) = cx.queue.pop() {
-        ok &= subprogram(db, pb, cx, d, depth).is_ok();
+    while let Some((d, depth, checked)) = cx.queue.pop() {
+        ok &= subprogram(db, pb, cx, d, depth, checked).is_ok();
     }
     ir.inst_size = cx.inst_size;
     ir.names = std::mem::take(&mut cx.names);

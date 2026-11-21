@@ -1990,6 +1990,27 @@ which tools/difftest parses.
   parameters pass the signal reference, the driver slot (`out`/`inout`) and the actual's
   descriptor; their elements and slices are sub-ranges of the reference.
 
+## A value driven through a signal parameter belongs to the actual's subtype (user, 2026-11-21, #1181)
+
+- **Decision:** a value driven through a scalar `out` or `inout` signal formal that lies
+  outside the subtype of the actual signal is a range error at the assignment (`E3009`,
+  "value 10 outside of INTEGER range 0 to 9 for actual of signal parameter O"). The formal denotes the
+  actual (LRM 4.2.2.3), so the value becomes the driving value of the actual (14.7.3), which
+  belongs to the actual's subtype. Both reference simulators let the value through (catalogue
+  `sig-param-range`).
+- **Cost:** decided statically per call. A call whose actual's subtype holds every value of the
+  formal's (the same subtype, a type mark the formal's is derived from, static bounds inside:
+  the test of #1175) calls the procedure's plain body and pays nothing. Any other call, and a
+  checked formal passed on as an actual, calls the procedure's checked body
+  (`func::checked_func_of`): a second lowering of the same body whose scalar `out`/`inout`
+  signal formals take two more cells, the low and high bound of the actual's subtype, checked
+  at each drive through the formal. It counts into the plain body's coverage items.
+- **Not covered (ponytail):** a procedure that declares subprograms or protected types keeps
+  its plain body for every call (its nested functions would take the checked body's frame);
+  the reading through an `in` or `inout` signal formal of a value outside the formal's
+  subtype is not checked; ports are a separate question (#1183: LRM 2008 14.3.5 makes a
+  scalar port whose subtypes are not compatible an elaboration error).
+
 ## CLI: JSON diagnostics, `-W` forms, `--explain` (yavs CLI, 2026-10-18)
 
 - **JSON diagnostics follow the common compiler shape** (`level`, `children`, `rendered`, plus `code` as a plain string

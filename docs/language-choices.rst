@@ -58,6 +58,15 @@ yavs, with what to do about each.
      - Give the variable a subtype that holds every value the procedure can return, or check the
        value in the procedure. A design that passed on another simulator may have kept the
        value outside its subtype.
+   * - A procedure that drives a value outside the subtype of the signal passed to it through an
+       ``out`` or ``inout`` signal parameter: ``o <= 10`` with a signal of ``integer range 0 to 9``
+     - Error ``E3009`` at the assignment in the procedure: the formal stands for the signal, so
+       the value it drives must belong to the signal's subtype. The message ends ``for actual of
+       signal parameter`` and the formal's name, with the signal's range. Not yet checked in a procedure
+       that declares subprograms or protected types of its own.
+     - Give the signal a subtype that holds every value the procedure can drive, or check the
+       value in the procedure. A design that passed on another simulator may have put the value
+       into the signal.
    * - A named aggregate as an operand of a predefined operator, ``c = (3 => a, 2 => b, ...)``, with
        ``c`` of a constrained array type declared ``downto``
      - The aggregate runs in the direction of the index subtype, so its leftmost element is its

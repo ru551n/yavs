@@ -1208,3 +1208,48 @@ fn a_region_excludes_the_arm_where_its_choice_or_body_stands() {
     ];
     assert_eq!(got, want, "{got:#?}");
 }
+
+/// A procedure called once with a signal actual narrower than its formal (its checked body,
+/// #1181) and twice with one that is not: every item of its body is counted once, over all
+/// three calls.
+#[test]
+fn checked_body_counts_into_the_same_items() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli/cov_sig_param.vhd");
+    let tmp = tempdir("sigparam");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let src = src.to_str().expect("utf-8 path");
+    assert!(yavs(&tmp, &["analyze", &lib, src]).status.success());
+    let o = yavs(
+        &tmp,
+        &[
+            "run",
+            &lib,
+            "cov_sig_param",
+            "--cov=sbcm",
+            "--cov-file=a.ycov",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let db = read(&tmp.join("a.ycov"));
+    let mut seen = std::collections::BTreeMap::new();
+    for (k, e) in &db.items {
+        if (9..=12).contains(&e.line) {
+            let n = seen
+                .entry((format!("{:?}", k.kind), e.line))
+                .or_insert((0, 0));
+            n.0 += 1;
+            n.1 += e.count;
+        }
+    }
+    assert!(seen.values().all(|&(n, _)| n == 1), "{seen:?}");
+    let stmt = |line: u32| seen.get(&("Statement".to_string(), line)).map(|v| v.1);
+    assert_eq!(
+        (stmt(9), stmt(10), stmt(12)),
+        (Some(3), Some(2), Some(1)),
+        "{seen:?}"
+    );
+    assert!(
+        seen.keys().any(|(k, _)| k.starts_with("Condition")),
+        "{seen:?}"
+    );
+}

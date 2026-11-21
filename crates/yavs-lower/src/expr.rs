@@ -13,6 +13,7 @@ use yavs_sem::decl::{Alias, Body, DeclKind, ObjClass, ObjRole, Param, Subprogram
 use yavs_sem::hir::UnitHir;
 use yavs_sem::hir::{Actual, AggAssoc, AggBounds, Arg, AttrPrefix, Choice, ExprKind, PredefAttr};
 use yavs_sem::implicit::{Family, Form, ImplicitOp};
+use yavs_sem::scope::ScopeKind;
 use yavs_sem::stat::{ConstValue, Elems, Staticness};
 use yavs_sem::types::{Constraint, Direction, RangeC, TypeKind};
 use yavs_sem::{Db, DeclId, ExprId, SubtypeId, TypeId};
@@ -89,6 +90,9 @@ pub(crate) enum Place {
 pub(crate) enum Kept {
     /// A static name, lowered again: it denotes the same object after the call.
     Name(ExprId),
+    /// A static name passed by reference (`Fx::checked_after`): the value the call left in it
+    /// is checked against its subtype, nothing is copied back.
+    Check(ExprId),
     Scalar {
         slot: u32,
         w: Width,
@@ -1091,6 +1095,12 @@ impl<'a> Fx<'a, '_> {
         }
         for (off, kept, st, what) in std::mem::take(&mut self.writeback) {
             let p = self.kept(&kept)?;
+            if let (Kept::Check(_), Place::Scalar { addr, w, st: to }) = (&kept, &p) {
+                let (_, rt, _) = self.scalar(*to, span)?;
+                let v = self.load(*addr, *w, rt);
+                self.check_scalar(v, Some(st), *to, &what, span)?;
+                continue;
+            }
             if self.is_comp(self.db.base(st)) {
                 // A logic slice actual: the temporary's elements go back into it.
                 let t = self.addr(Space::Frame(self.depth), off);
@@ -1143,7 +1153,7 @@ impl<'a> Fx<'a, '_> {
             self.store(a, r, Width::B8);
         }
         match kept {
-            Kept::Name(e) => Kept::Name(e),
+            Kept::Name(e) | Kept::Check(e) => Kept::Name(e),
             Kept::Scalar { w, st, .. } => Kept::Scalar { slot, w, st },
             Kept::Logic { st, .. } => Kept::Logic { slot, st },
             Kept::Slice { tid, dims, .. } => Kept::Slice { slot, tid, dims },
@@ -1157,7 +1167,7 @@ impl<'a> Fx<'a, '_> {
             this.load(a, Width::B8, t)
         };
         Ok(match *k {
-            Kept::Name(e) => self.place(e)?,
+            Kept::Name(e) | Kept::Check(e) => self.place(e)?,
             Kept::Scalar { slot, w, st } => Place::Scalar {
                 addr: word(self, slot, 0, RegTy::Ptr),
                 w,
@@ -3871,6 +3881,27 @@ impl<'a> Fx<'a, '_> {
                     cells.push(v);
                 }
                 Shape::Ref => match self.place(e)? {
+                    // An actual whose subtype may not hold every value of the formal's, that
+                    // nothing but the formal reaches during the call: by reference, its value
+                    // checked against its subtype after the call (LRM 4.2.2.2, #1175).
+                    Place::Scalar { addr, w, st }
+                        if w == self.scalar(p.subtype, es)?.2
+                            && !self.object_within(p.subtype, st)
+                            && self.checked_after(sp, args, a, e) =>
+                    {
+                        if p.mode == yavs_sem::hir::Mode::Inout {
+                            let (_, rt, _) = self.scalar(p.subtype, es)?;
+                            let v = self.load(addr, w, rt);
+                            self.check_inout(v, st, p, sp, es)?;
+                        }
+                        cells.push(addr);
+                        self.writeback.push((
+                            0,
+                            Kept::Check(e),
+                            p.subtype,
+                            format!("actual of {}", param_what(p)),
+                        ));
+                    }
                     // A narrow array element (4 bytes), or an actual whose subtype may not
                     // hold every value of the formal's: copy-in/copy-out through a frame
                     // temporary of the formal's width, as for a logic element below; the
@@ -3883,9 +3914,11 @@ impl<'a> Fx<'a, '_> {
                         let (_, rt, fw) = self.scalar(p.subtype, es)?;
                         let off = self.fb.slot(8, 8);
                         let t = self.addr(Space::Frame(self.depth), off);
-                        let v = self.load(addr, w, rt);
-                        self.check_inout(v, st, p, sp, es)?;
-                        self.store(t, v, fw);
+                        if !self.assigns_first(sp, p) {
+                            let v = self.load(addr, w, rt);
+                            self.check_inout(v, st, p, sp, es)?;
+                            self.store(t, v, fw);
+                        }
                         cells.push(t);
                         let kept = self.keep(e, Place::Scalar { addr, w, st });
                         self.writeback.push((
@@ -3910,18 +3943,20 @@ impl<'a> Fx<'a, '_> {
                         // for scalars); the actual is written back after the call.
                         let off = self.fb.slot(8, 8);
                         let t = self.addr(Space::Frame(self.depth), off);
-                        let code = self.reg(RegTy::I64);
-                        self.emit(Inst::LGet {
-                            dst: code,
-                            base: data,
-                            idx,
-                        });
-                        let tid = self.ty(db.base(st), es)?;
-                        let bias = self.code_bias(tid);
-                        let v = self.dec(code, bias);
-                        self.check_inout(v, st, p, sp, es)?;
-                        let (_, _, w) = self.scalar(p.subtype, es)?;
-                        self.store(t, v, w);
+                        if !self.assigns_first(sp, p) {
+                            let code = self.reg(RegTy::I64);
+                            self.emit(Inst::LGet {
+                                dst: code,
+                                base: data,
+                                idx,
+                            });
+                            let tid = self.ty(db.base(st), es)?;
+                            let bias = self.code_bias(tid);
+                            let v = self.dec(code, bias);
+                            self.check_inout(v, st, p, sp, es)?;
+                            let (_, _, w) = self.scalar(p.subtype, es)?;
+                            self.store(t, v, w);
+                        }
                         cells.push(t);
                         let kept = self.keep(e, Place::Logic { data, idx, st });
                         self.writeback.push((
@@ -4089,6 +4124,88 @@ impl<'a> Fx<'a, '_> {
             return Ok(());
         }
         self.check_scalar(v, Some(st), p.subtype, &param_what(p), span)
+    }
+
+    /// Whether `out`/`inout` actual `e` (of argument `arg`) of a call of `sp` can be passed by
+    /// reference and its value checked after the call: nothing but the formal reaches it while
+    /// the call runs, so the value it holds before the check is never seen (#1175). `e` is a
+    /// static name of a variable of a process or subprogram; the callee is declared outside that
+    /// region and does not wait; no other actual of the call names a variable or an alias.
+    fn checked_after(&self, sp: &Subprogram, args: &[Arg], arg: &Arg, e: ExprId) -> bool {
+        let db = self.db;
+        let Some(yavs_sem::hir::Lsp {
+            root: yavs_sem::hir::ObjRoot::Decl(d),
+            ..
+        }) = db.static_lsp(e)
+        else {
+            return false;
+        };
+        let region = db.decls[d].scope;
+        let local = matches!(&db.decls[d].kind, DeclKind::Object(o)
+            if o.class == ObjClass::Variable && o.role == ObjRole::Plain)
+            && matches!(
+                db.scopes[region].kind,
+                ScopeKind::Process | ScopeKind::Subprogram | ScopeKind::SeqBlock
+            );
+        let quiet = match &sp.body {
+            Body::Hir { .. } => sp
+                .scope
+                .and_then(|s| db.scopes[s].owner)
+                .is_some_and(|o| db.procedure_waits(o).is_none()),
+            Body::Native(_) | Body::Implicit(_) => true,
+            _ => false,
+        };
+        if !local || !quiet {
+            return false;
+        }
+        let mut s = sp.scope;
+        while let Some(x) = s {
+            if x == region {
+                return false;
+            }
+            s = db.scopes[x].parent;
+        }
+        args.iter().all(|b| match &b.actual {
+            _ if std::ptr::eq(b, arg) => true,
+            Actual::Expr(x) => {
+                let mut hit = false;
+                db.walk_expr(*x, &mut |y| {
+                    hit |= matches!(db.exprs[y].kind, ExprKind::Obj(o)
+                        if o == d || matches!(db.decls[o].kind, DeclKind::Alias(_)));
+                });
+                !hit
+            }
+            Actual::Default | Actual::Open => true,
+            _ => false,
+        })
+    }
+
+    /// Whether the body of `sp` assigns its `out` formal `p` whole before anything can read it,
+    /// so the formal's temporary needs no copy in: the first statement is `p := v` with `v` not
+    /// naming `p`, and the body declares nothing but the parameters.
+    fn assigns_first(&self, sp: &Subprogram, p: &Param) -> bool {
+        let db = self.db;
+        let (yavs_sem::hir::Mode::Out, Some(f), Body::Hir { scope, stmts }) =
+            (p.mode, p.decl, &sp.body)
+        else {
+            return false;
+        };
+        let Some(yavs_sem::hir::StmtKind::VarAssign {
+            target,
+            rhs: yavs_sem::hir::Rhs::Simple(v),
+        }) = stmts.first().map(|&s| &db.stmts[s].kind)
+        else {
+            return false;
+        };
+        let mut reads = false;
+        db.walk_expr(*v, &mut |y| {
+            reads |= matches!(db.exprs[y].kind, ExprKind::Obj(o) if o == f);
+        });
+        matches!(db.exprs[target.expr].kind, ExprKind::Obj(o) if o == f)
+            && !reads
+            && db.scopes[*scope].order.iter().all(
+                |&d| matches!(&db.decls[d].kind, DeclKind::Object(o) if o.role == ObjRole::Param),
+            )
     }
 
     /// The descriptor of an array signal actual as the formal `p` sees it.

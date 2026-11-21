@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:out_formal_entry:_p0	rd x=50
+diag	note	0	0	:out_formal_entry:_p0	w=1
+diag	note	0	0	:out_formal_entry:_p0	w=50
+diag	note	0	0	:out_formal_entry:_p0	rd x=42
+diag	note	0	0	:out_formal_entry:_p0	a=1
+diag	note	0	0	:out_formal_entry:_p0	a=42
+diag	note	0	0	:out_formal_entry:_p0	a=7 10 w=9

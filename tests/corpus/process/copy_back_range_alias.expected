@@ -1,0 +1,5 @@
+exit	1
+diag	note	0	0	:copy_back_range_alias:_p0	r.f=5
+diag	note	0	0	:copy_back_range_alias:_p0	x.f=7
+diag	note	0	0	:copy_back_range_alias:_p0	r.f=7
+diag	fatal	0	0	-	value 10 outside of INTEGER range 0 to 9 for actual of parameter O

@@ -75,6 +75,7 @@ CYCLE_TESTS = {
     "inputs.vhd": [("cycle_inputs", "", None)],
     "inreset.vhd": [("cycle_inreset", "", None)],
     "lazy.vhd": [("cycle_lazy", "", None)],
+    "lazyrst.vhd": [("cycle_lazyrst", "", None)],
     "intelem1.vhd": [("cycle_intelem1", "", None)],
     "intarr.vhd": [("cycle_intarr", "", None)],
     "ints.vhd": [("cycle_ints", "", None)],

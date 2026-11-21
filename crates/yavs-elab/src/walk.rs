@@ -2189,8 +2189,12 @@ impl Elab<'_> {
                     };
                     let (al, ashape) = self.m.select(ao, &asels, espan)?;
                     let modes = self.m.leaf_modes(self.db, fo, hmode, span)?;
-                    let (f, a) = ((&fl[..], &fshape, s), (&al[..], &ashape, sc));
-                    self.m.edges(self.db, f, a, fo, &modes, espan)?;
+                    let start = self.m.nets.ports.len();
+                    self.m.edges(&fl, &al, &modes, espan)?;
+                    if !fits(Some(&fshape), &ashape, mode) {
+                        let (f, a) = ((&fl[..], &fshape, s), (&al[..], &ashape, sc));
+                        self.m.check_edges(self.db, start, f, a, fo, espan)?;
+                    }
                 }
                 return Ok(());
             }
@@ -2224,15 +2228,46 @@ impl Elab<'_> {
             return Ok(());
         };
         let (al, ashape) = self.m.select(ao, &asels, aspan)?;
-        let shape = own.unwrap_or_else(|| ashape.clone());
+        // A port whose values may fall outside the subtype that receives them gets range checks
+        // on its edges (#1183), apart from the usual port.
+        if !fits(own.as_ref(), &ashape, mode) {
+            let a = (al, ashape, ascope);
+            return self.checked_port(s, p, kind, own, init.as_ref(), hmode, a, (span, aspan));
+        }
+        let shape = own.unwrap_or(ashape);
         let fo = self
             .m
             .add_obj(self.db, s, p, kind, shape, init.as_ref(), span)?;
+        let fl = self.m.select(fo, &[], span)?.0;
+        let modes = self.m.leaf_modes(self.db, fo, hmode, span)?;
+        self.m.edges(&fl, &al, &modes, aspan)
+    }
+
+    /// The end of [`Elab::port`] for port `p` of scope `s` associated with actual parts `al` of
+    /// shape `ashape` (in scope `ascope`) whose values may need a range check (#1183).
+    #[cold]
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn checked_port(
+        &mut self,
+        s: ScopeId,
+        p: DeclId,
+        kind: ObjKind,
+        own: Option<Shape>,
+        init: Option<&Val>,
+        hmode: Mode,
+        (al, ashape, ascope): (Vec<(LeafId, Range)>, Shape, Option<ScopeId>),
+        (span, aspan): (Span, Span),
+    ) -> R<()> {
+        let shape = own.unwrap_or_else(|| ashape.clone());
+        let fo = self.m.add_obj(self.db, s, p, kind, shape, init, span)?;
         let (fl, fshape) = self.m.select(fo, &[], span)?;
         let modes = self.m.leaf_modes(self.db, fo, hmode, span)?;
+        let start = self.m.nets.ports.len();
+        self.m.edges(&fl, &al, &modes, aspan)?;
         let sc = ascope.ok_or_else(|| Box::new(ice(aspan, "port actual without a scope")))?;
         let (f, a) = ((&fl[..], &fshape, s), (&al[..], &ashape, sc));
-        self.m.edges(self.db, f, a, fo, &modes, aspan)
+        self.m.check_edges(self.db, start, f, a, fo, aspan)
     }
 
     /// The equivalent process `formal <= e` of an expression actual (LRM 6.5.6.3) in the
@@ -6502,20 +6537,61 @@ impl Model {
         Ok(out)
     }
 
-    /// The port edges of formal parts `fl` (of shape `fs`, of port `fo` in scope `s`) and
-    /// actual parts `al` (of shape `as_`, in scope `sc`). A value that may fall outside the
-    /// subtype that receives it is range checked by a conversion (#1183).
-    #[allow(clippy::too_many_arguments)]
+    /// The port edges of formal parts `fl` and actual parts `al`, with no conversion; a port
+    /// whose values may need a range check gets them afterwards ([`Model::check_edges`]).
     fn edges(
         &mut self,
-        db: &Db,
-        (fl, fs, s): (&[(LeafId, Range)], &Shape, ScopeId),
-        (al, as_, sc): (&[(LeafId, Range)], &Shape, ScopeId),
-        fo: ObjId,
+        fl: &[(LeafId, Range)],
+        al: &[(LeafId, Range)],
         modes: &HashMap<LeafId, PortMode>,
         span: Span,
     ) -> R<()> {
         self.same_parts(fl, al, span)?;
+        for (f, a) in fl.iter().zip(al) {
+            if f.1.len == 0 {
+                continue;
+            }
+            let Some(&mode) = modes.get(&f.0) else {
+                return Err(Box::new(ice(span, "formal leaf without a mode")));
+            };
+            // An `in` formal starts with its actual's value (LRM 14.7.3.3), which the
+            // initial value of a later signal may read.
+            if mode == PortMode::In {
+                let al = self.nets.leaf(a.0);
+                let src = crate::collapse::slice_init(&al.init, al.ty.len, a.1);
+                crate::collapse::put_init(
+                    &mut self.nets.leaves[f.0.index()].init,
+                    f.1.offset,
+                    &src,
+                    f.1.len,
+                );
+            }
+            self.nets.ports.push(PortEdge {
+                formal: *f,
+                actual: *a,
+                mode,
+                to_formal: None,
+                to_actual: None,
+            });
+        }
+        Ok(())
+    }
+
+    /// Range checks on the port edges from `start` on, which [`Model::edges`] made for formal
+    /// parts `fl` (of shape `fs`, of port `fo` in scope `s`) and actual parts `al` (of shape
+    /// `as_`, in scope `sc`): a value that may fall outside the subtype that receives it is
+    /// checked by a conversion (#1183). Apart from `edges`, so the usual port does not pay.
+    #[cold]
+    #[inline(never)]
+    fn check_edges(
+        &mut self,
+        db: &Db,
+        start: usize,
+        (fl, fs, s): (&[(LeafId, Range)], &Shape, ScopeId),
+        (al, as_, sc): (&[(LeafId, Range)], &Shape, ScopeId),
+        fo: ObjId,
+        span: Span,
+    ) -> R<()> {
         // One leaf a side, the usual port: its scalar, with no list made.
         let one = match (fl, al) {
             ([_], [_]) => one_leaf(fs).zip(one_leaf(as_)),
@@ -6534,12 +6610,14 @@ impl Model {
                 "port parts that do not match their shape",
             )));
         }
+        let mut e = start;
         for (k, (f, a)) in fl.iter().zip(al).enumerate() {
             if f.1.len == 0 {
                 continue;
             }
-            let Some(&mode) = modes.get(&f.0) else {
-                return Err(Box::new(ice(span, "formal leaf without a mode")));
+            let mode = match self.nets.ports.get(e) {
+                Some(edge) if edge.formal == *f && edge.actual == *a => edge.mode,
+                _ => return Err(Box::new(ice(span, "port edge of another part"))),
             };
             let (fsh, ash) = one.unwrap_or_else(|| (fls[k], als[k]));
             let to_formal = match mode {
@@ -6556,25 +6634,9 @@ impl Model {
                 }
                 _ => None,
             };
-            // An `in` formal starts with its actual's value (LRM 14.7.3.3), which the
-            // initial value of a later signal may read.
-            if mode == PortMode::In {
-                let al = self.nets.leaf(a.0);
-                let src = crate::collapse::slice_init(&al.init, al.ty.len, a.1);
-                crate::collapse::put_init(
-                    &mut self.nets.leaves[f.0.index()].init,
-                    f.1.offset,
-                    &src,
-                    f.1.len,
-                );
-            }
-            self.nets.ports.push(PortEdge {
-                formal: *f,
-                actual: *a,
-                mode,
-                to_formal,
-                to_actual,
-            });
+            let edge = &mut self.nets.ports[e];
+            (edge.to_formal, edge.to_actual) = (to_formal, to_actual);
+            e += 1;
         }
         Ok(())
     }
@@ -6787,6 +6849,29 @@ impl Model {
 
 /// A scalar range as cells (`Model::cell_bounds`): low, high, and left, direction, right.
 type CellBounds = (u64, u64, (u64, &'static str, u64));
+
+/// Whether every value of a port association fits the subtype that receives it in `mode`, from
+/// the formal's shape `f` (`None`: it takes the actual's, so they agree) and the actual's `a`,
+/// with one scalar a side; `false` for any other, whose leaves [`Model::check_edges`] decides
+/// one by one (#1183).
+#[inline(never)]
+fn fits(f: Option<&Shape>, a: &Shape, mode: PortMode) -> bool {
+    let Some(f) = f else { return true };
+    let (Some(f), Some(a)) = (one_leaf(f), one_leaf(a)) else {
+        return false;
+    };
+    // The same static range on both sides, the usual port: nothing to compare.
+    if let (Shape::Scalar { range: Some(x), .. }, Shape::Scalar { range: Some(y), .. }) = (f, a)
+        && x == y
+    {
+        return true;
+    }
+    match mode {
+        PortMode::In => !may_fail(a, f),
+        PortMode::Out | PortMode::Buffer => !may_fail(f, a),
+        PortMode::Inout => !may_fail(a, f) && !may_fail(f, a),
+    }
+}
 
 /// Whether a value of scalar shape `from` may lie outside scalar shape `to` (#1183): false
 /// for static ranges with `to`'s the wider, the usual port, with nothing evaluated.

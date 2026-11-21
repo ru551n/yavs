@@ -2072,8 +2072,13 @@ which tools/difftest parses.
   association gets a checking identity conversion in the direction that can fail (an existing
   conversion checks its result unless the target holds every value of its type), so it is not
   collapsed and its values are copied and checked in the update phase, as converted ports are.
-  Measured 2026-11-21: an elaboration of 60000 associations none of which needs a check runs
-  0.45 percent more instructions; GRLIB and Microwatt run as before.
+  Measured 2026-11-21: an elaboration of 60000 associations none of which needs a check ran
+  0.45 percent more instructions at first; GRLIB and Microwatt run as before. The usual port is
+  then decided apart (`walk::fits`: one scalar a side, the same static range or a sending range
+  within the receiving one) and takes the plain path, keeping no shape; any other gets its
+  checks after its edges are made, in a cold path (`Model::check_edges`). That leaves 0.17
+  percent (about 55 instructions per association), not split further (an earlier, longer form
+  of the comparison alone took about 50).
 - **Not covered (ponytail):** a floating-point subtype whose range is given by an attribute
   (`real range r'range`) has no bounds at elaboration and is not checked.
 

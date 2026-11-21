@@ -19,6 +19,13 @@ sys.path.insert(0, str(HERE))
 import cyclegate as G  # noqa: E402
 
 D = G.D
+# Reviewed differences under the exact contract: (test, contract) -> (signals, cause).
+CHOICE = ("a clocked member with a choice keeps a register where only the second image changed it "
+          "(docs/cycle-mode.rst \"Two-state values\"): `sums` shows 0 at the first edge where the normal mode has 'U'")
+KNOWN = {
+    ("bench/lfsr64.vhd", "exact"): ({"bench_lfsr64.sums"}, CHOICE),
+    ("bench/lfsr64_xor.vhd", "exact"): ({"bench_lfsr64_xor.sums"}, CHOICE),
+}
 HELD = re.compile(r"warning\[W0802\]: `([^`]+)` is not recorded in the waveform")
 
 
@@ -51,6 +58,10 @@ def one(item, a):
             why.append(f"names on one side only: {(only_a + r['only_b'])[:5]}")
         if r["different"] or r["shape"]:
             why.append(f"{r['different']} of {r['signals']} signals differ: {[d.get('name') for d in r['diffs'][:5]]}")
+        names, cause = KNOWN.get((name, a.contract), (set(), ""))
+        if why and not only_a and not r["only_b"] and not r["shape"] and \
+                {d.get("name") for d in r["diffs"]} <= names and len(r["diffs"]) == r["different"]:
+            return {**res, "bucket": "known", "why": cause}
         if why:
             bucket = "differs" if a.contract == "exact" or only_a or r["only_b"] else "contract"
             return {**res, "bucket": bucket, "why": "; ".join(why), "dir": str(base)}

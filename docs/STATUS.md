@@ -3509,7 +3509,9 @@ The GitHub Action that installs a release lives in its own repository, `ru551n/y
   used as functions and functions used as statements (`E1300`), no function with the expected
   result type (`E1301`), an ambiguous procedure call reported at the one actual that decides it
   (`E1302` with a qualification help in the declaration's spelling), candidate lists in help, and
-  hints for calls from several packages and for vector/integer operators.
+  hints for calls from several packages and for vector/integer operators. A call no overload accepts whose actual
+  has no interpretation of its own (an undeclared name, a call nothing matches, also an index) reports that actual
+  (`E1100`, `E1301` of the inner call), not the overload set (#1190).
 - Subprogram calls with sub-element (individual) associations (`pr(x(0) => s)`, `f(r.i => 1)`,
   slices), also of unconstrained formals, resolve and give `Actual::Individual`; each actual is
   typed by its sub-element, a non-static formal index is `E1410`, whole and part `E1310` (#210); the elements of an unconstrained formal must form a

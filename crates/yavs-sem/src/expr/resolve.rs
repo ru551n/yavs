@@ -1563,20 +1563,7 @@ impl Db {
                         return;
                     }
                 }
-                if let NameRes::Overloads(ds) = self.classify(scope, prefix) {
-                    self.no_function(scope, prefix, args, &ds);
-                    return;
-                }
-                self.report(
-                    Diagnostic::error(
-                        diag::NO_OVERLOAD,
-                        "no visible subprogram accepts these arguments",
-                    )
-                    .with_primary(prefix.span, "no matching subprogram")
-                    .with_note(
-                        "LRM 12.5: the occurrence is legal only with exactly one interpretation in its complete context",
-                    ),
-                );
+                self.no_apply(scope, prefix, args);
                 return;
             }
             if let K::Name(n) = &e.kind
@@ -1596,20 +1583,7 @@ impl Db {
                     && !std::ptr::eq(under, n)
                     && matches!(self.name_cands(scope, under), CandSet::Types(v) if v.is_empty())
                 {
-                    if let NameRes::Overloads(ds) = self.classify(scope, prefix) {
-                        self.no_function(scope, prefix, args, &ds);
-                    } else {
-                        self.report(
-                            Diagnostic::error(
-                                diag::NO_OVERLOAD,
-                                "no visible subprogram accepts these arguments",
-                            )
-                            .with_primary(prefix.span, "no matching subprogram")
-                            .with_note(
-                                "LRM 12.5: the occurrence is legal only with exactly one interpretation in its complete context",
-                            ),
-                        );
-                    }
+                    self.no_apply(scope, prefix, args);
                     return;
                 }
             }
@@ -2316,6 +2290,9 @@ impl Db {
                         one.push(e);
                     }
                 }
+                if self.unresolved_actuals(scope, args) {
+                    return Err(crate::Reported);
+                }
                 if let [p] = one[..]
                     && let Some(r) = self.assoc_mismatch(scope, p, args, callee_span)
                 {
@@ -2478,6 +2455,35 @@ impl Db {
         procs
     }
 
+    /// `prefix(args)` that is no value: a call no overload accepts, or a name with an actual
+    /// or a prefix that has no interpretation of its own (reported instead, 8.2).
+    fn no_apply(&mut self, scope: ScopeId, prefix: &ast::Name, args: &[ast::AssocElem]) {
+        if let NameRes::Overloads(ds) = self.classify(scope, prefix) {
+            return self.no_function(scope, prefix, args, &ds);
+        }
+        if self.unresolved_actuals(scope, args) {
+            return;
+        }
+        if let ast::NameKind::Apply {
+            prefix: inner,
+            args: inner_args,
+        } = &prefix.kind
+            && matches!(self.name_cands(scope, prefix), CandSet::Types(v) if v.is_empty())
+        {
+            return self.no_apply(scope, inner, inner_args);
+        }
+        self.report(
+            Diagnostic::error(
+                diag::NO_OVERLOAD,
+                "no visible subprogram accepts these arguments",
+            )
+            .with_primary(prefix.span, "no matching subprogram")
+            .with_note(
+                "LRM 12.5: the occurrence is legal only with exactly one interpretation in its complete context",
+            ),
+        );
+    }
+
     /// `f(args)` matching no overload `ds` of `f` (E1301), or the association error
     /// of the only function `f` (E1100, E1301, E1310, E1311).
     fn no_function(
@@ -2500,6 +2506,9 @@ impl Db {
             }
         }
         if fns.is_empty() && self.procedures_only(prefix, ds) {
+            return;
+        }
+        if self.unresolved_actuals(scope, args) {
             return;
         }
         if let [f] = fns[..]
@@ -2533,6 +2542,22 @@ impl Db {
             d = d.with_help(format!("candidates: {}", list.join(", ")));
         }
         self.report(d);
+    }
+
+    /// An actual without any interpretation (an undeclared name, a call nothing matches) is
+    /// the real problem of a call that no overload accepts: report it as in an assignment
+    /// (8.2, no cascade) and return true.
+    fn unresolved_actuals(&mut self, scope: ScopeId, args: &[ast::AssocElem]) -> bool {
+        let mut any = false;
+        for a in args {
+            if let ast::Actual::Expr(x) = &a.actual
+                && matches!(self.cands(scope, x), CandSet::Types(v) if v.is_empty())
+            {
+                self.resolve(scope, x, Expected::Any);
+                any = true;
+            }
+        }
+        any
     }
 
     /// The association list `args` does not fit subprogram `d` itself (6.5.7.1): report

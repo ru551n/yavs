@@ -1666,7 +1666,14 @@ impl Fx<'_, '_> {
         } else {
             None
         };
-        let m = self.msg("aggregate", Dir::To);
+        let ix = match &db.types[t].kind {
+            TypeKind::Array { indexes, .. } => indexes.get(usize::from(k)).copied(),
+            _ => None,
+        };
+        let m = match ix {
+            Some(ix) => self.msg_st("aggregate", Dir::To, "", ix),
+            None => self.msg("aggregate", Dir::To),
+        };
         let put = |fx: &mut Self, pos: Reg, e: ExprId| -> R<()> {
             let f = flat(fx, pos);
             if last {

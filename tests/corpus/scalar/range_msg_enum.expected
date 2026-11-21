@@ -1,0 +1,3 @@
+exit	1
+diag	note	0	0	:range_msg_enum:_p0	green ok
+diag	fatal	0	0	-	value WHITE outside of RGB range RED to BLUE for variable Q

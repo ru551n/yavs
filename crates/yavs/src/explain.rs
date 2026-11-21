@@ -518,7 +518,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E3009",
-        "A VHDL runtime error: bound check, length mismatch of an array, record field or element, overflow, null access, division by zero and the like. So is reading the bounds of a deferred constant before its full declaration has been elaborated (a subprogram of the package body that reads `U'length` is called to initialise a constant above the full declaration of `U`: move that constant below it). The message and the call stack say where.",
+        "A VHDL runtime error: bound check, length mismatch of an array, record field or element, overflow, null access, division by zero and the like. So is reading the bounds of a deferred constant before its full declaration has been elaborated (a subprogram of the package body that reads `U'length` is called to initialise a constant above the full declaration of `U`: move that constant below it). The message and the call stack say where. A range or index error shows the value and the bounds as VHDL writes them: an enumeration literal (`value WHITE outside of RGB range RED to BLUE`), a physical value with its unit (`value 20 NS outside of SHORT range 1 NS to 10 NS`), a real in full, and `high downto low` for a descending range.",
     ),
     (
         "E3010",

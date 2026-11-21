@@ -1,0 +1,3 @@
+exit	1
+diag	note	0	0	:range_msg_phys_time:_p0	in range
+diag	fatal	0	0	-	value 20 US outside of SHORT range 1 NS to 10 NS for variable TS

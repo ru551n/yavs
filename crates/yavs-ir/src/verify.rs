@@ -56,6 +56,16 @@ pub(crate) fn verify(prog: &Program, first: usize) -> Vec<VerifyError> {
             ));
         }
     }
+    for (id, c) in prog.checks.iter() {
+        if c.ty.is_some_and(|t| prog.types.get(t).is_none()) {
+            errs.push(VerifyError::new(
+                FuncId(u32::MAX),
+                "<program>",
+                None,
+                format!("{id}: a check message names a missing type"),
+            ));
+        }
+    }
     errs
 }
 

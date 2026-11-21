@@ -17808,3 +17808,16 @@ the parked retune package.
 - **Sound by content, steered by name.** Code is still found only by the body's Cranelift key, with the build and the optimiser's fingerprint, so a hit is the code a compile would make, whichever closure stored it. The list's entries are names and sizes. They only say what to look up, and so what run 1 compiles early: a name the run's own function shares, with a different body, costs a probe (a lowering) and an early compile.
 - **What it widens.** "The first run has no prediction: its `unpaid` rule is unchanged (no prior was invented)": the names of other closures' compiled functions act as a prior for run 1. Within one work library that was already so; this extends it to every mapped library. "Library stages": code from one library is reused by closures of others, keyed by content, not by the library stage's ids. The library stage itself is unchanged.
 - **Measured** (2026-11-19, instructions, bench builds, fresh worlds prepared by the binary measured, byte-copy A/A). Run 1 of a closure after a testbench of a second library ran twice, 8 worlds: a com cell 0.70 of the base, an AXI-stream cell 0.87; with a renamed copy of the same testbench in the second library 0.76 and 0.81. Later runs take on the shifts the same-library case has on main (the AXI cell's run 2 1.018, the com cell's steady runs 0.951). Where the other testbench is in the same work library nothing changes (main already gained there: the com cell's run 1 26.0 to 18.3 G, the AXI cell's 37.9 to 33.2 G). Split by removing one kind from the other library's store: with its list alone the com cell's run 1 is 17.8 G and the AXI cell's 33.1 G, as with both; with its code alone 26.2 and 38.1 G, as with neither. So the gain is mostly the names acting as a prior for run 1 (functions priced as links are compiled early), and linked code adds to it only when the other closure ran the same processes (the renamed copy: 36.3 G with the list alone, 31.2 G with both). Closures with nothing in the other stores (the vunitops cells, 14 cells x 16 worlds; realbench, 38 tests whose worlds map up to 15 libraries, 16 and 6 worlds; the 114-test suite at `-p1` and `-p0`; the 26 bench designs, by CPU time) stay within their A/A, also under the layout probe.
+
+## Range and index errors print values in VHDL form (2026-11-21, #1178)
+
+- **Decision:** a failed range or index check shows an enumeration value as its literal (upper
+  case, a character literal quoted: `value WHITE outside of RGB range RED to BLUE`), a physical value
+  with its unit in the largest unit that divides it exactly (`20 NS`, zero in the largest unit
+  as the first reference simulator prints it), a real in full and the bounds of a descending
+  subtype as `high downto low`. Where the range check is lowered, `CheckMsg::ty` names the
+  enumeration or physical base type (`FuncCx::msg_ty`); integers and reals leave it empty, so
+  their checks and the optimiser's view of them are unchanged. The text is built only when the
+  check fails, in `Machine::check_val` of the interpreter, which compiled code reaches because
+  it leaves to the interpreter at a failed check. Not covered: the operands of `result of A * B
+  cannot be represented as T`, and cycle mode (its messages carry positions).

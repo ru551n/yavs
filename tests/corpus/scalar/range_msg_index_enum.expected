@@ -1,0 +1,3 @@
+exit	1
+diag	note	0	0	:range_msg_index_enum:_p0	in range
+diag	fatal	0	0	-	index 'z' outside of range 'a' to 'c' for cv

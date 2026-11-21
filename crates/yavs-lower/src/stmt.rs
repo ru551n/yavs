@@ -2702,7 +2702,7 @@ impl Fx<'_, '_> {
             db.decls[formal].name.to_string().to_ascii_uppercase()
         );
         let tn = db.types[t].name.text.as_str().to_ascii_uppercase();
-        let what = self.fb.program().check_msg_for(&what, Dir::To, &tn);
+        let what = self.msg_ty(&what, Dir::To, &tn, t);
         if rt == RegTy::F64 {
             self.emit(Inst::FCheck { v, lo, hi, what });
         } else {
@@ -3003,7 +3003,12 @@ impl Fx<'_, '_> {
         let t = self.scalar_expr(a)?;
         let z = self.int(0);
         let max = self.int(i64::MAX);
-        let m = self.msg("delay of a waveform element", Dir::To);
+        let m = self.msg_st(
+            "delay of a waveform element",
+            Dir::To,
+            "",
+            self.db.exprs[a].subtype,
+        );
         self.emit(Inst::Check {
             kind: CheckKind::Range,
             v: t,
@@ -3133,7 +3138,12 @@ impl Fx<'_, '_> {
                 let t = self.scalar_expr(e)?;
                 let z = self.int(0);
                 let max = self.int(i64::MAX);
-                let m = self.msg("timeout of a wait statement", Dir::To);
+                let m = self.msg_st(
+                    "timeout of a wait statement",
+                    Dir::To,
+                    "",
+                    self.db.exprs[e].subtype,
+                );
                 self.emit(Inst::Check {
                     kind: CheckKind::Range,
                     v: t,

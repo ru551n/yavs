@@ -82,10 +82,23 @@ impl ProgramBuilder {
     /// A check message naming the subtype: `value 101 outside of PCT range 0 to 100 for
     /// variable P` (`what` = "variable P", `subtype` = "PCT").
     pub fn check_msg_for(&mut self, what: &str, dir: crate::Dir, subtype: &str) -> CheckMsgId {
+        self.check_msg_ty(what, dir, subtype, None)
+    }
+
+    /// `check_msg_for` for an enumeration or physical scalar of type `ty`: the message shows
+    /// its values as literals or with units.
+    pub fn check_msg_ty(
+        &mut self,
+        what: &str,
+        dir: crate::Dir,
+        subtype: &str,
+        ty: Option<TyId>,
+    ) -> CheckMsgId {
         self.prog.checks.push(CheckMsg {
             what: what.to_string(),
             dir,
             subtype: subtype.to_string(),
+            ty,
         })
     }
 

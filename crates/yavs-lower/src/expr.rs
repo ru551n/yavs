@@ -2968,7 +2968,7 @@ impl<'a> Fx<'a, '_> {
             fx.check_scalar(v, Some(fx.db.exprs[e].subtype), elem, "", span)?;
             Ok(v)
         };
-        let m = self.msg("aggregate", Dir::To);
+        let m = self.msg_st("aggregate", Dir::To, "", index);
         // `others` first: the named and positional elements then overwrite their positions.
         for a in assocs
             .iter()
@@ -3393,6 +3393,12 @@ impl<'a> Fx<'a, '_> {
 
     /// Check scalar `v` against range `r` of subtype `to` (named in the message).
     pub(crate) fn check_in(&mut self, v: Reg, r: Rng, to: SubtypeId, what: &str) {
+        self.check_in_as(v, r, to, what, true);
+    }
+
+    /// `check_in`; `named` false when `v` is no value of `to`'s type but an integer checked
+    /// against its positions (`T'val`), which the message then shows as integers.
+    fn check_in_as(&mut self, v: Reg, r: Rng, to: SubtypeId, what: &str, named: bool) {
         let db = self.db;
         let t = db.base(to);
         let dir = ir_dir(r.dir);
@@ -3403,7 +3409,11 @@ impl<'a> Fx<'a, '_> {
             self.low_high(r)
         };
         let st = ty::subtype_name(db, to);
-        let what = self.fb.program().check_msg_for(what, dir, &st);
+        let what = if named {
+            self.msg_ty(what, dir, &st, t)
+        } else {
+            self.fb.program().check_msg_for(what, dir, &st)
+        };
         if real {
             self.emit(Inst::FCheck { v, lo, hi, what });
         } else {
@@ -5169,9 +5179,11 @@ impl<'a> Fx<'a, '_> {
         let z = self.int(0);
         let ok = self.cmp(CmpOp::Ne, n, z);
         let (lo, hi) = self.low_high(s);
-        let what = self.msg(
+        let what = self.msg_st(
             &format!("the result of `&` ({})", ty::subtype_name(db, index)),
             ir_dir(s.dir),
+            "",
+            index,
         );
         let chk = self.select(ok, right, s.left, RegTy::I64);
         self.emit(Inst::Check {
@@ -5439,9 +5451,11 @@ impl<'a> Fx<'a, '_> {
             let z = self.int(0);
             let ok = self.cmp(CmpOp::Ne, n, z);
             let (lo, hi) = self.low_high(s);
-            let what = self.msg(
+            let what = self.msg_st(
                 &format!("the aggregate ({})", ty::subtype_name(db, index)),
                 ir_dir(s.dir),
+                "",
+                index,
             );
             let chk = self.select(ok, right, s.left, RegTy::I64);
             self.emit(Inst::Check {
@@ -5568,7 +5582,7 @@ impl<'a> Fx<'a, '_> {
             self.put_pieces(data, n, logic, bw, m, &pieces);
             return Ok(V::A(data, dope));
         }
-        let what = self.msg("aggregate", Dir::To);
+        let what = self.msg_st("aggregate", Dir::To, "", index);
         let pos_of = |fx: &mut Self, idx: Reg| {
             let pos = fx.reg(RegTy::I64);
             fx.emit(Inst::Pos {
@@ -5848,7 +5862,8 @@ impl<'a> Fx<'a, '_> {
                     Pos => Ok(V::S(self.scalar_expr(args[0])?)),
                     Val => {
                         let v = self.scalar_expr(args[0])?;
-                        self.check_scalar(v, None, st, "", span)?;
+                        let r = self.scalar_bounds(st, span)?;
+                        self.check_in_as(v, r, st, "", false);
                         Ok(V::S(v))
                     }
                     Succ | Pred | Leftof | Rightof => {
@@ -6117,7 +6132,7 @@ impl<'a> Fx<'a, '_> {
         let mut acc: Option<Reg> = None;
         for (k, &ix) in indices.iter().enumerate() {
             let i = self.scalar_expr(ix)?;
-            let what = self.msg(what, Dir::To);
+            let what = self.msg_st(what, Dir::To, "", self.db.exprs[ix].subtype);
             let p = self.reg(RegTy::I64);
             self.emit(Inst::Pos {
                 dst: p,
@@ -6430,7 +6445,12 @@ impl<'a> Fx<'a, '_> {
         let nd = self.one_dope(r.left, r.right, dir);
         let n = self.dope_len(nd);
         let p = self.reg(RegTy::I64);
-        let what_id = self.msg(what, Dir::To);
+        let what_id = match range {
+            RangeC::Explicit { left, .. } => {
+                self.msg_st(what, Dir::To, "", self.db.exprs[*left].subtype)
+            }
+            _ => self.msg(what, Dir::To),
+        };
         let dir_what = self.msg(&format!("direction of the slice of {what}"), Dir::To);
         self.emit(Inst::SlicePos {
             dst: p,

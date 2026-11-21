@@ -1,0 +1,3 @@
+exit	1
+diag	note	0	0	:range_msg_real:_p0	in range
+diag	fatal	0	0	-	value 2.5 outside of UNIT range 0 to 0.5 for variable U

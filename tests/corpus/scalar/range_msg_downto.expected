@@ -1,0 +1,3 @@
+exit	1
+diag	note	0	0	:range_msg_downto:_p0	in range
+diag	fatal	0	0	-	value 12 outside of DN range 9 downto 0 for variable D

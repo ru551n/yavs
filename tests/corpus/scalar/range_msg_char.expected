@@ -1,0 +1,3 @@
+exit	1
+diag	note	0	0	:range_msg_char:_p0	c ok
+diag	fatal	0	0	-	value D outside of MID range 'b' to 'c' for variable M

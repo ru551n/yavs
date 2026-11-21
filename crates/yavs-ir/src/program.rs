@@ -1742,6 +1742,9 @@ pub struct CheckMsg {
     /// `Length` check it is the lead word of the message instead (`expression length 4 does
     /// not match case choice length 3`), `value` when empty.
     pub subtype: String,
+    /// The type of the checked scalar when its values print as something else than integers: an
+    /// enumeration (literal names) or a physical type (value with unit). `None` for the rest.
+    pub ty: Option<TyId>,
 }
 
 /// `Case` choices as sorted, non-overlapping inclusive ranges.

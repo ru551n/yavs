@@ -1496,7 +1496,7 @@ fn cmp(op: CmpOp, o: std::cmp::Ordering) -> bool {
     }
 }
 
-fn bounds(lo: i64, hi: i64, dir: Dir) -> String {
+fn bounds(lo: &str, hi: &str, dir: Dir) -> String {
     match dir {
         Dir::To => format!("{lo} to {hi}"),
         Dir::Downto => format!("{hi} downto {lo}"),
@@ -4186,7 +4186,39 @@ impl Machine {
                 what: "?".into(),
                 dir: Dir::To,
                 subtype: String::new(),
+                ty: None,
             })
+    }
+
+    /// A scalar of a check message as VHDL shows it: an enumeration literal (upper case, a
+    /// character literal quoted), a physical value in the largest unit that divides it (`20 NS`),
+    /// otherwise the integer. Only runs when a check fails.
+    fn msg_val(&self, m: &yavs_ir::CheckMsg, v: i64) -> String {
+        let shown = |n: &str| {
+            if n.starts_with(['\\', '\'']) {
+                n.to_string()
+            } else {
+                n.to_ascii_uppercase()
+            }
+        };
+        match m.ty.and_then(|t| self.rt.prog.types.get(t)) {
+            Some(Ty::Enum { lits, .. }) => usize::try_from(v)
+                .ok()
+                .and_then(|p| lits.get(p))
+                .map_or_else(|| v.to_string(), |l| shown(l)),
+            Some(Ty::Physical { units, .. }) => {
+                let u = units
+                    .iter()
+                    .filter(|(_, s)| *s > 0 && v % s == 0)
+                    .max_by_key(|(_, s)| *s)
+                    .or(units.first());
+                u.map_or_else(
+                    || v.to_string(),
+                    |(n, s)| format!("{} {}", v / s.max(&1), shown(n)),
+                )
+            }
+            _ => v.to_string(),
+        }
     }
 
     fn check_msg(&self, m: yavs_ir::CheckMsgId) -> (&str, Dir) {
@@ -11185,12 +11217,14 @@ impl Machine {
     fn pos_fail(&self, l: i64, rr: i64, dir: u64, i: i64, what: yavs_ir::CheckMsgId) -> R<()> {
         match dir {
             0 | 1 => {
+                let m = self.msg(what);
+                let (l, rr) = (self.msg_val(&m, l), self.msg_val(&m, rr));
                 let b = if dir == 0 {
                     format!("{l} to {rr}")
                 } else {
                     format!("{l} downto {rr}")
                 };
-                rt_err(outside("index", &i.to_string(), &b, &self.msg(what)))
+                rt_err(outside("index", &self.msg_val(&m, i), &b, &m))
             }
             _ => Err(ice_f!("direction {dir} in a descriptor")),
         }
@@ -11326,7 +11360,8 @@ impl Machine {
                     dir
                 };
                 let m = self.msg(what);
-                rt_err(outside(k, &x.to_string(), &bounds(l, h, dir), &m))
+                let b = bounds(&self.msg_val(&m, l), &self.msg_val(&m, h), dir);
+                rt_err(outside(k, &self.msg_val(&m, x), &b, &m))
             }
             CheckKind::Length => {
                 // `subtype` is the lead word of the message when set ("expression").
@@ -11545,7 +11580,8 @@ impl Machine {
                     Ok(v) if l <= v && v <= h => self.set(dst, v as u64),
                     _ => {
                         let m = self.msg(what);
-                        return rt_err(outside("value", &real_text(x), &bounds(l, h, m.dir), &m));
+                        let b = bounds(&l.to_string(), &h.to_string(), m.dir);
+                        return rt_err(outside("value", &real_text(x), &b, &m));
                     }
                 }
             }

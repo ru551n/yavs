@@ -560,6 +560,36 @@ impl<'a, 'b> Fx<'a, 'b> {
         self.fb.program().check_msg(what, dir)
     }
 
+    /// `msg` for scalars of base type `t` in subtype `subtype` (may be empty): an enumeration
+    /// or physical type is named in the message, so its values print as literals and units.
+    pub fn msg_ty(
+        &mut self,
+        what: &str,
+        dir: yavs_ir::Dir,
+        subtype: &str,
+        t: yavs_sem::TypeId,
+    ) -> yavs_ir::CheckMsgId {
+        use yavs_sem::types::TypeKind;
+        let named = matches!(
+            self.db.types[t].kind,
+            TypeKind::Enum { .. } | TypeKind::Physical { .. }
+        );
+        // Lowering an enumeration or physical type does not fail.
+        let ty = named.then(|| self.ty(t, Span::default()).ok()).flatten();
+        self.fb.program().check_msg_ty(what, dir, subtype, ty)
+    }
+
+    /// `msg_ty` for the base type of subtype `st`.
+    pub fn msg_st(
+        &mut self,
+        what: &str,
+        dir: yavs_ir::Dir,
+        subtype: &str,
+        st: SubtypeId,
+    ) -> yavs_ir::CheckMsgId {
+        self.msg_ty(what, dir, subtype, self.db.base(st))
+    }
+
     pub fn ty(&mut self, t: yavs_sem::TypeId, span: Span) -> R<TyId> {
         ty::lower(self.db, self.cx, self.fb.program(), t, span)
     }

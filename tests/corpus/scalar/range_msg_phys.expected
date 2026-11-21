@@ -1,0 +1,3 @@
+exit	1
+diag	note	0	0	:range_msg_phys:_p0	in range
+diag	fatal	0	0	-	value 6 M outside of SLEN range 5 MM to 50 CM for variable SL

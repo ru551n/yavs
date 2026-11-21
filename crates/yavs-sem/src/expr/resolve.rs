@@ -1424,6 +1424,14 @@ impl Db {
                 // type; only a bare attribute name is unsupported here (#653).
                 // With interpretations, the type mismatch below is the problem (#822).
                 if !matches!(n.kind, ast::NameKind::Apply { .. }) && is.is_empty() {
+                    // `f(undeclared)'length`: the prefix is the real problem (#1191).
+                    if let ast::NameKind::Attribute { prefix: ap, .. } = &n.kind
+                        && let ast::NameKind::Apply { prefix, args } = &ap.kind
+                        && matches!(self.name_cands(scope, ap), CandSet::Types(v) if v.is_empty())
+                    {
+                        self.no_apply(scope, prefix, args);
+                        return;
+                    }
                     self.unsupported(n.span, "this use of a predefined attribute");
                     return;
                 }
@@ -2550,14 +2558,21 @@ impl Db {
     fn unresolved_actuals(&mut self, scope: ScopeId, args: &[ast::AssocElem]) -> bool {
         let mut any = false;
         for a in args {
-            if let ast::Actual::Expr(x) = &a.actual
-                && matches!(self.cands(scope, x), CandSet::Types(v) if v.is_empty())
-            {
-                self.resolve(scope, x, Expected::Any);
-                any = true;
+            if let ast::Actual::Expr(x) = &a.actual {
+                any |= self.unresolved_expr(scope, x);
             }
         }
         any
+    }
+
+    /// `x` has no interpretation of its own (an undeclared name): report why, as an
+    /// assignment does, and return true.
+    pub(crate) fn unresolved_expr(&mut self, scope: ScopeId, x: &ast::Expr) -> bool {
+        let none = matches!(self.cands(scope, x), CandSet::Types(v) if v.is_empty());
+        if none {
+            self.resolve(scope, x, Expected::Any);
+        }
+        none
     }
 
     /// The association list `args` does not fit subprogram `d` itself (6.5.7.1): report

@@ -1582,8 +1582,17 @@ impl Db {
         };
         match pick {
             Some(t) => Ok(t),
-            None if a.contains(&self.poison.ty) || b.contains(&self.poison.ty) => Err(Reported),
-            None => Err(self.error(
+            None => {
+                // A bound with no interpretation (an undeclared name) is the real problem
+                // (#1191); both are reported.
+                let (ul, ur) = (
+                    self.unresolved_expr(scope, l),
+                    self.unresolved_expr(scope, r),
+                );
+                if ul || ur || a.contains(&self.poison.ty) || b.contains(&self.poison.ty) {
+                    return Err(Reported);
+                }
+                Err(self.error(
                 Diagnostic::error(
                     diag::TYPE_MISMATCH,
                     "the type of this range cannot be determined",
@@ -1593,7 +1602,8 @@ impl Db {
                 .with_note(
                     "LRM 5.3.2.2: the type of a range is determined as a complete context, by the rules of 12.5",
                 ),
-            )),
+            ))
+            }
         }
     }
 

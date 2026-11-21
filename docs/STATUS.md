@@ -3511,7 +3511,9 @@ The GitHub Action that installs a release lives in its own repository, `ru551n/y
   (`E1302` with a qualification help in the declaration's spelling), candidate lists in help, and
   hints for calls from several packages and for vector/integer operators. A call no overload accepts whose actual
   has no interpretation of its own (an undeclared name, a call nothing matches, also an index) reports that actual
-  (`E1100`, `E1301` of the inner call), not the overload set (#1190).
+  (`E1100`, `E1301` of the inner call), not the overload set (#1190). An undeclared name in a range bound (`for k in 0 to m loop`, generate and
+  index ranges) or in the index of an attribute prefix (`f(m)'length`) reports `E1100`, not the undetermined range
+  type (`E1300`) or an unsupported attribute (`E1999`) (#1191).
 - Subprogram calls with sub-element (individual) associations (`pr(x(0) => s)`, `f(r.i => 1)`,
   slices), also of unconstrained formals, resolve and give `Actual::Individual`; each actual is
   typed by its sub-element, a non-static formal index is `E1410`, whole and part `E1310` (#210); the elements of an unconstrained formal must form a

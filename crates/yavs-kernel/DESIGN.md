@@ -379,7 +379,8 @@ pub trait Process: Send {
   with one condition (`y <= a when s = '1' else b;`): `MuxProcess` (#786). Expression trees of those operators, compound conditions and chains of arms are a small program the kernel evaluates itself: `ProgProcess` (#788).
 - Elaboration: leaves as `Builder::signal`/`resolved_signal` with `SignalType::logic` for
   `std_ulogic` arrays and `SignalType::bytes` otherwise; uncollapsed ports as `Builder::port`
-  with `Converter` closures that call the IR conversion function; `'stable/'quiet/'delayed/
+  with `Converter` closures that call the IR conversion function (or check a value's range,
+  `ConvError::Range`, #1183); `'stable/'quiet/'delayed/
   'transaction` as `Builder::*_signal`; guarded signals with `Builder::guard`; flags `postponed`
   and `serial`.
 

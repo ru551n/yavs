@@ -268,6 +268,36 @@ fn formal_conversion_reads_a_port_signal_of_the_same_cycle() {
 }
 
 #[test]
+fn port_range_check_is_a_runtime_error() {
+    // A converter's `ConvError::Range` is a range error (`E3009`, #1183), not a failed
+    // conversion (`E3008`): the value 12 driven up into an actual of `0 to 9`.
+    let check: Converter = Arc::new(|v| match v[0].as_bytes() {
+        Some([x]) if *x > 9 => Err(ConvError::Range(format!("value {x} outside of 0 to 9"))),
+        _ => Ok(v.to_vec()),
+    });
+    let mut b = Builder::new();
+    let o = b.signal("u.o", BYTE, &[0]);
+    let y = b.signal("y", BYTE, &[0]);
+    let pc = PortConv {
+        to_actual: Some(check),
+        ..Default::default()
+    };
+    b.port(o, y, PortMode::Out, pc);
+    stim(&mut b, "so", o, &[(0, 3), (1, 12)]);
+    let (mut sim, _) = build(b, Config::default());
+    sim.run_until(ns(0)).unwrap();
+    assert_eq!(sim.value(y).unwrap(), Value::Bytes(vec![3]));
+    let Err(err) = sim.run_until(ns(1)) else {
+        panic!("a range error expected")
+    };
+    assert_eq!(
+        err.kind,
+        ErrorKind::Runtime("value 12 outside of 0 to 9".into())
+    );
+    assert_eq!(err.kind.code(), "E3009");
+}
+
+#[test]
 fn formal_conversion_reading_a_whole_resolved_part_is_not_implemented() {
     // `o` converted to `y` reads `r.n`, a leaf of a record resolved as a whole: it has no
     // driving value of its own before the driving value pass ends.

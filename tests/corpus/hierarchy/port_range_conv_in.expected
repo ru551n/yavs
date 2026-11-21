@@ -1,0 +1,4 @@
+exit	1
+diag	note	0	0	:port_range_conv_in:u:_p0	i=0
+diag	note	0	1	:port_range_conv_in:u:_p0	i=5
+diag	fatal	1000000	1	-	value -12 outside of NATURAL range 0 to 2147483647 for port port_range_conv_in.u.i

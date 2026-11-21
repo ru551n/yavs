@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use yavs_diag::{Diagnostic, Span};
-use yavs_kernel::{Elem, LogicVec, Value};
+use yavs_kernel::{ConvError, Elem, LogicVec, Value};
 use yavs_sem::decl::{DeclKind, ObjClass, ObjRole};
 use yavs_sem::hir::{AttrPrefix, Direction, ExprKind, PredefAttr, RangeC};
 use yavs_sem::scope::ScopeKind as SemScope;
@@ -239,6 +239,105 @@ pub struct ConvFn {
     /// slot, IR type and end of each. Their values follow the source parts, in this order.
     pub(crate) reads: Vec<(u32, yavs_ir::TyId, Side)>,
     pub(crate) inst_size: u32,
+    /// Per target part, the range check of its values (#1183); empty for none.
+    pub(crate) check: Vec<Option<RangeCheck>>,
+}
+
+/// A range check of the values a port association passes on (#1183): every element of a
+/// target part belongs to the subtype that receives it.
+#[derive(Clone)]
+pub(crate) struct RangeCheck {
+    /// The part's kernel element and the scalar's class.
+    pub enc: Enc,
+    /// Low and high bound: positions, or f64 bits for a real.
+    pub lo: u64,
+    pub hi: u64,
+    pub shown: Shown,
+    /// The message after the value: `outside of INTEGER range 0 to 9 for port :t:u:i`.
+    pub msg: std::sync::Arc<str>,
+}
+
+/// How a range check message shows a scalar, as the interpreter's range errors do (#1178): an
+/// enumeration literal, a physical value in the largest unit that divides it, a number.
+#[derive(Clone)]
+pub(crate) enum Shown {
+    Int,
+    Real,
+    Enum(std::sync::Arc<[String]>),
+    Phys(std::sync::Arc<[(String, i64)]>),
+}
+
+impl Shown {
+    pub(crate) fn of(db: &Db, t: TypeId) -> Shown {
+        // Upper case; a character literal or an extended identifier as written.
+        let shown = |n: String| match n.starts_with(['\\', '\'']) {
+            true => n,
+            false => n.to_ascii_uppercase(),
+        };
+        match &db.types[t].kind {
+            TypeKind::Enum { lits } => Shown::Enum(
+                (lits.iter())
+                    .map(|&d| match db.decls[d].name {
+                        yavs_sem::decl::Designator::Char(c) => format!("'{c}'"),
+                        n => shown(n.to_string()),
+                    })
+                    .collect(),
+            ),
+            TypeKind::Physical { units } => Shown::Phys(
+                (units.iter())
+                    .map(|u| (shown(db.decls[u.decl].name.to_string()), u.scale))
+                    .collect(),
+            ),
+            TypeKind::Floating | TypeKind::UniversalReal => Shown::Real,
+            _ => Shown::Int,
+        }
+    }
+
+    /// The text of cell `c` (a position, or f64 bits for a real).
+    pub(crate) fn text(&self, c: u64) -> String {
+        let v = c as i64;
+        match self {
+            Shown::Int => v.to_string(),
+            Shown::Real => String::from_utf8_lossy(&yavs_std::image::real_image(f64::from_bits(c)))
+                .into_owned(),
+            Shown::Enum(lits) => (usize::try_from(v).ok())
+                .and_then(|p| lits.get(p))
+                .map_or_else(|| v.to_string(), |l| l.clone()),
+            Shown::Phys(units) => (units.iter())
+                .filter(|(_, s)| *s > 0 && v % s == 0)
+                .max_by_key(|(_, s)| *s)
+                .or(units.first())
+                .map_or_else(|| v.to_string(), |(n, s)| format!("{} {n}", v / s.max(&1))),
+        }
+    }
+}
+
+impl RangeCheck {
+    fn check(&self, v: &Value) -> Result<(), ConvError> {
+        let bad = |c: u64| match self.enc.class {
+            Class::Real => {
+                let x = f64::from_bits(c);
+                !(f64::from_bits(self.lo) <= x && x <= f64::from_bits(self.hi))
+            }
+            _ => !(self.lo as i64..=self.hi as i64).contains(&(c as i64)),
+        };
+        let first = match (self.enc.elem, v) {
+            (Elem::Bytes(w), Value::Bytes(b)) => b.chunks(w as usize).map(cell).find(|&c| bad(c)),
+            (Elem::Logic, Value::Logic(l)) => (0..l.len())
+                .map(|i| match self.enc.bit01 {
+                    true => (l.get(i) as u64).saturating_sub(2),
+                    false => l.get(i) as u64,
+                })
+                .find(|&c| bad(c)),
+            _ => {
+                let m = "a port range check got a value of the wrong shape";
+                return Err(ConvError::Failed(m.into()));
+            }
+        };
+        let Some(c) = first else { return Ok(()) };
+        let v = self.shown.text(c);
+        Err(ConvError::Range(format!("value {v} {}", self.msg)))
+    }
 }
 
 /// One end of a conversion: a scalar, an array leaf with its bounds as an IR descriptor, or
@@ -305,7 +404,31 @@ impl Side {
 
 impl ConvFn {
     /// Convert kernel values: one per part of the source side, one per part of the target.
-    pub fn apply(&self, vs: &[Value]) -> Result<Vec<Value>, String> {
+    pub fn apply(&self, vs: &[Value]) -> Result<Vec<Value>, ConvError> {
+        let out = self.convert(vs).map_err(ConvError::Failed)?;
+        for (v, c) in out.iter().zip(&self.check) {
+            if let Some(c) = c {
+                c.check(v)?;
+            }
+        }
+        Ok(out)
+    }
+
+    /// The identity of one part of `enc` checked by `check` (#1183): a port association
+    /// with no conversion whose values may fall outside the subtype that receives them.
+    pub(crate) fn checked(enc: Enc, len: u64, check: RangeCheck) -> ConvFn {
+        let side = || Side::Leaves(vec![(enc, len)]);
+        ConvFn {
+            func: None,
+            from: side(),
+            to: side(),
+            reads: Vec::new(),
+            inst_size: 0,
+            check: vec![Some(check)],
+        }
+    }
+
+    fn convert(&self, vs: &[Value]) -> Result<Vec<Value>, String> {
         let n: usize = self.reads.iter().map(|r| r.2.parts()).sum();
         let (vs, mut read) = vs
             .split_at_checked(vs.len().wrapping_sub(n))
@@ -628,6 +751,7 @@ pub(crate) fn conv_fn(
             to: Side::Leaves(b),
             reads: Vec::new(),
             inst_size: 0,
+            check: Vec::new(),
         };
         return Ok((c, Vec::new()));
     }
@@ -694,6 +818,7 @@ pub(crate) fn conv_fn(
         func,
         reads,
         inst_size,
+        check: Vec::new(),
     };
     Ok((c, parts))
 }

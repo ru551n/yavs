@@ -1,0 +1,4 @@
+exit	1
+diag	note	0	1	:port_range_inout:_p0	s=4
+diag	note	1000000	0	:port_range_inout:u:_p0	b=4
+diag	fatal	1000000	1	-	value -1 outside of NATURAL range 0 to 2147483647 for actual of port port_range_inout.u.b

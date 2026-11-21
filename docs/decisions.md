@@ -2050,6 +2050,33 @@ which tools/difftest parses.
   subtype is not checked; ports are a separate question (#1183: LRM 2008 14.3.5 makes a
   scalar port whose subtypes are not compatible an elaboration error).
 
+## A value passing through a port belongs to the subtype that receives it (user, 2026-11-21, #1183: land at the measured cost, check initial values per LRM 14.7.5.2)
+
+- **Decision:** values are checked at run time, not subtypes at elaboration. A scalar value
+  that passes through a port association and lies outside the subtype that receives it is a
+  range error (`E3009`): the driving value of an `out`, `inout` or `buffer` port against the
+  actual's subtype ("value 10 outside of INTEGER range 0 to 9 for actual of port top.u.o"),
+  the effective value an `in` or `inout` port takes from its actual against the port's
+  subtype ("... for port top.u.i"), and the result of a conversion in the port map against
+  the subtype it goes to. LRM 2008 14.3.5 makes an association of scalar subtypes that are not
+  compatible an error at elaboration; that is not done, so a design whose values all fit keeps
+  running. One reference simulator lets every value through, the other rejects the
+  association at elaboration (catalogue `port-range`).
+- **Initial values pass through too:** an `out` port with no default starts at its subtype's
+  `'LEFT`, and that is the driving value its actual starts from (14.7.5.2), so `o : out
+  integer` on a `natural` signal fails at 0 fs, as does an `integer` signal left at
+  `INTEGER'LEFT` on a `natural` `in` port.
+- **Cost:** decided per association at elaboration from the elaborated ranges. Where the
+  sending subtype lies within the receiving one (the same subtype, `natural` into `integer`)
+  nothing changes: the port still collapses into its actual and pays nothing. Any other
+  association gets a checking identity conversion in the direction that can fail (an existing
+  conversion checks its result unless the target holds every value of its type), so it is not
+  collapsed and its values are copied and checked in the update phase, as converted ports are.
+  Measured 2026-11-21: an elaboration of 60000 associations none of which needs a check runs
+  0.45 percent more instructions; GRLIB and Microwatt run as before.
+- **Not covered (ponytail):** a floating-point subtype whose range is given by an attribute
+  (`real range r'range`) has no bounds at elaboration and is not checked.
+
 ## CLI: JSON diagnostics, `-W` forms, `--explain` (yavs CLI, 2026-10-18)
 
 - **JSON diagnostics follow the common compiler shape** (`level`, `children`, `rendered`, plus `code` as a plain string

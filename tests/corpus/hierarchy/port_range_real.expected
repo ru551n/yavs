@@ -1,0 +1,2 @@
+exit	1
+diag	fatal	1000000	1	-	value 1.5 outside of UNIT range 0 to 1 for actual of port port_range_real.i.r

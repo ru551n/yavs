@@ -1,0 +1,43 @@
+-- difftest: top=port_range_kinds std=2008 exit=1 ref=hand
+-- ref=hand: sim1 passes 'Z' into the actual with no check, sim2 rejects the associations at
+-- elaboration (discrepancy `port-range`). Enumeration, physical and floating-point actuals
+-- narrower than their out ports: values in range go through, 'Z' does not fit `X01`
+-- (LRM 14.7.3, #1183).
+library ieee;
+use ieee.std_logic_1164.all;
+entity port_range_kinds_src is
+  port (l : out std_ulogic := '0'; t : out time := 0 ns; r : out real := 0.0);
+end entity;
+architecture a of port_range_kinds_src is
+begin
+  process
+  begin
+    l <= '1';
+    t <= 4 ns;
+    r <= 0.5;
+    wait for 1 ns;
+    l <= 'Z';
+    wait;
+  end process;
+end architecture;
+
+library ieee;
+use ieee.std_logic_1164.all;
+entity port_range_kinds is end entity;
+architecture a of port_range_kinds is
+  subtype short is time range 0 ns to 5 ns;
+  subtype unit is real range 0.0 to 1.0;
+  signal x : X01 := '0';
+  signal t : short := 0 ns;
+  signal u : unit := 0.0;
+begin
+  i : entity work.port_range_kinds_src port map (l => x, t => t, r => u);
+  process
+  begin
+    wait for 0 ns;
+    report "x=" & std_ulogic'image(x) & " t=" & time'image(t) & " u2=" & integer'image(integer(u * 2.0));
+    wait for 2 ns;
+    report "not reached" severity failure;
+    wait;
+  end process;
+end architecture;

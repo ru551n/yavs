@@ -2042,6 +2042,9 @@ impl Elab<'_> {
                 };
                 let to_formal = idx(&mut self.m, *actual_conv, &ashape, &fshape)?;
                 let to_actual = idx(&mut self.m, *formal_conv, &fshape, &ashape)?;
+                let (down, up) = (Port { s, fo, up: false }, Port { s, fo, up: true });
+                (self.m).conv_checks(db, to_formal, &fl, (&fshape, s), down, aspan)?;
+                (self.m).conv_checks(db, to_actual, &al, (&ashape, sc), up, aspan)?;
                 let ([f], [a]) = (fl.as_slice(), al.as_slice()) else {
                     // Several leaves on a side: one kernel converter over all of them, so
                     // the conversion runs once per cycle with every part current.
@@ -2137,6 +2140,9 @@ impl Elab<'_> {
                         };
                         let to_formal = conv_idx(c, &ashape, &fshape)?;
                         let to_actual = conv_idx(*formal_conv, &fshape, &ashape)?;
+                        let (down, up) = (Port { s, fo, up: false }, Port { s, fo, up: true });
+                        (self.m).conv_checks(db, to_formal, &fl, (&fshape, s), down, espan)?;
+                        (self.m).conv_checks(db, to_actual, &al, (&ashape, sc), up, espan)?;
                         match (fl.as_slice(), al.as_slice()) {
                             ([f], [a]) => self.m.nets.ports.push(PortEdge {
                                 formal: *f,
@@ -2181,9 +2187,10 @@ impl Elab<'_> {
                         }
                         continue;
                     };
-                    let (al, _) = self.m.select(ao, &asels, espan)?;
+                    let (al, ashape) = self.m.select(ao, &asels, espan)?;
                     let modes = self.m.leaf_modes(self.db, fo, hmode, span)?;
-                    self.m.edges(&fl, &al, &modes, espan)?;
+                    let (f, a) = ((&fl[..], &fshape, s), (&al[..], &ashape, sc));
+                    self.m.edges(self.db, f, a, fo, &modes, espan)?;
                 }
                 return Ok(());
             }
@@ -2217,13 +2224,15 @@ impl Elab<'_> {
             return Ok(());
         };
         let (al, ashape) = self.m.select(ao, &asels, aspan)?;
-        let shape = own.unwrap_or(ashape);
+        let shape = own.unwrap_or_else(|| ashape.clone());
         let fo = self
             .m
             .add_obj(self.db, s, p, kind, shape, init.as_ref(), span)?;
-        let fl = self.m.select(fo, &[], span)?.0;
+        let (fl, fshape) = self.m.select(fo, &[], span)?;
         let modes = self.m.leaf_modes(self.db, fo, hmode, span)?;
-        self.m.edges(&fl, &al, &modes, aspan)
+        let sc = ascope.ok_or_else(|| Box::new(ice(aspan, "port actual without a scope")))?;
+        let (f, a) = ((&fl[..], &fshape, s), (&al[..], &ashape, sc));
+        self.m.edges(self.db, f, a, fo, &modes, aspan)
     }
 
     /// The equivalent process `formal <= e` of an expression actual (LRM 6.5.6.3) in the
@@ -6493,20 +6502,59 @@ impl Model {
         Ok(out)
     }
 
+    /// The port edges of formal parts `fl` (of shape `fs`, of port `fo` in scope `s`) and
+    /// actual parts `al` (of shape `as_`, in scope `sc`). A value that may fall outside the
+    /// subtype that receives it is range checked by a conversion (#1183).
+    #[allow(clippy::too_many_arguments)]
     fn edges(
         &mut self,
-        fl: &[(LeafId, Range)],
-        al: &[(LeafId, Range)],
+        db: &Db,
+        (fl, fs, s): (&[(LeafId, Range)], &Shape, ScopeId),
+        (al, as_, sc): (&[(LeafId, Range)], &Shape, ScopeId),
+        fo: ObjId,
         modes: &HashMap<LeafId, PortMode>,
         span: Span,
     ) -> R<()> {
         self.same_parts(fl, al, span)?;
-        for (f, a) in fl.iter().zip(al) {
+        // One leaf a side, the usual port: its scalar, with no list made.
+        let one = match (fl, al) {
+            ([_], [_]) => one_leaf(fs).zip(one_leaf(as_)),
+            _ => None,
+        };
+        let (fls, als): (Vec<&Shape>, Vec<&Shape>) = match one {
+            Some(_) => (Vec::new(), Vec::new()),
+            None => (
+                fs.leaves().into_iter().map(|l| l.1).collect(),
+                as_.leaves().into_iter().map(|l| l.1).collect(),
+            ),
+        };
+        if one.is_none() && (fls.len() != fl.len() || als.len() != al.len()) {
+            return Err(Box::new(ice(
+                span,
+                "port parts that do not match their shape",
+            )));
+        }
+        for (k, (f, a)) in fl.iter().zip(al).enumerate() {
             if f.1.len == 0 {
                 continue;
             }
             let Some(&mode) = modes.get(&f.0) else {
                 return Err(Box::new(ice(span, "formal leaf without a mode")));
+            };
+            let (fsh, ash) = one.unwrap_or_else(|| (fls[k], als[k]));
+            let to_formal = match mode {
+                PortMode::In | PortMode::Inout if may_fail(ash, fsh) => {
+                    let what = Port { s, fo, up: false };
+                    self.check_conv(db, *f, Some((ash, sc)), (fsh, s), what, span)?
+                }
+                _ => None,
+            };
+            let to_actual = match mode {
+                PortMode::Out | PortMode::Inout | PortMode::Buffer if may_fail(fsh, ash) => {
+                    let what = Port { s, fo, up: true };
+                    self.check_conv(db, *a, Some((fsh, s)), (ash, sc), what, span)?
+                }
+                _ => None,
             };
             // An `in` formal starts with its actual's value (LRM 14.7.3.3), which the
             // initial value of a later signal may read.
@@ -6524,11 +6572,194 @@ impl Model {
                 formal: *f,
                 actual: *a,
                 mode,
-                to_formal: None,
-                to_actual: None,
+                to_formal,
+                to_actual,
             });
         }
         Ok(())
+    }
+
+    /// A conversion that range checks the values part `to` (of scalar shape `to.0`, declared
+    /// in scope `to.1`) receives from one of shape `from` (#1183), for `what` in the message;
+    /// none when `from`'s range lies within `to`'s, so the edge stays free (and collapses).
+    #[cold]
+    #[inline(never)]
+    fn check_conv(
+        &mut self,
+        db: &Db,
+        to: (LeafId, Range),
+        from: Option<(&Shape, ScopeId)>,
+        (tsh, ts): (&Shape, ScopeId),
+        what: Port,
+        span: Span,
+    ) -> R<Option<u32>> {
+        let Some(c) = self.range_check(db, to.0, from, (tsh, ts), what, span)? else {
+            return Ok(None);
+        };
+        self.convs
+            .push(crate::eval::ConvFn::checked(c.enc, u64::from(to.1.len), c));
+        self.nets.fn_reads.push(Vec::new());
+        Ok(Some(self.convs.len() as u32 - 1))
+    }
+
+    /// The range check of [`Model::check_conv`]; with `from` `None`, always.
+    fn range_check(
+        &mut self,
+        db: &Db,
+        leaf: LeafId,
+        from: Option<(&Shape, ScopeId)>,
+        (tsh, ts): (&Shape, ScopeId),
+        what: Port,
+        span: Span,
+    ) -> R<Option<crate::eval::RangeCheck>> {
+        let Shape::Scalar { ty, sub, .. } = tsh else {
+            return Ok(None);
+        };
+        let Some(enc) = crate::eval::enc_of(db, *ty) else {
+            return Ok(None);
+        };
+        // ponytail: a real range given by an attribute has no bounds here and is not checked.
+        let Some((lo, hi, (l, d, r))) = self.cell_bounds(db, tsh, ts, span)? else {
+            return Ok(None);
+        };
+        if let Some((fsh, fs)) = from
+            && let Some((flo, fhi, _)) = self.cell_bounds(db, fsh, fs, span)?
+        {
+            let within = match enc.class {
+                crate::eval::Class::Real => {
+                    let f = f64::from_bits;
+                    f(lo) <= f(flo) && f(fhi) <= f(hi)
+                }
+                _ => lo as i64 <= flo as i64 && fhi as i64 <= hi as i64,
+            };
+            if within {
+                return Ok(None);
+            }
+        }
+        let name = match db.subtypes[*sub].name {
+            Some(n) => n.text.as_str().to_ascii_uppercase(),
+            None => db.types[*ty].name.text.as_str().to_ascii_uppercase(),
+        };
+        let enc = crate::eval::Enc {
+            elem: self.nets.leaf(leaf).ty.elem,
+            ..enc
+        };
+        let shown = crate::eval::Shown::of(db, *ty);
+        let (l, r) = (shown.text(l), shown.text(r));
+        let at = self.port_text(what);
+        Ok(Some(crate::eval::RangeCheck {
+            enc,
+            lo,
+            hi,
+            shown,
+            msg: format!("outside of {name} range {l} {d} {r} for {at}").into(),
+        }))
+    }
+
+    /// The low and high bound of scalar shape `sh` (declared in scope `s`) as cells (positions,
+    /// f64 bits for a real) and its left bound, direction and right bound as cells; `None` for a
+    /// real range given by an attribute.
+    fn cell_bounds(
+        &mut self,
+        db: &Db,
+        sh: &Shape,
+        s: ScopeId,
+        span: Span,
+    ) -> R<Option<CellBounds>> {
+        use yavs_sem::hir::{Direction, RangeC};
+        let dir = |d: Direction| {
+            if d == Direction::Downto {
+                "downto"
+            } else {
+                "to"
+            }
+        };
+        let Shape::Scalar { ty, sub, range, .. } = sh else {
+            return Ok(None);
+        };
+        if !crate::eval::is_real(db, *ty) {
+            let Some(b) = range else { return Ok(None) };
+            let (lo, hi) = b.low_high();
+            let lr = (b.left as u64, dir(b.dir), b.right as u64);
+            return Ok(Some((lo as u64, hi as u64, lr)));
+        }
+        let Some(RangeC::Explicit {
+            left,
+            dir: d,
+            right,
+        }) = db.scalar_range(*sub)
+        else {
+            return Ok(None);
+        };
+        let mut real = |e: ExprId| match self.eval(db, e, Some(s))? {
+            Val::Real(x) => Ok(x),
+            _ => Err(Box::new(ice(span, "real bound of another type"))),
+        };
+        let (l, r) = (real(left)?, real(right)?);
+        let (lo, hi) = if d == Direction::Downto {
+            (r, l)
+        } else {
+            (l, r)
+        };
+        Ok(Some((
+            lo.to_bits(),
+            hi.to_bits(),
+            (l.to_bits(), dir(d), r.to_bits()),
+        )))
+    }
+
+    /// Range checks of the target parts `parts` (of shape `sh`, in scope `s`) of conversion
+    /// `c`: a converted value belongs to the subtype that receives it (#1183).
+    fn conv_checks(
+        &mut self,
+        db: &Db,
+        c: Option<u32>,
+        parts: &[(LeafId, Range)],
+        (sh, s): (&Shape, ScopeId),
+        what: Port,
+        span: Span,
+    ) -> R<()> {
+        let Some(c) = c else { return Ok(()) };
+        let leaves = sh.leaves();
+        if leaves.len() != parts.len() {
+            return Err(Box::new(ice(
+                span,
+                "conversion parts that do not match their shape",
+            )));
+        }
+        // A result can be any value of the type: no check where the target holds them all.
+        let mut checks = Vec::with_capacity(parts.len());
+        for (p, (_, l, _)) in parts.iter().zip(leaves) {
+            let full = match l {
+                Shape::Scalar { ty, .. } => {
+                    self.shape(db, db.types[*ty].first_subtype, Some(s), span)?
+                }
+                _ => None,
+            };
+            let from = full.as_ref().map(|f| (f, s));
+            checks.push(self.range_check(db, p.0, from, (l, s), what, span)?);
+        }
+        if checks.iter().any(Option::is_some) {
+            self.convs[c as usize].check = checks;
+        }
+        Ok(())
+    }
+
+    /// The end of a range check message: `port top.u.i`, `actual of port top.u.o` (#1183).
+    /// Paths leave component scopes out; a component port takes the instance's label.
+    fn port_text(&self, p: Port) -> String {
+        let name = self.nets.obj(p.fo).name.text;
+        let h = &self.hier;
+        let path = match (&h.scope(p.s).kind, h.scope(p.s).parent) {
+            (ScopeKind::Component { .. }, Some(up)) => {
+                format!("{}.{}.{name}", h.dotted(up), h.scope(p.s).name.text)
+            }
+            _ => format!("{}.{name}", h.dotted(p.s)),
+        };
+        match p.up {
+            true => format!("actual of port {path}"),
+            false => format!("port {path}"),
+        }
     }
 
     /// Formal and actual leaf parts pair up one to one (`PORT_MISMATCH` otherwise).
@@ -6552,6 +6783,40 @@ impl Model {
         }
         Ok(())
     }
+}
+
+/// A scalar range as cells (`Model::cell_bounds`): low, high, and left, direction, right.
+type CellBounds = (u64, u64, (u64, &'static str, u64));
+
+/// Whether a value of scalar shape `from` may lie outside scalar shape `to` (#1183): false
+/// for static ranges with `to`'s the wider, the usual port, with nothing evaluated.
+#[inline]
+fn may_fail(from: &Shape, to: &Shape) -> bool {
+    match (from, to) {
+        (Shape::Scalar { range: Some(f), .. }, Shape::Scalar { range: Some(t), .. }) => {
+            let ((flo, fhi), (lo, hi)) = (f.low_high(), t.low_high());
+            !(lo <= flo && fhi <= hi)
+        }
+        (Shape::Scalar { .. }, Shape::Scalar { .. }) => true,
+        _ => false,
+    }
+}
+
+/// The scalar of a shape that is one leaf (a scalar or an array of scalars).
+fn one_leaf(s: &Shape) -> Option<&Shape> {
+    match s {
+        Shape::Scalar { .. } => Some(s),
+        Shape::Array { elem, .. } => one_leaf(elem),
+        Shape::Record { .. } => None,
+    }
+}
+
+/// The port a range check is for (#1183): port `fo` of scope `s`; `up`, its actual.
+#[derive(Clone, Copy)]
+struct Port {
+    s: ScopeId,
+    fo: ObjId,
+    up: bool,
 }
 
 /// The first pair of array dimension lengths (the name's, the object's) that differ.

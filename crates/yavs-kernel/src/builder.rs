@@ -43,7 +43,21 @@ pub enum PortMode {
 /// It receives the value of every source part, in order, and must return one value per
 /// target part, each the whole part ([`Builder::port_parts`]; one part on each side for
 /// [`Builder::port`]).
-pub type Converter = Arc<dyn Fn(&[Value]) -> Result<Vec<Value>, String> + Send + Sync>;
+pub type Converter = Arc<dyn Fn(&[Value]) -> Result<Vec<Value>, ConvError> + Send + Sync>;
+
+/// Why a port conversion failed: the conversion itself (`E3008`), or a value outside the
+/// subtype that receives it (a range check, `E3009`, #1183).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConvError {
+    Failed(String),
+    Range(String),
+}
+
+impl From<&str> for ConvError {
+    fn from(m: &str) -> ConvError {
+        ConvError::Failed(m.to_string())
+    }
+}
 
 /// Conversions of one association: actual to formal (`in`, `inout`) and formal to actual
 /// (`out`, `inout`, `buffer`). An impure conversion function also reads other signals

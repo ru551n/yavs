@@ -1,0 +1,3 @@
+exit	1
+diag	note	0	1	:port_range_elem:_p0	s(1)=9
+diag	fatal	1000000	1	-	value 12 outside of INTEGER range 0 to 9 for actual of port port_range_elem.u.o

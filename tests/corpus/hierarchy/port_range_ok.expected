@@ -1,0 +1,3 @@
+exit	0
+diag	note	2000000	0	:port_range_ok:_p0	so(1)=5 sb=6 hi=7 sc=2
+diag	note	2000000	1	:port_range_ok:u:_p0	cell i=5 b=6 bf=7

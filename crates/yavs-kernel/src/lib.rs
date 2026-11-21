@@ -16,7 +16,7 @@ mod time;
 mod value;
 
 pub use builder::{
-    Builder, Converter, EdgeTrigger, IdleLit, IdleRead, PortConv, PortMode, ProcFlags,
+    Builder, ConvError, Converter, EdgeTrigger, IdleLit, IdleRead, PortConv, PortMode, ProcFlags,
 };
 pub use error::{ErrorInfo, ErrorKind, SimError, StmtId};
 pub use image::{ImageItem, ImageKind, ImageSpec, NO_IMAGE};

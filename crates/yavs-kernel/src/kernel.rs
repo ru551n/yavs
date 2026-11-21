@@ -1466,7 +1466,10 @@ fn convert(
         }
         None => f(&vals),
     }
-    .map_err(fail)?;
+    .map_err(|e| match e {
+        crate::builder::ConvError::Failed(m) => fail(m),
+        crate::builder::ConvError::Range(m) => ErrorKind::Runtime(m),
+    })?;
     if out.len() != targets.len() {
         let m = format!("{} values for {} port parts", out.len(), targets.len());
         return Err(fail(m));

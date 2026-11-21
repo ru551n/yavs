@@ -76,6 +76,19 @@ yavs, with what to do about each.
      - Give the signal a subtype that holds every value the procedure can drive, or check the
        value in the procedure. A design that passed on another simulator may have put the value
        into the signal.
+   * - A value passing through a port that does not belong to the subtype receiving it: an ``out
+       integer`` port driving 10 into a signal of ``integer range 0 to 9``, an ``in natural`` port
+       on an ``integer`` signal that holds -1, or a conversion in the port map whose result does
+       not fit
+     - Error ``E3009`` when the value passes: the message ends ``for actual of port`` (a value
+       going up into the signal) or ``for port`` (a value going down into the port), with the
+       port's path and the receiving range. The port's initial value counts too: an ``out
+       integer`` port with no default starts at ``INTEGER'LEFT`` and fails at once on a
+       ``natural`` signal. Ports whose subtypes are merely different but whose values fit run
+       as before.
+     - Give the port and its actual subtypes that hold every value that can pass, or a default
+       in range. A design that passed on another simulator may have put the value into the
+       signal, or been rejected there before it ran.
    * - A named aggregate as an operand of a predefined operator, ``c = (3 => a, 2 => b, ...)``, with
        ``c`` of a constrained array type declared ``downto``
      - The aggregate runs in the direction of the index subtype, so its leftmost element is its

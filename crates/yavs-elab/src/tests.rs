@@ -2647,6 +2647,53 @@ end;
     }
 }
 
+/// #1183: a port whose values may fall outside the subtype that receives them gets a range
+/// check (a conversion, so it is not collapsed); one whose values all fit stays an alias; a
+/// conversion checks its result only where the target does not hold the whole type.
+#[test]
+fn port_range_checks_only_where_they_can_fail() {
+    let src = "
+entity leaf is
+  port (wide : in integer; narrow : in natural; o : out natural := 0; w : out integer := 0;
+        c1 : out integer := 0; c2 : out integer := 0);
+end;
+architecture rtl of leaf is begin end;
+entity top is end;
+architecture t of top is
+  function id (x : integer) return integer is begin return x; end;
+  signal n : natural;
+  signal i : integer;
+  signal d, d2 : integer range 0 to 9;
+  signal x, x2 : integer;
+begin
+  u : entity work.leaf port map (wide => n, narrow => i, o => x, w => d,
+                                 id(c1) => x2, id(c2) => d2);
+end;
+";
+    let obj = |e: &Elaborated, path: &str| {
+        let k = sig_paths(e).iter().position(|p| p == path).expect(path);
+        e.nets.objs[k].leaves
+    };
+    let (_, e) = elab("rangecheck", src, "top", &[]);
+    // `natural` into `integer`, and `natural` out into `integer`: free, collapsed.
+    assert_eq!(obj(&e, ":top:u:wide"), obj(&e, ":top:n"));
+    assert_eq!(obj(&e, ":top:u:o"), obj(&e, ":top:x"));
+    // `integer` into `natural`, and `integer` out into `0 to 9`: checked, kept.
+    assert_ne!(obj(&e, ":top:u:narrow"), obj(&e, ":top:i"));
+    assert_ne!(obj(&e, ":top:u:w"), obj(&e, ":top:d"));
+    let checked: Vec<_> = (e.nets.ports.iter())
+        .map(|p| (p.to_formal.is_some(), p.to_actual.is_some()))
+        .collect();
+    assert_eq!(
+        checked,
+        [(true, false), (false, true), (false, true), (false, true)]
+    );
+    // A conversion's result is checked only where the target does not hold the whole type.
+    assert_eq!(e.convs.len(), 4);
+    assert!(e.convs[2].check.is_empty());
+    assert!(e.convs[3].check.iter().all(Option::is_some));
+}
+
 /// #528: an `out` or `buffer` port that is the only source of its actual's elements is an
 /// alias of the actual, which takes the formal's initial value; an `inout` port, an actual
 /// with another source, a forced actual and an actual fed from above keep their edges.

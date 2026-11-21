@@ -225,7 +225,7 @@ python3 tools/difftest/difftest.py --candidate yavs  # end to end, threads 1 and
   thread-sensitive change also gets a case in `tests/determinism.rs`.
 - Codes owned: `E3000`-`E3099` (`ErrorKind::code`: E3001 time overflow, E3002 delta limit (with its `LoopCause`), E3003
   postponed delta, E3004 invalid assignment, E3005 deadline in the past (wait or wake-up), E3006 bad reference,
-  E3007 resolution, E3008 conversion, E3009 VHDL runtime error, E3010 usage, E3011 partly disconnected source of a guarded composite), plus `E9999`.
+  E3007 resolution, E3008 conversion (`ConvError::Failed`), E3009 VHDL runtime error (also a converter's `ConvError::Range`, a port range check, #1183), E3010 usage, E3011 partly disconnected source of a guarded composite), plus `E9999`.
 
 ## 6. Coordination
 

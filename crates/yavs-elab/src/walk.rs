@@ -3359,6 +3359,28 @@ impl Elab<'_> {
                 };
                 return self.trigger_of(s, *cond, None, false, None);
             }
+            // `assert not (<edge> and ...);` holds on a false edge, the rest not evaluated.
+            StmtKind::ConcAssert {
+                postponed: false,
+                cond,
+                ..
+            } => {
+                let ExprKind::Call { callee, args, .. } = &db.exprs[*cond].kind else {
+                    return None;
+                };
+                let d = &db.decls[*callee];
+                let boolean = Some(db.base(db.exprs[*cond].subtype)) == db.well_known.boolean;
+                let ([a], true) = (
+                    &args[..],
+                    d.implicit && boolean && d.name.key().as_str() == "\"not\"",
+                ) else {
+                    return None;
+                };
+                let Actual::Expr(x) = a.actual else {
+                    return None;
+                };
+                return self.trigger_of(s, x, None, false, None);
+            }
             _ => return None,
         };
         // `wait until x = '1'`: the whole condition is the level (its `on` list must be `x`).

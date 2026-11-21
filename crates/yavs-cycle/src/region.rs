@@ -115,6 +115,97 @@ pub(crate) fn exact_meta() -> bool {
     EXACT_META.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The start of the body of a combinational member with notes (A52): its `fresh` slot is 1 at
+/// its first run or when an element of its wait set changed since its last run, the normal
+/// mode's event that runs the process; the elements are kept in slots of their own for the next.
+fn fresh_ops(e: &Elaborated, b: &mut Body) {
+    let Some((f, armed)) = b.fresh else {
+        return;
+    };
+    let nets = &e.nets;
+    let mut ops = vec![Op::Copy {
+        dst: Ref::Loc(f),
+        src: Ref::Loc(armed),
+        len: 1,
+    }];
+    let mut snaps = vec![(armed, 1)];
+    for &(l, a, len) in &b.wait {
+        let at = nets.loc[l.index()];
+        let n = nets.signal_len(at.signal);
+        // Logic elements in kernel order; a word per element of others, from the right.
+        let (lo, bits, full) = match n.checked_sub(at.base + a + len) {
+            Some(_) if nets.leaf(l).ty.elem == yavs_kernel::Elem::Logic => (at.base + a, len, n),
+            Some(right) => (64 * right, 64 * len, 64 * n),
+            // ponytail: not a part of the signal (no case known): all of it, at worst a note
+            // made again on an unchanged wait set.
+            None => (0, 64 * n, 64 * n),
+        };
+        let w = crate::codegen::words(bits);
+        let (snap, tmp, ne) = (b.locs, b.locs + w, b.locs + 2 * w);
+        b.locs += 2 * w + 1;
+        snaps.push((snap, w));
+        ops.extend([
+            Op::Extract {
+                dst: Ref::Loc(tmp),
+                src: Ref::Sig(at.signal.0),
+                lo,
+                len: bits,
+                full,
+            },
+            Op::VecEq {
+                dst: Ref::Loc(ne),
+                a: Ref::Loc(tmp),
+                b: Ref::Loc(snap),
+                len: bits,
+                ne: true,
+            },
+            Op::Gate {
+                g: lower::Gate::Or,
+                dst: Ref::Loc(f),
+                a: Ref::Loc(f),
+                b: Ref::Loc(ne),
+                len: 1,
+            },
+            Op::Copy {
+                dst: Ref::Loc(snap),
+                src: Ref::Loc(tmp),
+                len: bits,
+            },
+        ]);
+    }
+    ops.push(Op::Lit {
+        dst: Ref::Loc(armed),
+        val: Box::new([0]),
+    });
+    b.fresh_len = ops.len() as u32;
+    ops.append(&mut b.ops);
+    b.ops = ops;
+    b.snaps = snaps;
+}
+
+/// The key of a process's own dependence element for its notes (`analyse`): the process index
+/// above every signal leaf and variable key.
+const NOTES: u64 = 1 << 40;
+
+/// `--no-asserts` (A54): the asserts and reports of processes below the top-level unit are
+/// dropped; off (the default), every member evaluates its own.
+static NO_ASSERTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Drop the asserts and reports below the top-level unit (true) or evaluate them (the default).
+pub fn set_no_asserts(on: bool) {
+    NO_ASSERTS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether `--no-asserts` is on.
+pub(crate) fn no_asserts() -> bool {
+    NO_ASSERTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether the asserts and reports of a process of scope `scope` are evaluated.
+pub(crate) fn asserts_kept(e: &Elaborated, scope: yavs_elab::ScopeId) -> bool {
+    !NO_ASSERTS.load(std::sync::atomic::Ordering::Relaxed) || in_top_scope(e, scope)
+}
+
 /// `YAVS_CYCLE_EXACT_CLOCKS=1` (tests and gates only): a clock copied by assignment stays a
 /// clock of its own, as the normal mode's delta order has it (A32).
 pub(crate) fn exact_clocks() -> Result<bool, String> {
@@ -642,7 +733,7 @@ pub(crate) fn subset(db: &Db, e: &Elaborated) -> Subset {
         }
         // A loop element by element in the combinational logic.
         stat(|| format!("subset round: {} ms", t0.elapsed().as_millis()));
-        let a = analyse(db, e, fits.iter().map(|(pi, f)| (*pi, f)));
+        let a = analyse(db, e, fits.iter().map(|(pi, f)| (*pi, f)), &BTreeSet::new());
         stat(|| format!("subset analyse: {} ms", t0.elapsed().as_millis()));
         for (ps, path) in &a.cycles {
             for &q in ps {
@@ -774,17 +865,35 @@ fn differs(e: &Elaborated, f: &Fit, b: &Body) -> Option<String> {
     ))
 }
 
-/// The dependence analysis of the fitting processes.
+/// The dependence analysis of the fitting processes. A combinational member of `noted` runs its
+/// notes on settled values: it also drives an element of its own ([`NOTES`]) that depends on all
+/// it reads, so it runs after what makes any of that.
 fn analyse<'f>(
     db: &Db,
     e: &Elaborated,
     fits: impl Iterator<Item = (usize, &'f Fit)>,
+    noted: &BTreeSet<usize>,
 ) -> dep::Analysis {
     let _ = db;
     let n = e.procs.len();
     let mut procs: Vec<(usize, Vec<dep::Out>)> = fits
         .filter(|(_, f)| !f.outs.is_empty() || f.form == Form::Comb)
-        .map(|(pi, f)| (pi, f.outs.clone()))
+        .map(|(pi, f)| {
+            let mut outs = f.outs.clone();
+            if noted.contains(&pi) {
+                let mut reads = dep::ESet::default();
+                (f.reads.iter())
+                    .filter(|r| r.0 & VAR == 0)
+                    .for_each(|(k, a, z)| reads.add(k, a, z));
+                outs.push(dep::Out {
+                    leaf: NOTES | pi as u64,
+                    lo: 0,
+                    hi: 1,
+                    dep: dep::Dep::set(std::rc::Rc::new(reads)),
+                });
+            }
+            (pi, outs)
+        })
         .collect();
     // Port edges the kernel updates are copies in the same delta: an `in` formal depends on its
     // actual, an `out` actual on its formal (a conversion: on all of the other side). They are
@@ -846,6 +955,9 @@ fn analyse<'f>(
     let atom = |k: u64, a: u32, z: u32| -> String {
         if k & VAR != 0 {
             return "a variable".into();
+        }
+        if k & NOTES != 0 {
+            return "the asserts and reports of a process".into();
         }
         let l = LeafId(k as u32);
         let n = e.leaf_name(l);
@@ -930,22 +1042,55 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
                 pi,
                 Why::NotYet(Reason::new(crate::codes::LEFT_OUT, pspan(pi), w)),
             )),
-            // The asserts and reports of the top-level unit are evaluated (A19): at a clock edge
+            // Asserts and reports are evaluated (A19, A52): at a clock edge or after the settle
             // in region code, else the process stays in the event kernel.
-            Ok(b) if b.dropped > 0 && in_top_unit(e, pi) => {
-                nfits -= 1;
-                out.push((
-                    pi,
-                    Why::Behavioural(format!(
-                        "it holds an assert or report of the top-level unit that cycle mode \
-                         evaluates only in the event kernel: {}",
-                        b.note_why
-                            .as_deref()
-                            .unwrap_or("not evaluated in region code")
-                    )),
-                ))
+            Ok(b) if b.note_why.is_some() => {
+                let w = b.note_why.as_deref().unwrap_or_default();
+                if in_top_unit(e, pi) {
+                    nfits -= 1;
+                    out.push((
+                        pi,
+                        Why::Behavioural(format!(
+                            "it holds an assert or report of the top-level unit that cycle mode \
+                             evaluates only in the event kernel: {w}"
+                        )),
+                    ));
+                } else {
+                    let at = b.drops.first().map_or(pspan(pi), |d| d.0);
+                    out.push((
+                        pi,
+                        Why::NotYet(Reason::new(
+                            crate::codes::ASSERT,
+                            at,
+                            format!("an assert or report of this form: {w}"),
+                        )),
+                    ));
+                }
             }
-            Ok(b) => {
+            Ok(mut b) => {
+                // A combinational member with notes runs them when what it waits on changed
+                // (`Body::fresh`): the region must read all of it.
+                let wait: Vec<(LeafId, u32, u32)> = (f.wait.iter())
+                    .filter(|_| b.fresh.is_some())
+                    .map(|(k, a, z)| (LeafId(k as u32), a, z - a))
+                    .collect();
+                if let Some(&(l, ..)) = wait.iter().find(|w| !b.reads.contains(&w.0)) {
+                    out.push((
+                        pi,
+                        Why::NotYet(Reason::new(
+                            crate::codes::ASSERT,
+                            pspan(pi),
+                            format!(
+                                "an assert or report in a process whose sensitivity list names \
+                                 more than it reads: it does not read {}",
+                                e.leaf_name(l)
+                            ),
+                        )),
+                    ));
+                    continue;
+                }
+                b.wait = wait;
+                fresh_ops(e, &mut b);
                 taken.insert(pi, (f, b));
             }
             Err(w) => out.push((pi, Why::NotYet(lower::reason(w, pspan(pi))))),
@@ -1095,25 +1240,32 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             // drive only: it sees the values the normal mode's checker would see of them (the
             // region exports two-state values), never a metavalue of the kernel read as 0.
             // What the checker counts too: the lowering reads nothing of a value it folds
-            // (`is_x` is false on two-state values).
+            // (`is_x` is false on two-state values). Under `--cycle-exact-meta` the same for every
+            // member with notes, which must see the kernel's metavalues (E4140 below the top).
             let fit_reads = f.reads.iter().map(|(k, _, _)| LeafId(k as u32));
+            let top = in_top_unit(e, pi);
             if b.notes > 0
+                && (top || exact_meta)
                 && let Some(l) = (b.reads.iter().copied()).chain(fit_reads).find(|&l| {
                     b.clock.is_none_or(|c| c.leaf != l)
                         && own_clock.get(&pi).is_none_or(|&c| c != l)
                         && (outside.contains_key(&l) || !inside.contains(&l) || consts.contains(&l))
                 })
             {
+                let (code, what) = if top {
+                    (
+                        crate::codes::CHECK_OUTSIDE,
+                        "an assert reading a signal the region does not drive alone",
+                    )
+                } else {
+                    (
+                        crate::codes::ASSERT,
+                        "an assert or report under `--cycle-exact-meta` reading a signal the region does not drive alone",
+                    )
+                };
                 gone.push((
                     pi,
-                    Reason::new(
-                        crate::codes::CHECK_OUTSIDE,
-                        pspan(pi),
-                        format!(
-                            "an assert reading a signal the region does not drive alone: {}",
-                            e.leaf_name(l)
-                        ),
-                    ),
+                    Reason::new(code, pspan(pi), format!("{what}: {}", e.leaf_name(l))),
                 ));
                 continue;
             }
@@ -1153,7 +1305,11 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         stat(|| format!("select: cross {} ms", t0.elapsed().as_millis()));
         if gone.is_empty() {
             // The order and the loop groups of what is left: a group runs as a loop of passes.
-            let a = analyse(db, e, taken.iter().map(|(pi, (f, _))| (*pi, f)));
+            let noted: BTreeSet<usize> = (taken.iter())
+                .filter(|(_, (_, b))| b.fresh.is_some())
+                .map(|(pi, _)| *pi)
+                .collect();
+            let a = analyse(db, e, taken.iter().map(|(pi, (f, _))| (*pi, f)), &noted);
             let mut members = Vec::new();
             let order: Vec<usize> = a
                 .order

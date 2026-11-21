@@ -381,6 +381,8 @@ pub(crate) const IDLE_WORDS: usize = 4096;
 #[derive(Default)]
 pub(crate) struct Idle {
     pub on: bool,
+    /// The run being probed made a note: it is not idle (the same image makes it again).
+    pub noted: bool,
     pub masks: Vec<u64>,
     pub snap: Vec<u64>,
     pub misses: u32,
@@ -898,7 +900,7 @@ impl<const RAIL: bool> RegionProc<RAIL> {
     /// The idle rule after an edge run of the classes `m`: whether it changed the image; with
     /// `known` (`YAVS_CYCLE_SKIP_CHECK=full` ran a run the rule skips) it must not have.
     fn idle_end(&mut self, ctx: &Ctx<'_>, m: u64, known: bool) -> Result<(), SimError> {
-        let same = self.idle.snap == self.img;
+        let same = !std::mem::take(&mut self.idle.noted) && self.idle.snap == self.img;
         if known && !same {
             return Err(ctx.error(ErrorKind::Internal(
                 "cycle mode: an edge run the idle rule skips changed the image (YAVS_CYCLE_SKIP_CHECK)"
@@ -1551,6 +1553,7 @@ impl<const RAIL: bool> RegionProc<RAIL> {
     fn notes(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         let (at, cap) = self.log;
         let n = std::mem::take(&mut self.img[at]) as usize;
+        self.idle.noted = true;
         let internal =
             |ctx: &Ctx<'_>, m: &str| ctx.error(ErrorKind::Internal(format!("cycle mode: {m}")));
         if n > cap {
@@ -1565,9 +1568,13 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             let Some((Check::Note(nt), _, pi, _)) = self.checks.get(site) else {
                 return Err(internal(ctx, "a note of a site that is no note"));
             };
-            fired.push((*pi, nt.severity, nt.text(&self.img)));
+            fired.push((nt.comb, *pi, nt.severity, nt.text(&self.img)));
         }
-        self.report(ctx, fired.into_iter())
+        // In the normal mode's order: the clocked members' at the edge, then the combinational
+        // ones', each in elaboration order (the processes of a delta run in it).
+        fired.sort_by_key(|f| (f.0, f.1));
+        let fired = fired.into_iter().map(|(_, pi, s, t)| (pi, s, t));
+        self.report(ctx, fired)
     }
 
     /// Report `(member, severity, text)` in order, as their members, through the normal mode's
@@ -1800,6 +1807,7 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             if known || self.idle.rest == 0 {
                 self.idle.snap.clear();
                 self.idle.snap.extend_from_slice(&self.img);
+                self.idle.noted = false;
                 probe = Some((m, known));
             } else {
                 self.idle.rest -= 1;

@@ -299,7 +299,7 @@ begin
   f12 <= a when en = '1' else b;
   with en select f13 <= a when '1', b when others;
   f14 <= a when rising_edge(clk);
-  assert en /= 'X' report "concurrent, not evaluated";
+  assert en = '0' or en = '1' report "concurrent, evaluated";
 
   -- Static loops: every element assigned; levels feeding the next in one process.
   levels : process (all)

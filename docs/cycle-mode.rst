@@ -297,7 +297,7 @@ a small design with a testbench and four things cycle mode does not take:
         behavioural, in the event kernel (1 process):
           tb_left_out.main (left_out.vhd:67)          it waits for a time
       cycle-based processes give no warnings of the ieee libraries (numeric_std metavalue and compare warnings)
-      asserts and reports of processes of the top-level unit are evaluated: at the clock edge in region code, else the process stays in the event kernel
+      asserts and reports are evaluated: at the clock edge or after the settle in region code, else the process stays in the event kernel
       subset: 1 of 7 processes fit, 0 loop groups among them
       boundary: 1 signal leaves exported (0 nothing outside waits on), 1 inputs, 0 wake the region
       cycle-based, 1 process:
@@ -309,10 +309,10 @@ a small design with a testbench and four things cycle mode does not take:
   same words as the error of ``--cycle-strict``: the construct, and after a colon what at that place causes it. A
   concurrent assignment is shown as ``name <= ...``. A delayed clock like ``clk <= not clk after ...`` is on
   almost every list and is expected. *Behavioural* processes are the ones that are testbench by nature.
-* If cycle-based processes hold ``assert`` or ``report`` statements, a line counts them per process: they are not
-  evaluated (:ref:`cycle-changes`). The next block lists each statement once (one in a loop or a called function
-  counts once per process here), in the order of the warning (W4101): the severity, where it is, and the process. The following two lines are fixed text: library warnings, and the asserts of
-  the top-level unit, which are evaluated.
+* Under ``--no-asserts``, a line counts the ``assert`` and ``report`` statements cycle-based processes drop, per
+  process (:ref:`cycle-no-asserts`). The next block lists each statement once (one in a loop counts once per
+  process here), failures first: the severity, where it is, and the process. The following two lines are fixed
+  text: library warnings, and how asserts and reports are evaluated.
 * ``subset`` counts the processes that fit the rules. Fewer processes join than fit when one with a rarer
   problem needs something yavs does not implement yet, or a rule of the region as a whole keeps it out (the
   rows of E4101 and E4128 to E4137). A *loop group* is a set of
@@ -355,7 +355,8 @@ Cycle mode is for speed. By default it gives up these, and nothing else, in the 
   register on the copy samples the source's registers before the edge where the normal mode, a delta cycle later,
   gives their new values (:ref:`cycle-deltas`, :ref:`cycle-clock-copies`).
 * **Library warnings.** The ``numeric_std`` and other ``ieee`` warnings (metavalues, truncation) are not given by
-  cycle-based processes, nor are their reports and assertions below the top-level unit (:ref:`cycle-reports`).
+  cycle-based processes. Their own reports and assertions are evaluated, on settled values, so a combinational
+  process reports once per time step where the normal mode may report each delta (:ref:`cycle-reports`).
 * **Values in error messages.** A failed check (overflow, range, index) stops the run with the normal mode's error
   code, source line, time and process, and says what failed, but not the values involved: keeping them costs code
   in every check. ``--cycle-exact-meta`` keeps them, with the normal mode's message (:ref:`cycle-checks`).
@@ -403,6 +404,10 @@ A cycle-based process computes with ``0`` and ``1`` only.
 
   Where it still differs from the normal mode:
 
+  - An ``assert`` or ``report`` of the region formats the region's own values: a register's ``'U'`` start reads
+    ``0`` there. A process whose assert or report reads a signal the region does not drive alone stays in the event
+    simulation (:ref:`cycle-reports`), so only what members drive is seen this way.
+
   - The region's own set of values reads a ``'U'`` as ``0``. Where that takes the branch the normal mode does not
     (``y <= a when s = '0' else b`` with ``s`` ``'U'``: the normal mode gives ``b``), the result is the region's
     (``a``), as without the second image.
@@ -430,6 +435,9 @@ A cycle-based process computes with ``0`` and ``1`` only.
 * A metavalue that reaches the region from outside (``'X'``, ``'U'``, ``'W'``, ``'-'``, ``'Z'`` and the like) is read as
   ``0``. ``'1'`` and ``'H'`` read as ``1``, ``'0'`` and ``'L'`` as ``0``. yavs counts the elements read this way and
   prints the count at the end of the run, as in the example above.
+* So a change between two values with the same two-state value (``'1'`` to ``'H'``, ``'U'`` to ``'X'``) is no change in
+  the region: a combinational process of the region does not run for it and makes no ``report`` or ``assert``
+  message where the normal mode makes one.
 * So a cycle-based process that copies a line another driver pulls up (a released ``'H'``) to a signal the testbench
   reads gives the testbench ``'1'`` where the normal mode gives ``'H'``. ``to_x01`` makes ``'1'`` of both; a test
   that compares the signal with ``'1'`` or ``'H'`` directly sees the difference.
@@ -528,29 +536,77 @@ second set changed it (see above). The normal mode gives ``0``:
 Reports, assertions and library warnings
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A cycle-based process below the top-level unit does not produce ``report`` or ``assert`` messages, at any
-severity, and no cycle-based process gives the library warnings of ``numeric_std`` and the other ``ieee`` packages
-(metavalue and truncation warnings), also not while a call is evaluated during elaboration (below). The report counts the statements it drops per process and lists each one with its severity (:ref:`cycle-report`).
-The processes of the top-level unit, the testbench's, keep their checks (below).
+Cycle-based processes evaluate their ``assert`` and ``report`` statements, with the normal mode's message text,
+severity, time and process name, and the same effect on the run: an ``error`` counts for the exit status, a
+``failure`` (or whatever ``--exit-severity`` names) ends the run at the time the normal mode ends it.
 
-``--cycle`` and ``--cycle-strict`` print one warning (W4101) at the start when the dropped statements include any of
-severity ``error`` or ``failure``, or of a severity known only at run time: how many, and where the first five are
-(the line and the process), failures first, and first within a severity a ``report`` or an ``assert false``, which
-always reports when the run reaches it (the usual way a design ends its own test). Dropped notes and warnings are not in it; ``--cycle-report`` lists those
-too.
+* A clocked process evaluates them at its clock edge, on the values before the edge, as the normal mode does.
+* A combinational process evaluates them once its inputs are settled, and only in a wake where an element it waits
+  on (its sensitivity list, or what it reads for ``process (all)`` and a concurrent ``assert``) changed since its
+  last run: the event that runs it in the normal mode. The region computes its logic in dependency order, so the
+  values an assert sees are the settled values of that time step, never a value the region passes through on the
+  way: a process runs after every process that makes what it reads, its asserts included, and in a loop group the
+  runs before the last make no messages.
+* No cycle-based process gives the library warnings of ``numeric_std`` and the other ``ieee`` packages (metavalue
+  and truncation warnings), also not while a call is evaluated during elaboration (below).
+
+What can differ:
+
+* **Delta and order.** A message of the region carries the delta of the region's wake; in the normal mode a
+  message of combinational logic comes some deltas later. Within one run of the region the clocked processes'
+  messages come first, then the combinational ones', each in elaboration order. Against the messages of the
+  processes in the event simulation they come in the order of the wakes: within one time step a message of the
+  region may come before or after one the normal mode prints before or after it.
+* **Intermediate values.** In the normal mode a combinational process runs again in every delta where one of its
+  inputs changes, so it can report a value its inputs hold for one delta only, or report twice in one time step.
+  In cycle mode it runs once per wake on settled values: such a message is made once, with the settled values, or
+  not at all when the settled values satisfy the assert.
+* **Metavalues.** Under the default two-state values an assert sees ``'U'`` and ``'X'`` as ``0``
+  (:ref:`cycle-two-state`). An assert that fires in the normal mode only because a value is still ``'U'`` (a
+  register before its reset, ``unsigned(addr) < DEPTH`` on an uninitialised address) does not fire in cycle mode,
+  and one that holds only because of a metavalue may fire. A combinational process makes its messages when what
+  it waits on changed as two-state values: a change from ``'1'`` to ``'H'`` or from ``'U'`` to ``'X'`` is none.
+  Under ``--cycle-exact-meta`` a process with an ``assert`` or ``report`` that reads a signal the region does not
+  drive alone stays in the event simulation (E4140), so it sees the metavalues the rest of the design gives it;
+  what members drive it still sees two-state (a register's ``'U'`` start as ``0``).
+
+An assert or report cycle mode cannot evaluate keeps its process in the event simulation, where it runs as before
+(E4140 in the report, an error below the top-level unit under ``--cycle-strict``). Cycle mode takes a message made of
+string literals, ``&``, ``'image`` and ``to_string`` of integers, enumerations, ``std_ulogic`` and ``boolean``
+values, and ``to_string``, ``to_hstring`` and ``to_ostring`` of vectors, with a severity known during elaboration.
+A concurrent ``assert not (rising_edge(clk) and a and b)`` (any edge test as the first operand, any number of
+operands after it) is a check at that clock edge, on the values before it, as its process in the normal mode does
+nothing between edges. It does not take an assert in the asynchronous reset branch of a clocked process, a
+concurrent ``assert`` that tests a clock edge in another form (``assert not rising_edge(clk) or ...``), or a
+combinational process whose sensitivity list names a signal it does not read. An assert that holds by what is known
+during elaboration (a width check of a called function on its constant arguments) is no code at all.
+
+.. _cycle-no-asserts:
+
+Dropping the design's asserts: ``--no-asserts``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``--no-asserts`` drops the ``assert`` and ``report`` statements of the processes below the top-level design unit, in
+the normal mode and in cycle mode alike, for speed. The processes of the top-level unit (the testbench) keep
+theirs, and the statements inside subprograms run wherever they are called from, so a testbench's checks and the
+check and logging calls of its verification components still run. Below the top-level unit is everything the
+testbench entity instantiates: the design, and verification components, bus models and checker entities. The run
+starts with a note that counts the statements it drops; ``--cycle-report`` lists them per process with their
+severity. A process kept out only by an assert it cannot evaluate joins the region under ``--no-asserts``.
 
 .. note::
 
-   A design that stops its own simulation with an ``assert`` or ``report`` below the top-level unit runs on under
-   ``--cycle``: until ``--stop-time``, or until the testbench ends the run. Look for W4101 at the start of the run.
+   A design that ends its own test with an ``assert`` or ``report`` below the top-level unit runs on under
+   ``--no-asserts``: until ``--stop-time``, or until the testbench ends the run.
 
-* This includes ``severity failure``. A design that ends its own test from RTL code, with an assertion or a
-  ``report ... severity failure`` that the testbench does not check, does not end it in cycle mode: the run goes on,
-  and the exit status is that of however it does end. ``rtl_failure.vhd`` is such a design:
+``rtl_failure.vhd`` is such a design: it ends its test from RTL code, with a ``report ... severity failure`` that the
+testbench does not check.
 
 .. literalinclude:: examples/cycle/rtl_failure.vhd
    :language: vhdl
    :caption: rtl_failure.vhd
+
+In the normal mode and with ``--cycle`` the run ends at 275 ns with exit status 1:
 
 .. code-block:: text
 
@@ -559,34 +615,32 @@ too.
     ** Failure: 275000000fs+0: acc reached 250, the design ends the test
         Process tb_rtl_failure.dut.process (rtl_failure.vhd:16)
 
+``--cycle`` prints on standard error:
+
 .. code-block:: text
 
     cycle mode: 2 of 4 processes run cycle-based, 2 in the event kernel (see --cycle-report)
-    warning[W4101]: 1 assert or report of severity failure is not evaluated in cycle mode
-     |
-     = note: rtl_failure.vhd:26: severity failure, in tb_rtl_failure.dut.process (rtl_failure.vhd:16)
-     = help: these do not stop the simulation in cycle mode; run without `--cycle` to evaluate them, or with `--cycle-report` instead to list every assert and report cycle mode drops
+    cycle mode: 8 metavalue elements read as 0 (8 at initialisation, 0 at changes of the region's inputs)
+
+With ``--no-asserts`` (in either mode) both statements are dropped, the run starts with this note on standard error:
+
+.. code-block:: text
+
+    note: `--no-asserts`: 2 assert and report statements in 1 process below the top-level unit are not evaluated
+
+and it reaches the testbench's own end at 1022 ns with status 0:
+
+.. code-block:: text
 
     ** Note: 1022000000fs+0: testbench finished, q=E8
         Process tb_rtl_failure.main
-    cycle mode: 8 metavalue elements read as 0 (8 at initialisation, 0 at changes of the region's inputs)
     ** Note: 1022000000fs+0: FINISH called with status 0
 
-In the normal mode the first block is the output and the exit status is 1, at 275 ns. In cycle mode the run reaches
-the testbench's own end at 1022 ns with status 0.
-
-* Messages of processes that stay in the event simulation are produced as before, so a testbench that checks results
-  keeps working. A clocked checker of the *top-level* unit that reads only signals of the region (the design's
-  outputs) runs cycle-based and evaluates its ``assert`` and ``report`` statements at the clock edge, with the
-  normal mode's message text, severity, time and process name, and the same effect on the run and on the exit
-  status. Its message may use string literals, ``&``, ``'image`` and ``to_string`` of integers, enumerations,
-  ``std_ulogic`` and ``boolean`` values, and ``to_string``, ``to_hstring`` and ``to_ostring`` of vectors. Any other
-  top-level process with an ``assert`` or ``report`` stays in the event simulation; the testbench's checks are never
-  dropped. Within one delta cycle, the messages of the region come after those of the event simulation.
-* The gap in this rule is a checker or monitor entity *below* the top-level unit: it looks like the design, so a
-  clocked process in it joins the region and its assertions are dropped. Put such checks in a process of the
-  top-level unit, or run the test in the normal mode.
-* ``--assert-summary`` and ``--exit-severity`` see only the messages that are produced.
+* Messages of processes that stay in the event simulation are produced as before. A process of the *top-level*
+  unit with an ``assert`` or ``report`` joins the region only when it is clocked and reads nothing but signals the
+  region drives (the design's outputs): its checks then see exactly the values the normal mode's would, at the
+  clock edge. Any other, a combinational one included, stays in the event simulation; the testbench's checks are never dropped, also not under ``--no-asserts``.
+* ``--assert-summary`` and ``--exit-severity`` count the messages of the region as those of the normal mode.
 * A call of a pure function whose arguments are all known during elaboration (generics and constants:
   ``log2(DEPTH)``, a check of a register map) is evaluated once, while the design is elaborated, and its value is
   built into the region. What the design's own code in that call reports is kept: its ``assert`` and ``report``
@@ -750,7 +804,7 @@ Exit status and time
 The exit status follows the messages that are produced. A run in cycle mode ends in the same way as before when the
 testbench ends it (``finish``, ``stop``, an error in a process outside the region, a failed check of a verification
 library, ``--stop-time``). It ends differently only when something in the normal mode ended it from a statement
-that cycle mode drops (a failure raised by RTL code), or when a signal that the testbench waits for is seen at
+that ``--no-asserts`` drops (a failure raised by RTL code), or when a signal that the testbench waits for is seen at
 another delta. See :ref:`cycle-troubleshooting`.
 
 .. _cycle-strict:
@@ -1005,8 +1059,10 @@ Troubleshooting
 1. Does the end of the run say that metavalues were read as ``0``? Then ``'U'``, ``'X'`` or an uninitialised
    register mattered. Fix the design or the test, check it in the normal mode, or run with ``--cycle-exact-meta``
    when the testbench checks for an ``'X'`` or a ``'Z'`` from the design.
-2. Does the run start with warning W4101, or does ``--cycle-report`` list asserts and reports as not evaluated? Then RTL code that used to report, fail, or end
-   the test does not do it now (:ref:`cycle-changes`).
+2. Does a message of the design come at another delta, once instead of twice, or not at all? A combinational
+   process reports on settled values only, and an assert that needs a ``'U'`` to fire does not fire on two-state
+   values (:ref:`cycle-reports`). With ``--no-asserts``, RTL code that used to report, fail, or end the test does
+   not do it.
 3. Does the testbench read a value a delta after the edge, or depend on delta numbers? Sample later. Does the
    design copy a clock by an assignment and read registers of the source on the copy? See
    :ref:`cycle-clock-copies`.
@@ -1018,7 +1074,7 @@ the smallest design that shows it.
 
 **A test hangs, or ends at another time.** If the summary line counts inputs driven by nothing, ``--cycle-report``
 names them; a test that relies on their metavalue (see two-state values above) needs them driven in the testbench. If the end of the test came from RTL code (an ``assert`` or ``report`` of
-severity failure in the design, which is dropped), the run now goes on to the testbench's own end or to
+severity failure in the design) and the run has ``--no-asserts``, the run goes on to the testbench's own end or to
 ``--stop-time``. Give the test a ``--stop-time``, or move the check into the testbench. If it is a testbench that waits
 for a signal in the same delta as a register, see delta cycles above. ``--cycle-report`` shows whether the process
 that raises the message joined.

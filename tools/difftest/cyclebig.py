@@ -3,8 +3,8 @@
 `--cycle`, with one binary, for one bounded simulated time (`GATE`), and compare exit status, the console
 (standard output without report records) and the text files the run writes in its working directory
 (the CPU's instruction trace, UART logs). A `?` in the normal mode's file (a hex digit of a metavalue)
-matches any character: cycle mode reads metavalues as 0. Reports are counted, not compared: cycle
-mode does not evaluate reports, asserts and library warnings of member processes. The region's members
+matches any character: cycle mode reads metavalues as 0. Reports are counted, not compared: member
+processes give no library warnings, and NEORV32's normal mode prints tens of thousands. The region's members
 must be the count `GATE` holds, so a change of membership is seen, and the normal console must hold the
 test's `expect` lines, so two equally short runs cannot pass. Fails when the run compared nothing (no
 member, or no output at all) and when a world is missing (the command that makes it is printed). Worlds
@@ -28,17 +28,20 @@ DEFAULT = "neorv32_dual_full,microwatt_coremark_short"
 MEMBERS = re.compile(r"(\d+) of (\d+) processes")
 # Per test: the stop time of both runs (None: the test's own), the exit status of each mode (None: the
 # test's), and the members of the region. Microwatt ends at 1368.555 us with its RTL's `end of test`
-# failure, which cycle mode drops (A12, A21): both runs stop at 1369 us, past "Execution completed.".
+# failure in both modes (cycle mode evaluates the asserts of its members, A52): exit 1, stop 1369 us.
 # A new member count is a decision, made in the commit that changes it. NEORV32 3822 -> 3795: the
 # registers with an asynchronous reset in the fan-in of run-count seeds stay out (the reset
 # sequencer making `rstn_sys`, the NEOTRNG ring-oscillator flip-flops). 3795 -> 3801: the testbench's
 # `std_ulogic(...)` copies of its pulled-up lines (`twi_sda_i`, `onewire_i`, `smc_di` and three more) join.
 # Microwatt 281 -> 258: the cross-delta rule follows paths through processes outside the region, so
 # the logic from registers of the DTM's `jtag_clk` to registers of `clk` stays out (DTM, debug master,
-# arbiter, the inputs of the block RAM and of the caches).
+# arbiter, the inputs of the block RAM and of the caches). 258 -> 233 (exact contract, A52): a member with
+# an assert or report that reads a signal the region does not drive alone stays out under
+# `--cycle-exact-meta` (E4140): `wb_x_state` reads `soc_reset`, and 26 core processes with asserts
+# (caches, TLBs, register file, execute, FPU, MMU, log buffer) then read what processes outside drive.
 GATE = {
     "neorv32_dual_full": dict(stop=None, normal=None, cycle=None, members="3801 of 3910"),
-    "microwatt_coremark_short": dict(stop="1369us", normal=1, cycle=0, members="258 of 418"),
+    "microwatt_coremark_short": dict(stop="1369us", normal=1, cycle=1, members="233 of 418"),
 }
 
 

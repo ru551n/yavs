@@ -61,6 +61,13 @@ def pats(s, w):
 
 
 CYCLE_TESTS = {
+    "asserts.vhd": [("cycle_asserts", "", lambda s, w=w: W.sub(str(w), s)) for w in (63, 65, 128)],
+    "assertloop.vhd": [("cycle_assertloop", "", None)],
+    "idlenote.vhd": [("cycle_idlenote", "", None)],
+    "edgeassert.vhd": [("cycle_edgeassert", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
+    "noteorder.vhd": [("cycle_noteorder", "", None)],
+    "foldassert.vhd": [("cycle_foldassert", "", None)],
+    "portcheck.vhd": [("cycle_portcheck", "", None)],
     "calls.vhd": [("cycle_calls", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
     "clocks.vhd": [("cycle_clocks", "", None)],
     "cmpcount.vhd": [("cycle_cmpcount", "", None)],
@@ -207,6 +214,31 @@ def settled(lines, lost):
     return rest, {k: v[1] for k, v in last.items()}
 
 
+def settled_meta(nl, cl):
+    """Default contract, `settled` of each process (unlabelled ones by their place): equal, or each
+    cycle line the normal one with its metavalues read two-state (`meta_pair`); a time where only
+    the normal run reports pairs so with the process's last cycle report before it (an event between
+    two values of one two-state value, which the region does not see)."""
+    (rn, sn), (rc, sc) = settled(nl, lambda p: False), settled(cl, lambda p: False)
+    if rn != rc:
+        return False
+    pair = lambda a, b: a is not None and b is not None and len(a) == len(b) and all(
+        x == y or (x.split("\t")[0] == y.split("\t")[0] and meta_pair(x, y)) for x, y in zip(a, b))
+    # A report the region did not make: its values are the last report's two-state twins, letter by
+    # letter (no hex digit stands in), so the region saw no change.
+    twin = lambda a, b: a is not None and b is not None and len(a) == len(b) and all(
+        len(x) == len(y) and all(p == q or (p in "UXZWL-" and q == "0") or (p == "H" and q == "1")
+                                 for p, q in zip(x, y)) for x, y in zip(a, b))
+    last = {}
+    for k in sorted(set(sn) | set(sc), key=lambda k: (int(k[0]) if k[0].isdigit() else -1, k[1])):
+        n, c = sn.get(k), sc.get(k)
+        if not (n == c or pair(n, c) or (c is None and twin(n, last.get(k[1])))):
+            return False
+        if c is not None:
+            last[k[1]] = c
+    return True
+
+
 def classify(nl, cl, lost):
     """nl, cl: canonical lines of normal and cycle mode; lost(path) says whether a report of a
     process at that path may be missing. Returns (bucket, why): identical, documented (the
@@ -252,9 +284,10 @@ def member_paths(rep):
         if re.match(r"^  \S", l):
             on = bool(re.match(r"^  cycle-based, \d+ process", l))
         elif on:
-            m = re.match(r"^    (.*?) \(\S+:\d+\)  \S", l)
+            m = re.match(r"^    (.*?) (\(\S+:\d+\))  \S", l)
             if m:
                 out.update({D.lrm_path(m.group(1)), D.lrm_path(re.sub(r" <= \.\.\.$", "", m.group(1)))})
+                out.add(D.lrm_path(m.group(1)) + " " + m.group(2))  # an unlabelled one by its place (`names`)
     return out
 
 
@@ -310,7 +343,18 @@ def meta_pair(n, c):
         while k < len(n) - 1 and n[k + 1] in "UXZWLH01-":
             k += 1
         return bool(re.search("[UXZWLH]", n[j:k + 1]))
+
+    def bits(i):
+        """A '-' read as '0' in a run of '0', '1' and '-' with a '-' after its first place: no
+        integer image (its sign comes first, once)."""
+        j, k = i, i
+        while j > 0 and n[j - 1] in "01-":
+            j -= 1
+        while k < len(n) - 1 and n[k + 1] in "01-":
+            k += 1
+        return "-" in n[j + 1:k + 1]
     return len(n) == len(c) and all(a == b or (a in "UXZW" and b in DIGITS) or (a == "-" and b in DIGITS and dash(i))
+                                    or (a == "-" and b == "0" and bits(i))
                                     or (a, b) in (("H", "1"), ("L", "0")) for i, (a, b) in enumerate(zip(n, c)))
 
 
@@ -340,19 +384,20 @@ def lib_class(gone_n, gone_c):
     return ["library metavalue warnings of processes outside that read the region"] if sorted(gone_n) != sorted(gone_c) else []
 
 
-def contract_lines(nrc, nout, nerr, crc, cout, cerr, raw_cerr, rep, down, default):
+def contract_lines(nrc, nout, nerr, crc, cout, cerr, raw_cerr, rep, down, default, names=False):
     """(normal lines, cycle lines, classes used): the canonical lines of both runs without the library
     warnings of members (A33) and, where the runs differ in them, those of processes outside reading
     the region (`down`); under the default contract with the cycle line of a metavalue read two-state
-    replaced by the normal one (`meta_pair`) when the run shows it read one (`meta_evidence`)."""
+    replaced by the normal one (`meta_pair`) when the run shows it read one (`meta_evidence`). `names`:
+    an unlabelled process by its path and place, not `-` (`D.process_path`)."""
     nout, a = drop_down(nout, down)
     nerr, b = drop_down(nerr, down)
     cout, c = drop_down(cout, down)
     cerr, d = drop_down(cerr, down)
     classes = lib_class(a + b, c + d)
     mem = member_paths(rep)
-    nl = drop_ieee(D.normalise(nrc, nout, nerr, yavs=True), mem)
-    cl = drop_ieee(D.normalise(crc, cout, cerr, yavs=True), mem)
+    nl = drop_ieee(D.normalise(nrc, nout, nerr, yavs=True, names=names), mem)
+    cl = drop_ieee(D.normalise(crc, cout, cerr, yavs=True, names=names), mem)
     if default and nl != cl and meta_evidence(raw_cerr, rep):
         cl, k = meta_align(nl, cl)
         if k:
@@ -447,6 +492,21 @@ def one(item, jobs_args):
                                                  read_down(base / "report" / "down.txt"), default)
                 lost = lambda path: dropped > 0 and (path in members or (path == "-" and "-" in members))
                 res["bucket"], res["why"] = contract_bucket(*classify(nl, cl, lost), classes, default)
+                if res["bucket"] == "differs":
+                    # Unlabelled processes apart (all `-` above): each one's settled reports equal,
+                    # in another order than other processes' within a time step (README).
+                    # Not aligned by `meta_align`: `settled_meta` pairs the lines of each process itself.
+                    nk, ck, _ = contract_lines(nrc, nout, nerr, crc, cout, cerr, outs[1][2], rep,
+                                               read_down(base / "report" / "down.txt"), False, names=True)
+                    if settled(nk, lambda p: False) == settled(ck, lambda p: False):
+                        res["bucket"], res["why"] = contract_bucket(
+                            "documented", "intermediate delta cycles are not visible and the reports of "
+                            "processes apart come in another order within a time step (the settled values "
+                            "of each process are equal)", classes, default)
+                    elif default and meta_evidence(outs[1][2], rep) and settled_meta(nk, ck):
+                        res["bucket"], res["why"] = "contract", "explained by " + "; ".join(
+                            classes + ["metavalues read as 0 or 1, per process and time step",
+                                       "events between metavalues of one two-state value"])
                 res["classes"] = classes
         if res["bucket"] == "differs":
             res["crc"] = "%08x" % zlib.crc32("\n".join(difflib.unified_diff(nl, cl, lineterm="", n=1)).encode())
@@ -473,6 +533,21 @@ def selftest():
     assert classify(n, n[:3] + ["out\tother"], lost)[0] == "differs"
     d = ["exit\t0", "diag\tnote\t5\t1\t:tb:p\ta", "diag\tnote\t5\t2\t:tb:p\tb", "out\tdone"]
     assert classify(d, d[:1] + d[2:], lost)[0] == "documented"  # the first of two deltas is not seen
+    # Two unlabelled processes (`-`) in another order within a time step: told apart by their place.
+    out = lambda a, b: f"** Note: 0fs+0: {a}\n    Process tb.u.process (t.vhd:{b})\n"
+    nn, cn = out("x", 3) + out("y", 9), out("y", 9) + out("x", 3)
+    assert settled(D.normalise(0, nn, "", yavs=True), lost) != settled(D.normalise(0, cn, "", yavs=True), lost)
+    assert settled(D.normalise(0, nn, "", yavs=True, names=True), lost) == settled(D.normalise(0, cn, "", yavs=True, names=True), lost)
+    assert settled(D.normalise(0, nn, "", yavs=True, names=True), lost) != settled(D.normalise(0, out("y", 3) + out("x", 9), "", yavs=True, names=True), lost)
+    m = lambda *v: ["exit\t0"] + [f"diag\tnote\t{t}\t1\t:tb:m\tq={x}" for t, x in v]
+    assert settled_meta(m((0, "U"), (5, "1"), (7, "H"), (9, "0")), m((0, "0"), (5, "1"), (9, "0")))
+    assert meta_pair("q 1-1- 3", "q 1010 3") and meta_pair("q --1 3", "q 001 3") and not meta_pair("q -11 3", "q 011 3")
+    assert not meta_pair("n=-1", "n=11")  # a minus sign never pairs with a 1
+    assert not meta_pair("n=-12", "n=112") and not meta_pair("q 1-1-", "q 1111")
+    assert not settled_meta(m((0, "U"), (5, "1"), (7, "L")), m((0, "0"), (5, "1")))  # L after 1 is an event
+    assert not settled_meta(m((0, "1")), m((0, "0")))  # never a plain value against another
+    assert not settled_meta(m((0, "0")), m((0, "0"), (5, "0")))  # a report the normal run lacks
+    assert not settled_meta(m((0, "0"), (5, "1"), (7, "X")), m((0, "0"), (5, "1")))  # X after 1 is 0: a change
     f = ["exit\t1", "diag\tfailure\t9\t1\t:tb:m\tbad"]
     assert classify(f, ["exit\t0", "out\tmore"], lost)[0] == "documented"  # its stop is lost
     assert classify(f, ["exit\t0"], lambda p: False)[0] == "differs"

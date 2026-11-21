@@ -761,38 +761,34 @@ fn plain_cycle_prints_one_summary_line() {
             "cycle_partial",
         ],
     );
-    // One line, the warning of the dropped failure assert of `reg` (W4101), then the count of
-    // metavalues the region read as 0, which is its own line.
+    // One line, then the count of metavalues the region read as 0, which is its own line; `reg`
+    // evaluates its failure assert, so nothing warns about it.
     let err = String::from_utf8_lossy(&o.stderr);
-    let (head, rest) = err
-        .split_once("\n\n")
-        .expect("the warning ends in a blank line");
+    let mut lines = err.lines();
     assert_eq!(
-        head,
-        "cycle mode: 5 of 7 processes run cycle-based, 2 in the event kernel (see --cycle-report)
-warning[W4101]: 1 assert or report of severity failure is not evaluated in cycle mode
- |
- = note: partial.vhd:82: severity failure, in cycle_partial.dut.reg
- = help: these do not stop the simulation in cycle mode; run without `--cycle` to evaluate them, \
-or with `--cycle-report` instead to list every assert and report cycle mode drops"
+        lines.next(),
+        Some(
+            "cycle mode: 5 of 7 processes run cycle-based, 2 in the event kernel (see --cycle-report)"
+        ),
+        "{err}"
     );
     assert!(
-        rest.lines()
-            .all(|l| l.contains("metavalue elements read as 0")),
+        lines.all(|l| l.contains("metavalue elements read as 0")),
         "{err}"
     );
 }
 
-/// A41: the asserts and reports of severity error and failure below the top that cycle mode drops
-/// get one warning at the start (W4101), the first five listed, failure first and in a severity
-/// those that always report when reached first (`assert false`, `report`); `--cycle-report`
-/// lists every one with its severity. The failure ends the normal run, not the cycle run.
+/// A52, A57: an assert cycle mode cannot evaluate (a severity known only at run time) keeps its
+/// process in the event kernel, so the failure ends the run as in the normal mode; under
+/// `--cycle-strict` it is error E4140 at the statement. `--no-asserts` drops the process's own
+/// asserts and reports in both modes (a note counts them, the report lists them once each) and the
+/// process joins; the assert of the function it calls still runs.
 #[test]
-fn dropped_error_and_failure_asserts_get_one_warning_and_the_report_lists_all() {
+fn an_assert_cycle_mode_cannot_evaluate_keeps_its_process_out_and_no_asserts_drops_it() {
     let dir = tempdir("cycle-awarn");
     analyze(&dir, "awarn.vhd", include_str!("cycle/awarn.vhd"));
     let go = |flags: &[&str]| {
-        let mut args = vec!["run", "--work=work:lib", "--tier=interp"];
+        let mut args = vec!["run", "--work=work:lib", "--tier=interp", "--no-cache"];
         args.extend(flags);
         args.push("cycle_awarn");
         let o = yavs(&dir, &args);
@@ -802,48 +798,61 @@ fn dropped_error_and_failure_asserts_get_one_warning_and_the_report_lists_all() 
             String::from_utf8_lossy(&o.stdout).into_owned(),
         )
     };
-    let (rc, _, out) = go(&["--no-cache"]);
+    let (rc, _, normal) = go(&[]);
     assert!(
-        rc == Some(1) && out.contains("the design ends its own test"),
-        "{out}"
+        rc == Some(1) && normal.contains("the design ends its own test"),
+        "{normal}"
     );
-    let warning = "warning[W4101]: 9 asserts and reports of severity error or failure are not \
-evaluated in cycle mode (2 failure, 6 error, 1 known at run time)
- |
- = note: awarn.vhd:29: severity failure, in cycle_awarn.dut.reg
- = note: awarn.vhd:27: severity failure, in cycle_awarn.dut.reg
- = note: awarn.vhd:36: a severity known only at run time, in cycle_awarn.dut.reg
- = note: awarn.vhd:35: severity error, in cycle_awarn.dut.reg
- = note: awarn.vhd:19: severity error, in cycle_awarn.dut.reg
- = note: and 4 more
- = help: these do not stop the simulation in cycle mode; run without `--cycle` to evaluate them, \
-or with `--cycle-report` instead to list every assert and report cycle mode drops
-
-";
-    // Cold, then warm from the cache (the warning is kept with the built region), and strict.
-    for flags in [&["--cycle"][..], &["--cycle"], &["--cycle-strict"]] {
+    let (rc, err, out) = go(&["--cycle"]);
+    assert_eq!((rc, &out), (Some(1), &normal), "{err}");
+    assert!(
+        err.starts_with("cycle mode: 2 of 4 processes run cycle-based"),
+        "{err}"
+    );
+    let (rc, err, _) = go(&["--cycle-strict"]);
+    assert_eq!(rc, Some(2), "{err}");
+    assert!(
+        err.contains(
+            "error[E4140]: an assert or report of this form is not supported in cycle mode\n  \
+             --> "
+        ) && err.contains("awarn.vhd:36:7")
+            && err.contains("a severity that is not known during elaboration")
+            && err.contains("or run with `--no-asserts` to drop the asserts and reports below")
+            && err.contains("in process cycle_awarn.dut.reg (awarn.vhd:23)"),
+        "{err}"
+    );
+    let note = "note: `--no-asserts`: 10 assert and report statements in 2 processes below the \
+                top-level unit are not evaluated";
+    let (rc, err, dropped) = go(&["--no-asserts"]);
+    assert!(
+        rc == Some(0) && dropped.contains("end q=3C") && !dropped.contains("ends its own test"),
+        "{dropped}"
+    );
+    assert!(err.starts_with(note), "{err}");
+    for flags in [
+        &["--no-asserts", "--cycle"][..],
+        &["--no-asserts", "--cycle-strict"],
+    ] {
         let (rc, err, out) = go(flags);
-        assert_eq!(rc, Some(0), "{flags:?}: {err}");
+        assert_eq!((rc, &out), (Some(0), &dropped), "{flags:?}: {err}");
+        assert!(err.starts_with(note), "{err}");
         assert!(
-            out.contains("end q=") && !out.contains("ends its own test"),
-            "{out}"
+            err.contains("cycle mode: 3 of 4 processes run cycle-based"),
+            "{err}"
         );
-        let rest = err.split_once('\n').map(|x| x.1).unwrap_or_default();
-        assert!(rest.starts_with(warning), "{flags:?}: {err}");
-        assert_eq!(err.matches("W4101").count(), 1, "{err}");
     }
-    let (rc, report, _) = go(&["--no-cache", "--cycle-report"]);
+    let (rc, report, _) = go(&["--no-asserts", "--cycle-report"]);
     assert_eq!(rc, Some(0), "{report}");
-    assert!(!report.contains("W4101"), "{report}");
     assert!(
         report.contains(
-            "  each assert and report not evaluated, by severity (2 failure, 1 known at run time, \
-6 error, 1 warning, 1 note):
+            "  10 asserts and reports not evaluated in cycle mode, held by 2 cycle-based processes:
+       9  cycle_awarn.dut.reg (awarn.vhd:23)
+       1  cycle_awarn.dut.assert (awarn.vhd:43)
+  each assert and report not evaluated, by severity (2 failure, 1 known at run time, 5 error, 1 warning, 1 note):
     failure   awarn.vhd:29  cycle_awarn.dut.reg
     failure   awarn.vhd:27  cycle_awarn.dut.reg
     run-time  awarn.vhd:36  cycle_awarn.dut.reg
     error     awarn.vhd:35  cycle_awarn.dut.reg
-    error     awarn.vhd:19  cycle_awarn.dut.reg
     error     awarn.vhd:31  cycle_awarn.dut.reg
     error     awarn.vhd:32  cycle_awarn.dut.reg
     error     awarn.vhd:38  cycle_awarn.dut.reg
@@ -851,9 +860,461 @@ or with `--cycle-report` instead to list every assert and report cycle mode drop
     warning   awarn.vhd:33  cycle_awarn.dut.reg
     note      awarn.vhd:34  cycle_awarn.dut.reg
 "
-        ),
+        ) && report.contains("those below it are dropped (--no-asserts)"),
         "{report}"
     );
+    // W4101 is retired, and `-Werror=W4101` still accepted.
+    let (rc, err, out) = go(&["--cycle", "-Werror=W4101"]);
+    assert_eq!((rc, &out), (Some(1), &normal), "{err}");
+    assert!(!err.contains("W4101"), "{err}");
+}
+
+/// The run of `asserts.vhd` with `flags` at width `w`: exit status, standard output, standard error.
+fn asserts_run(dir: &Path, flags: &[&str]) -> (Option<i32>, String, String) {
+    let mut args = vec!["run", "--work=work:lib", "--no-cache"];
+    args.extend(flags);
+    args.push("cycle_asserts");
+    let o = yavs(dir, &args);
+    (
+        o.status.code(),
+        String::from_utf8_lossy(&o.stdout).into_owned(),
+        String::from_utf8_lossy(&o.stderr).into_owned(),
+    )
+}
+
+/// The reports of a run as a sorted list of (time, severity, message, process), the delta left out:
+/// cycle mode gives each in the delta of the region's wake and in its own order (A52).
+fn report_set(out: &str) -> Vec<String> {
+    let lines: Vec<&str> = out.lines().collect();
+    let mut v: Vec<String> = (lines.windows(2))
+        .filter(|w| w[0].starts_with("** "))
+        .map(|w| {
+            let head = w[0]
+                .split_once("fs+")
+                .map_or(w[0].to_string(), |(t, rest)| {
+                    format!("{t}fs{}", rest.split_once(':').map_or("", |x| x.1))
+                });
+            format!("{head} | {}", w[1].trim())
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+/// A52: the asserts and reports below the top-level unit, evaluated in cycle mode, give the
+/// normal mode's messages, times, severities and processes and stop the run where it stops: a
+/// clocked member at its edge, combinational members once their inputs are settled and only when
+/// an element they wait on changed (a part of a vector across a word boundary, one field of a
+/// record, an integer, the same value assigned again), a concurrent assert. Membership asserted:
+/// `wide` (a sensitivity list naming more than it reads) and `rst_chk` (a report in its reset
+/// branch) stay out with E4140.
+#[test]
+fn asserts_below_the_top_are_evaluated_as_in_the_normal_mode() {
+    for w in [63, 64, 65, 128] {
+        let dir = tempdir("cycle-asserts");
+        analyze(
+            &dir,
+            "asserts.vhd",
+            &with_width(include_str!("cycle/asserts.vhd"), w),
+        );
+        let (rc, normal, _) = asserts_run(&dir, &["--tier=interp"]);
+        assert_eq!(rc, Some(1), "{normal}");
+        assert!(
+            normal.contains("the design ends the test at 00001110")
+                && normal.contains("f1 is 0011")
+                && normal.contains("i above 299: 400"),
+            "{normal}"
+        );
+        let want = report_set(&normal);
+        assert_eq!(want.len(), 29, "{w}: {want:#?}");
+        for t in tiers() {
+            for mode in ["--cycle", "--cycle-exact-meta"] {
+                let flags = if mode == "--cycle" {
+                    vec![mode]
+                } else {
+                    vec!["--cycle", mode]
+                };
+                let (rc, out, err) = asserts_run(&dir, &[&t[..], &flags].concat());
+                assert_eq!(rc, Some(1), "{w} {t:?} {mode}: {err}");
+                assert_eq!(report_set(&out), want, "{w} {t:?} {mode}\n{out}");
+                // Under the exact rules a member with notes reads only what members drive:
+                // `reg` reads the testbench's `a`, and its readers then read `n` from outside.
+                let n = if mode == "--cycle" { 11 } else { 3 };
+                assert!(
+                    err.contains(&format!("cycle mode: {n} of 15 processes run cycle-based")),
+                    "{err}"
+                );
+            }
+        }
+        let err = with_report(&dir, &["--cycle"], "cycle_asserts", String::new());
+        for p in [
+            "reg",
+            "early",
+            "peer",
+            "sum",
+            "field",
+            "part",
+            "stp",
+            "int",
+            "assert (asserts.vhd:107)",
+        ] {
+            assert!(
+                err.contains(&format!("    cycle_asserts.dut.{p}")),
+                "{p}: {err}"
+            );
+        }
+        let exact = with_report(
+            &dir,
+            &["--cycle", "--cycle-exact-meta"],
+            "cycle_asserts",
+            String::new(),
+        );
+        for (p, l, what) in [
+            ("sum", 79, "cycle_asserts.a"),
+            ("early", 41, "cycle_asserts.dut.n"),
+        ] {
+            assert!(
+                exact.contains(&format!("    cycle_asserts.dut.{p} (asserts.vhd:{l})")) && exact.contains(&format!(
+                    "E4140 an assert or report under `--cycle-exact-meta` reading a signal the region does not drive alone: {what} (asserts.vhd:{l})"
+                )),
+                "{p}: {exact}"
+            );
+        }
+        assert!(
+            err.contains("E4140 an assert or report in a process whose sensitivity list names more than it reads: it does not read cycle_asserts.b (asserts.vhd:109)")
+                && err.contains("E4140 an assert or report of this form: an assert or report in the asynchronous reset branch of a clocked process (asserts.vhd:118)"),
+            "{err}"
+        );
+        // `--exit-severity=error`: the error at 90 ns ends both runs there.
+        let (rc, normal, _) = asserts_run(&dir, &["--exit-severity=error"]);
+        let (rc2, cycle, err) = asserts_run(&dir, &["--exit-severity=error", "--cycle"]);
+        assert_eq!((rc, rc2), (Some(1), Some(1)), "{err}");
+        assert!(
+            normal.ends_with("nine, an error\n    Process cycle_asserts.dut.reg\n"),
+            "{normal}"
+        );
+        assert_eq!(report_set(&cycle), report_set(&normal), "{cycle}");
+    }
+}
+
+/// A52: a combinational member whose report reads what depends on its own output runs in a loop
+/// group after what makes it; its runs before the last report nothing, so cycle mode reports the
+/// settled value once per change, the normal mode's last report of each time step.
+#[test]
+fn a_combinational_report_in_a_loop_group_reports_settled_values_only() {
+    let dir = tempdir("cycle-assertloop");
+    analyze(&dir, "assertloop.vhd", include_str!("cycle/assertloop.vhd"));
+    let go = |flags: &[&str]| {
+        let mut args = vec!["run", "--work=work:lib", "--no-cache"];
+        args.extend(flags);
+        args.push("cycle_assertloop");
+        let o = yavs(&dir, &args);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let out = String::from_utf8_lossy(&o.stdout).into_owned();
+        // (time, message) of each report, the delta left out.
+        (out.lines())
+            .filter_map(|l| l.strip_prefix("** Note: "))
+            .filter_map(|l| {
+                let (t, rest) = l.split_once("fs+")?;
+                Some((t.to_string(), rest.split_once(": ")?.1.to_string()))
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut settled: Vec<(String, String)> = Vec::new();
+    for r in go(&[]) {
+        if settled.last().is_some_and(|p| p.0 == r.0) {
+            settled.pop();
+        }
+        settled.push(r);
+    }
+    assert_eq!(settled.len(), 4, "{settled:?}");
+    for t in tiers() {
+        assert_eq!(go(&[&t[..], &["--cycle"]].concat()), settled, "{t:?}");
+    }
+    let err = with_report(&dir, &["--cycle"], "cycle_assertloop", String::new());
+    assert!(
+        err.contains("in the region: a loop group of 2 processes, 3 process runs per settle")
+            && err.contains("cycle mode: 2 of 3 processes run cycle-based"),
+        "{err}"
+    );
+}
+
+/// A52: a concurrent `assert not (<edge> and a and b)` runs on the kernel's edge trigger and joins
+/// as a clocked member checking `a and b` on the values before the edge; `c` set in the delta of
+/// the edge is seen as by the normal mode's process. The `or` form stays out (E4140).
+#[test]
+fn an_edge_tested_concurrent_assert_is_a_check_at_the_edge() {
+    for w in [1, 63, 64, 65, 128] {
+        let dir = tempdir("cycle-edgeassert");
+        analyze(
+            &dir,
+            "edgeassert.vhd",
+            &with_width(include_str!("cycle/edgeassert.vhd"), w),
+        );
+        let go = |flags: &[&str]| {
+            let mut args = vec!["run", "--work=work:lib", "--no-cache"];
+            args.extend(flags);
+            args.push("cycle_edgeassert");
+            let o = yavs(&dir, &args);
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            String::from_utf8_lossy(&o.stdout).into_owned()
+        };
+        let normal = go(&[]);
+        let want = report_set(&normal);
+        assert_eq!(want.len(), if w == 1 { 26 } else { 6 }, "{w}: {normal}");
+        for t in tiers() {
+            assert_eq!(
+                report_set(&go(&[&t[..], &["--cycle"]].concat())),
+                want,
+                "{w} {t:?}"
+            );
+        }
+        let err = with_report(&dir, &["--cycle"], "cycle_edgeassert", String::new());
+        assert!(
+            err.contains("cycle mode: 3 of 5 processes run cycle-based")
+                && [22, 25].iter().all(|l| err.lines().any(|x| {
+                    x.contains(&format!("dut.assert (edgeassert.vhd:{l})")) && x.ends_with(" clocked")
+                }))
+                && err.contains("E4140 an assert or report of this form: a call of `rising_edge` (edgeassert.vhd:28)"),
+            "{w}: {err}"
+        );
+    }
+}
+
+/// Under `--cycle-exact-meta` a member below the top-level unit whose report reads a signal the
+/// region does not drive alone stays out (E4140) and reports the 'U' start as the normal mode;
+/// under the default contract it joins and reports 0. The top-level checker that reads only a
+/// member's register joins and reports its 'U' start as 0 also under `--cycle-exact-meta` (a known
+/// gap, docs "Two-state values": notes read the region's image, not the second one).
+#[test]
+fn exact_meta_keeps_out_a_report_reading_the_kernel() {
+    let dir = tempdir("cycle-exactnote");
+    analyze(&dir, "exactnote.vhd", include_str!("cycle/exactnote.vhd"));
+    let go = |flags: &[&str]| {
+        let mut args = vec!["run", "--work=work:lib", "--no-cache"];
+        args.extend(flags);
+        args.push("cycle_exactnote");
+        let o = yavs(&dir, &args);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        report_set(&String::from_utf8_lossy(&o.stdout))
+    };
+    let at0 = |r: &[String]| -> Vec<String> {
+        (r.iter())
+            .filter(|l| l.starts_with("** Note: 0fs"))
+            .cloned()
+            .collect()
+    };
+    let normal = go(&[]);
+    assert_eq!(normal.len(), 6, "{normal:#?}");
+    let has = |r: &[String], t: &str| at0(r).iter().any(|l| l.contains(t));
+    assert!(
+        has(&normal, "q=U r=U") && has(&normal, "top q=U"),
+        "{normal:#?}"
+    );
+    for t in tiers() {
+        let exact = go(&[&t[..], &["--cycle", "--cycle-exact-meta"]].concat());
+        assert!(
+            has(&exact, "q=U r=U") && has(&exact, "top q=0"),
+            "{t:?} {exact:#?}"
+        );
+        assert_eq!(exact[2..], normal[2..], "{t:?}");
+        let plain = go(&[&t[..], &["--cycle"]].concat());
+        assert!(
+            has(&plain, "q=0 r=0") && has(&plain, "top q=0"),
+            "{t:?} {plain:#?}"
+        );
+    }
+    let err = with_report(
+        &dir,
+        &["--cycle", "--cycle-exact-meta"],
+        "cycle_exactnote",
+        String::new(),
+    );
+    assert!(
+        err.contains("cycle mode: 3 of 5 processes run cycle-based")
+            && err.contains("E4140 an assert or report under `--cycle-exact-meta` reading a signal the region does not drive alone: cycle_exactnote.d (exactnote.vhd:16)"),
+        "{err}"
+    );
+    let err = with_report(&dir, &["--cycle"], "cycle_exactnote", String::new());
+    assert!(
+        err.contains("cycle mode: 4 of 5 processes run cycle-based"),
+        "{err}"
+    );
+}
+
+/// A25: the reports of clocked members of two edge classes whose edges come in one delta are
+/// reported in elaboration order, as the normal mode's processes of that delta run, not class by
+/// class as the region makes them.
+#[test]
+fn reports_of_two_edge_classes_come_in_elaboration_order() {
+    let dir = tempdir("cycle-noteorder");
+    analyze(&dir, "noteorder.vhd", include_str!("cycle/noteorder.vhd"));
+    let go = |flags: &[&str]| {
+        let mut args = vec!["run", "--work=work:lib", "--no-cache"];
+        args.extend(flags);
+        args.push("cycle_noteorder");
+        let o = yavs(&dir, &args);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    let normal = go(&[]);
+    assert_eq!(normal.matches("** Note").count(), 12, "{normal}");
+    for t in tiers() {
+        assert_eq!(go(&[&t[..], &["--cycle"]].concat()), normal, "{t:?}");
+    }
+    let err = with_report(&dir, &["--cycle"], "cycle_noteorder", String::new());
+    assert!(
+        err.contains("cycle mode: 4 of 5 processes run cycle-based"),
+        "{err}"
+    );
+}
+
+/// An assert that holds by what the lowering knows (a width check on variables of constants in a
+/// called function) is no code: no check of its combinational process for an input to reach, so
+/// the input waits for the next edge.
+#[test]
+fn an_assert_that_holds_by_known_values_is_no_check() {
+    let dir = tempdir("cycle-foldassert");
+    analyze(&dir, "foldassert.vhd", include_str!("cycle/foldassert.vhd"));
+    let err = with_report(&dir, &["--cycle"], "cycle_foldassert", String::new());
+    assert!(
+        err.contains("cycle mode: 2 of 3 processes run cycle-based")
+            && err.contains("  wakes: 0 settled at once"),
+        "{err}"
+    );
+    let o = yavs(
+        &dir,
+        &[
+            "run",
+            "--work=work:lib",
+            "--no-cache",
+            "--cycle",
+            "cycle_foldassert",
+        ],
+    );
+    assert!(
+        o.status.success() && String::from_utf8_lossy(&o.stdout).contains("q=04"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+}
+
+/// The range check of a port's expression actual in the region names the port and points at the
+/// actual, as the normal mode's does.
+#[test]
+fn a_port_actual_check_names_the_port_as_the_normal_mode() {
+    let dir = tempdir("cycle-portcheck");
+    analyze(&dir, "portcheck.vhd", include_str!("cycle/portcheck.vhd"));
+    let go = |flags: &[&str]| {
+        let mut args = vec!["run", "--work=work:lib", "--no-cache"];
+        args.extend(flags);
+        args.push("cycle_portcheck");
+        let o = yavs(&dir, &args);
+        assert_eq!(o.status.code(), Some(1));
+        String::from_utf8_lossy(&o.stderr).into_owned()
+    };
+    let normal = go(&[]);
+    let place = "portcheck.vhd:21:73";
+    assert!(
+        normal.contains("for port N") && normal.contains(place),
+        "{normal}"
+    );
+    let exact = go(&["--cycle", "--cycle-exact-meta"]);
+    assert!(
+        exact.contains("value 4 outside of INTEGER range 0 to 3 for port N")
+            && exact.contains(place),
+        "{exact}"
+    );
+    let plain = go(&["--cycle"]);
+    assert!(
+        plain.contains("for port N") && plain.contains(place),
+        "{plain}"
+    );
+}
+
+/// A52: the idle rule skips an edge run that would change nothing, but never one that makes a
+/// note: a member that holds its state and reports at every edge reports 40 times.
+#[test]
+fn an_edge_run_that_makes_a_note_is_never_idle() {
+    let dir = tempdir("cycle-idlenote");
+    analyze(&dir, "idlenote.vhd", include_str!("cycle/idlenote.vhd"));
+    let go = |flags: &[&str]| {
+        let mut args = vec!["run", "--work=work:lib", "--no-cache"];
+        args.extend(flags);
+        args.push("cycle_idlenote");
+        let o = yavs_env(
+            &dir,
+            &args,
+            &[("YAVS_CYCLE_SKIP_CHECK", ""), ("YAVS_CYCLE_STATS", "1")],
+        );
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        (
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
+    };
+    let (normal, _) = go(&[]);
+    assert_eq!(normal.matches("held is '1'").count(), 40, "{normal}");
+    for t in tiers() {
+        let (cycle, err) = go(&[&t[..], &["--cycle"]].concat());
+        assert_eq!(cycle, normal, "{t:?}");
+        assert!(
+            err.contains("cycle stats: edge runs skipped as idle: 0"),
+            "{err}"
+        );
+    }
+}
+
+/// A54: `--no-asserts` drops the asserts and reports below the top-level unit in both modes, also
+/// from a work library whose cache holds the run without it, and back (the option is in the keys).
+#[test]
+fn no_asserts_drops_them_below_the_top_in_both_modes_and_is_in_the_cache_keys() {
+    let dir = tempdir("cycle-noasserts");
+    analyze(
+        &dir,
+        "asserts.vhd",
+        &with_width(include_str!("cycle/asserts.vhd"), 65),
+    );
+    let note = "note: `--no-asserts`: 15 assert and report statements in 11 processes below the \
+                top-level unit are not evaluated";
+    let go = |flags: &[&str]| {
+        let mut args = vec!["run", "--work=work:lib"];
+        args.extend(flags);
+        args.push("cycle_asserts");
+        let o = yavs(&dir, &args);
+        (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
+    };
+    for _ in 0..2 {
+        for mode in [&[][..], &["--cycle"], &["--cycle-strict"]] {
+            let (rc, out, err) = go(&[mode, &["--no-asserts"]].concat());
+            assert_eq!(
+                (rc, out.as_str()),
+                (
+                    Some(0),
+                    "** Note: 110000000fs+1: chk sees 11\n    Process cycle_asserts.dut.reg\n"
+                ),
+                "{mode:?}: {err}"
+            );
+            assert!(err.starts_with(note), "{mode:?}: {err}");
+            if !mode.is_empty() {
+                // `wide` and `rst_chk` join once their reports are dropped.
+                assert!(
+                    err.contains("cycle mode: 13 of 15 processes run cycle-based"),
+                    "{err}"
+                );
+            }
+            if mode != ["--cycle-strict"] {
+                let (rc, out, err) = go(mode);
+                assert_eq!(rc, Some(1), "{mode:?}: {err}");
+                assert!(out.contains("the design ends the test"), "{out}");
+                assert!(!err.contains("--no-asserts"), "{err}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -3519,7 +3980,7 @@ fn row<'a>(report: &'a str, label: &str) -> (&'a str, &'a str) {
                 h if h
                     .get(1..5)
                     .and_then(|n| n.parse::<u32>().ok())
-                    .is_some_and(|n| n == 4101 || (4128..=4137).contains(&n)) =>
+                    .is_some_and(|n| n == 4101 || n == 4140 || (4128..=4137).contains(&n)) =>
                 {
                     "in the subset, not implemented in cycle mode yet:"
                 }
@@ -3710,12 +4171,8 @@ fn every_shape_of_the_subset_fits() {
             ),
         "{report}"
     );
-    // Asserts and reports are counted, never a reason to stay out (the other holder computes
-    // logic a process with a foreign call may read: the run-count rule keeps it out).
-    assert!(
-        report.contains("1 assert and reports not evaluated in cycle mode, held by 1 cycle-based"),
-        "{report}"
-    );
+    // Asserts and reports are evaluated: nothing is listed as not evaluated.
+    assert!(!report.contains("not evaluated in cycle mode"), "{report}");
 }
 
 #[test]
@@ -6418,8 +6875,7 @@ fn records(out: &str) -> Vec<(String, String)> {
 /// once per process at 0 fs where the normal mode makes it at every call, with the same text and
 /// process, also from the compilation cache; one of severity error or failure keeps its process
 /// in the event kernel, so its messages, times and the exit status are the normal mode's; a call
-/// whose arguments only the unrolled loop knows joins when its assert holds and stays out when it
-/// fails; a failing call in a branch that never runs is not seen. A constant's report is made
+/// whose arguments only the unrolled loop knows joins, its assert evaluated where it runs (A52); a failing call in a branch that never runs is not seen. A constant's report is made
 /// once in both modes. The library warning is dropped also when a constant's call of the normal
 /// mode made the call cache entry.
 #[test]
@@ -6543,12 +6999,12 @@ fn reports_of_calls_folded_with_constants_are_made() {
             assert_eq!(c, Some(1), "{out}");
             members(&err, 6);
         }
-        // A failing assert in the unrolled loop keeps `pc` out.
+        // A failing assert in the unrolled loop is evaluated in `pc`, which joins (A52).
         for s in ["-gs=note", "-gs=warning"] {
             let normal = go(&flags(&["-gloop_odd=true", s], false));
             let (c, out, err) = go(&flags(&["-gloop_odd=true", s], true));
             assert_eq!((c, &out), (normal.0, &normal.1), "{t:?} {s}\n{err}");
-            members(&err, 8);
+            members(&err, 9);
         }
         // The failing call in `pa`'s branch on `dead`: elaboration's failure is not seen while
         // the branch cannot run (above), and when it runs `pa` stays out.
@@ -6572,14 +7028,9 @@ fn reports_of_calls_folded_with_constants_are_made() {
             "{p}: {r}"
         );
     }
+    // The failing assert of the unrolled loop is evaluated: `pc` joins (A52).
     let r = report(&["-gloop_odd=true"]);
-    assert!(
-        row(&r, "cycle_foldrep.u.pc").1.contains(
-            "an assert or report of `half`, called with arguments known during elaboration, \
-             that cycle mode cannot show to hold"
-        ),
-        "{r}"
-    );
+    assert_eq!(row(&r, "cycle_foldrep.u.pc").0, "cycle-based:", "{r}");
 }
 
 /// Out ports of a subtype resolved by a function of the design on an unresolved actual
@@ -7390,11 +7841,6 @@ fn rare_reasons_are_named_in_the_report_and_under_strict() {
                     "dut.two_conds",
                     "E4101",
                     "a clocked process whose condition is more than the edge test and one more condition",
-                ),
-                (
-                    "dut.known_assert",
-                    "E4101",
-                    "an assert or report of `odd`, called with arguments known during elaboration, that cycle mode cannot show to hold",
                 ),
                 (
                     "dut.pieces",

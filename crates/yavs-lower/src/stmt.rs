@@ -140,6 +140,9 @@ impl Fx<'_, '_> {
                 severity,
                 ..
             } => {
+                if self.dropped_here() {
+                    return Ok(());
+                }
                 let c = self.assert_cond(*cond)?;
                 let (fail, ok) = (self.block(), self.block());
                 self.branch(c, ok, fail);
@@ -149,6 +152,7 @@ impl Fx<'_, '_> {
                 self.at(ok);
                 Ok(())
             }
+            H::Report { .. } if self.dropped_here() => Ok(()),
             H::Report { report, severity } => self.report(Some(*report), *severity, 0, span),
             H::ProcCall(c) | H::ConcProcCall { call: c, .. } => {
                 // 10.2: a function calls no procedure that waits; sem decides it within one
@@ -950,6 +954,12 @@ impl Fx<'_, '_> {
             });
         }
         Ok(())
+    }
+
+    /// An assert or report statement of a process that `--no-asserts` drops (A54); those of
+    /// subprograms run.
+    fn dropped_here(&self) -> bool {
+        self.kind == yavs_ir::FuncKind::Process && self.cx.drop_asserts
     }
 
     fn report(

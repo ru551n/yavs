@@ -274,6 +274,15 @@ identical to a run without it, at any `--threads`.
   of the cached analysis. With it the region also follows the `'U'` start values on a second image for up to
   1024 clock edges and drives `'U'` where the output depends on them (owner decision A38, 2026-11-17); its end is
   a line of the summary on standard error starting `cycle mode: 'U' start values`.
+- `yavs run --no-asserts` (owner decision A54, 2026-11-21) drops the `assert` and `report` statements of the
+  processes below the top-level design unit (whose instance's architecture is not the top's), in the normal mode
+  and in cycle mode; the statements inside subprograms and those of the top-level unit's processes run. The run
+  prints one note on standard error before the simulation: ``note: `--no-asserts`: N assert and report statements
+  in P processes below the top-level unit are not evaluated`` (each process instance counts its own statements). It
+  is part of the keys of the lowered program and of cycle mode's cached analysis. Cycle-based processes evaluate
+  their asserts and reports without it (A52): one cycle mode cannot evaluate keeps its process in the event kernel,
+  E4140 under `--cycle-strict` below the top-level unit. W4101 is no longer given; `-Werror=W4101` and
+  `-Wno-W4101` are accepted and change nothing.
 - With `--cycle` or `--cycle-strict` the machine code of every function of the cycle region is kept in
   `<dir>/yavs-cache/cycle/cycle-<key>.img` of the work library (the function's body, the target with its Cranelift
   settings, the yavs build); a later run that makes a function with the same key links it instead of compiling it,

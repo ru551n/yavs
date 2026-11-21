@@ -65,6 +65,9 @@ pub struct LowerOptions {
     pub cov_directives: bool,
     /// Run the subprograms of `yavs_ir::ieee` from their VHDL bodies (the environment variable `YAVS_NO_NATIVE_IEEE`).
     pub no_native_ieee: bool,
+    /// `--no-asserts` (A54): the architectures [`Lowerer::drop_asserts`] names lower the assert
+    /// and report statements of their processes to nothing; subprograms keep theirs.
+    pub no_asserts: bool,
 }
 
 impl LowerOptions {
@@ -90,6 +93,7 @@ impl Default for LowerOptions {
             cov_combination: false,
             cov_directives: true,
             no_native_ieee: std::env::var_os("YAVS_NO_NATIVE_IEEE").is_some(),
+            no_asserts: false,
         }
     }
 }
@@ -433,6 +437,10 @@ pub(crate) struct Cx {
     /// Empty in an image (`Lowerer::image` refuses otherwise).
     #[serde(skip)]
     pub diags: Vec<Diagnostic>,
+    /// The architecture being lowered drops the asserts and reports of its processes
+    /// (`--no-asserts`, [`Lowerer::drop_asserts`]).
+    #[serde(skip)]
+    pub drop_asserts: bool,
     pub tys: HashMap<TypeId, TyId>,
     pub natives: HashMap<(String, Option<TyId>), NativeId>,
     pub foreigns: HashMap<DeclId, yavs_ir::ForeignId>,
@@ -863,6 +871,7 @@ impl<'a> Lowerer<'a> {
                 cov_dirs: HashMap::default(),
                 named_entities: None,
                 diags: Vec::new(),
+                drop_asserts: false,
                 tys: HashMap::default(),
                 natives: HashMap::default(),
                 foreigns: HashMap::default(),
@@ -983,6 +992,12 @@ impl<'a> Lowerer<'a> {
     /// and so is every captured object. The old code stays in the program, unreferenced.
     pub fn forget_free_objects(&mut self) {
         forget_free_objects(&mut self.pb, &mut self.cx);
+    }
+
+    /// `--no-asserts`: whether the architectures lowered from here on drop the assert and report
+    /// statements of their processes (those below the top-level unit).
+    pub fn drop_asserts(&mut self, on: bool) {
+        self.cx.drop_asserts = on;
     }
 
     /// Lower an architecture: its signals, instance constants and processes.

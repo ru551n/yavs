@@ -106,7 +106,8 @@ to stderr in the reference simulator and stdout in the second reference simulato
 taken out of stderr). A third run with `--cycle-report` (analysis only) gives the members of each test and which
 of them hold asserts and reports. Buckets: identical; documented (only the delta of report stamps, reports and asserts of member
 processes that cycle mode does not evaluate, or delta cycles a monitor no longer sees, shown by the lines
-themselves; a vanished report counts as a member's when its process path is one of a member with dropped asserts,
+themselves, also with the reports of different processes in another order within one time step when each process's
+last reports of each time step are equal, an unlabelled process told apart by its place (`names`); a vanished report counts as a member's when its process path is one of a member with dropped asserts,
 or `-` for an unlabelled process while such a member exists); known (differs, and `cyclegate.expected` lists the
 test with the checksum of its diff, or several comma-separated where the contracts or `YAVS_CYCLE_RAIL=off`
 give different diffs, and the reviewed cause: a changed diff is not known any more); differs
@@ -142,6 +143,7 @@ replay (console and written files), the fuzzer (`explained`) and `cyclebig.py` (
 | Class | Rule | Evidence | Contracts |
 |---|---|---|---|
 | metavalue read as 0 or 1 | a cycle line equals the normal line but where the normal line holds `U`, `X`, `Z`, `W` or `-` and the cycle line a digit (`0`-`9`, `A`-`F`: a bit, or a hex digit of a value computed from it), or `H` against `1`, `L` against `0`; lines of one length, paired in order by their text with digits and metavalues masked; never a metavalue on the cycle side | the cycle run's `metavalue elements read as 0` line, a member's metavalue literal or an input nothing drives in the region report (`meta_evidence`); `cyclebig.py` has no report and applies it to files only | default |
+| metavalues per process and time step | when the lines differ otherwise: each process's last reports of each time step (unlabelled processes by their place) equal or `meta_pair`ed, in any order between processes; a time where only the normal run reports is explained only when that report is, letter by letter, the two-state twin of the process's last cycle report (`'H'` of `1`, `'U'`, `'X'`, `'Z'`, `'W'`, `'L'`, `'-'` of `0`: the region saw no change) (`settled_meta`) | as the metavalue class | default |
 | library metavalue warnings of processes outside | a `NUMERIC_STD...: metavalue detected` note or warning record (`** ...` and its `Process NAME` line) of a process in the region's downstream set is taken out of both runs; the class is used when the two runs' records differ. The downstream set (`YAVS_CYCLE_DOWNSTREAM=FILE` on the report run, `region::downstream`) is every process outside that reads a leaf the region exports, directly or through other processes outside, port edges (both ways) and implicit signals: only those can see a value the region gave two-state (the default contract, A31) or a `'U'` start it gave as 0 (A21, A23c; also under the exact contract). A warning of any other process outside must be the same in both runs | the downstream set | default: `contract`; exact: `documented` |
 | library warnings of members | as A33: the region gives none; taken out of both runs (`drop_ieee`) | the region report's members | both (documented) |
 | a copied clock is its source (fuzzer) | the design with every clock the generator copies (`dk <= clk0;`, or the clock a generic chooses when every instance gives it one value) replaced by its source in every use but its assignment, ports and the testbench's writes (`copy_variant`) runs in the normal mode, and the cycle run equals that run, the metavalue class applied to it under its own evidence: exactly the A32 semantics, a register of the source read directly on a copy gives its value before the edge | a copy in the design (`copy_reference` runs only then) | default |
@@ -169,7 +171,7 @@ console must hold the test's `expect` lines. A run that compared nothing (no mem
 does a test without a world (the command that makes it is printed). Default tests `neorv32_dual_full` and
 `microwatt_coremark_short`, both to completion in about a minute (6 s and 56 s on 2026-11-16): Microwatt runs to
 1369 us in both modes, past "Execution completed."; the normal mode ends with its RTL's `end of test` failure (exit
-status 1), which cycle mode drops by decision (exit status 0), and `GATE` expects each. `--selftest` checks the
+status 1), and so does cycle mode, whose members evaluate their asserts (A52); `GATE` expects each. `--selftest` checks the
 comparison:
 
     YAVS_REALBENCH_CACHE=<cache> python3 -I tools/difftest/cyclebig.py target/release/yavs

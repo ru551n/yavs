@@ -138,6 +138,10 @@ pub(crate) enum Check {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Note {
     pub severity: u8,
+    /// Of a combinational member: made after the settle, where the normal mode makes it in a
+    /// later delta than the clocked members' (`rt::RegionProc::notes`).
+    #[serde(default)]
+    pub comb: bool,
     pub pieces: Vec<Piece>,
     pub args: Vec<(Ref, u32)>,
 }
@@ -789,10 +793,24 @@ pub(crate) struct Body {
     /// times): where, the severity (`SEV_RUNTIME` when not known during elaboration), and whether
     /// it always reports when reached (a `report`, an `assert false`).
     pub drops: Vec<(Span, u8, bool)>,
-    /// A process of the top-level unit: why an assert or report of it cannot be evaluated in
-    /// region code (with `dropped` above 0), and how many are (`Op::Note`).
+    /// Why an assert or report of it cannot be evaluated in region code (the process stays in
+    /// the event kernel), and how many are (`Op::Note`).
     pub note_why: Option<String>,
     pub notes: u32,
+    /// A combinational member with notes: its slot that says what it waits on changed since its
+    /// last run (the condition of its notes) and its slot that is 1 until its first run; the
+    /// build computes both at the start of its body from `wait` (A52).
+    #[serde(default)]
+    pub fresh: Option<(u32, u32)>,
+    /// Its wait set, the elements whose events run it in the normal mode (`region::select`).
+    #[serde(default)]
+    pub wait: Vec<(LeafId, u32, u32)>,
+    /// The operations at the start of `ops` that compute `fresh` (`region::fresh_ops`), and the
+    /// slots they keep from one run to the next.
+    #[serde(default)]
+    pub fresh_len: u32,
+    #[serde(default)]
+    pub snaps: Vec<(u32, u32)>,
     /// The reports elaboration made evaluating the calls this body folds (A22), `(severity,
     /// text)` in order: made once, as the member, at initialisation.
     pub reports: Vec<(u8, String)>,
@@ -1136,9 +1154,14 @@ fn merge_guarded(saved: Vec<Jump>, rest: Vec<Jump>) -> Vec<Jump> {
 /// unoptimised build (8 MiB fit about 21 levels there) and a tenth of that when optimised.
 const DEPTH_MAX: usize = if cfg!(unoptimised) { 12 } else { 32 };
 
-/// Why an assert or report of a top-level process outside a clock edge is not evaluated in
-/// region code: the region settles once per wake where the normal mode runs the process at
-/// every event of what it waits on.
+/// Why an assert or report in the reset branch of a clocked process is not evaluated in region
+/// code: the branch runs in the settle at every wake while the reset holds, where the normal mode
+/// runs it at every event of the clock or the reset.
+const NOTE_RESET: &str =
+    "an assert or report in the asynchronous reset branch of a clocked process";
+
+/// Why a combinational process of the top-level unit with an assert or report stays in the event
+/// kernel (A19): the testbench's checks of the values of every delta stay exact.
 const NOTE_COMB: &str = "an assert or report that runs outside a clock edge";
 
 /// Why a comparison or arithmetic with a literal holding a metavalue keeps its process out.
@@ -1183,6 +1206,8 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         dropped: 0,
         drops: Vec::new(),
         top: crate::region::in_top_unit(e, pi),
+        eval: crate::region::asserts_kept(e, p.scope),
+        fresh: None,
         at_edge: false,
         note_why: None,
         notes: 0,
@@ -1220,13 +1245,28 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         StmtKind::ConcSignalAssign { .. } => {
             Err(bug("a guarded or postponed concurrent assignment"))
         }
-        // Simulation-only, as in processes: not evaluated, and it reads nothing.
+        // A combinational process of its own: evaluated after the settle (A52), or dropped by
+        // `--no-asserts` below the top-level unit.
         StmtKind::ConcAssert {
             postponed: false, ..
         } => {
-            lx.drop_stmt(p.stmt);
-            if lx.top {
-                lx.note_why = Some(NOTE_COMB.into());
+            // `assert not (<edge> and c)` on the kernel's edge trigger: a check at the edge.
+            if let Some(t) = p.trigger.filter(|_| lx.eval) {
+                let clock = Clock {
+                    leaf: t.leaf,
+                    elem: t.elem,
+                    rising: t.rising,
+                    legacy: t.legacy,
+                };
+                lx.at_edge = true;
+                lx.eval_note(p.stmt);
+                lx.at_edge = false;
+                return Ok(lx.body(Kind::Clocked, Some(clock), None));
+            }
+            if lx.eval {
+                lx.eval_note(p.stmt);
+            } else {
+                lx.drop_stmt(p.stmt);
             }
             Ok(lx.body(Kind::Comb, None, None))
         }
@@ -1279,9 +1319,15 @@ struct Lx<'a> {
     var_words: Vec<(u32, u32)>,
     dropped: u32,
     drops: Vec<(Span, u8, bool)>,
-    /// A process of the top-level unit: its asserts and reports are evaluated (A19) where they
-    /// can be: at the clock edge of a clocked process (`at_edge`).
+    /// A process of the top-level unit (A19).
     top: bool,
+    /// Its asserts and reports are evaluated (A52): at the clock edge of a clocked process
+    /// (`at_edge`), after the settle in a combinational one (`fresh`). Off for a process below
+    /// the top-level unit under `--no-asserts` (A54): its own statements are dropped.
+    eval: bool,
+    /// A combinational member's notes: the slot that is 1 when what it waits on changed since
+    /// its last run, and the slot that is 1 until its first run (`Body::fresh`).
+    fresh: Option<(u32, u32)>,
     at_edge: bool,
     note_why: Option<String>,
     notes: u32,
@@ -1368,6 +1414,10 @@ impl Lx<'_> {
             drops: self.drops,
             note_why: self.note_why,
             notes: self.notes,
+            fresh: self.fresh,
+            wait: Vec::new(),
+            fresh_len: 0,
+            snaps: Vec::new(),
             metas: self.metas,
             meta_out: self.metas - self.lit_cmp.len() as u32,
             uninit: self.uninit,
@@ -1594,8 +1644,21 @@ impl Lx<'_> {
             return Err("a port whose leaves are not one per field".into());
         }
         let dst = self.place_sig(v, so)?;
-        let src = self.expr_h(pa.expr, Some(&dst))?;
-        self.assign(&dst, src)
+        // As the normal mode's: its checks name the port and point at the actual.
+        let (n0, at) = (self.checks.len(), self.at);
+        self.at = self.db.exprs[pa.expr].span;
+        let r = (self.expr_h(pa.expr, Some(&dst))).and_then(|src| self.assign(&dst, src));
+        self.at = at;
+        let sig = obj_desc(self.db, so.decl);
+        let port = sig.replacen("signal", "port", 1);
+        for (c, _) in &mut self.checks[n0..] {
+            if let Check::Range { what, .. } | Check::Index { what, .. } = c
+                && *what == sig
+            {
+                what.clone_from(&port);
+            }
+        }
+        r
     }
 
     fn loc(&mut self, words: u32) -> Ref {
@@ -1807,48 +1870,34 @@ impl Lx<'_> {
             StmtKind::Next { loop_, when } => self.jump(Tgt::Next(*loop_), *when),
             StmtKind::Exit { loop_, when } => self.jump(Tgt::Exit(*loop_), *when),
             StmtKind::Wait { .. } => Err(bug("a wait statement")),
-            // Simulation-only: compiled to nothing, counted for the report (the mode is for speed).
-            StmtKind::Assert { .. } | StmtKind::Report { .. } if !self.top => {
-                // In a call of constants the outcome is fixed: one that holds is dropped, any
-                // other would be lost (A22), so the process stays out.
-                if let Some(f) = self.frames.last().filter(|f| f.consts) {
-                    let holds = matches!(&db.stmts[s].kind,
-                        StmtKind::Assert { cond, .. } if self.fold_bool(*cond) == Some(true));
-                    if !holds {
-                        return Err(format!(
-                            "an assert or report of `{}`, called with arguments known during \
-                             elaboration, that cycle mode cannot show to hold",
-                            db.decls[f.callee].name
-                        ));
-                    }
+            StmtKind::Assert { .. } | StmtKind::Report { .. } => {
+                // In a call of constants the outcome is fixed: one that holds is no code.
+                let consts = self.frames.last().is_some_and(|f| f.consts);
+                if consts
+                    && matches!(&db.stmts[s].kind,
+                        StmtKind::Assert { cond, .. } if self.fold_bool(*cond) == Some(true))
+                {
                     return Ok(());
                 }
-                self.drop_stmt(s);
-                Ok(())
-            }
-            // A process of the top-level unit (A19): evaluated at the clock edge, else it
-            // keeps the process in the event kernel (`region::select`).
-            StmtKind::Assert { .. } | StmtKind::Report { .. } => {
-                let made = if self.at_edge {
-                    self.capture_known(|lx| lx.note(s)).map(|(ops, _)| ops)
-                } else {
-                    Err(NOTE_COMB.into())
-                };
-                match made {
-                    Ok(ops) => {
-                        self.ops.extend(ops);
-                        self.notes += 1;
-                    }
-                    Err(w) => {
-                        self.drop_stmt(s);
-                        let w = w
-                            .split([AT, INNER, CALL])
-                            .next()
-                            .unwrap_or_default()
-                            .to_string();
-                        self.note_why.get_or_insert(w);
-                    }
+                // `--no-asserts` below the top-level unit (A54): the process's own statements
+                // are dropped, counted for the report; those of the calls it makes run.
+                if !self.eval && self.frames.is_empty() {
+                    self.drop_stmt(s);
+                    return Ok(());
                 }
+                // The notes and warnings of the `ieee` and `std` libraries are not made in region
+                // code (A23, A33).
+                if self.library_quiet(s) {
+                    return Ok(());
+                }
+                // One that holds by what is known here (a width check of variables of constants)
+                // is no code either: no check of its process that its inputs would reach.
+                if matches!(&db.stmts[s].kind,
+                    StmtKind::Assert { cond, .. } if self.fold_bool(*cond) == Some(true))
+                {
+                    return Ok(());
+                }
+                self.eval_note(s);
                 Ok(())
             }
             StmtKind::ProcCall(call) => self.proc_call(call),
@@ -2413,6 +2462,72 @@ impl Lx<'_> {
         Ok(self.whole(c))
     }
 
+    /// Assert or report `s` evaluated in region code: at the clock edge of a clocked process,
+    /// after the settle of a combinational one when what it waits on changed (`fresh`). One that
+    /// cannot be (`note_why`) keeps the process in the event kernel (`region::select`).
+    fn eval_note(&mut self, s: StmtId) {
+        let made = if self.at_edge {
+            self.capture_known(|lx| lx.note(s)).map(|(ops, _)| ops)
+        } else if self.p.trigger.is_some() {
+            Err(NOTE_RESET.into())
+        } else if self.top {
+            Err(NOTE_COMB.into())
+        } else {
+            let fresh = match self.fresh {
+                Some((f, _)) => f,
+                None => {
+                    let f = self.locs;
+                    self.locs += 2;
+                    self.init.push((f + 1, 1));
+                    self.fresh = Some((f, f + 1));
+                    f
+                }
+            };
+            (self.capture_known(|lx| lx.note(s))).map(|(ops, _)| {
+                vec![Op::If {
+                    cond: Ref::Loc(fresh),
+                    then: ops,
+                    else_: Vec::new(),
+                }]
+            })
+        };
+        match made {
+            Ok(ops) => {
+                self.ops.extend(ops);
+                self.notes += 1;
+            }
+            Err(w) => {
+                self.drop_stmt(s);
+                let w = w
+                    .split([AT, INNER, CALL])
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                self.note_why.get_or_insert(w);
+            }
+        }
+    }
+
+    /// An assert or report of the `ieee` or `std` libraries' files (an inlined call of theirs) of
+    /// severity note or warning.
+    fn library_quiet(&self, s: StmtId) -> bool {
+        let st = &self.db.stmts[s];
+        let path = &self.db.sources.get(st.span.file).path;
+        if !std::path::Path::new(path).starts_with(yavs_sem::default_stdlib()) {
+            return false;
+        }
+        let (sev, default) = match &st.kind {
+            StmtKind::Assert { severity, .. } => (*severity, 2),
+            StmtKind::Report { severity, .. } => (*severity, 0),
+            _ => return false,
+        };
+        let sev = sev.map_or(Some(default), |x| match self.fold(x) {
+            Some(ConstValue::Enum(p)) => Some(p),
+            _ => None,
+        });
+        matches!(sev, Some(0 | 1))
+    }
+
     /// Assert or report `s` left out: counted, and its place and severity kept once.
     fn drop_stmt(&mut self, s: StmtId) {
         self.dropped += 1;
@@ -2446,8 +2561,25 @@ impl Lx<'_> {
                 severity,
             } => (Some(*cond), *report, *severity, 2),
             StmtKind::Report { report, severity } => (None, Some(*report), *severity, 0),
+            StmtKind::ConcAssert {
+                cond,
+                report,
+                severity,
+                ..
+            } => (Some(*cond), *report, *severity, 2),
             _ => return Err("a statement that is not an assert or report".into()),
         };
+        // At the edge of `assert not (<edge> and a and b ...)`: it fails when all of `a`, `b` ...
+        // hold, each tested only when those before it do (always, with none).
+        let edge_fail = match &db.stmts[s].kind {
+            StmtKind::ConcAssert { cond, .. } if self.at_edge => Some(
+                crate::check::not_operand(db, *cond)
+                    .and_then(|x| edge_ands(db, x))
+                    .ok_or("an edge-tested assert of another form than `not (<edge> and ...)`")?,
+            ),
+            _ => None,
+        };
+        let cond = cond.filter(|_| edge_fail.is_none());
         let severity = match sev {
             None => default,
             Some(x) => match self.fold(x) {
@@ -2456,6 +2588,7 @@ impl Lx<'_> {
             },
         };
         let c = cond.map(|c| self.cond(c)).transpose()?;
+
         let (mut pieces, mut args) = (Vec::new(), Vec::new());
         // The message is evaluated only when the assertion fails, as in the normal mode.
         let mut made = Vec::new();
@@ -2466,10 +2599,27 @@ impl Lx<'_> {
         }
         let site = self.site(Check::Note(Box::new(Note {
             severity,
+            comb: !self.at_edge,
             pieces,
             args: args.clone(),
         })));
         made.push(Op::Note { site, args });
+        if let Some(ands) = edge_fail {
+            for &x in ands.iter().rev() {
+                let ops = self.capture(|lx| {
+                    let c = lx.cond(x)?;
+                    lx.ops.push(Op::If {
+                        cond: c,
+                        then: std::mem::take(&mut made),
+                        else_: Vec::new(),
+                    });
+                    Ok(())
+                })?;
+                made = ops;
+            }
+            self.ops.extend(made);
+            return Ok(());
+        }
         match c {
             Some(c) => self.ops.push(Op::If {
                 cond: c,
@@ -2507,6 +2657,20 @@ impl Lx<'_> {
         }
         match &db.exprs[x].kind {
             ExprKind::Qualified { operand, .. } => self.message(*operand, out, args),
+            // A constant of the process (`constant msg : string := base & "...";`): its value,
+            // made of what reads no signal.
+            ExprKind::Obj(d)
+                if let yavs_sem::decl::DeclKind::Object(o) = &db.decls[*d].kind
+                    && o.class == yavs_sem::decl::ObjClass::Constant
+                    && let Some(v) = o.default
+                    && {
+                        let mut lsps = Vec::new();
+                        db.reads(v, &mut lsps);
+                        lsps.is_empty()
+                    } =>
+            {
+                self.message(v, out, args)
+            }
             ExprKind::Attr {
                 attr: PredefAttr::Image,
                 prefix: AttrPrefix::Subtype(_),
@@ -4117,6 +4281,19 @@ impl Lx<'_> {
                                     .find_map(|(k, _)| self.e.model_vals.get(k)?.get(d))
                             })
                             .cloned()
+                            // One of the process (`constant c : t := (others => '1');`): its
+                            // value, when it reads no signal.
+                            .or_else(|| {
+                                let v = o.default?;
+                                let mut lsps = Vec::new();
+                                db.reads(v, &mut lsps);
+                                let own = matches!(db.stmts[self.p.stmt].kind,
+                                    StmtKind::Process { scope, .. } if scope == db.decls[*d].scope);
+                                if !lsps.is_empty() || !own {
+                                    return None;
+                                }
+                                self.fold(v)
+                            })
                     }
                     _ => None,
                 }
@@ -8189,6 +8366,29 @@ fn subtype_name(db: &Db, st: SubtypeId) -> String {
         Some(n) => n.text.as_str().to_ascii_uppercase(),
         None => db.types[s.base].name.text.as_str().to_ascii_uppercase(),
     }
+}
+
+/// The operands after the edge test of `<edge> and a and b ...` (the edge leftmost, as the
+/// checker's `edge_head` takes it), in order: `None` for another form.
+fn edge_ands(db: &Db, x: ExprId) -> Option<Vec<ExprId>> {
+    if db.edge_shape(x).is_some() {
+        return Some(Vec::new());
+    }
+    let ExprKind::Call { callee, args, .. } = &db.exprs[x].kind else {
+        return None;
+    };
+    let ([a, b], true) = (
+        &args[..],
+        db.decls[*callee].implicit && db.decls[*callee].name.key().as_str() == "\"and\"",
+    ) else {
+        return None;
+    };
+    let (Actual::Expr(a), Actual::Expr(b)) = (&a.actual, &b.actual) else {
+        return None;
+    };
+    let mut v = edge_ands(db, *a)?;
+    v.push(*b);
+    Some(v)
 }
 
 /// An object as check messages name it: `variable P`, `signal S`.

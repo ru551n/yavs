@@ -283,6 +283,13 @@ identical to a run without it, at any `--threads`.
   their asserts and reports without it (A52): one cycle mode cannot evaluate keeps its process in the event kernel,
   E4140 under `--cycle-strict` below the top-level unit. W4101 is no longer given; `-Werror=W4101` and
   `-Wno-W4101` are accepted and change nothing.
+- `--wave` with `--cycle` or `--cycle-strict` (A52, user 2026-11-21): the signals the region drives that the wave
+  selection keeps (`--wave-include`, `--wave-exclude`, `--wave-max-array`) are exported from its image after each
+  edge and settle like outputs, so the file has their last value of each time step; the input changes that reach
+  them combinationally are settled in their own time step. Without `--wave` the region is unchanged. The wave
+  options are part of the key of the cached analysis. A memory of integers or enumerations the region writes at
+  run-time indices cannot be exported: W0802 names it and the file leaves it out. `--surfer` and
+  `--wave-variables` stay refused (E4102).
 - With `--cycle` or `--cycle-strict` the machine code of every function of the cycle region is kept in
   `<dir>/yavs-cache/cycle/cycle-<key>.img` of the work library (the function's body, the target with its Cranelift
   settings, the yavs build); a later run that makes a function with the same key links it instead of compiling it,
@@ -737,7 +744,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   runner passes neither; use `yavs.sim_flags`. It passes `--tier-compile` from the sim option
   `yavs.tier_compile` (before `yavs.sim_flags`, which win).
 - Cycle mode: the sim option `yavs.cycle` (`off`, `on`, `strict`) becomes `--cycle` or `--cycle-strict` on `yavs run`
-  (never `elab`), before `yavs.sim_flags`. With a debug session, coverage or `--wave` the runner fails the test before
+  (never `elab`), before `yavs.sim_flags`. With a debug session, coverage or `--yavs-surfer` the runner fails the test before
   starting yavs, naming both (yavs itself answers E4102). `--cycle-exact-meta` has no sim option of its own:
   `yavs.sim_flags` passes it after the cycle flag.
 - Threads: yavs defaults to `--threads=1`. The sim

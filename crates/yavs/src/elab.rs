@@ -239,9 +239,10 @@ pub struct RunArgs {
     /// with reasons. Cycle-based processes evaluate their asserts and reports, a clocked one at its
     /// clock edge, a combinational one once its inputs are settled, with the normal mode's text,
     /// severity, time and process; one cycle mode cannot evaluate keeps its process in the event
-    /// kernel (`--no-asserts` drops those below the top-level unit). Not with a debug session,
-    /// `--wave`, `--cov`, `--vhpi`, `--surfer` or `--activity` (E4102). The strict form is
-    /// `--cycle-strict`, given instead of this option.
+    /// kernel (`--no-asserts` drops those below the top-level unit). `--wave` records the signals
+    /// inside the region per time step, without delta cycles. Not with a debug session,
+    /// `--wave-variables`, `--cov`, `--vhpi`, `--surfer` or `--activity` (E4102). The strict form
+    /// is `--cycle-strict`, given instead of this option.
     #[arg(long, conflicts_with = "cycle_strict")]
     cycle: bool,
     /// Cycle mode in its strict form, experimental, instead of `--cycle`: the same selection, but a
@@ -326,6 +327,9 @@ pub struct RunArgs {
     /// `--wave` was not given and `--surfer` chose the file.
     #[arg(skip)]
     wave_default: bool,
+    /// Under `--cycle`: the kernel signals the region holds and cannot export to the wave.
+    #[arg(skip)]
+    wave_held: Vec<u32>,
     /// In a debug session (`--dap`, `--interactive`, `--do`), show the source file COMPILED as
     /// ORIGINAL and take breakpoints in ORIGINAL: for files compiled from a rewritten copy with
     /// the same lines. Repeatable.
@@ -578,18 +582,18 @@ impl RunArgs {
         self.cycle || self.cycle_strict || self.cycle_report.is_some()
     }
 
-    /// The option `--cycle` cannot be used with: it records, shows, counts or changes signals
-    /// inside the region. `--surfer` is named before the `--wave` it implies. Left allowed:
+    /// The option `--cycle` cannot be used with: it shows, counts or changes signals or variables
+    /// inside the region. Left allowed: `--wave` (the region exports what it records, A52),
     /// `--profile` (samples the interpreter, so the region's time is one entry of the kernel),
     /// `--assert-summary` (counts the asserts that run, and the region drops its own),
-    /// `--shuffle`, `--hang-report`, `--time-report`; the `--wave-*` options do nothing alone.
+    /// `--shuffle`, `--hang-report`, `--time-report`; the other `--wave-*` options.
     fn not_with_cycle(&self) -> Option<&'static str> {
         if self.debugged() {
             Some("a debug session")
         } else if self.surfer.is_some() {
             Some("`--surfer`")
-        } else if self.wave.is_some() {
-            Some("`--wave`")
+        } else if self.wave.is_some() && self.wave_variables {
+            Some("`--wave-variables`")
         } else if self.cov.is_some() {
             Some("`--cov`")
         } else if !self.vhpi.is_empty() {
@@ -1589,6 +1593,14 @@ fn prepare(
             a.source_map,
             a.cycle_exact_meta,
         );
+        // `--wave` exports what it records (A52), so its selection is part of the key.
+        let part = match &a.wave {
+            Some(_) => format!(
+                "{part}|wave|{:?}|{:?}|{}",
+                a.wave_include, a.wave_exclude, a.wave_max_array
+            ),
+            None => part,
+        };
         yavs_cycle::analysis_cache(
             (!c.no_cache && !work.is_empty()).then(|| std::path::Path::new(work)),
             part.into_bytes(),
@@ -2070,6 +2082,11 @@ fn run_design(
         );
         yavs_cycle::set_exact_meta(a.cycle_exact_meta);
         yavs_cycle::set_no_asserts(a.no_asserts);
+        yavs_cycle::set_wave(
+            a.wave
+                .is_some()
+                .then(|| yavs_wave::recorded_signals(&db, &e, wave_selection(&a))),
+        );
         match yavs_cycle::plan(&db, &e, mode) {
             Ok(plan) => {
                 if mode == yavs_cycle::Mode::Report {
@@ -2091,6 +2108,7 @@ fn run_design(
                 }
                 eprint!("{}", plan.summary);
                 e.region = plan.region;
+                a.wave_held = plan.wave_held;
                 cycle_metas = Some(plan.metas);
                 cycle_reporter = Some(plan.reporter);
             }
@@ -2935,6 +2953,20 @@ fn view_end(view: &ViewSlot, format: MessageFormat, color: bool) {
     }
 }
 
+/// What `--wave-include`, `--wave-exclude` and `--wave-max-array` select.
+fn wave_selection(a: &RunArgs) -> yavs_wave::Selection {
+    yavs_wave::Selection {
+        include: (a.wave_include.iter())
+            .map(|p| yavs_diag::dotted(p))
+            .collect(),
+        exclude: (a.wave_exclude.iter())
+            .map(|p| yavs_diag::dotted(p))
+            .collect(),
+        max_array_elems: a.wave_max_array,
+        held: Vec::new(),
+    }
+}
+
 /// Subscribe the VHPI observer (`--vhpi`) and the waveform recorder (`--wave`) to `sim`, for
 /// `yavs run` with or without `--dap`; returns the recorder and its file. `--surfer` starts the
 /// viewer with the first recorder, and tells it of the next ones.
@@ -2961,17 +2993,8 @@ fn observers(
         None => None,
         Some(path) => {
             let sel = yavs_wave::Selection {
-                include: a
-                    .wave_include
-                    .iter()
-                    .map(|p| yavs_diag::dotted(p))
-                    .collect(),
-                exclude: a
-                    .wave_exclude
-                    .iter()
-                    .map(|p| yavs_diag::dotted(p))
-                    .collect(),
-                max_array_elems: a.wave_max_array,
+                held: a.wave_held.clone(),
+                ..wave_selection(a)
             };
             let mut cfg = yavs_wave::WaveConfig::default();
             // `--surfer` flushes every second unless `--surfer-refresh` or the variable say
@@ -3011,6 +3034,20 @@ fn observers(
                 built.filter(|_| a.wave_vars()),
             ) {
                 Ok((rec, hier)) => {
+                    for p in &hier.held {
+                        out.emit(
+                            &none,
+                            &Diagnostic::warning(
+                                "W0802",
+                                format!("`{p}` is not recorded in the waveform"),
+                            )
+                            .with_note(
+                                "cycle mode keeps this memory of integers or enumerations in its \
+                                 region and cannot export its values",
+                            )
+                            .with_help("run without `--cycle` to record it"),
+                        );
+                    }
                     for s in &hier.skipped {
                         let why = match s.elems {
                             Some(n) => format!(

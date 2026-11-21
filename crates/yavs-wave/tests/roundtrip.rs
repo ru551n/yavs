@@ -363,6 +363,7 @@ fn selection_and_array_cap() {
         include: vec!["top.**".into()],
         exclude: vec!["TOP.dbg".into(), "top.*.hidden".into()],
         max_array_elems: 4,
+        held: Vec::new(),
     };
     let bit = EnumType::bit();
     let sig = |_id: u32| SigType::Scalar(ScalarType::Enum(bit.clone()));

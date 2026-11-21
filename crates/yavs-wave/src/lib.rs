@@ -28,5 +28,5 @@ pub use model::{
     ScopeKind, SigType, SignalId, Skipped,
 };
 pub use select::{Selection, glob_match};
-pub use sim::{Recorder, Signals, Sink, record, record_to, var_counts};
+pub use sim::{Recorder, Signals, Sink, record, record_to, recorded_signals, var_counts};
 pub use writer::{Error, WaveConfig, WaveWriter};

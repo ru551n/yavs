@@ -87,7 +87,7 @@ the top-level unit that does not fit an error. A wrong value is refused at setup
 
 - Cycle-based processes evaluate their `report` and `assert` statements (`yavs.no_asserts` drops those below the test bench entity, in both modes), but give no library warnings.
 - They are two-state: metavalues read as `'0'`. Outside processes keep full semantics.
-- There are no waves, and none of coverage, `--yavs-debug`, `--yavs-interactive` or `--yavs-surfer` in the same test (the test fails before yavs starts, error E4102 of yavs).
+- A waveform comes from `yavs.sim_flags` (`["--wave=FILE"]`), with the signals inside the region per time step; none of coverage, `--yavs-debug`, `--yavs-interactive` or `--yavs-surfer` in the same test (the test fails before yavs starts, error E4102 of yavs).
 
 All the rules are in the `--cycle` entry of the yavs command line reference. To see what would join, set `yavs.sim_flags` to `["--cycle-report"]` for one test with `yavs.cycle` `"off"`: yavs prints the report and does not simulate, so that test fails. `yavs.sim_flags` `["--cycle-exact-meta"]` with `yavs.cycle` `"on"` or `"strict"` keeps the exact metavalue rules for a test, and the values in the message of a failed check.
 

@@ -107,6 +107,7 @@ CYCLE_TESTS = {
     "qualrec.vhd": [("cycle_qualrec", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
     "elabcall.vhd": [("cycle_elabcall", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
     "waitfilter.vhd": [("cycle_waitfilter", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
+    "waves.vhd": [("cycle_waves", "", lambda s, w=w: W.sub(str(w), s)) for w in (1, 64, 65)],
 }
 
 

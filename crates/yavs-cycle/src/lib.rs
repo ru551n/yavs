@@ -22,7 +22,7 @@ use yavs_sem::Db;
 
 pub use codegen::{set_cache, set_threads};
 use lower::{Kind, Op, Ref};
-pub use region::{set_exact_meta, set_no_asserts};
+pub use region::{set_exact_meta, set_no_asserts, set_wave};
 pub use store::analysis_cache;
 
 /// Codes of cycle mode. Under `--cycle-strict` every reason a process below the top-level unit
@@ -385,6 +385,9 @@ pub struct Plan {
     /// the asserts and reports of top-level members (A19) go through it (the assert counts of
     /// `std.env`, the exit status, the enabled severities), then out as the member's.
     pub reporter: Reporter,
+    /// `--wave`: the kernel signals it would record that the region holds and cannot export
+    /// (sorted), for `yavs_wave::Selection::held`.
+    pub wave_held: Vec<u32>,
 }
 
 /// The normal mode's report path: the text to report for a severity and message, or `None` when
@@ -563,6 +566,7 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
         // `--cycle` on a hit: the region as it was built, its code as it was compiled.
         store::Got::Built(f) if mode == Mode::Run => {
             let (mut b, sites, blob) = *f;
+            let wave_held = region::wave_held(e, &b.members, &b.outputs);
             let (metas, reporter) = (Arc::new(Metas::default()), Reporter::default());
             let code = codegen::from_blob(std::mem::take(&mut b.code), &blob).map_err(|m| {
                 vec![
@@ -583,6 +587,7 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
                 )),
                 metas,
                 reporter,
+                wave_held,
             });
         }
         store::Got::Built(_) => {
@@ -650,9 +655,12 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
             region: None,
             metas,
             reporter: Reporter::default(),
+            wave_held: Vec::new(),
         });
     }
     let reporter = Reporter::default();
+    let members: Vec<usize> = sel.members.iter().map(|m| m.0).collect();
+    let wave_held = region::wave_held(e, &members, &sel.outputs);
     let region = build(db, e, sel, &summary, metas.clone(), reporter.clone()).map_err(|m| {
         vec![
             Diagnostic::error(
@@ -669,6 +677,7 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
         region: Some(region),
         metas,
         reporter,
+        wave_held,
     })
 }
 

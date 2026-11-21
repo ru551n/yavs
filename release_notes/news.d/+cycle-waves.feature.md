@@ -1,0 +1,1 @@
+Cycle mode: `--wave` now works with `--cycle` and `--cycle-strict`. Signals inside the region are recorded per time step from the region's own values, and `--wave-include` and `--wave-exclude` choose them too, so a narrow selection costs little; the cycle mode page lists what differs from a normal-mode waveform.

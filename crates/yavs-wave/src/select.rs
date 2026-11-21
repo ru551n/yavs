@@ -9,6 +9,9 @@ pub struct Selection {
     pub exclude: Vec<String>,
     /// Arrays (and memories) with more elements than this are not recorded.
     pub max_array_elems: usize,
+    /// Kernel signals whose values the simulation does not hold (a memory cycle mode keeps in its
+    /// region), sorted: an object on one is left out and listed in `Hierarchy::held`.
+    pub held: Vec<u32>,
 }
 
 impl Default for Selection {
@@ -17,6 +20,7 @@ impl Default for Selection {
             include: Vec::new(),
             exclude: Vec::new(),
             max_array_elems: 65_536,
+            held: Vec::new(),
         }
     }
 }

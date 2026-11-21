@@ -155,7 +155,7 @@ Syntax, command line, waveforms, coverage, debugger, plugins (E0 and W0)
    * - _`E0801`
      - The waveform file given to ``--wave`` cannot be created or written (missing directory, permissions, full disk).
    * - _`W0802`
-     - An array or vector has more elements than ``--wave-max-array`` and is left out of the waveform.
+     - A signal is left out of the waveform: an array or vector with more elements than ``--wave-max-array``, a variable whose bounds are known only when the simulation runs, or, under ``--cycle``, a memory of integers or enumerations that the cycle region writes at run-time indices and cannot export.
    * - _`E0803`
      - The Ctrl-C handler for ``--wave`` cannot be installed.
    * - _`E0901`
@@ -613,7 +613,7 @@ Cycle mode (E4 and W4)
    * - _`W4101`
      - Retired: cycle mode no longer gives this warning.
    * - _`E4102`
-     - ``yavs run --cycle`` (or ``--cycle-strict``) cannot be used with an option that records, shows, counts or changes signals inside the cycle region: a debug session (``--dap``, ``--interactive``, ``--do``), ``--wave``, ``--surfer`` (which records a waveform), ``--cov``, ``--vhpi`` or ``--activity``.
+     - ``yavs run --cycle`` (or ``--cycle-strict``) cannot be used with an option that shows, counts or changes signals or variables inside the cycle region: a debug session (``--dap``, ``--interactive``, ``--do``), ``--surfer``, ``--wave-variables``, ``--cov``, ``--vhpi`` or ``--activity``.
    * - _`E4103`
      - The file given to ``yavs run --cycle-report=FILE`` cannot be created or written (missing directory, permissions, full disk).
    * - _`E4104`

@@ -243,14 +243,29 @@ pub fn record_to(
     record_with(db, e, sel, built, false, sink)
 }
 
-fn record_with(
+/// The kernel signals a recording of `sel` reads (without variables), sorted: cycle mode exports
+/// those its region holds.
+pub fn recorded_signals(db: &Db, e: &Elaborated, sel: Selection) -> Vec<u32> {
+    let (_, entries, _) = walk(db, e, sel, None, false);
+    let mut v: Vec<u32> = (entries.iter())
+        .filter_map(|en| match en.src {
+            Src::Sig { sig, .. } => Some(sig),
+            Src::Var => None,
+        })
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// The design walked into a builder: its entries and variables.
+fn walk(
     db: &Db,
     e: &Elaborated,
     sel: Selection,
     built: Option<&Built>,
     alias: bool,
-    sink: impl FnOnce(&Hierarchy) -> Result<Box<dyn Sink>, Error>,
-) -> Result<(Recorder, Hierarchy), Error> {
+) -> (HierarchyBuilder, Vec<Entry>, Vec<Var>) {
     let mut d = Design {
         db,
         e,
@@ -284,6 +299,18 @@ fn record_with(
     let Design {
         b, entries, vars, ..
     } = d;
+    (b, entries, vars)
+}
+
+fn record_with(
+    db: &Db,
+    e: &Elaborated,
+    sel: Selection,
+    built: Option<&Built>,
+    alias: bool,
+    sink: impl FnOnce(&Hierarchy) -> Result<Box<dyn Sink>, Error>,
+) -> Result<(Recorder, Hierarchy), Error> {
+    let (b, entries, vars) = walk(db, e, sel, built, alias);
     let h = b.finish();
     let writer = sink(&h)?;
     let mut flat = vec![Vec::new(); e.nets.signal_count()];
@@ -1150,6 +1177,11 @@ impl Design<'_> {
             // declared objects.
             ObjKind::ComponentPort(_) | ObjKind::Implicit => return,
         };
+        let nets = &self.e.nets;
+        if (obj.leaves.0.0..obj.leaves.1.0).any(|l| self.b.is_held(nets.loc[l as usize].signal.0)) {
+            self.b.held(obj.name.text.as_str());
+            return;
+        }
         let at = At::Sig {
             leaf: obj.leaves.0.0,
             k: 0,

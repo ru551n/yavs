@@ -592,7 +592,7 @@ fn cycle_mode_refuses_the_options_that_see_inside_the_region() {
     let dir = tempdir("cycle-not-with");
     analyze(&dir, "partial.vhd", include_str!("cycle/partial.vhd"));
     for (opt, name) in [
-        ("--wave=x.fst", "--wave"),
+        ("--wave=x.fst --wave-variables", "--wave-variables"),
         ("--cov=s", "--cov"),
         ("--vhpi=nothing", "--vhpi"),
         ("--surfer", "--surfer"),
@@ -8802,4 +8802,184 @@ fn parameter_ranges_are_checked_as_in_the_normal_mode() {
             );
         }
     }
+}
+
+/// Each name a wave file records with its value at the end of each time step where it changed
+/// (FST keeps no deltas; a value written again unchanged is dropped). With `u_as_0` a `'U'` reads
+/// as `0`, as the two-state region gives it.
+fn wave_steps(path: &Path, u_as_0: bool) -> std::collections::BTreeMap<String, Vec<(u64, String)>> {
+    let mut w = wellen::simple::read(path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+    let h = w.hierarchy();
+    let vars: Vec<(String, wellen::SignalRef)> = (h.all_vars())
+        .map(|r| (h[r].full_name(h), h[r].signal_ref()))
+        .collect();
+    let refs: Vec<_> = vars.iter().map(|v| v.1).collect();
+    w.load_signals(&refs);
+    let tt = w.time_table().to_vec();
+    let mut out = std::collections::BTreeMap::new();
+    for (name, r) in vars {
+        let mut v: Vec<(u64, String)> = Vec::new();
+        for (t, val) in w.get_signal(r).expect("loaded").iter_changes() {
+            let mut s = val.to_bit_string().unwrap_or_else(|| val.to_string());
+            if u_as_0 {
+                s = s.replace(['u', 'U'], "0");
+            }
+            let t = tt[t as usize];
+            if v.last().is_some_and(|l| l.0 == t) {
+                v.pop();
+            }
+            if v.last().is_none_or(|l| l.1 != s) {
+                v.push((t, s));
+            }
+        }
+        out.insert(name, v);
+    }
+    out
+}
+
+/// `--wave` under `--cycle`: the signals only the region reads (registers, logic on them, logic on
+/// an input that changes between edges, a record, an array, a memory, a register without a start
+/// value) have the normal mode's value at every time step, at widths around a word and under both
+/// contracts; the memory of integers, which the region cannot export, is left out with a warning.
+/// The console, the members and, without `--wave`, the region's outputs are those of a run without.
+#[test]
+fn waves_of_signals_inside_the_region_follow_the_normal_mode_per_time_step() {
+    let outputs = |err: &str| -> usize {
+        (err.lines())
+            .find_map(|l| {
+                let mut w = l.strip_prefix("cycle stats: ")?.split(' ');
+                let n = w.next()?.parse().ok()?;
+                (w.next() == Some("outputs")).then_some(n)
+            })
+            .unwrap_or_else(|| panic!("no outputs line: {err}"))
+    };
+    for w in [1, 63, 64, 65, 128] {
+        let dir = tempdir(&format!("cycle-waves-{w}"));
+        analyze(
+            &dir,
+            "waves.vhd",
+            &with_width(include_str!("cycle/waves.vhd"), w),
+        );
+        let wave = |flags: &[&str], file: &str, env: &[(&str, &str)]| {
+            let path = dir.join(file).display().to_string();
+            let wf = format!("--wave={path}");
+            let mut args = vec!["run", "--work=work:lib", "--no-cache", wf.as_str()];
+            args.extend(flags);
+            args.push("cycle_waves");
+            let o = yavs_env(&dir, &args, env);
+            let err = String::from_utf8_lossy(&o.stderr).into_owned();
+            assert!(o.status.success(), "{w} {flags:?}: {err}");
+            (String::from_utf8_lossy(&o.stdout).into_owned(), err)
+        };
+        let (n_out, _) = wave(&[], "n.fst", &[]);
+        let (_, _) = wave(&["--wave-include=cycle_waves.dut.mix"], "nn.fst", &[]);
+        for exact in [false, true] {
+            let mode: &[&str] = if exact {
+                &["--cycle", "--cycle-exact-meta"]
+            } else {
+                &["--cycle"]
+            };
+            let stats = [("YAVS_CYCLE_STATS", "1")];
+            let (c_out, c_err) = wave(mode, "c.fst", &stats);
+            assert_eq!(c_out, n_out, "{w} exact={exact}");
+            assert!(
+                c_err.contains("cycle mode: 6 of 7 processes run cycle-based"),
+                "{w} exact={exact}: {c_err}"
+            );
+            assert!(
+                c_err.contains("warning[W0802]: `cycle_waves.dut.iram` is not recorded"),
+                "{c_err}"
+            );
+            // Without `--wave`: the same console, members and outputs.
+            let mut args = vec!["run", "--work=work:lib", "--no-cache"];
+            args.extend(mode);
+            args.push("cycle_waves");
+            let o = yavs_env(&dir, &args, &stats);
+            let err = String::from_utf8_lossy(&o.stderr);
+            assert_eq!(String::from_utf8_lossy(&o.stdout), c_out);
+            assert!(err.contains("cycle mode: 6 of 7 processes"), "{err}");
+            let (none, full) = (outputs(&err), outputs(&c_err));
+            // Per time step, a 'U' as 0 under two-state values.
+            let n = wave_steps(&dir.join("n.fst"), !exact);
+            let c = wave_steps(&dir.join("c.fst"), false);
+            let inside = [
+                "cycle_waves.dut.q",
+                "cycle_waves.dut.mix2",
+                "cycle_waves.dut.noinit",
+            ];
+            for k in inside {
+                let k = n.keys().find(|n| n.starts_with(k)).expect("recorded");
+                assert!(n[k].len() > 3, "{k} changes: {:?}", n[k]);
+            }
+            let kept: Vec<&String> = n.keys().filter(|k| !k.contains(".iram")).collect();
+            assert!(n.len() > kept.len());
+            assert_eq!(c.keys().collect::<Vec<_>>(), kept, "{w} exact={exact}");
+            for k in kept {
+                assert_eq!(c[k], n[k], "{w} exact={exact} {k}");
+            }
+            if exact {
+                let k = n.keys().find(|n| n.contains("noinit")).unwrap();
+                assert!(n[k][0].1.contains(['u', 'U']), "{:?}", n[k]);
+            }
+            // Only `mix`: the same as the normal mode's, and fewer outputs than the whole wave.
+            let (_, err) = wave(
+                &[mode, &["--wave-include=cycle_waves.dut.mix"]].concat(),
+                "cn.fst",
+                &stats,
+            );
+            let narrow = outputs(&err);
+            assert!(none < narrow && narrow < full, "{none} {narrow} {full}");
+            let (nn, cn) = (
+                wave_steps(&dir.join("nn.fst"), !exact),
+                wave_steps(&dir.join("cn.fst"), false),
+            );
+            assert!(!nn.is_empty());
+            assert_eq!(cn, nn, "{w} exact={exact}");
+        }
+    }
+}
+
+/// The wave options are in the key of the cached analysis: a region cached without `--wave` is not
+/// the one a run with it uses (its inside would stay at the start values), and the reverse.
+#[test]
+fn waves_under_cycle_do_not_take_a_region_cached_without_them() {
+    let dir = tempdir("cycle-waves-cache");
+    analyze(
+        &dir,
+        "waves.vhd",
+        &with_width(include_str!("cycle/waves.vhd"), 8),
+    );
+    let run = |wave: bool| {
+        let mut args = vec!["run", "--work=work:lib", "--cycle"];
+        if wave {
+            args.push("--wave=c.fst");
+        }
+        args.push("cycle_waves");
+        let o = yavs_env(&dir, &args, &[("YAVS_CYCLE_STATS", "1")]);
+        let err = String::from_utf8_lossy(&o.stderr).into_owned();
+        assert!(o.status.success(), "{err}");
+        (err.lines())
+            .find(|l| l.starts_with("cycle stats: ") && l.contains(" outputs ("))
+            .expect("an outputs line")
+            .to_string()
+    };
+    let changes = || {
+        let c = wave_steps(&dir.join("c.fst"), false);
+        let k = c
+            .keys()
+            .find(|k| k.starts_with("cycle_waves.dut.q"))
+            .unwrap();
+        c[k].len()
+    };
+    let cold = run(false);
+    let waved = run(true);
+    assert!(changes() > 3);
+    assert_ne!(cold, waved);
+    // Warm runs, each after the other kind: the region of its own options.
+    assert_eq!(run(false), cold);
+    assert_eq!(run(true), waved);
+    assert!(changes() > 3);
+    std::fs::remove_dir_all(dir.join("lib/yavs-cache")).unwrap();
+    assert_eq!(run(true), waved);
+    assert_eq!(run(false), cold);
 }

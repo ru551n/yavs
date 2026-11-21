@@ -48,8 +48,8 @@ as ``--name=value``.
        the rest stays in the event kernel; the test output gets the line ``cycle mode: N of M processes run
        cycle-based``, shown with ``-v`` for a passing test) or ``"strict"`` (the same, but a clocked or combinational process below the top-level unit that does
        not fit is an error that lists them all). Set it per library, testbench, test or configuration. Cycle-based
-       processes evaluate their ``report`` and ``assert`` statements but give no library warnings, read metavalues as ``'0'`` and
-       have no waves; what it changes is in :doc:`cycle-mode`, and the flags are in the :doc:`cli-reference` (``--cycle``). A test that also has coverage,
+       processes evaluate their ``report`` and ``assert`` statements but give no library warnings, read metavalues as ``'0'``, and
+       their signals are recorded per time step only (``yavs.sim_flags`` ``["--wave=FILE"]``); what it changes is in :doc:`cycle-mode`, and the flags are in the :doc:`cli-reference` (``--cycle``). A test that also has coverage,
        ``--yavs-debug``, ``--yavs-interactive`` or ``--yavs-surfer`` fails before yavs starts, naming both. Not passed
        to ``elab``. To see what would join, set ``yavs.sim_flags`` to ``["--cycle-report"]`` for one test with ``yavs.cycle`` ``"off"``: yavs prints the report and does not simulate, so that test fails. ``yavs.sim_flags`` ``["--cycle-exact-meta"]`` with ``yavs.cycle`` ``"on"`` or ``"strict"`` keeps the exact metavalue rules for a test, and the values in the message of a failed check.
    * - ``yavs.no_asserts``

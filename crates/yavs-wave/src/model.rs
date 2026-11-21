@@ -220,6 +220,8 @@ pub struct Hierarchy {
     types: Vec<Arc<SigType>>,
     signals: usize,
     pub skipped: Vec<Skipped>,
+    /// Signals left out because the simulation does not hold their values (`Selection::held`).
+    pub held: Vec<String>,
 }
 
 impl Hierarchy {
@@ -444,6 +446,20 @@ impl HierarchyBuilder {
         let path = self.path_of(name);
         if self.sel.included(&path) && !self.sel.excluded(&path) {
             self.h.skipped.push(Skipped { path, elems: None });
+        }
+    }
+
+    /// Whether kernel signal `k` is one of `Selection::held`.
+    pub(crate) fn is_held(&self, k: u32) -> bool {
+        !self.sel.held.is_empty() && self.sel.held.binary_search(&k).is_ok()
+    }
+
+    /// A signal `name` left out because the simulation does not hold its values; listed in
+    /// [`Hierarchy::held`] when the selection keeps it.
+    pub fn held(&mut self, name: &str) {
+        let path = self.path_of(name);
+        if !self.dropped() && self.sel.included(&path) && !self.sel.excluded(&path) {
+            self.h.held.push(path);
         }
     }
 

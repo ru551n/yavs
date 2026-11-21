@@ -110,6 +110,41 @@ pub fn set_exact_meta(on: bool) {
     EXACT_META.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// `--wave` (A52): the kernel signals the wave records, sorted; `None` without a wave.
+static WAVE: std::sync::Mutex<Option<Vec<u32>>> = std::sync::Mutex::new(None);
+
+/// The kernel signals `--wave` records (sorted), or `None`: the region exports the leaves it
+/// drives of those, so the kernel holds their values for the recorder.
+pub fn set_wave(sigs: Option<Vec<u32>>) {
+    *WAVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = sigs;
+}
+
+pub(crate) fn wave() -> Option<Vec<u32>> {
+    WAVE.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+/// The kernel signals `--wave` records that members drive and the region does not export (a
+/// memory of integers written at run-time indices), sorted: the recorder leaves them out.
+pub(crate) fn wave_held(e: &Elaborated, members: &[usize], outputs: &BTreeSet<LeafId>) -> Vec<u32> {
+    let Some(w) = wave() else {
+        return Vec::new();
+    };
+    let k = |l: LeafId| e.nets.loc[l.index()].signal.0;
+    let out: BTreeSet<u32> = outputs.iter().map(|&l| k(l)).collect();
+    let mem: BTreeSet<usize> = members.iter().copied().collect();
+    let driven: BTreeSet<u32> = (e.nets.drivers.iter())
+        .filter(|d| mem.contains(&d.proc.index()))
+        .map(|d| k(d.leaf))
+        .collect();
+    (w.into_iter())
+        .filter(|s| driven.contains(s) && !out.contains(s))
+        .collect()
+}
+
 /// Whether `--cycle-exact-meta` is on: also, failed checks keep their operands for the message.
 pub(crate) fn exact_meta() -> bool {
     EXACT_META.load(std::sync::atomic::Ordering::Relaxed)
@@ -2575,7 +2610,7 @@ fn boundary(
         .intersection(&clocked_reads)
         .copied()
         .collect();
-    let (outputs, waited, readers) = if outside_reads_all(db) {
+    let (mut outputs, waited, readers) = if outside_reads_all(db) {
         (driven.clone(), driven.clone(), BTreeMap::new())
     } else {
         let (seen, waited, readers) = outside_reads(db, e, &is_member);
@@ -2585,6 +2620,22 @@ fn boundary(
             readers,
         )
     };
+    // `--wave`: the leaves it records are exported too (not memories of integers, which the export
+    // cannot take), before `at_once` so an input change reaching them settles in its time step.
+    if let Some(w) = wave() {
+        let k = |l: &LeafId| e.nets.loc[l.index()].signal.0;
+        let mut rams = BTreeMap::new();
+        for (_, b) in members.iter().filter(|m| m.1.kind == Kind::Clocked) {
+            sig_writes(&b.ops, &mut rams);
+        }
+        let held = |s: u32| {
+            rams.get(&s).is_some_and(|h: &How| h.indexed)
+                && big_signal(e, s)
+                && e.nets.leaf(e.nets.packs[s as usize].0).ty.elem != yavs_kernel::Elem::Logic
+        };
+        let rec = |l: &&LeafId| w.binary_search(&k(l)).is_ok() && !held(k(l));
+        outputs.extend(driven.iter().filter(rec).copied());
+    }
     let at_once = at_once(&members, reset_reads, &outputs, &readers, &wakes);
     Selection {
         members,

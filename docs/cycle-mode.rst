@@ -87,8 +87,9 @@ message of a failed check (:ref:`cycle-contract`):
     yavs run --cycle --cycle-exact-meta --work=work:build/work tb_counter
 
 ``yavs analyze`` takes none of them, and ``yavs elab`` does not take them. The region is compiled whatever
-``--tier`` says, and ``--threads`` and ``--shuffle`` are accepted. The options ``--wave``, ``--cov``, ``--vhpi`` and
-a debug session are refused (:ref:`cycle-changes`).
+``--tier`` says, and ``--threads`` and ``--shuffle`` are accepted. ``--wave`` records the signals inside the region
+too, per time step (:ref:`cycle-waves`). The options ``--cov``, ``--vhpi``, ``--surfer``, ``--wave-variables`` and a
+debug session are refused (:ref:`cycle-changes`).
 
 From a VUnit run script the sim option ``yavs.cycle`` does the same, per library, testbench, test or configuration:
 
@@ -357,6 +358,10 @@ Cycle mode is for speed. By default it gives up these, and nothing else, in the 
 * **Library warnings.** The ``numeric_std`` and other ``ieee`` warnings (metavalues, truncation) are not given by
   cycle-based processes. Their own reports and assertions are evaluated, on settled values, so a combinational
   process reports once per time step where the normal mode may report each delta (:ref:`cycle-reports`).
+* **Waves inside a time step.** ``--wave`` records the signals inside the region from the region's own values, at
+  the end of each time step: the same time steps as the normal mode, without its delta cycles and the glitches between
+  them, with the region's values (two-state by default), without variables and without memories of integers or
+  enumerations (:ref:`cycle-waves`).
 * **Values in error messages.** A failed check (overflow, range, index) stops the run with the normal mode's error
   code, source line, time and process, and says what failed, but not the values involved: keeping them costs code
   in every check. ``--cycle-exact-meta`` keeps them, with the normal mode's message (:ref:`cycle-checks`).
@@ -712,6 +717,37 @@ Sample later: after a time step (``wait for 1 ns``), or at the falling edge. A t
 reads values at a clock edge, or a time after it, gives the same result in both modes. A testbench that is correct
 by timing instead of by delta order has nothing to change.
 
+.. _cycle-waves:
+
+Waveforms
+~~~~~~~~~
+
+``--wave`` works with ``--cycle`` and ``--cycle-strict``, and so do ``--wave-include``, ``--wave-exclude`` and
+``--wave-max-array``. The file has the names of a normal-mode file and its values per time step, as far as the
+region allows:
+
+* Signals the event simulation holds (those of processes outside the region, the inputs of the region and the
+  outputs the testbench reads) are recorded as in the normal mode.
+* A signal only the region reads is exported from the region's image after each clock edge and after each settle of
+  an input change, and recorded from there. A value changes in the time step where it changes in the normal mode, with
+  its last value of that time step. Within a time step it differs: the region settles at once, so the delta cycles of
+  the normal mode and any glitch between them are not there. The file keeps one value per time step in both modes,
+  so this shows only for a signal that changes and changes back within a time step: the normal mode's file may
+  write its value again at that time, this one writes nothing. Where cycle mode gives other values than the normal
+  mode (:ref:`cycle-contract`, a register on a copied clock for one), the file shows those values.
+* Values are the region's: under the default contract ``0`` and ``1``, so a signal without an initial value shows
+  ``0`` where the normal mode shows ``'U'`` (:ref:`cycle-two-state`). With ``--cycle-exact-meta`` the second set of
+  values gives ``'U'`` and ``'X'`` where the testbench would read them, while it runs.
+* Memories are recorded like other arrays (up to ``--wave-max-array`` elements), the words written at each edge
+  exported. A memory of integers or enumerations of more than 64 elements that the region writes at run-time indices
+  cannot be exported and is left out of the file, with warning W0802 naming it.
+* Variables are not recorded: ``--wave-variables`` is refused (E4102), as the region keeps the variables of its
+  processes in its own image.
+* Recording costs time only for what is recorded: the region exports just the signals the selection keeps, so
+  ``--wave-include`` of a few signals costs little more than no wave, and without ``--wave`` nothing changes. The
+  region exports each recorded signal every time step it changes, which a run with the whole design recorded pays
+  for, in the region as in the normal mode.
+
 .. _cycle-clock-copies:
 
 Clocks copied by an assignment
@@ -751,8 +787,8 @@ What is refused
 ~~~~~~~~~~~~~~~
 
 The signals inside the region are kept in an image of their own, and nothing can observe or change them there.
-So ``--cycle`` and ``--cycle-strict`` stop with E4102 before simulating when combined with ``--wave``, ``--surfer``
-(which records a waveform), ``--cov``, ``--vhpi``, ``--activity`` (which counts the activations and events of every
+So ``--cycle`` and ``--cycle-strict`` stop with E4102 before simulating when combined with ``--surfer`` (which shows
+a waveform as it is written), ``--wave-variables``, ``--cov``, ``--vhpi``, ``--activity`` (which counts the activations and events of every
 process and signal), or a debug session (``--dap``, ``--interactive``, ``--do``). The error names the option and
 nothing is written or run. It looks like this:
 
@@ -765,8 +801,8 @@ nothing is written or run. It looks like this:
 
     error: aborting due to 1 previous error
 
-Run the design in the normal mode for waveforms, coverage, activity counts, debugging and VHPI plugins.
-``--cycle-report`` does not simulate, so it is not refused with ``--wave``.
+Run the design in the normal mode for coverage, activity counts, debugging, VHPI plugins, a waveform of variables or
+one shown in Surfer. ``--wave`` is allowed (:ref:`cycle-waves`).
 
 Options that do not read the signals of the region stay allowed: ``--profile`` (it samples the interpreter, so the
 region's time shows as the kernel's and only the processes outside the region are listed), ``--assert-summary`` (it

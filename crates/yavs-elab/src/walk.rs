@@ -6516,47 +6516,36 @@ impl Model {
 
     /// The port mode of each leaf of port object `fo` with mode `m`: one for all, or per
     /// record element from a mode view.
-    fn leaf_modes(&self, db: &Db, fo: ObjId, m: Mode, span: Span) -> R<HashMap<LeafId, PortMode>> {
+    fn leaf_modes(&self, db: &Db, fo: ObjId, m: Mode, span: Span) -> R<LeafModes> {
         let obj = self.nets.obj(fo);
-        let (a, _) = obj.leaves;
-        let tree = match m {
-            Mode::View { .. } => Some(db.port_mode_tree(m)),
-            _ => None,
+        let (a, b) = obj.leaves;
+        let Mode::View { .. } = m else {
+            return Ok(LeafModes::All(a, b, port_mode(m)));
         };
-        let mut out = HashMap::new();
-        for (k, (path, _, _)) in obj.shape.leaves().into_iter().enumerate() {
-            let mode = match &tree {
-                None => port_mode(m),
-                Some(t) => {
-                    let mut t = t;
-                    let mut p = path.as_slice();
-                    loop {
-                        match t {
-                            yavs_sem::view::ModeTree::Leaf(m) => break port_mode(*m),
-                            yavs_sem::view::ModeTree::Array(e) => t = e,
-                            yavs_sem::view::ModeTree::Record { elems, .. } => {
-                                let Some((&f, rest)) = p.split_first() else {
-                                    return Err(Box::new(ice(
-                                        span,
-                                        "mode view deeper than the port",
-                                    )));
-                                };
-                                let Some(e) = elems.get(f as usize) else {
-                                    return Err(Box::new(ice(
-                                        span,
-                                        "mode view does not fit the port",
-                                    )));
-                                };
-                                t = e;
-                                p = rest;
-                            }
-                        }
+        let tree = db.port_mode_tree(m);
+        let mut out = Vec::new();
+        for (path, _, _) in obj.shape.leaves() {
+            let mut t = &tree;
+            let mut p = path.as_slice();
+            let mode = loop {
+                match t {
+                    yavs_sem::view::ModeTree::Leaf(m) => break port_mode(*m),
+                    yavs_sem::view::ModeTree::Array(e) => t = e,
+                    yavs_sem::view::ModeTree::Record { elems, .. } => {
+                        let Some((&f, rest)) = p.split_first() else {
+                            return Err(Box::new(ice(span, "mode view deeper than the port")));
+                        };
+                        let Some(e) = elems.get(f as usize) else {
+                            return Err(Box::new(ice(span, "mode view does not fit the port")));
+                        };
+                        t = e;
+                        p = rest;
                     }
                 }
             };
-            out.insert(LeafId(a.0 + k as u32), mode);
+            out.push(mode);
         }
-        Ok(out)
+        Ok(LeafModes::View(a, out))
     }
 
     /// The port edges of formal parts `fl` and actual parts `al`, with no conversion; a port
@@ -6565,7 +6554,7 @@ impl Model {
         &mut self,
         fl: &[(LeafId, Range)],
         al: &[(LeafId, Range)],
-        modes: &HashMap<LeafId, PortMode>,
+        modes: &LeafModes,
         span: Span,
     ) -> R<()> {
         self.same_parts(fl, al, span)?;
@@ -6573,7 +6562,7 @@ impl Model {
             if f.1.len == 0 {
                 continue;
             }
-            let Some(&mode) = modes.get(&f.0) else {
+            let Some(mode) = modes.get(f.0) else {
                 return Err(Box::new(ice(span, "formal leaf without a mode")));
             };
             // An `in` formal starts with its actual's value (LRM 14.7.3.3), which the
@@ -6866,6 +6855,27 @@ impl Model {
             ));
         }
         Ok(())
+    }
+}
+
+/// The port mode of each leaf of a port object (`Model::leaf_modes`).
+enum LeafModes {
+    /// Leaves `.0 .. .1`, all of one mode: a port without a mode view.
+    All(LeafId, LeafId, PortMode),
+    /// One per leaf from leaf `.0` on, from a mode view.
+    View(LeafId, Vec<PortMode>),
+}
+
+impl LeafModes {
+    fn get(&self, l: LeafId) -> Option<PortMode> {
+        match self {
+            LeafModes::All(a, b, m) => (a.0..b.0).contains(&l.0).then_some(*m),
+            LeafModes::View(a, v) => {
+                l.0.checked_sub(a.0)
+                    .and_then(|k| v.get(k as usize))
+                    .copied()
+            }
+        }
     }
 }
 

@@ -8,9 +8,11 @@
 -- vector at a run-time index, `mv(idx) := din(0)` a variable at one while `go` holds (`vq` sees
 -- it an edge later, with no input moved in between);
 -- `mem` is a memory written at `wa` while `we` holds. On `cb`: `rq` loads `trig`, `z` loads
--- `q xor sat` (registers of the other clock), `mq` reads `mem` at `ra`.
+-- `q xor sat` (registers of the other clock), `zs` loads `sl`, which toggles at the edges of `ca`
+-- where `en` or `go` holds, `zp` loads `sp`, which toggles at every seventh (one class
+-- untracked while the other is not, at every phase of the turns), `mq` reads `mem` at `ra`.
 -- The settle: `y` from `q` and `x`, `mo` from `mem`, `ce` from `e2`, an input changed in the
--- delta of an edge that `qe` sees through it an edge later.
+-- delta of every seventh edge late in the run, which `qe` sees through it an edge later.
 -- The stimulus holds everything for stretches, then moves each input once or twice: between
 -- edges, in the delta of an edge of `ca` (`en`, `dd`), `arst` and `trig` as pulses between two
 -- edges of `ca`.
@@ -21,7 +23,8 @@ entity cycle_blockskip is
 end entity;
 architecture a of cycle_blockskip is
   type mem_t is array (0 to 15) of std_ulogic_vector(W - 1 downto 0);
-  signal ca, cb, en, dd, e2, ce, qe, go, arst, trig, rq, we : std_ulogic := '0';
+  signal ca, cb, en, dd, e2, ce, qe, sl, zs, sp, zp, go, arst, trig, rq, we : std_ulogic := '0';
+  signal ic : natural range 0 to 6 := 0;
   signal din, q, w2, z, y, mo, mq, accq : std_ulogic_vector(W - 1 downto 0) := (others => '0');
   signal v, vq : std_ulogic_vector(W - 1 downto 0) := (others => '0');
   signal cnt, sat, c2, r2 : unsigned(W - 1 downto 0) := (others => '0');
@@ -96,6 +99,21 @@ begin
       qe <= ce;
     end if;
   end process;
+
+  pf : process (ca)
+  begin
+    if rising_edge(ca) then
+      if en = '1' or go = '1' then
+        sl <= not sl;
+      end if;
+      if ic = 6 then
+        ic <= 0;
+        sp <= not sp;
+      else
+        ic <= ic + 1;
+      end if;
+    end if;
+  end process;
   ce <= not e2;
 
   pc : process (ca)
@@ -138,6 +156,8 @@ begin
   begin
     if rising_edge(cb) then
       rq <= trig;
+      zs <= sl;
+      zp <= sp;
       z <= q xor std_ulogic_vector(sat);
       mq <= mem(ra);
     end if;
@@ -161,8 +181,8 @@ begin
       if i = 120 then
         dd <= '1';
       end if;
-      if i = 125 then
-        e2 <= '1';
+      if i >= 120 and i mod 7 = 0 then
+        e2 <= not e2;
       end if;
       wait for 5 ns;
       ca <= '0';
@@ -213,7 +233,7 @@ begin
       report "t=" & time'image(now) & " cnt=" & to_hstring(cnt) & " sat=" & to_hstring(sat)
         & " q=" & to_hstring(q) & " w2=" & to_hstring(w2) & " rr=" & to_string(rr)
         & " x=" & to_string(x) & " acc=" & to_hstring(accq) & " v=" & to_hstring(v)
-        & " vq=" & to_hstring(vq) & " r2=" & to_hstring(r2) & " qe=" & to_string(qe) & " z=" & to_hstring(z) & " y=" & to_hstring(y) & " mo=" & to_hstring(mo)
+        & " vq=" & to_hstring(vq) & " r2=" & to_hstring(r2) & " qe=" & to_string(qe) & " zs=" & to_string(zs) & " zp=" & to_string(zp) & " z=" & to_hstring(z) & " y=" & to_hstring(y) & " mo=" & to_hstring(mo)
         & " mq=" & to_hstring(mq);
     end if;
   end process;

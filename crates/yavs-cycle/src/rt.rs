@@ -454,7 +454,8 @@ pub(crate) struct Skip {
 
 /// `YAVS_CYCLE_BLOCKSKIP` (developers): unset each class tracked or untracked as it pays
 /// ([`Adapt`]); `off` nothing tracked, class cones and every body as before; `on` always
-/// tracked; `flip` two edges tracked and three untracked in turn (for the tests).
+/// tracked; `flip` in turn two edges tracked and three untracked (every second class seven and
+/// three), for the tests.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Knob {
     #[default]
@@ -2240,7 +2241,10 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             a.cost += COST_EDGE + COST_RUN * ran + ran_ops / 2;
             a.watched += 1;
             let flip = s.knob == Knob::Flip;
-            if a.watched < if flip { 2 } else { WATCH } {
+            // The tests' turns: two edges tracked of five, or seven of ten for every second
+            // class (so one class is untracked while another is not, and both at times).
+            let turn = if k % 2 == 0 { 2 } else { 7 };
+            if a.watched < if flip { turn } else { WATCH } {
                 continue;
             }
             if flip || a.saved < a.cost {

@@ -828,7 +828,7 @@ Compiled tiers: Cranelift
      - unset
      - ``run``
    * - ``YAVS_CYCLE_BLOCKSKIP``
-     - Developers: ``off`` makes a cycle region (``--cycle``) run every clocked process of a clock at each of its edges and the logic all of them reach, as before the skip of idle clocked processes (to measure it); ``on`` keeps every clock's processes watched for the skip even where it does not pay; ``flip`` watches each clock for two edges and then runs it unwatched for three, in turn (for the tests). Another value is error E4104.
+     - Developers: ``off`` makes a cycle region (``--cycle``) run every clocked process of a clock at each of its edges and the logic all of them reach, as before the skip of idle clocked processes (to measure it); ``on`` keeps every clock's processes watched for the skip even where it does not pay; ``flip`` watches each clock for two edges (every second clock seven) and then runs it unwatched for three, in turn (for the tests). Another value is error E4104.
      - ``off``, ``on``, ``flip``
      - unset: each clock's processes are watched for the skip while it pays
      - ``run``

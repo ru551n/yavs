@@ -7289,6 +7289,127 @@ fn the_second_image_follows_memories_calls_and_choices() {
     }
 }
 
+/// Clocked members choose on each image's own values under `--cycle-exact-meta`: where the
+/// region's image reads a 'U' as 0 and so takes a branch the normal mode does not (`s = '0'`,
+/// `unsigned(ad) < 2`, `when "00"`), the second image takes the normal mode's, and a register
+/// loaded from a 'U' there shows the normal mode's value, not 'U' (A43: following the region's
+/// branch in clocked members failed an assert in Microwatt's icache). Widths 1 to 128.
+#[test]
+fn clocked_choices_on_a_u_take_each_images_own_branch() {
+    let dir = tempdir("cycle-railclk");
+    analyze(&dir, "railclk.vhd", include_str!("cycle/railclk.vhd"));
+    for w in [1, 63, 64, 65, 128] {
+        let g = format!("-gW={w}");
+        for t in tiers() {
+            let t = [&t[..], &[&g[..]]].concat();
+            let notes = |l: Vec<String>| -> Vec<String> {
+                l.into_iter().filter(|x| x.contains(" qn=")).collect()
+            };
+            let (normal, _) = run(&dir, &t, "cycle_railclk");
+            let normal = notes(normal);
+            let zero = "0".repeat(w);
+            let want = format!("q0={zero} qn={zero} qc={zero}");
+            assert!(
+                normal.len() == 1 && normal[0].ends_with(&want),
+                "{normal:?}"
+            );
+            let exact = [&t[..], &["--cycle", "--cycle-exact-meta"]].concat();
+            let (cycle, err) = run(&dir, &exact, "cycle_railclk");
+            let cycle = notes(cycle);
+            assert!(
+                cycle.len() == 1 && cycle[0].ends_with(&want),
+                "{w}: {cycle:?}\n{err}"
+            );
+            assert!(
+                err.contains("cycle mode: 1 of 3 processes run cycle-based")
+                    && err.contains("second image: still followed when the run ended")
+                    && err.lines().any(|l| l.starts_with("    cycle_railclk.ck ")),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
+/// A guarded combinational member that reads the region's image runs again on the second image
+/// when only the region's image changed: `y <= a when s = '1' else b` reads `s` as the region's
+/// image holds it, and when `s` goes from 'U' to '1' (already 1 on the second image) `y` and `q`
+/// show `a` as in the normal mode (with every step guarded). Widths 1 to 128.
+#[test]
+fn the_second_image_runs_a_member_that_reads_the_regions_image() {
+    let dir = tempdir("cycle-railguard");
+    analyze(&dir, "railguard.vhd", include_str!("cycle/railguard.vhd"));
+    for w in [1, 63, 64, 65, 128] {
+        let g = format!("-gW={w}");
+        for t in tiers() {
+            let t = [&t[..], &[&g[..]]].concat();
+            let notes = |l: Vec<String>| -> Vec<String> {
+                l.into_iter().filter(|x| x.contains("y=")).collect()
+            };
+            let (normal, _) = run(&dir, &t, "cycle_railguard");
+            let normal = notes(normal);
+            let (zero, one) = ("0".repeat(w), "1".repeat(w));
+            assert!(
+                normal.len() == 2 && normal[0].ends_with(&format!("y={zero}")),
+                "{normal:?}"
+            );
+            assert!(
+                normal[1].ends_with(&format!("y={one} q={one}")),
+                "{normal:?}"
+            );
+            let exact = [&t[..], &["--cycle", "--cycle-exact-meta"]].concat();
+            let env = [("YAVS_CYCLE_GUARD", "all")];
+            let (cycle, err) = run_vars(&dir, &exact, "cycle_railguard", &env);
+            let cycle = notes(cycle);
+            let tail = |l: &[String]| -> Vec<String> {
+                l.iter()
+                    .map(|x| x[x.find("y=").expect("y")..].to_string())
+                    .collect()
+            };
+            assert_eq!(tail(&cycle), tail(&normal), "{w}: {err}");
+            assert!(
+                err.contains("cycle mode: 2 of 4 processes run cycle-based")
+                    && err.contains("second image: still followed when the run ended"),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
+/// A register the second image changes on a 'U' enable is given back its value in every word of
+/// a register file of 80 words (`rail_keep`), as the normal mode keeps it.
+#[test]
+fn the_second_image_keeps_every_word_of_a_wide_register() {
+    let dir = tempdir("cycle-railkeep");
+    analyze(&dir, "railkeep.vhd", include_str!("cycle/railkeep.vhd"));
+    for i in [3, 63, 64, 70, 79] {
+        let g = format!("-gI={i}");
+        for t in tiers() {
+            let t = [&t[..], &[&g[..]]].concat();
+            let notes = |l: Vec<String>| -> Vec<String> {
+                l.into_iter().filter(|x| x.contains("rf=")).collect()
+            };
+            let (normal, _) = run(&dir, &t, "cycle_railkeep");
+            let normal = notes(normal);
+            let want = format!("rf={:016X} rf0=0000000000000011", i * 4099 + 17);
+            assert!(
+                normal.len() == 1 && normal[0].ends_with(&want),
+                "{normal:?}"
+            );
+            let exact = [&t[..], &["--cycle", "--cycle-exact-meta"]].concat();
+            let (cycle, err) = run(&dir, &exact, "cycle_railkeep");
+            let cycle = notes(cycle);
+            assert!(
+                cycle.len() == 1 && cycle[0].ends_with(&want),
+                "{i}: {cycle:?}\n{err}"
+            );
+            assert!(
+                err.contains("second image: still followed when the run ended"),
+                "{i}: {err}"
+            );
+        }
+    }
+}
+
 /// `YAVS_CYCLE_RAIL` takes `off`, `no-reseed` and `cap=N`; another value is an error naming
 /// them, before the run.
 #[test]

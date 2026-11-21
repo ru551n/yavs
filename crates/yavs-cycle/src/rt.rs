@@ -456,9 +456,9 @@ pub(crate) struct Rail {
     pub edges: u64,
     pub cap: u64,
     pub reseed: bool,
-    /// The words of `RegionProc::regs` before a run: the region's and the rail's, then the
-    /// region's and each of `more`.
-    pub snap: Vec<[u64; 2]>,
+    /// The words of `RegionProc::regs` before a run: the region's, the rail's, then each of
+    /// `more`'s, one after the other.
+    pub snap: Vec<u64>,
 }
 
 /// How a rail ended.
@@ -1437,17 +1437,18 @@ impl<const RAIL: bool> RegionProc<RAIL> {
         Ok(())
     }
 
-    /// The state words of both images before the region's run (`Rail::snap`).
+    /// The state words of every image before the region's run (`Rail::snap`).
     fn rail_snap(&self, rail: &mut Option<Box<Rail>>) {
         let Some(r) = rail.as_deref_mut() else {
             return;
         };
-        r.snap.clear();
-        let (a, b) = (&self.img, &r.img);
-        for &(w, c, _) in self.regs.iter() {
-            for i in w as usize..(w + c) as usize {
-                r.snap.push([a[i], b[i]]);
-                r.snap.extend(r.more.iter().map(|m| [a[i], m[i]]));
+        let Rail {
+            snap, img, more, ..
+        } = r;
+        snap.clear();
+        for m in [&self.img, &*img].into_iter().chain(more.iter()) {
+            for &(w, c, _) in self.regs.iter() {
+                snap.extend_from_slice(&m[w as usize..(w + c) as usize]);
             }
         }
     }
@@ -1460,20 +1461,24 @@ impl<const RAIL: bool> RegionProc<RAIL> {
     /// depending on the start values the region's run happened to leave as it was is lost too
     /// (it reads as without the rail).
     fn rail_keep(&self, r: &mut Rail) {
-        let keep = |mb: u64, rb: u64, ma: u64, ra: u64, m: u64| {
-            let d = m & !(mb ^ rb) & !(ma ^ mb) & (ra ^ rb);
-            ra & !d | ma & d
-        };
-        let mut k = 0;
-        for &(w, c, m) in self.regs.iter() {
-            for i in w as usize..(w + c) as usize {
-                let ([mb, rb], ma) = (r.snap[k], self.img[i]);
-                r.img[i] = keep(mb, rb, ma, r.img[i], m);
-                k += 1;
-                for u in r.more.iter_mut() {
-                    u[i] = keep(mb, r.snap[k][1], ma, u[i], m);
-                    k += 1;
+        let Rail {
+            snap, img, more, ..
+        } = r;
+        let n = snap.len() / (2 + more.len());
+        let (mb_all, rest) = snap.split_at(n);
+        for (k, u) in std::iter::once(img).chain(more.iter_mut()).enumerate() {
+            let rb_all = &rest[k * n..(k + 1) * n];
+            let mut at = 0;
+            for &(w, c, m) in self.regs.iter() {
+                let (w, c) = (w as usize, c as usize);
+                let ws = (u[w..w + c].iter_mut()).zip(&self.img[w..w + c]);
+                for ((ra, &ma), (&mb, &rb)) in
+                    ws.zip(mb_all[at..at + c].iter().zip(&rb_all[at..at + c]))
+                {
+                    let d = m & !(mb ^ rb) & !(ma ^ mb) & (*ra ^ rb);
+                    *ra = *ra & !d | ma & d;
                 }
+                at += c;
             }
         }
     }

@@ -66,34 +66,46 @@ pub(crate) fn lower_ty(
         }
         TypeKind::Protected { .. } => {
             let state = pb.ty(Ty::Record { fields: Vec::new() });
-            let vars = crate::protected::state_vars(db, t).len() as u32;
-            let id = pb.ty(Ty::Protected { state, vars });
+            let vars = crate::protected::state_vars(db, t);
+            let boxed = (0..vars.len() as u32)
+                .filter(|&n| crate::protected::boxed(db, vars[n as usize]))
+                .collect();
+            let n = vars.len() as u32;
+            let id = pb.ty(Ty::Protected {
+                state,
+                vars: n,
+                boxed,
+            });
             cx.tys.insert(t, id);
             let mut fields = Vec::new();
-            for d in crate::protected::state_vars(db, t) {
+            for &d in &vars {
                 let DeclKind::Object(o) = &db.decls[d].kind else {
                     continue;
                 };
-                fields.push(field(
-                    db,
-                    cx,
-                    pb,
-                    db.decls[d].name.to_string(),
-                    o.subtype,
-                    span,
-                )?);
+                let mut f = field(db, cx, pb, db.decls[d].name.to_string(), o.subtype, span)?;
+                // Its value is a heap object `prot_init_late` creates (#1180).
+                if crate::protected::boxed(db, d) {
+                    f.ty = pb.ty(Ty::Access { target: f.ty });
+                    f.desc = None;
+                }
+                fields.push(f);
             }
-            // The bounds each object keeps (`state_ranges`, #1176).
-            let vars = crate::protected::state_vars(db, t);
-            for (n, _) in crate::protected::state_ranges(db, t) {
-                let (name, ty) = (db.decls[vars[n]].name.to_string(), fields[n].ty);
-                for b in ["left", "right"] {
-                    let name = format!("{name}'{b}");
-                    fields.push(Field {
-                        name,
-                        ty,
-                        desc: None,
-                    });
+            // The bounds each object keeps (`state_ranges`, #1176), as 8-byte words.
+            let ranges = crate::protected::state_ranges(db, t);
+            if !ranges.is_empty() {
+                let word = pb.ty(Ty::Int {
+                    lo: i64::MIN,
+                    hi: i64::MAX,
+                });
+                for (n, _) in ranges {
+                    let name = db.decls[vars[n]].name.to_string();
+                    for b in ["left", "right"] {
+                        fields.push(Field {
+                            name: format!("{name}'{b}"),
+                            ty: word,
+                            desc: None,
+                        });
+                    }
                 }
             }
             pb.set_ty(state, Ty::Record { fields });

@@ -1055,15 +1055,27 @@ fn deref(sh: &Shared, at: &At<'_, '_>, t: &LitType, v: &Lit) -> Option<(LitType,
     }?;
     let c = yavs_elab::ir_decode_shown(&sh.prog, ty, &cv)?;
     let (t, v) = design::ir_lit(&sh.prog, ty, &c)?;
-    // A protected state lists the body's variables only, not the object's own bookkeeping.
+    // A protected state lists the body's variables only, not the object's own bookkeeping,
+    // and a variable whose field holds the handle of its value shows the value.
     match (protected, t, v) {
         (true, LitType::Record(mut fs), Lit::Record(mut xs)) => {
-            let vars = (sh.prog.types.iter()).find_map(|(_, t)| match t {
-                yavs_ir::Ty::Protected { state, vars } if *state == ty => Some(*vars as usize),
+            let p = (sh.prog.types.iter()).find_map(|(_, t)| match t {
+                yavs_ir::Ty::Protected { state, vars, boxed } if *state == ty => {
+                    Some((*vars as usize, boxed))
+                }
                 _ => None,
             });
-            fs.truncate(vars.unwrap_or(usize::MAX));
-            xs.truncate(vars.unwrap_or(usize::MAX));
+            let (vars, boxed) = p.map_or((usize::MAX, &[][..]), |(n, b)| (n, &b[..]));
+            fs.truncate(vars);
+            xs.truncate(vars);
+            for &n in boxed {
+                let n = n as usize;
+                if let (Some(f), Some(x)) = (fs.get_mut(n), xs.get_mut(n))
+                    && let Some((t, v)) = deref(sh, at, &f.1, x)
+                {
+                    (f.1, *x) = (t, v);
+                }
+            }
             Some((LitType::Record(fs), Lit::Record(xs)))
         }
         (_, t, v) => Some((t, v)),

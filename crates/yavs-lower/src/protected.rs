@@ -7,7 +7,8 @@ use yavs_diag::Span;
 use yavs_ir::{Dir, Inst, Mode, ParamClass, Reg, RegTy, RootKind, Ty, TyId, Width};
 use yavs_sem::decl::{Body, DeclKind, ObjClass, ObjRole};
 use yavs_sem::hir::Arg;
-use yavs_sem::types::{RangeC, TypeKind};
+use yavs_sem::stat::Staticness;
+use yavs_sem::types::{Constrainedness, RangeC, TypeKind};
 use yavs_sem::{Db, DeclId, ExprId, ScopeId, SubtypeId, TypeId};
 
 use crate::composite::scalar_w;
@@ -60,27 +61,47 @@ pub(crate) fn state_vars(db: &Db, t: TypeId) -> Vec<DeclId> {
     out
 }
 
-/// The ranges of scalar state variables of protected type `t` that may differ per object (a
-/// bound reading another state variable or calling an impure function): the variable's index
-/// in `state_vars` and its range. Each object keeps their bounds, left and right, in two state
+/// The ranges of state variables of protected type `t` that may differ per object (a bound
+/// reading another state variable or calling an impure function): the variable's index in
+/// `state_vars` and its range. Each object keeps their bounds, left and right, in two state
 /// fields after the variables (`bind_range`), evaluated once in declaration order when the
 /// object is created (LRM 14.4.2.1, #1176).
 // ponytail: a range record (2019) is evaluated at each use; a direction field would keep it.
 pub(crate) fn state_ranges(db: &Db, t: TypeId) -> Vec<(usize, &RangeC)> {
     let mut out = Vec::new();
     for (n, v) in state_vars(db, t).into_iter().enumerate() {
-        if let DeclKind::Object(o) = &db.decls[v].kind
-            && db.types[db.base(o.subtype)].kind.is_scalar()
-        {
-            let dynamic = db.declared_ranges(v).into_iter();
-            out.extend(
-                dynamic
-                    .filter(|r| db.dynamic_range(r).is_some())
-                    .map(|r| (n, r)),
-            );
-        }
+        let dynamic = db.declared_ranges(v).into_iter();
+        out.extend(
+            dynamic
+                .filter(|r| db.dynamic_range(r).is_some())
+                .map(|r| (n, r)),
+        );
     }
     out
+}
+
+/// Whether state variable `v` is a composite whose bounds may read the object: a range of
+/// `state_ranges`, or bounds taken from an initial value that is not globally static (a
+/// constant). Its size is known only once the object exists, so its field holds the handle of
+/// a heap object that `prot_init_late` creates in declaration order (#1180).
+pub(crate) fn boxed(db: &Db, v: DeclId) -> bool {
+    let DeclKind::Object(o) = &db.decls[v].kind else {
+        return false;
+    };
+    composite(db, v)
+        && (o
+            .default
+            .is_some_and(|e| db.exprs[e].stat < Staticness::Globally)
+            && db.constrainedness(o.subtype) != Constrainedness::Full
+            || (db.declared_ranges(v).iter()).any(|r| db.dynamic_range(r).is_some()))
+}
+
+/// Whether state variable `v` is of an array or record type.
+fn composite(db: &Db, v: DeclId) -> bool {
+    matches!(&db.decls[v].kind, DeclKind::Object(o) if matches!(
+        db.types[db.base(o.subtype)].kind,
+        TypeKind::Array { .. } | TypeKind::Record { .. }
+    ))
 }
 
 impl Fx<'_, '_> {
@@ -153,6 +174,9 @@ impl Fx<'_, '_> {
         for (n, v) in state_vars(db, t).into_iter().enumerate() {
             let (a, fd) = self.field_addr(state, base, p, n as u32, span)?;
             let obj = match scalar_w(self.fb.program(), fields[n].ty) {
+                _ if self.boxed_target(v, fields[n].ty).is_some() => {
+                    self.bind_boxed(fields[n].ty, a, depth, span)?
+                }
                 Some(w) => {
                     let o = self.fb.slot(8, 8);
                     let sa = self.addr(Space::Frame(depth), o);
@@ -177,11 +201,50 @@ impl Fx<'_, '_> {
             };
             self.cx.objs.insert(v, obj);
         }
-        let first = fields.len() - 2 * state_ranges(db, t).len();
-        for (k, (_, rc)) in state_ranges(db, t).into_iter().enumerate() {
+        let ranged = state_ranges(db, t);
+        let first = fields.len() - 2 * ranged.len();
+        for (k, (_, rc)) in ranged.into_iter().enumerate() {
             self.bind_range(state, base, p, (first + 2 * k) as u32, rc, depth, span)?;
         }
         Ok(())
+    }
+
+    /// The IR type of the value of state variable `v` when its field (of type `ft`) holds the
+    /// handle of it (`boxed`).
+    fn boxed_target(&mut self, v: DeclId, ft: TyId) -> Option<TyId> {
+        match self.fb.program().types().get(ft) {
+            Some(&Ty::Access { target }) if composite(self.db, v) => Some(target),
+            _ => None,
+        }
+    }
+
+    /// A frame slot `[data, desc]` of the heap object whose handle is in the field at `a` of
+    /// type `ft` (`boxed`).
+    fn bind_boxed(&mut self, ft: TyId, a: Reg, depth: u8, span: Span) -> R<Obj> {
+        let Some(&Ty::Access { target }) = self.fb.program().types().get(ft) else {
+            return Err(self
+                .cx
+                .ice(span, "a boxed protected variable without a handle"));
+        };
+        let h = self.load(a, Width::B8, RegTy::Handle);
+        let what = self.msg("protected variable", Dir::To);
+        let q = self.reg(RegTy::Ptr);
+        self.emit(Inst::Deref {
+            dst: q,
+            handle: h,
+            what,
+        });
+        let ds = self.desc_size(target);
+        let data = self.offset(q, ds);
+        let o = self.fb.slot(16, 8);
+        let sa = self.addr(Space::Frame(depth), o);
+        self.store(sa, data, Width::B8);
+        let sd = self.offset(sa, 8);
+        self.store(sd, q, Width::B8);
+        Ok(Obj::Array {
+            space: Space::Frame(depth),
+            off: o,
+        })
     }
 
     /// A frame copy of the bounds of range `rc` the object at `p` keeps in state fields `n`
@@ -408,6 +471,27 @@ impl Fx<'_, '_> {
             late.push(init.is_none());
             match init {
                 Some(val) => self.store_init(v, fields[n].ty, a, val, span)?,
+                // A placeholder until `prot_init_late` creates it, so that a method called by
+                // an earlier initialiser binds an object: its descriptor is all zero (one
+                // element per dimension).
+                None if let Some(target) = self.boxed_target(v, fields[n].ty) => {
+                    let tds = self.desc_size(target);
+                    let zd = self.alloc_n(tds.max(1));
+                    let size = self.size_of(target, zd);
+                    let zero = self.bytes_addr(vec![0]);
+                    let h = self.reg(RegTy::Handle);
+                    self.emit(Inst::NewFill {
+                        dst: h,
+                        ty: target,
+                        desc: zd,
+                        dsize: tds,
+                        data: zero,
+                        size,
+                        fill: 1,
+                        shared,
+                    });
+                    self.store(a, h, Width::B8);
+                }
                 // Its default needs its bounds: `prot_init_late` writes it.
                 None if ranged.iter().any(|&(m, _)| m == n) => {}
                 None => {
@@ -511,6 +595,23 @@ impl Fx<'_, '_> {
                     let (a, _) = self.field_addr(state, base, p, n as u32, span)?;
                     self.open_file_at(v, a)?;
                 }
+                continue;
+            }
+            if self.boxed_target(v, fields[n].ty).is_some() {
+                // Its object, now that its bounds are known; `comp_init` checks the initial
+                // value against them and writes `[data, desc, handle]`.
+                let o = self.fb.slot(24, 8);
+                let sa = self.addr(Space::Frame(self.depth), o);
+                self.comp_init(v, sa, shared)?;
+                let hs = self.offset(sa, 16);
+                let h = self.load(hs, Width::B8, RegTy::Handle);
+                let (a, _) = self.field_addr(state, base, p, n as u32, span)?;
+                self.store(a, h, Width::B8);
+                let obj = Obj::Array {
+                    space: Space::Frame(self.depth),
+                    off: o,
+                };
+                self.cx.objs.insert(v, obj);
                 continue;
             }
             let val = match o.default {

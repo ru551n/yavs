@@ -83,10 +83,13 @@ pub enum Ty {
     },
     /// A protected type; `state` is the record type of its private variables, `vars` how many
     /// of its leading fields are the body's declared variables (the rest is the object's own
-    /// bookkeeping, which a debugger does not list).
+    /// bookkeeping, which a debugger does not list). `boxed` lists the variables whose field
+    /// holds the handle of their value, created with the object (a constraint that reads
+    /// another variable); a debugger shows the value.
     Protected {
         state: TyId,
         vars: u32,
+        boxed: Vec<u32>,
     },
 }
 

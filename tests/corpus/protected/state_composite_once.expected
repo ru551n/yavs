@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:state_composite_once:_p0	a k=4 v=0 to 4 v'length=5 iv'length=4 iv(1)=7 d=5 downto 2 r.data'length=4 len=9 u'length=5 buf4 m=3 w=111
+diag	note	0	0	:state_composite_once:_p0	b k=6 v=0 to 6 v'length=7 iv'length=6 iv(1)=7 d=7 downto 2 r.data'length=6 len=13 u'length=7 buf6 m=5 w=11111
+diag	note	0	0	:state_composite_once:_p0	l k=8 v=0 to 8 v'length=9 iv'length=8 iv(1)=7 d=9 downto 2 r.data'length=8 len=17 u'length=9 buf8 m=7 w=1111111
+diag	note	0	0	:state_composite_once:_p0	a k=2 v=0 to 4 v'length=5 iv'length=4 iv(1)=7 d=5 downto 2 r.data'length=4 len=9 u'length=5 buf4 m=3 w=111 sum=33
+diag	note	0	0	:state_composite_once:_p0	l sum=73
+diag	note	0	0	:state_composite_once:_p0	fresh k=10 v=0 to 10 v'length=11 iv'length=10 iv(1)=7 d=11 downto 2 r.data'length=10 len=21 u'length=11 buf10 m=9 w=111111111 self v'length=7
+diag	note	0	0	:state_composite_once:_p0	b k=6 v=0 to 6 v'length=7 iv'length=6 iv(1)=7 d=7 downto 2 r.data'length=6 len=13 u'length=7 buf6 m=5 w=11111

@@ -1801,7 +1801,8 @@ fn conditions_read_shared_variables() {
 }
 
 /// A protected object's state lists the body's variables, not the bounds it keeps for
-/// `variable q : integer range 0 to k` (#1176).
+/// `variable q : integer range 0 to k` (#1176), and `v : bit_vector(0 to k)`, which it holds by
+/// handle, by its value (#1180).
 #[test]
 fn protected_state_hides_kept_ranges() {
     let d = tempdir_with(
@@ -1814,6 +1815,7 @@ architecture a of t is
   type bounded_t is protected body
     variable k : integer := 5;
     variable q : integer range 0 to k := 1;
+    variable v : bit_vector(0 to k) := \"101100\";
     procedure bump is
     begin
       q := q + 1;
@@ -1829,8 +1831,9 @@ begin
 end;
 ",
     );
-    let o = script(&d, "t", "break t.vhd:11; run; describe sv; examine sv.q");
+    let o = script(&d, "t", "break t.vhd:12; run; describe sv; examine sv.v");
     let out = stdout(&o) + &stderr(&o);
-    assert!(out.contains("fields k, q\n"), "{out}");
+    assert!(out.contains("fields k, q, v\n"), "{out}");
+    assert!(out.contains("\"101100\""), "{out}");
     assert!(!out.contains("'left") && !out.contains("'right"), "{out}");
 }

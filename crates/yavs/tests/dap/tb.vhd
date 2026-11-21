@@ -302,7 +302,8 @@ begin
 end architecture;
 
 -- A protected state variable whose range reads another state variable: the object keeps the
--- bounds, which the debugger does not list as variables (#1176).
+-- bounds, which the debugger does not list as variables (#1176); `v`, whose value the object
+-- holds by handle, shows as its value (#1180).
 entity prot_range is end;
 architecture a of prot_range is
   type bounded_t is protected
@@ -311,6 +312,7 @@ architecture a of prot_range is
   type bounded_t is protected body
     variable k : integer := 5;
     variable q : integer range 0 to k := 1;
+    variable v : bit_vector(0 to k) := "101100";
     procedure bump is
     begin
       q := q + 1;

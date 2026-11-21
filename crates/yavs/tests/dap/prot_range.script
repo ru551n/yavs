@@ -1,7 +1,7 @@
 top prot_range
 request initialize {"adapterID": "yavs"}
 request launch {}
-request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": [{"line": 316}]}
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": [{"line": 318}]}
 request configurationDone {}
 event stopped
 request stackTrace {"threadId": 1}
@@ -9,6 +9,7 @@ request scopes {"frameId": 65537}
 request variables {"variablesReference": 262149}
 request variables {"variablesReference": 4294967296}
 request evaluate {"expression": "q", "frameId": 65537}
+request evaluate {"expression": "v", "frameId": 65537}
 request variables {"variablesReference": 4294967297}
 request continue {"threadId": 1}
 event terminated

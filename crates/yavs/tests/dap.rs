@@ -290,12 +290,14 @@ fn console_commands_in_evaluate() {
 }
 
 /// A protected object's state lists the body's variables, not the bounds the object keeps for
-/// `variable q : integer range 0 to k` (#1176): `prot_range.script` stops in a method.
+/// `variable q : integer range 0 to k` (#1176), and shows `v : bit_vector(0 to k)`, which it
+/// holds by handle, as its value (#1180): `prot_range.script` stops in a method.
 #[test]
 fn protected_state_hides_kept_ranges() {
     script_case("prot_range", &[]);
     let t = std::fs::read_to_string(cases().join("prot_range.expected")).expect("expected");
     assert!(t.contains(r#""name":"q""#), "{t}");
+    assert!(t.contains(r#""name":"v","value":"\"101100\"""#), "{t}");
     assert!(!t.contains("'left") && !t.contains("'right"), "{t}");
 }
 

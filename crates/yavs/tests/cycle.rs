@@ -4933,15 +4933,21 @@ fn an_edge_run_that_would_change_nothing_is_skipped() {
 /// by its writer and another body, a reset from outside and one from a register of the other
 /// clock pulsed between two edges, a clocked variable, a vector written at a run-time index, a
 /// memory, registers read across clocks; inputs moved between edges and in the delta of an edge.
-/// The normal mode's values with the skip check, without it, with every member cut into parts and
-/// under the exact contract (its rail on, and ended early); bodies skipped and changes seen.
+/// The normal mode's values with the skip check, without it, with every member cut into parts,
+/// always tracked and with each class tracked and untracked in turn, and under the exact
+/// contract (its rail on, and ended early); bodies skipped and changes seen.
 #[test]
 fn a_clocked_body_whose_inputs_did_not_change_is_skipped() {
     let dir = tempdir("cycle-blockskip");
-    let envs: [&[(&str, &str)]; 3] = [
+    let envs: [&[(&str, &str)]; 5] = [
         &[],
         &[("YAVS_CYCLE_SKIP_CHECK", "")],
         &[("YAVS_CYCLE_CHUNK", "7")],
+        &[("YAVS_CYCLE_BLOCKSKIP", "on")],
+        &[
+            ("YAVS_CYCLE_BLOCKSKIP", "flip"),
+            ("YAVS_CYCLE_SKIP_CHECK", ""),
+        ],
     ];
     for w in [1, 63, 64, 65, 128] {
         analyze(
@@ -4982,6 +4988,10 @@ fn a_clocked_body_whose_inputs_did_not_change_is_skipped() {
                     if m != 1 {
                         assert!(n("clocked bodies skipped as idle") > 0, "{err}");
                     }
+                    if env.contains(&("YAVS_CYCLE_BLOCKSKIP", "flip")) && m != 1 {
+                        assert!(n("classes gone untracked") > 0, "{err}");
+                        assert!(n("class edges run untracked") > 0, "{err}");
+                    }
                 }
             }
             // Off: every body at each edge, the same values.
@@ -5007,7 +5017,7 @@ fn a_clocked_body_whose_inputs_did_not_change_is_skipped() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(!o.status.success() && o.stdout.is_empty(), "{err}");
     assert!(
-        err.contains("error[E4104]: YAVS_CYCLE_BLOCKSKIP takes `off`, not `of`"),
+        err.contains("error[E4104]: YAVS_CYCLE_BLOCKSKIP takes `off`, `on` or `flip`, not `of`"),
         "{err}"
     );
 }

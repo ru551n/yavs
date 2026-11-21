@@ -180,6 +180,18 @@ pub(crate) type Marks = Vec<Box<[u64]>>;
 /// A bit set as its words that are not 0, with their places.
 pub(crate) type Sparse = Box<[(u32, u64)]>;
 
+/// `f` of every set bit of `m`.
+#[inline]
+fn for_bits(m: &[u64], mut f: impl FnMut(usize)) {
+    for (j, &w) in m.iter().enumerate() {
+        let mut w = w;
+        while w != 0 {
+            f(64 * j + w.trailing_zeros() as usize);
+            w &= w - 1;
+        }
+    }
+}
+
 /// `m |= s`.
 #[inline]
 fn or_into(m: &mut [u64], s: &[(u32, u64)]) {
@@ -345,6 +357,9 @@ pub(crate) struct RegionProc<const RAIL: bool> {
     pub skip: Arc<Skip>,
     pub dirty: Vec<u64>,
     pub go: Vec<u64>,
+    /// Per edge class: whether its tracking pays ([`Adapt`]); not changed in this run.
+    pub adapt: Vec<Adapt>,
+    pub frozen: bool,
     /// The edge each cone and reach of `skip` was last ORed in, and this edge: many members that
     /// changed share one.
     pub ored: (Vec<u32>, Vec<u32>, u32),
@@ -401,7 +416,8 @@ pub(crate) struct Idle {
 /// A member is dirty when its last run changed something, or a source whose reach holds it
 /// changed since (an input chunk read, a clocked member's run); at its class's edge only a dirty
 /// one runs, the others are behind their run word (0). While the rail of `--cycle-exact-meta`
-/// runs, every body runs and every cone is marked.
+/// runs, every body runs and every cone is marked. A class whose tracking does not pay runs its
+/// bodies untracked for a while ([`Adapt`]).
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Skip {
     /// Per clocked member: its run word (`u32::MAX`: it always runs), its flag word, its cone
@@ -417,18 +433,63 @@ pub(crate) struct Skip {
     pub reach: Vec<Sparse>,
     /// Per input cone (`RegionProc::cones`): its reach.
     pub chunk: Vec<u32>,
+    /// The members without a class (several classes: they test the edges themselves; tracked
+    /// at every edge); per track its operations; per class those of its members, its mode word
+    /// (1: untracked) and what an untracked edge of it makes dirty; per settle step its
+    /// operations.
+    pub noclass: Box<[u64]>,
+    pub ops: Vec<u32>,
+    pub class_ops: Vec<u64>,
+    pub modes: Vec<u32>,
+    pub class_reach: Vec<Sparse>,
+    pub step_ops: Vec<u32>,
+    pub knob: Knob,
 }
 
-/// `YAVS_CYCLE_BLOCKSKIP` (developers): unset the idle skip of clocked bodies and the mark of
-/// what they changed ([`Skip`]), `off` the class cones and every body as before.
-pub(crate) fn skip_knob() -> Result<bool, String> {
+/// `YAVS_CYCLE_BLOCKSKIP` (developers): unset each class tracked or untracked as it pays
+/// ([`Adapt`]); `off` nothing tracked, class cones and every body as before; `on` always
+/// tracked; `flip` two edges tracked and three untracked in turn (for the tests).
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) enum Knob {
+    #[default]
+    Adapt,
+    Off,
+    On,
+    Flip,
+}
+
+/// Per edge class, whether its tracking pays: while tracked, `WATCH` edges are watched (the
+/// operations its skipped bodies and the settle steps of its cone left unmarked did not run,
+/// against an estimate of what tracking its run bodies cost); a class that saved less runs
+/// untracked for `rest` edges (doubling from `REST` to `REST_MAX` while it keeps failing),
+/// one that saved more is trusted for `REST` edges, then watched again.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Adapt {
+    pub plain: bool,
+    pub left: u32,
+    pub watched: u32,
+    pub saved: u64,
+    pub cost: u64,
+    pub rest: u32,
+}
+
+const WATCH: u32 = 16;
+const REST: u32 = 256;
+const REST_MAX: u32 = 4096;
+// ponytail: a fixed cost model (measured on NEORV32 and ac701 boot: about 50 instructions per
+// tracked body run and one per operation saved); a per-design calibration if it misjudges one.
+const COST_RUN: u64 = 50;
+
+pub(crate) fn skip_knob() -> Result<Knob, String> {
     let v = std::env::var_os("YAVS_CYCLE_BLOCKSKIP").unwrap_or_default();
     match &*v.to_string_lossy() {
-        "" => Ok(true),
-        "off" => Ok(false),
+        "" => Ok(Knob::Adapt),
+        "off" => Ok(Knob::Off),
+        "on" => Ok(Knob::On),
+        "flip" => Ok(Knob::Flip),
         v => Err(format!(
-            "YAVS_CYCLE_BLOCKSKIP takes `off`, not `{v}`{}",
-            yavs_diag::suggest::tail(v, "value", ["off"].into_iter())
+            "YAVS_CYCLE_BLOCKSKIP takes `off`, `on` or `flip`, not `{v}`{}",
+            yavs_diag::suggest::tail(v, "value", ["off", "on", "flip"].into_iter())
         )),
     }
 }
@@ -564,8 +625,10 @@ pub(crate) const EX_NAMES: [&str; EX_N] = [
     "clocked bodies run",
     "clocked bodies skipped as idle",
     "clocked bodies that changed a word",
+    "class edges run untracked",
+    "classes gone untracked",
 ];
-pub(crate) const EX_N: usize = 22;
+pub(crate) const EX_N: usize = 24;
 
 impl Stats {
     /// One wake that runs code: the edges of each class, and the members the mark lets run.
@@ -1873,6 +1936,9 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                 }
             }
             if dynamic {
+                // A run the idle rule would have skipped (the skip check runs it) leaves the
+                // classes' modes as a skip would: it must change no word of the image.
+                self.frozen = probe.is_some_and(|p| p.1);
                 self.skip_go();
             }
             if self.stats
@@ -1903,6 +1969,7 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             if dynamic {
                 self.run_marked(ctx, Fun::Own, false)?;
                 self.skip_end();
+                self.adapt_end();
                 if self.stats
                     && let Some(st) = self.metas.stats.lock().expect("not poisoned").as_mut()
                 {
@@ -1957,12 +2024,16 @@ impl<const RAIL: bool> RegionProc<RAIL> {
     /// The clocked members that run at this edge ([`Skip`]): of the classes that had one, those
     /// dirty and those that always run; their run words set.
     fn skip_go(&mut self) {
+        self.adapt_start();
         let s = &*self.skip;
         self.go.fill(0);
         for (k, &(_, _, w)) in self.clocks.iter().enumerate() {
-            if self.img[w] != 0
-                && let Some(c) = s.classes.get(k)
-            {
+            if self.img[w] != 0 {
+                let c = if self.adapt[k].plain {
+                    &s.noclass
+                } else {
+                    &s.classes[k]
+                };
                 self.go.iter_mut().zip(&c[..]).for_each(|(g, c)| *g |= c);
             }
         }
@@ -2020,6 +2091,129 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                         self.ex[21] += 1;
                     }
                 }
+            }
+        }
+    }
+
+    /// At an edge, before the bodies: a class whose untracked edges are up goes back to tracked
+    /// (its run words closed, every member dirty: their flags were not read meanwhile).
+    fn adapt_start(&mut self) {
+        if self.frozen {
+            return;
+        }
+        let s = &*self.skip;
+        for (k, &(_, _, w)) in self.clocks.iter().enumerate() {
+            let a = &mut self.adapt[k];
+            if self.img[w] == 0 || !a.plain {
+                continue;
+            }
+            a.left -= 1;
+            if a.left > 0 {
+                continue;
+            }
+            *a = Adapt {
+                rest: a.rest,
+                ..Default::default()
+            };
+            self.img[s.modes[k] as usize] = 0;
+            for_bits(&s.classes[k], |t| {
+                let r = s.tracks[t].0;
+                if r != u32::MAX {
+                    self.img[r as usize] = 0;
+                }
+            });
+            self.dirty
+                .iter_mut()
+                .zip(&s.classes[k][..])
+                .for_each(|(d, c)| *d |= c);
+        }
+    }
+
+    /// After the edge's own steps and `skip_end`: an untracked class marks its cone and makes
+    /// what it reaches dirty; a watched one adds what it saved and cost, and after `WATCH` edges
+    /// is trusted or goes untracked.
+    fn adapt_end(&mut self) {
+        let s = &*self.skip;
+        for (k, &(_, _, w)) in self.clocks.iter().enumerate() {
+            if self.img[w] == 0 {
+                continue;
+            }
+            let a = &mut self.adapt[k];
+            if self.frozen && !a.plain {
+                continue;
+            }
+            if a.plain {
+                (self.mark.iter_mut())
+                    .zip(&self.class_cones[k][..])
+                    .for_each(|(m, c)| *m |= c);
+                or_into(&mut self.dirty, &s.class_reach[k]);
+                if self.stats {
+                    self.ex[22] += 1;
+                }
+                continue;
+            }
+            if s.knob == Knob::On {
+                continue;
+            }
+            if a.watched >= WATCH {
+                a.left -= 1;
+                if a.left == 0 {
+                    (a.watched, a.saved, a.cost) = (0, 0, 0);
+                }
+                continue;
+            }
+            // Bodies of this class that ran (their operations), and the steps of its cone the
+            // mark leaves out.
+            let (mut ran, mut ran_ops) = (0u64, 0u64);
+            for (j, (g, c)) in self.go.iter().zip(&s.classes[k][..]).enumerate() {
+                let mut m = g & c;
+                while m != 0 {
+                    ran += 1;
+                    ran_ops += u64::from(s.ops[64 * j + m.trailing_zeros() as usize]);
+                    m &= m - 1;
+                }
+            }
+            let mut unmarked = 0u64;
+            for (j, (c, m)) in self.class_cones[k].iter().zip(&self.mark).enumerate() {
+                let mut x = c & !m;
+                while x != 0 {
+                    unmarked += u64::from(s.step_ops[64 * j + x.trailing_zeros() as usize]);
+                    x &= x - 1;
+                }
+            }
+            a.saved += s.class_ops[k].saturating_sub(ran_ops) + unmarked;
+            a.cost += COST_RUN * ran + ran_ops / 2;
+            a.watched += 1;
+            let flip = s.knob == Knob::Flip;
+            if a.watched < if flip { 2 } else { WATCH } {
+                continue;
+            }
+            if flip || a.saved < a.cost {
+                a.rest = if flip {
+                    3
+                } else {
+                    (2 * a.rest).clamp(REST, REST_MAX)
+                };
+                *a = Adapt {
+                    plain: true,
+                    left: a.rest,
+                    rest: a.rest,
+                    ..Default::default()
+                };
+                self.img[s.modes[k] as usize] = 1;
+                for_bits(&s.classes[k], |t| {
+                    let r = s.tracks[t].0;
+                    if r != u32::MAX {
+                        self.img[r as usize] = 1;
+                    }
+                });
+                if self.stats {
+                    self.ex[23] += 1;
+                }
+            } else {
+                a.watched = WATCH;
+                a.left = REST;
+                a.rest = 0;
             }
         }
     }

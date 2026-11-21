@@ -43,9 +43,9 @@ type SharedEntry = unsafe extern "C" fn(*mut u64, *const usize) -> u32;
 pub(crate) struct Code {
     _module: JITModule,
     /// By [`Fun`]: what it runs, in order.
-    entries: [Vec<Run>; 3],
+    entries: [Vec<Run>; 4],
     /// The edge's own steps in parts: a part runs when one of its words is not 0 (none: always).
-    edge_parts: Vec<(Vec<u32>, std::ops::Range<usize>)>,
+    edge_parts: Vec<EdgePart>,
     /// The words each loop group drives: (first, count), and where [`Run::Save`] copies them.
     groups: Vec<(Vec<(u32, u32)>, u32)>,
     /// The runs of words each [`Run::Copy`] copies: (to, from, count).
@@ -114,6 +114,7 @@ enum Run {
 }
 
 /// A step of the settle as [`compile`] takes it.
+#[derive(Clone)]
 pub(crate) enum Step {
     /// Operations, cut into functions with their neighbours.
     Ops(Vec<Op>),
@@ -150,6 +151,20 @@ pub(crate) struct Shape {
     pub blocks: Vec<(u32, u32)>,
     pub keep: Vec<bool>,
 }
+
+/// A part of the edge's own steps: it runs when one of its words is not 0 (none: always); its
+/// steps tracked (`Code::entries[1]`) and untracked (`[3]`), and the word choosing the untracked
+/// ones when it is 1 (`u32::MAX`: none).
+type EdgePart = (
+    Vec<u32>,
+    std::ops::Range<usize>,
+    std::ops::Range<usize>,
+    u32,
+);
+
+/// The edge's steps with its clocked bodies untracked, per edge word the mode word of its class,
+/// and the mode word of the part before any gate ([`EdgePart`]).
+pub(crate) type Untracked<'a> = (&'a [Step], &'a [(u32, u32)], u32);
 
 /// The site [`Code::run`] gives when a loop group changed in a pass after its fixed point.
 pub(crate) const UNSETTLED: u32 = u32::MAX;
@@ -230,7 +245,7 @@ impl Code {
         match f {
             Fun::Edge if edge => {
                 self.open(img);
-                for (ws, r) in &self.edge_parts {
+                for (ws, r, _, _) in &self.edge_parts {
                     if ws.is_empty() || ws.iter().any(|&w| img[w as usize] != 0) {
                         self.steps(img, &self.entries[1][r.clone()], None, false)?;
                     }
@@ -252,9 +267,12 @@ impl Code {
     ) -> Result<(), u32> {
         let mark = mark.filter(|m| m.iter().zip(&self.every[..]).any(|(m, e)| e & !m != 0));
         if matches!(f, Fun::Edge | Fun::Own) {
-            for (ws, r) in &self.edge_parts {
+            for (ws, r, p, m) in &self.edge_parts {
                 if ws.is_empty() || ws.iter().any(|&w| img[w as usize] != 0) {
-                    self.steps(img, &self.entries[1][r.clone()], None, guards)?;
+                    // The reference (no guards) runs every body untracked.
+                    let v = !guards || (*m != u32::MAX && img[*m as usize] != 0);
+                    let (e, r) = if v && !p.is_empty() { (3, p) } else { (1, r) };
+                    self.steps(img, &self.entries[e][r.clone()], None, guards)?;
                 }
             }
         }
@@ -1399,6 +1417,7 @@ pub(crate) fn compile<'a>(
     settle: &'a [Step],
     units: &[u32],
     edge: &'a [Step],
+    plain: Option<Untracked<'a>>,
     init: &'a [Step],
     bodies: &'a [(Vec<Op>, bool)],
     shapes: &'a [Shape],
@@ -1468,12 +1487,19 @@ pub(crate) fn compile<'a>(
     // with its table and first site, or a step of the runner.
     let mut tables: Vec<Box<[usize]>> = Vec::new();
     let mut copies: Vec<Vec<(u32, u32, u32)>> = Vec::new();
-    let mut runs: [Vec<Pend>; 3] = Default::default();
+    let mut runs: [Vec<Pend>; 4] = Default::default();
     let mut settle_units: Vec<Vec<u32>> = Vec::new();
-    let mut edge_parts = Vec::new();
-    for (f, (what, steps)) in [("settle", settle), ("edge", edge), ("init", init)]
-        .into_iter()
-        .enumerate()
+    // The edge's parts of each variant: words and range.
+    let mut parts_of: [Vec<(Vec<u32>, std::ops::Range<usize>)>; 2] = Default::default();
+    let (plain_steps, modes, mode0) = plain.unwrap_or((&[], &[], u32::MAX));
+    for (f, (what, steps)) in [
+        ("settle", settle),
+        ("edge", edge),
+        ("init", init),
+        ("plain", plain_steps),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let mut cur: Vec<Part<'a>> = Vec::new();
         // The settle's units (`compile`'s `units`) of the parts in `cur`, and of each step made.
@@ -1647,14 +1673,35 @@ pub(crate) fn compile<'a>(
         if f == 0 {
             settle_units = eunits;
         }
-        if f == 1 {
+        if f == 1 || f == 3 {
             let n = runs[f].len();
-            edge_parts = (gates.iter().enumerate())
+            parts_of[f / 2] = (gates.iter().enumerate())
                 .map(|(k, &(w, a))| (w.to_vec(), a..gates.get(k + 1).map_or(n, |g| g.1)))
-                .filter(|(_, r)| !r.is_empty())
                 .collect();
         }
     }
+    // A part runs untracked when its class's mode word is 1 (a part of no class or of several
+    // classes holds no body whose variants differ: the tracked one).
+    let [tracked, untracked] = parts_of;
+    if plain.is_some()
+        && (tracked.len() != untracked.len()
+            || (tracked.iter().zip(&untracked)).any(|(a, b)| a.0 != b.0))
+    {
+        return Err("the edge's untracked variant has other gates".into());
+    }
+    let edge_parts: Vec<EdgePart> = (tracked.into_iter().enumerate())
+        .map(|(k, (w, r))| {
+            let mode = match &w[..] {
+                _ if plain.is_none() => u32::MAX,
+                [] => mode0,
+                [x] => modes.iter().find(|m| m.0 == *x).map_or(u32::MAX, |m| m.1),
+                _ => u32::MAX,
+            };
+            let p = untracked.get(k).map_or(0..0, |u| u.1.clone());
+            (w, r, p, mode)
+        })
+        .filter(|x| !x.1.is_empty())
+        .collect();
     // Per shape, per block: the block whose base it is addressed from and the distance to it, the
     // same in every instance (an instance's signals lie in one order: a body needs few bases).
     let mut inst: Vec<Vec<usize>> = vec![Vec::new(); shapes.len()];
@@ -2168,7 +2215,7 @@ fn finish(
                 .0,
         ))
     };
-    let mut entries: [Vec<Run>; 3] = Default::default();
+    let mut entries: [Vec<Run>; 4] = Default::default();
     for (f, rs) in plan.runs.iter().enumerate() {
         entries[f] = (rs.iter())
             .map(|r| {
@@ -2215,7 +2262,9 @@ fn finish(
     if (plan.copies.iter().flatten()).any(|&(d, s, n)| (d.max(s) + n) as usize > words) {
         return Err("a copy's words do not fit the image".into());
     }
-    if (plan.edge_parts.iter()).any(|(ws, _)| ws.iter().any(|&w| w as usize >= words)) {
+    if (plan.edge_parts.iter()).any(|(ws, _, _, m)| {
+        ws.iter().any(|&w| w as usize >= words) || (*m != u32::MAX && *m as usize >= words)
+    }) {
         return Err("an edge gate's word does not fit the image".into());
     }
     // A step without units behind a guard runs only after it: `steps` walks every step then.
@@ -2262,9 +2311,9 @@ fn finish(
 pub(crate) struct CodePlan {
     /// Per function: its symbol, and whether it is a shape's body (with a table).
     funs: Vec<(String, bool)>,
-    runs: [Vec<Pend>; 3],
+    runs: [Vec<Pend>; 4],
     /// [`Code::edge_parts`].
-    edge_parts: Vec<(Vec<u32>, std::ops::Range<usize>)>,
+    edge_parts: Vec<EdgePart>,
     groups: Vec<(Vec<(u32, u32)>, u32)>,
     copies: Vec<Vec<(u32, u32, u32)>>,
     words: usize,
@@ -3985,6 +4034,7 @@ mod tests {
             &[Step::Ops(vec![op])],
             &[0],
             &[],
+            None,
             &[],
             &[],
             &[],

@@ -1121,6 +1121,9 @@ fn built(
     // members).
     let edge_words: Vec<u32> = (0..sel.clocks.len() as u32).map(|k| n + k).collect();
     n += sel.clocks.len().max(1) as u32;
+    // One word per edge class: 1 when its clocked bodies run untracked (`rt::Adapt`).
+    let mode_words: Vec<u32> = (0..sel.clocks.len() as u32).map(|k| n + k).collect();
+    n += sel.clocks.len() as u32;
     // Under `--cycle-exact-meta` the two words of `Ref::Oth` (`rt::Rail`).
     let oth = n;
     if region::exact_meta() {
@@ -1187,7 +1190,8 @@ fn built(
     // Per member: its clocked body with the memory writes kept back, those writes, and the slot
     // that says one of them happened.
     let mut deferred: Vec<(Vec<Op>, Vec<Pending>, u32)> = Vec::new();
-    let skip_on = rt::skip_knob()?;
+    let knob = rt::skip_knob()?;
+    let skip_on = knob != rt::Knob::Off;
     let mut track_at: Vec<Option<u32>> = Vec::new();
     for (pi, b) in &sel.members {
         let base = n;
@@ -1637,6 +1641,9 @@ fn built(
         clocked.sort_by_key(|&k| gate_of(k));
     }
     let mut gate: Vec<u32> = Vec::new();
+    // The edge's steps with the clocked bodies untracked (`codegen::compile`'s `plain`): their
+    // places in `edge` and their operations.
+    let mut plain_bodies: Vec<(usize, Vec<Op>)> = Vec::new();
     for k in clocked {
         let (r, b) = (&rs[k], &sel.members[k].1);
         let w = gate_of(k);
@@ -1653,11 +1660,9 @@ fn built(
             } else {
                 &deferred[k].0
             };
-            let body = tracked(
-                k,
-                shared_body(ops, true, several && class_word(k).is_none()),
-            );
-            let ops = body.iter().map(|op| r.op(op)).collect();
+            let body = shared_body(ops, true, several && class_word(k).is_none());
+            plain_bodies.push((edge.len(), body.iter().map(|op| r.op(op)).collect()));
+            let ops = tracked(k, body).iter().map(|op| r.op(op)).collect();
             edge.push(codegen::Step::Ops(ops));
         }
     }
@@ -1744,6 +1749,20 @@ fn built(
         edge.push(codegen::Step::Ops(ops));
     }
     edge.extend(copies(false));
+    let mut plain = edge.clone();
+    for (i, ops) in plain_bodies {
+        plain[i] = codegen::Step::Ops(ops);
+    }
+    // Per edge word the mode word of its class; the part before any gate is the only class's.
+    let modes: Vec<(u32, u32)> = edge_words
+        .iter()
+        .copied()
+        .zip(mode_words.iter().copied())
+        .collect();
+    let mode0 = match &mode_words[..] {
+        [m] => *m,
+        _ => u32::MAX,
+    };
     let err = n;
     n += 2;
     // The log of the notes that fired in a run: a count, then a site per note (each runs at most
@@ -1831,6 +1850,7 @@ fn built(
         &settle,
         &units,
         &edge,
+        skip_on.then_some((&plain[..], &modes[..], mode0)),
         &init_fn,
         &bodies,
         &shapes,
@@ -1920,6 +1940,17 @@ fn built(
     let mut skip = rt::Skip {
         classes: vec![vec![0; cw].into_boxed_slice(); sel.clocks.len()],
         always: vec![0; cw].into_boxed_slice(),
+        noclass: vec![0; cw].into_boxed_slice(),
+        modes: mode_words.clone(),
+        knob,
+        class_ops: vec![0; sel.clocks.len()],
+        step_ops: (code.settle_units.iter())
+            .map(|us| {
+                (us.iter())
+                    .map(|&u| weight(&sel.members[u as usize].1.ops) as u32)
+                    .sum()
+            })
+            .collect(),
         ..Default::default()
     };
     let mut seen_cone: std::collections::HashMap<rt::Sparse, u32> = Default::default();
@@ -1944,10 +1975,20 @@ fn built(
         if run == u32::MAX {
             bit(&mut skip.always, ci);
         }
+        let ops = weight(&sel.members[k].1.ops) as u32;
         match class_word(k).and_then(|w| edge_words.iter().position(|&x| x == w)) {
-            Some(c) => bit(&mut skip.classes[c], ci),
-            None => skip.classes.iter_mut().for_each(|c| bit(c, ci)),
+            Some(c) => {
+                bit(&mut skip.classes[c], ci);
+                skip.class_ops[c] += u64::from(ops);
+            }
+            None => {
+                skip.classes.iter_mut().for_each(|c| bit(c, ci));
+                if several {
+                    bit(&mut skip.noclass, ci);
+                }
+            }
         }
+        skip.ops.push(ops);
         let (st, ms) = cone_of[ci];
         let c = intern(sparse(st), &mut seen_cone, &mut skip.cones);
         let h = intern(
@@ -1957,6 +1998,21 @@ fn built(
         );
         skip.tracks.push((run, base + t, c, h));
     }
+    // Per class: what an edge of its bodies run untracked makes dirty (all their reaches).
+    skip.class_reach = (skip.classes.iter())
+        .map(|m| {
+            let mut v = m.to_vec();
+            for (j, &w) in m.iter().enumerate() {
+                let mut w = w;
+                while w != 0 {
+                    let t = 64 * j + w.trailing_zeros() as usize;
+                    w &= w - 1;
+                    or_dense(&mut v, &skip.reach[skip.tracks[t].3 as usize]);
+                }
+            }
+            sparse(&v)
+        })
+        .collect();
     if stats {
         eprintln!(
             "cycle stats: {} clocked bodies tracked, {} always run; {} cones, {} reaches",
@@ -2502,6 +2558,8 @@ fn finish(
                     },
                     dirty: vec![!0; skip.always.len()],
                     ored: (vec![0; skip.cones.len()], vec![0; skip.reach.len()], 0),
+                    adapt: vec![rt::Adapt::default(); skip.modes.len()],
+                    frozen: false,
                     go: vec![0; skip.always.len()],
                     skip: skip.clone(),
                     cones: cones.clone(),
@@ -2747,6 +2805,13 @@ fn cones<'a>(
         (st.into_boxed_slice(), ms.into_boxed_slice())
     };
     (of_leaf, classes, class_members, clocked)
+}
+
+/// `v |= s`.
+fn or_dense(v: &mut [u64], s: &[(u32, u64)]) {
+    for &(k, w) in s {
+        v[k as usize] |= w;
+    }
 }
 
 /// The leaves member `k` reads (or writes): those it lists, and every leaf of a signal its

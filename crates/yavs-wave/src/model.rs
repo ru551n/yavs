@@ -272,6 +272,8 @@ struct Frame {
     start: Option<(usize, usize)>,
     /// The scope's name, for the paths of what is declared below it.
     name: Box<str>,
+    /// An include pattern matches this scope or one above it: everything below is included.
+    inc: bool,
 }
 
 /// Builds a [`Hierarchy`], applying the [`Selection`] as nodes are declared.
@@ -314,6 +316,13 @@ impl HierarchyBuilder {
         self.stack.last().is_some_and(|f| f.start.is_none())
     }
 
+    /// Whether the selection keeps `path` in a scope that is not dropped: the scopes above
+    /// were matched when they were opened, so only `path` itself is matched here.
+    fn keeps(&self, path: &str) -> bool {
+        let inc = self.sel.include.is_empty() || self.stack.last().is_some_and(|f| f.inc);
+        (inc || self.sel.hit_include(path)) && !self.sel.hit_exclude(path)
+    }
+
     fn put(&mut self, text: &str) -> Str {
         let at = self.h.names.len() as u32;
         self.h.names.push_str(text);
@@ -325,7 +334,11 @@ impl HierarchyBuilder {
 
     /// Open a scope. Always pair with [`Self::up`], also when the scope is dropped by the selection.
     pub fn scope(&mut self, name: &str, kind: ScopeKind, component: &str) {
-        let keep = !self.dropped() && !(self.globs && self.sel.excluded(&self.path_of(name)));
+        let path = self.globs.then(|| self.path_of(name));
+        let path = path.as_deref().unwrap_or_default();
+        let keep = !self.dropped() && !(self.globs && self.sel.hit_exclude(path));
+        let inc =
+            self.stack.last().is_some_and(|f| f.inc) || self.globs && self.sel.hit_include(path);
         let start = keep.then(|| {
             let start = (self.h.items.len(), self.h.names.len());
             let (name, comp) = (self.put(name), self.put(component));
@@ -335,6 +348,7 @@ impl HierarchyBuilder {
         self.stack.push(Frame {
             start,
             name: name.into(),
+            inc,
         });
     }
 
@@ -408,11 +422,8 @@ impl HierarchyBuilder {
         if self.dropped() {
             return false;
         }
-        if self.globs {
-            let path = self.path_of(name);
-            if !self.sel.included(&path) || self.sel.excluded(&path) {
-                return false;
-            }
+        if self.globs && !self.keeps(&self.path_of(name)) {
+            return false;
         }
         if let SigType::Vector { bounds, .. } = &**ty
             && bounds.len() > self.sel.max_array_elems as u64
@@ -444,7 +455,7 @@ impl HierarchyBuilder {
             return;
         }
         let path = self.path_of(name);
-        if self.sel.included(&path) && !self.sel.excluded(&path) {
+        if self.keeps(&path) {
             self.h.skipped.push(Skipped { path, elems: None });
         }
     }
@@ -458,7 +469,7 @@ impl HierarchyBuilder {
     /// [`Hierarchy::held`] when the selection keeps it.
     pub fn held(&mut self, name: &str) {
         let path = self.path_of(name);
-        if !self.dropped() && self.sel.included(&path) && !self.sel.excluded(&path) {
+        if !self.dropped() && self.keeps(&path) {
             self.h.held.push(path);
         }
     }
@@ -536,6 +547,47 @@ mod tests {
                 elems: Some(3)
             }]
         );
+    }
+
+    /// The builder matches each path once and inherits the scopes' matches: the same signals as
+    /// matching every path and its ancestors (`Selection::included`, `excluded`).
+    #[test]
+    fn matching_once_per_path_keeps_what_the_selection_means() {
+        let pats: &[&[&str]] = &[
+            &[],
+            &["top"],
+            &["top.u1"],
+            &["**.b"],
+            &["top.*.a"],
+            &["*.u?.*"],
+            &["**"],
+        ];
+        let paths = [["u1", "a"], ["u1", "b"], ["u2", "a"], ["u2", "b"]];
+        for inc in pats {
+            for exc in pats {
+                let sel = Selection {
+                    include: inc.iter().map(|s| s.to_string()).collect(),
+                    exclude: exc.iter().map(|s| s.to_string()).collect(),
+                    ..Selection::default()
+                };
+                let mut b = HierarchyBuilder::new(sel.clone());
+                b.scope("top", ScopeKind::Instance, "");
+                for (k, [u, n]) in paths.iter().enumerate() {
+                    b.scope(u, ScopeKind::Instance, "");
+                    let kept = b.signal(
+                        n,
+                        SignalId(k as u32),
+                        int(),
+                        PortDir::None,
+                        ObjClass::Signal,
+                    );
+                    b.up();
+                    let path = format!("top.{u}.{n}");
+                    let want = sel.included(&path) && !sel.excluded(&path);
+                    assert_eq!(kept, want, "{inc:?} {exc:?} {path}");
+                }
+            }
+        }
     }
 
     #[test]

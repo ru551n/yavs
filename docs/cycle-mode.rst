@@ -743,10 +743,9 @@ region allows:
   cannot be exported and is left out of the file, with warning W0802 naming it.
 * Variables are not recorded: ``--wave-variables`` is refused (E4102), as the region keeps the variables of its
   processes in its own image.
-* Recording costs time only for what is recorded: the region exports just the signals the selection keeps, so
-  ``--wave-include`` of a few signals costs little more than no wave, and without ``--wave`` nothing changes. The
-  region exports each recorded signal every time step it changes, which a run with the whole design recorded pays
-  for, in the region as in the normal mode.
+* Without ``--wave`` nothing changes. With it, recording costs what it costs in the normal mode, and the region also
+  exports each recorded signal at every time step where it changes. It exports only the signals the selection keeps,
+  so ``--wave-include`` of a few signals avoids most of that second part.
 
 .. _cycle-clock-copies:
 

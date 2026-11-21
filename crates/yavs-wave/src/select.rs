@@ -26,16 +26,34 @@ impl Default for Selection {
 }
 
 impl Selection {
+    /// The selection's meaning, for the tests: the builder matches each path once (`hit_include`).
+    #[cfg(test)]
     pub(crate) fn included(&self, path: &str) -> bool {
         self.include.is_empty() || any_match(&self.include, path)
     }
 
+    #[cfg(test)]
     pub(crate) fn excluded(&self, path: &str) -> bool {
         any_match(&self.exclude, path)
+    }
+
+    /// An include pattern matches `path` itself (not an ancestor).
+    pub(crate) fn hit_include(&self, path: &str) -> bool {
+        self.include
+            .iter()
+            .any(|p| glob(p.as_bytes(), path.as_bytes()))
+    }
+
+    /// An exclude pattern matches `path` itself (not an ancestor).
+    pub(crate) fn hit_exclude(&self, path: &str) -> bool {
+        self.exclude
+            .iter()
+            .any(|p| glob(p.as_bytes(), path.as_bytes()))
     }
 }
 
 /// True if a pattern matches `path` or any ancestor of it.
+#[cfg(test)]
 fn any_match(patterns: &[String], path: &str) -> bool {
     patterns.iter().any(|p| {
         let mut end = 0;

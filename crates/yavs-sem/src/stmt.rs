@@ -659,6 +659,34 @@ impl Db {
         self.waits_below(self.entity(d), &mut FxHashSet::default(), false)
     }
 
+    /// Whether the body of `sp` assigns its `out` formal `p` whole before anything can read it,
+    /// so the formal's temporary needs no copy in: the first statement is `p := v` with `v` not
+    /// naming `p`, and the body declares nothing but the parameters.
+    pub fn assigns_first(&self, sp: &crate::decl::Subprogram, p: &crate::decl::Param) -> bool {
+        let db = self;
+        let (crate::hir::Mode::Out, Some(f), crate::decl::Body::Hir { scope, stmts }) =
+            (p.mode, p.decl, &sp.body)
+        else {
+            return false;
+        };
+        let Some(StmtKind::VarAssign {
+            target,
+            rhs: crate::hir::Rhs::Simple(v),
+        }) = stmts.first().map(|&s| &db.stmts[s].kind)
+        else {
+            return false;
+        };
+        let mut reads = false;
+        db.walk_expr(*v, &mut |y| {
+            reads |= matches!(db.exprs[y].kind, crate::hir::ExprKind::Obj(o) if o == f);
+        });
+        matches!(db.exprs[target.expr].kind, crate::hir::ExprKind::Obj(o) if o == f)
+            && !reads
+            && db.scopes[*scope].order.iter().all(
+                |&d| matches!(&db.decls[d].kind, DeclKind::Object(o) if o.role == ObjRole::Param),
+            )
+    }
+
     fn waits_below(&self, d: DeclId, seen: &mut FxHashSet<DeclId>, here: bool) -> Option<Span> {
         let crate::decl::Body::Hir { scope, stmts } = &self.decls[d].kind.subprogram()?.body else {
             return None;

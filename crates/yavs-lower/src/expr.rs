@@ -3972,6 +3972,9 @@ impl<'a> Fx<'a, '_> {
         // The write-backs of this call, kept apart while each argument is lowered: a call in
         // an argument copies its own out right after it, and must not take this call's (#1179).
         let (mut held, mut held_parts) = (Vec::new(), Vec::new());
+        // `out` actuals passed by reference that take the formal's default value, stored once
+        // every actual is evaluated (LRM 14.6 b) 5), #1184).
+        let mut defaults = Vec::new();
         for a in args {
             held.append(&mut self.writeback);
             held_parts.append(&mut self.writeback_parts);
@@ -4009,6 +4012,9 @@ impl<'a> Fx<'a, '_> {
                             && !self.object_within(p.subtype, st)
                             && self.checked_after(sp, args, a, e) =>
                     {
+                        if self.out_default(sp, p) {
+                            defaults.push((addr, w, p.subtype, es));
+                        }
                         if p.mode == yavs_sem::hir::Mode::Inout {
                             let (_, rt, _) = self.scalar(p.subtype, es)?;
                             let v = self.load(addr, w, rt);
@@ -4026,15 +4032,20 @@ impl<'a> Fx<'a, '_> {
                     // hold every value of the formal's: copy-in/copy-out through a frame
                     // temporary of the formal's width, as for a logic element below; the
                     // write-back checks the value against the actual's subtype (LRM 4.2.2.2,
-                    // #1175).
+                    // #1175). So is an `out` actual taking the formal's default that the body
+                    // may reach by another path, which must not see that value (#1184).
                     Place::Scalar { addr, w, st }
                         if w != self.scalar(p.subtype, es)?.2
-                            || !self.object_within(p.subtype, st) =>
+                            || !self.object_within(p.subtype, st)
+                            || (self.out_default(sp, p) && !self.checked_after(sp, args, a, e)) =>
                     {
                         let (_, rt, fw) = self.scalar(p.subtype, es)?;
                         let off = self.fb.slot(8, 8);
                         let t = self.addr(Space::Frame(self.depth), off);
-                        if !self.assigns_first(sp, p) {
+                        if self.out_default(sp, p) {
+                            let v = self.formal_default(p.subtype, es)?;
+                            self.store(t, v, fw);
+                        } else if !self.db.assigns_first(sp, p) {
                             let v = self.load(addr, w, rt);
                             self.check_inout(v, st, p, sp, es)?;
                             self.store(t, v, fw);
@@ -4049,6 +4060,9 @@ impl<'a> Fx<'a, '_> {
                         ));
                     }
                     Place::Scalar { addr, w, st } => {
+                        if self.out_default(sp, p) {
+                            defaults.push((addr, w, p.subtype, es));
+                        }
                         if p.mode == yavs_sem::hir::Mode::Inout
                             && !self.object_within(st, p.subtype)
                         {
@@ -4063,7 +4077,11 @@ impl<'a> Fx<'a, '_> {
                         // for scalars); the actual is written back after the call.
                         let off = self.fb.slot(8, 8);
                         let t = self.addr(Space::Frame(self.depth), off);
-                        if !self.assigns_first(sp, p) {
+                        if self.out_default(sp, p) {
+                            let v = self.formal_default(p.subtype, es)?;
+                            let (_, _, w) = self.scalar(p.subtype, es)?;
+                            self.store(t, v, w);
+                        } else if !self.db.assigns_first(sp, p) {
                             let code = self.reg(RegTy::I64);
                             self.emit(Inst::LGet {
                                 dst: code,
@@ -4188,6 +4206,10 @@ impl<'a> Fx<'a, '_> {
                 }
             }
         }
+        for (addr, w, st, span) in defaults {
+            let v = self.formal_default(st, span)?;
+            self.store(addr, v, w);
+        }
         held.append(&mut self.writeback);
         held_parts.append(&mut self.writeback_parts);
         self.writeback = held;
@@ -4300,32 +4322,25 @@ impl<'a> Fx<'a, '_> {
         })
     }
 
-    /// Whether the body of `sp` assigns its `out` formal `p` whole before anything can read it,
-    /// so the formal's temporary needs no copy in: the first statement is `p := v` with `v` not
-    /// naming `p`, and the body declares nothing but the parameters.
-    fn assigns_first(&self, sp: &Subprogram, p: &Param) -> bool {
-        let db = self.db;
-        let (yavs_sem::hir::Mode::Out, Some(f), Body::Hir { scope, stmts }) =
-            (p.mode, p.decl, &sp.body)
-        else {
-            return false;
-        };
-        let Some(yavs_sem::hir::StmtKind::VarAssign {
-            target,
-            rhs: yavs_sem::hir::Rhs::Simple(v),
-        }) = stmts.first().map(|&s| &db.stmts[s].kind)
-        else {
-            return false;
-        };
-        let mut reads = false;
-        db.walk_expr(*v, &mut |y| {
-            reads |= matches!(db.exprs[y].kind, ExprKind::Obj(o) if o == f);
-        });
-        matches!(db.exprs[target.expr].kind, ExprKind::Obj(o) if o == f)
-            && !reads
-            && db.scopes[*scope].order.iter().all(
-                |&d| matches!(&db.decls[d].kind, DeclKind::Object(o) if o.role == ObjRole::Param),
-            )
+    /// Whether scalar `out` formal `p` of `sp` starts at its subtype's default value, not
+    /// assigned first (LRM 4.2.2.2: no copy in; 14.6 b) 5): the implicit initial value, 'left
+    /// or null, 6.4.2.4; #1184). A native or predefined body sets its outs itself (TEXTIO READ
+    /// leaves VALUE undefined on failure, 16.4), so the actual's value stays there.
+    fn out_default(&self, sp: &Subprogram, p: &Param) -> bool {
+        p.mode == yavs_sem::hir::Mode::Out
+            && !matches!(sp.body, Body::Native(_) | Body::Implicit(_))
+            && !self.db.assigns_first(sp, p)
+    }
+
+    /// The default value of a scalar or access subtype (LRM 6.4.2.4).
+    fn formal_default(&mut self, st: SubtypeId, span: Span) -> R<Reg> {
+        if matches!(
+            self.db.types[self.db.base(st)].kind,
+            TypeKind::Access { .. }
+        ) {
+            return Ok(self.int(0));
+        }
+        self.scalar_left(st, span)
     }
 
     /// The descriptor of an array signal actual as the formal `p` sees it.

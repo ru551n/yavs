@@ -312,6 +312,24 @@ Some simulators do not support conversions in calls (6.5.7.1).
 
 *Portable:* convert into a temporary variable before and after the call.
 
+Value of an ``out`` variable parameter on entry
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: vhdl
+
+   procedure none (variable x : out integer) is begin end;   -- none(v) sets v to integer'left
+
+A scalar or access ``out`` variable parameter starts at the default value of its subtype
+(``'left``, ``null``), not at the actual's value, and that value is copied back when the body
+never assigns it (4.2.2.2: only ``in`` and ``inout`` values are copied in; 14.6 b) 5): the
+implicit initial value of an ``out`` formal; 6.4.2.4; decided by the user, 2026-11-21, #1184).
+Array and record ``out`` parameters still start with the actual's value, as in both reference
+simulators: the standard lets them be passed by reference and calls a description whose effect
+depends on that erroneous, while its note 2 of 4.2.2.2 initializes them by type. Some simulators
+start a scalar ``out`` parameter with the actual's value.
+
+*Portable:* assign every ``out`` parameter on every path before reading it, or make it ``inout``.
+
 Named return values (2019)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 

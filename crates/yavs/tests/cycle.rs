@@ -7309,3 +7309,54 @@ fn the_rail_knob_names_its_values() {
     let o = yavs_env(&dir, &args, &[("YAVS_CYCLE_RAIL", "no-reseed")]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }
+
+/// A scalar `out` variable parameter starts at its subtype's `'left` in cycle mode as in the
+/// normal mode (#1184); one of a procedure declared in the process, which can name the actual
+/// and must see its old value, or whose actual an array `in` parameter also names, keeps that
+/// process in the event kernel.
+#[test]
+fn an_out_parameter_starts_at_its_default_in_cycle_mode() {
+    let dir = tempdir("cycle-out-default");
+    analyze(
+        &dir,
+        "outdef.vhd",
+        "library ieee;\nuse ieee.std_logic_1164.all;\n\
+         entity cycle_outdef is end entity;\narchitecture a of cycle_outdef is\n\
+         \x20 procedure none (x : out natural) is begin end procedure;\n\
+         \x20 procedure pk (x : out std_ulogic; a : in std_ulogic_vector) is\n  begin\n\
+         \x20   if a(0) = '1' then x := '1'; else x := '0'; end if;\n  end procedure;\n\
+         \x20 signal clk : std_ulogic := '0';\n  signal o1, o2 : natural;\n  signal o3 : std_ulogic;\nbegin\n\
+         \x20 p : process (clk)\n    variable v : natural := 5;\n  begin\n\
+         \x20   if rising_edge(clk) then\n      v := 5;\n      none(v);\n      o1 <= v;\n\
+         \x20   end if;\n  end process;\n\
+         \x20 q : process (clk)\n    variable w : natural := 5;\n\
+         \x20   procedure seen (x : out natural) is\n    begin\n\
+         \x20     if w = 5 then x := 1; else x := 2; end if;\n    end procedure;\n  begin\n\
+         \x20   if rising_edge(clk) then\n      w := 5;\n      seen(w);\n      o2 <= w;\n\
+         \x20   end if;\n  end process;\n\
+         \x20 r : process (clk)\n    variable arr : std_ulogic_vector(0 to 1) := \"11\";\n  begin\n\
+         \x20   if rising_edge(clk) then\n      arr := \"11\";\n      pk(arr(0), arr);\n\
+         \x20     o3 <= arr(0);\n    end if;\n  end process;\n\
+         \x20 tb : process\n  begin\n\
+         \x20   for i in 1 to 2 loop\n      clk <= '1';\n      wait for 5 ns;\n\
+         \x20     clk <= '0';\n      wait for 5 ns;\n\
+         \x20     report \"o1=\" & integer'image(o1) & \" o2=\" & integer'image(o2)\n\
+         \x20       & \" o3=\" & std_ulogic'image(o3);\n\
+         \x20   end loop;\n    wait;\n  end process;\nend architecture;\n",
+    );
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_outdef");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_outdef");
+        assert_eq!(normal.len(), 2, "{t:?} {normal:?}");
+        assert!(normal[1].ends_with("o1=0 o2=1 o3='1'"), "{t:?} {normal:?}");
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("E4101 an `out` parameter X not assigned first, of `seen` declared"),
+            "{err}"
+        );
+        assert!(
+            err.contains("E4101 an `out` parameter of `pk` not assigned first, whose actual"),
+            "{err}"
+        );
+    }
+}

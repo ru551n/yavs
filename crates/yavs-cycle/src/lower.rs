@@ -6985,6 +6985,9 @@ impl Lx<'_> {
         let db = self.db;
         let name = &db.decls[callee].name;
         let mut binds = HashMap::new();
+        // `out` variables that start at their subtype's default, set once every actual is
+        // evaluated (LRM 4.2.2.2, 14.6 b) 5), #1184).
+        let (mut defaults, mut defaults_of) = (Vec::new(), Vec::new());
         for (i, p) in sp.params.iter().enumerate() {
             let d = p
                 .decl
@@ -7051,7 +7054,78 @@ impl Lx<'_> {
                     v => self.formal_val(v, p.subtype, Some(d), &what)?,
                 }))
             };
+            if p.class != ObjClass::Signal
+                && p.mode == Mode::Out
+                && db.types[db.base(p.subtype)].kind.is_scalar()
+                && !db.assigns_first(sp, p)
+            {
+                // By reference, so a body that can name the actual would see the default early.
+                let mut s = sp.scope.and_then(|s| db.scopes[s].parent);
+                while let Some(x) = s {
+                    if matches!(
+                        db.scopes[x].kind,
+                        yavs_sem::scope::ScopeKind::Process
+                            | yavs_sem::scope::ScopeKind::Subprogram
+                            | yavs_sem::scope::ScopeKind::SeqBlock
+                    ) {
+                        return Err(format!(
+                            "an `out` {what} not assigned first, of `{name}` declared inside a \
+                             process or subprogram"
+                        ));
+                    }
+                    s = db.scopes[x].parent;
+                }
+                if let Bind::Val(v) = &b {
+                    defaults.push(v.clone());
+                    defaults_of.push(p.decl);
+                }
+            }
             binds.insert(d, b);
+        }
+        // An array or record `in` formal is bound to its actual's words: one naming an object of
+        // an `out` actual would see the default early (`p(a(i), a)`).
+        let names = |x: ExprId| {
+            let mut o = Vec::new();
+            db.walk_expr(x, &mut |y| {
+                if let ExprKind::Obj(d) = db.exprs[y].kind {
+                    o.push(d);
+                }
+            });
+            o
+        };
+        let actual = |q: usize| match args.iter().find(|a| usize::from(a.formal) == q) {
+            Some(yavs_sem::hir::Arg {
+                actual: Actual::Expr(x),
+                ..
+            }) => Some(*x),
+            _ => None,
+        };
+        let outs: Vec<DeclId> = (sp.params.iter().enumerate())
+            .filter(|(_, q)| defaults_of.contains(&q.decl))
+            .filter_map(|(k, _)| actual(k))
+            .flat_map(names)
+            .collect();
+        let seen = (sp.params.iter().enumerate()).any(|(k, q)| {
+            q.mode == Mode::In
+                && q.class != ObjClass::Signal
+                && !db.types[db.base(q.subtype)].kind.is_scalar()
+                && actual(k).is_some_and(|x| names(x).iter().any(|d| outs.contains(d)))
+        });
+        if seen {
+            return Err(format!(
+                "an `out` parameter of `{name}` not assigned first, whose actual an array or \
+                 record `in` parameter also names"
+            ));
+        }
+        for v in defaults {
+            if matches!(&v, Val::Part(p) if p.int.is_some()) {
+                return Err(format!(
+                    "an `out` parameter of `{name}` that starts at its default value"
+                ));
+            }
+            let t = self.fresh_like(&v);
+            self.start(&t);
+            self.assign(&v, t)?;
         }
         Ok(binds)
     }

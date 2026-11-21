@@ -1990,6 +1990,41 @@ which tools/difftest parses.
   parameters pass the signal reference, the driver slot (`out`/`inout`) and the actual's
   descriptor; their elements and slices are sub-ranges of the reference.
 
+## A scalar `out` variable formal starts at its subtype's default value (user, 2026-11-21, #1184)
+
+- **Decision:** follow the LRM. A scalar or access `out` variable formal starts at the default
+  value of its subtype (`'left`, `null`), never at the actual's value, and that value is copied
+  back when the body does not assign it. LRM 1076-2008 4.2.2.2: "At the start of each call, if
+  the mode is in or inout, the value of the actual parameter is copied into the associated formal
+  parameter"; 14.6 b) 5): "If the formal parameter is a variable of mode out, then the implicit
+  initial value for the object is determined"; 6.4.2.4: "The default initial value for a variable
+  of a scalar subtype T is defined to be the value given by T'LEFT"; and NOTE 2 of 4.2.2.2
+  (informative): "The value of an actual associated with a formal variable parameter of mode out
+  is not copied into the formal parameter. Rather, the formal parameter is initialized based on
+  its declared type, regardless of whether the implementation chooses to pass the parameter by
+  copy or by reference." sim2 agrees (also under `--std=93`); sim1 keeps the actual's value
+  (catalogue `out-formal-entry-value`).
+- **How:** at the call (`Fx::cells`, every tier). A temporary takes the default instead of the
+  actual's value; an actual passed by reference takes it once every actual of the call is
+  evaluated, and only where nothing else reaches it during the call (`Fx::checked_after`), else it
+  goes through the temporary, so a body that reads the actual by another path still sees its old
+  value. Nothing is stored where the body's first statement assigns the whole formal
+  (`Fx::assigns_first`), nor for native and predefined bodies, which set their outs themselves
+  (TEXTIO READ leaves VALUE undefined on failure, 16.4, so the actual's value stays). A formal
+  conversion already started at `'left`. `Db::assigns_first` (yavs-sem) is the one test of a
+  body that assigns first, used by both modes.
+- **Cycle mode** (`yavs-cycle`, `Lx::formals`): the formal is still bound by reference and
+  takes the default once every actual is evaluated. A procedure declared inside a process or
+  subprogram, which can name the actual, keeps the calling process in the event kernel (`E4101`
+  "an `out` parameter X not assigned first, of `p` declared inside a process or subprogram"), and
+  so does a call where an array or record `in` actual names an object of such an `out` actual
+  (`p(a(i), a)`), which is bound to the same words.
+- **Not changed:** array and record `out` formals keep the actual's value on entry, as both
+  reference simulators do. 4.2.2.2 lets them pass by reference ("every use of the formal
+  parameter (to read or update its value) be treated as a use of the associated actual
+  parameter") and makes a description erroneous "if its effect depends on which mechanism is
+  selected", while NOTE 2 initializes them by type: open for the maintainer.
+
 ## A value driven through a signal parameter belongs to the actual's subtype (user, 2026-11-21, #1181)
 
 - **Decision:** a value driven through a scalar `out` or `inout` signal formal that lies

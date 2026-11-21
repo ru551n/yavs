@@ -58,6 +58,15 @@ yavs, with what to do about each.
      - Give the variable a subtype that holds every value the procedure can return, or check the
        value in the procedure. A design that passed on another simulator may have kept the
        value outside its subtype.
+   * - A procedure that reads a scalar ``out`` variable parameter before assigning it, or returns
+       without assigning it
+     - The parameter starts at the default value of its subtype (``'left``, ``null`` for an
+       access type), as the standard says, not at the value of the variable passed to it, and
+       that value is copied back. Array and record ``out`` parameters still start with the
+       variable's value.
+     - Assign every ``out`` parameter on every path, or make it ``inout`` if the procedure needs
+       the value passed in. A design that passed on another simulator may have relied on the
+       parameter keeping the variable's value.
    * - A procedure that drives a value outside the subtype of the signal passed to it through an
        ``out`` or ``inout`` signal parameter: ``o <= 10`` with a signal of ``integer range 0 to 9``
      - Error ``E3009`` at the assignment in the procedure: the formal stands for the signal, so

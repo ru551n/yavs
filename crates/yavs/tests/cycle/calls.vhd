@@ -124,7 +124,7 @@ package body cycle_calls_pkg is
     return c;
   end function;
 
-  -- An early `return` leaves `n` unchanged: `out` scalars are passed by reference.
+  -- An early `return` leaves `n` at its default, `natural'left` (LRM 14.6 b) 5), #1184).
   procedure split (d : in std_ulogic_vector; signal lo_s : out std_ulogic; n : out natural;
                    acc : inout unsigned) is
   begin

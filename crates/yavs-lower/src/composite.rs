@@ -1048,6 +1048,39 @@ impl Fx<'_, '_> {
         Ok(())
     }
 
+    // ---- start values of `--init-unset` ----
+
+    /// The code `v` of a scalar of subtype `st` for a variable `Fx::unset` lays out: a `'U'` of
+    /// `std_ulogic` replaced by `yavs.init.unset_code`.
+    pub(crate) fn unset_code(&mut self, st: SubtypeId, v: Reg, span: Span) -> R<Reg> {
+        let Some(salt) = self.unset else {
+            return Ok(v);
+        };
+        if !self.db.is_std_ulogic(self.db.base(st)) {
+            return Ok(v);
+        }
+        let salt = self.int(salt as i64);
+        match self.native("yavs.init.unset_code", None, &[v, salt], Some(st), span)? {
+            Some(V::S(r)) => Ok(r),
+            _ => Err(self.cx.ice(span, "a start value that is no scalar")),
+        }
+    }
+
+    /// The `count` logic elements at `data` of an array of IR type `tid` for a variable
+    /// `Fx::unset` lays out: its `'U'` elements replaced by `yavs.init.unset`, when they are
+    /// `std_ulogic`.
+    pub(crate) fn unset_planes(&mut self, tid: TyId, data: Reg, count: Reg, span: Span) -> R<()> {
+        let Some(salt) = self.unset else {
+            return Ok(());
+        };
+        if Ty::logic_leaf(self.fb.program().types(), tid) != Some(LogicKind::StdULogic) {
+            return Ok(());
+        }
+        let salt = self.int(salt as i64);
+        self.native("yavs.init.unset", None, &[data, count, salt], None, span)?;
+        Ok(())
+    }
+
     // ---- default values ----
 
     /// [`Fx::default_into`] for an array element: a narrow integer element (`Ty::elem_size`)
@@ -1090,7 +1123,10 @@ impl Fx<'_, '_> {
                 TypeKind::Access { .. } | TypeKind::Protected { .. } | TypeKind::File { .. } => {
                     self.int(0)
                 }
-                _ => self.scalar_left(st, span)?,
+                _ => {
+                    let v = self.scalar_left(st, span)?;
+                    self.unset_code(st, v, span)?
+                }
             };
             self.store(addr, v, w);
             return Ok(());
@@ -1124,6 +1160,7 @@ impl Fx<'_, '_> {
                         n: count,
                         v: code,
                     });
+                    self.unset_planes(tid, addr, count, span)?;
                     return Ok(());
                 }
                 let count = self.layout_count(tid, desc);
@@ -1220,7 +1257,9 @@ impl Fx<'_, '_> {
                 };
                 Some((d, n, 0))
             }
-            None if self.zero_default(st, tid, span)? => Some((self.bytes_addr(vec![0]), size, 1)),
+            None if self.unset.is_none() && self.zero_default(st, tid, span)? => {
+                Some((self.bytes_addr(vec![0]), size, 1))
+            }
             _ => None,
         };
         if let Some((data, n, fill)) = direct {

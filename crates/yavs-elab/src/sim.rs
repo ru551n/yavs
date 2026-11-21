@@ -732,10 +732,12 @@ impl Elaborated {
             // Package objects first (#183), in dependency order: a package after those its
             // declaration and body use (LRM 14.4.2, `run_time_packages`).
             None => {
-                // Packages hold no process: one stored image serves runs with and without
-                // `--no-asserts`.
+                // Packages hold no process and no start values: one stored image serves runs
+                // with and without `--no-asserts`, `--init-unset` and `--init-x`.
                 let plain = LowerOptions {
                     no_asserts: false,
+                    init_unset: false,
+                    init_x: false,
                     ..opts
                 };
                 let (l, u) = crate::pkgcall::package_lowerer(db, packages, plain)?;
@@ -743,7 +745,12 @@ impl Elaborated {
                 l
             }
         };
+        // The session's lowering, resumed, has none of the run's start options either.
+        l.start_options(opts.init_unset, opts.init_x);
         l.externals_bound(self.ext_unbound.clone());
+        if opts.init_x {
+            l.x_sites(self.x_sites.clone());
+        }
         for p in &self.procs {
             if let Some(a) = &p.actual {
                 l.port_actual(p.stmt, a.expr, a.formal, a.port);
@@ -860,7 +867,11 @@ impl Elaborated {
         let cache = db.stages().filter(|_| !opts.any_coverage())?.clone();
         // Everything `lower_cold` hands to the lowerer, in the order it does: the same requests
         // on the same analysis give the same program, ids and all.
-        let mut p = vec![opts.no_native_ieee as u8];
+        let mut p = vec![
+            opts.no_native_ieee as u8,
+            opts.init_unset as u8,
+            opts.init_x as u8,
+        ];
         // `--no-asserts` drops what it drops by the top-level architecture.
         if opts.no_asserts {
             ids(&mut p, b't', &mut std::iter::once(self.top.arch.index()));

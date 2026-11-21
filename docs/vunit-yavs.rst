@@ -60,6 +60,14 @@ as ``--name=value``.
        called from, so the check and logging calls of a verification component keep working. Default ``False``; a
        value other than ``True`` or ``False`` is refused when it is set, with the value it most likely meant. Not
        passed to ``elab`` (:doc:`cli-reference`, ``--no-asserts``).
+   * - ``yavs.init_unset``
+     - ``yavs run --init-unset=VALUE``: the start value of ``std_ulogic`` elements of signals and process variables
+       without an initial value, ``"0"``, ``"1"``, ``"random"`` or ``"random:SEED"`` (``0`` and ``1`` may be integers);
+       by default they start at ``'U'`` (:ref:`start-values`). Checked when it is set: a wrong value fails at once and
+       names the closest one. Not passed to ``elab``. A ``--init-unset`` in ``yavs.sim_flags`` wins.
+   * - ``yavs.init_x``
+     - ``yavs run --init-x=VALUE``: the value of the metavalue literals the design assigns (:ref:`start-values`), the
+       same values as ``yavs.init_unset``. Not passed to ``elab``. A ``--init-x`` in ``yavs.sim_flags`` wins.
    * - ``yavs.cov_embed_sources``
      - ``yavs run --cov-embed-sources``: store the source text in the database, so the HTML report needs no
        checkout. The source text then travels with the database (:doc:`coverage`).

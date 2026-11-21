@@ -376,6 +376,13 @@ A cycle-based process computes with ``0`` and ``1`` only.
 
 * A signal or variable without an initial value starts as ``0``, not ``'U'``. The testbench still reads ``'U'`` at
   time 0, delta 0, and ``0`` from the next delta on.
+* ``--init-unset`` (:ref:`start-values`) gives those signals and the variables of clocked processes the start value
+  the normal mode gets with the same option: ``1`` or the bits of ``random:SEED`` instead of ``0``, from time 0 in
+  both modes and on both sides of the boundary. Then no ``'U'`` start value is left, the summary counts none, and
+  ``--cycle-exact-meta`` has none to follow. ``--init-x`` gives a metavalue literal it covers the normal mode's value
+  instead of ``0``, and such a literal no longer keeps a process out under ``--cycle-exact-meta``. ``--cycle-report``
+  lists the register signals and clocked variables without an initial value and without an asynchronous reset branch,
+  the ones ``--init-unset`` changes (a synchronous reset is not looked for, so a register with one is listed too).
 * With ``--cycle-exact-meta`` the region follows those start values for a while: it runs the same code a second
   time on a second set of values, where every ``'U'`` at the start (and every metavalue that reaches an input in that
   time) is ``1`` instead of ``0``. An output bit that differs between the two depends on a start value, and the

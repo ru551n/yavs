@@ -33,6 +33,8 @@ const UNCOLLAPSED: ElabConfig = ElabConfig {
     packs: true,
     keep_values: false,
     values: None,
+    init_unset: None,
+    init_x: false,
 };
 
 fn try_elab(

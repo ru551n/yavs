@@ -79,6 +79,7 @@ CYCLE_TESTS = {
     "fsmrec.vhd": [("cycle_fsmrec", "", None)],
     "handshake.vhd": [("cycle_handshake", "", None)],
     "history.vhd": [("cycle_history", "", None)],
+    "initunset.vhd": [("initunset", f, None) for f in ("--init-unset=0", "--init-unset=random:5")],
     "inputs.vhd": [("cycle_inputs", "", None)],
     "inreset.vhd": [("cycle_inreset", "", None)],
     "lazy.vhd": [("cycle_lazy", "", None)],

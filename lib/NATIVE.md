@@ -158,6 +158,8 @@ name the subprograms in this table. The `std_logic_textio` package is aliases on
 
 Internal, called by lowering only (#916): `yavs.prot.name_set` gives a protected object its `'path_name` and `'instance_name`; `yavs.prot.name_get` reads a variable's name through its object.
 
+Internal, called by lowering only: `yavs.init.unset` and `yavs.init.unset_code` give the `'U'` elements of a process variable without an initial value the value of `--init-unset`; `yavs.init.x` and `yavs.init.x_code` give the metavalue elements of a literal the value of `--init-x`.
+
 ### std.reflection (123)
 
 | Native symbol | Signature | Revision |

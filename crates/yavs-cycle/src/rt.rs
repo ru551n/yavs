@@ -360,6 +360,9 @@ pub(crate) struct RegionProc<const RAIL: bool> {
     pub rail: Option<Box<Rail>>,
     pub rail_cfg: Option<RailCfg>,
     pub useed: Arc<Vec<(u32, u32)>>,
+    /// `--init-unset`: the words of clocked variables without an initial value it sets at
+    /// initialisation (first, elements, salt), as the normal mode's `yavs.init.unset`.
+    pub unset: Arc<Vec<(u32, u32, u64)>>,
     pub state: Arc<Vec<(u32, u32)>>,
     /// Per driver, its elements of `BIT` and `BOOLEAN` leaves (first, count): never `'U'`.
     pub two: BTreeMap<u32, Vec<(u32, u32)>>,
@@ -1277,6 +1280,23 @@ impl<const RAIL: bool> RegionProc<RAIL> {
         Ok(())
     }
 
+    /// `--init-unset`: the start bits of clocked variables without an initial value, on the
+    /// region's image and the rail's.
+    fn unset_vars(&mut self, f: yavs_logic::start::Fill, mut rail: Option<&mut Rail>) {
+        for &(w, c, salt) in self.unset.iter() {
+            for j in 0..words(c) {
+                let n = (c - 64 * j).min(64);
+                let v = (0..n).fold(0u64, |v, b| {
+                    v | (u64::from(f.bit(salt, u64::from(64 * j + b))) << b)
+                });
+                self.img[(w + j) as usize] = v;
+                if let Some(r) = rail.as_deref_mut() {
+                    r.img[(w + j) as usize] = v;
+                }
+            }
+        }
+    }
+
     /// Initialisation under `RAIL`: the rail's image, the region's with every metavalue of the
     /// kernel's initial values and every clocked variable without an initial value at 1; none
     /// when there is none of them or the cap is 0.
@@ -1315,8 +1335,13 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                 )?;
             }
         }
-        // Variables without an initial value start 'U'.
-        for &(w, c) in self.useed.iter() {
+        // Variables without an initial value start 'U', unless `--init-unset` gives them a value.
+        let useed = if yavs_logic::start::unset().is_some() {
+            &[][..]
+        } else {
+            &self.useed[..]
+        };
+        for &(w, c) in useed {
             for j in 0..words(c) {
                 for m in std::iter::once(&mut img).chain(more.first_mut()) {
                     m[(w + j) as usize] |= mask((c - 64 * j).min(64));
@@ -1730,7 +1755,8 @@ impl<const RAIL: bool> RegionProc<RAIL> {
         let mut ended: Option<(RailEnd, Box<Rail>)> = None;
         if !self.started {
             // Initialisation: every leaf from the kernel's initial values, then settle.
-            let mut metas = self.uninit;
+            let unset = yavs_logic::start::unset();
+            let mut metas = if unset.is_some() { 0 } else { self.uninit };
             for rd in &self.leaves {
                 metas += Self::read::<false>(
                     ctx,
@@ -1759,6 +1785,9 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                 self.rail_snap(&mut rail);
             }
             self.run_code(ctx, Fun::Init, R && rail.is_some())?;
+            if let Some(f) = unset {
+                self.unset_vars(f, rail.as_deref_mut());
+            }
             if R {
                 self.rail_run(ctx, &mut rail, &mut ended, Fun::Init, false, false)?;
                 self.release(ctx, rail.as_deref_mut())?;

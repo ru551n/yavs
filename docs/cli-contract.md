@@ -522,7 +522,17 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
     advance (only `stop` or `finish` ends the run).
   - `--shuffle[=SEED]` (seed 1 without a value) prints ``note: process order is shuffled with seed N;
     replay it with `--shuffle=N` `` on stderr at the start, and the runtime diagnostics of a shuffled
-    run repeat the seed. That is the only run-time randomness; there is no time-based seed.
+    run repeat the seed.
+  - `--init-unset=0|1|random[:SEED]` and `--init-x=0|1|random[:SEED]` (user decisions A52, A53,
+    2026-11-21): the start value of the `std_ulogic` elements of signals, ports and process variables
+    without an initial value, and the value of the metavalue literals the design below the top-level
+    unit assigns (user guide "Start values and metavalue literals" in `docs/cli.rst`). Each prints
+    ``note: `--init-unset=V`: N signal elements ...; repeat the run with `--init-unset=V` `` (and the
+    same for `--init-x`) on stderr at the start, with `random` as `random:SEED`. `random` without a
+    seed draws one from the time and the process id, the only time-based seed of a run; a bit is a
+    function of the seed, the object and the element, so tiers, `--threads` and cycle mode agree. A
+    wrong value is a usage error (exit 2) naming the closest valid one. Without the options nothing
+    changes.
 - `--no-collapse-ports` (`run` and `elab`): keep every port its own signal. By default the
   formal of a port whose actual is a signal name (a whole signal, record elements, an element or a
   slice), with no conversion and no force or release of the port, is an alias of its actual: no

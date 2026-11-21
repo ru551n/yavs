@@ -288,6 +288,24 @@ class TestPackage(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "yavs.tier_compile.*wait.*background"):
             self.factory.check_sim_option("yavs.tier_compile", "on")
 
+    def test_init_options_are_validated(self):
+        self._vunit().get_simulator_name()
+        for name in ("yavs.init_unset", "yavs.init_x"):
+            for value in ("0", "1", 0, 1, "random", "random:42", f"random:{2**64 - 1}"):
+                self.factory.check_sim_option(name, value)
+            wrong = (
+                ("randon", "Did you mean 'random'"),
+                (True, "Did you mean '1'"),
+                ("random:", ""),
+                ("random:-1", ""),
+                (f"random:{2**64}", ""),
+                (2, ""),
+                ("x", ""),
+            )
+            for value, hint in wrong:
+                with self.assertRaisesRegex(ValueError, f"{name}.*\"0\".*\"1\".*\"random\".*{hint}"):
+                    self.factory.check_sim_option(name, value)
+
     def test_cycle_option_is_validated(self):
         self._vunit().get_simulator_name()
         for value in ("off", "on", "strict"):
@@ -817,6 +835,18 @@ class TestYavsInterface(unittest.TestCase):
         for options in ({}, {"yavs.no_asserts": False}):
             _, cmd, _ = self._simulate(make_config(sim_options=options))
             self.assertNotIn("--no-asserts", cmd)
+
+    def test_init_flags(self):
+        config = make_config(
+            sim_options={"yavs.init_unset": 1, "yavs.init_x": "random:7", "yavs.sim_flags": ["--stop-time=1ms"]}
+        )
+        _, cmd, _ = self._simulate(config)
+        self.assertEqual([arg for arg in cmd if arg.startswith("--init")], ["--init-unset=1", "--init-x=random:7"])
+        self.assertLess(cmd.index("--init-x=random:7"), cmd.index("--stop-time=1ms"))
+        _, cmd, _ = self._simulate(config, elaborate_only=True)
+        self.assertFalse(any(arg.startswith("--init") for arg in cmd))
+        _, cmd, _ = self._simulate(make_config())
+        self.assertFalse(any(arg.startswith("--init") for arg in cmd))
 
     def test_cycle_mode_flags(self):
         for value, flag in (("on", "--cycle"), ("strict", "--cycle-strict")):

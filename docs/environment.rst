@@ -828,9 +828,9 @@ Compiled tiers: Cranelift
      - unset
      - ``run``
    * - ``YAVS_CYCLE_BLOCKSKIP``
-     - Developers: ``off`` makes a cycle region (``--cycle``) run every clocked process of a clock at each of its edges and the logic all of them reach, as before the skip of idle clocked processes (to measure it). Another value is error E4104.
-     - ``off``
-     - unset: a clocked process with nothing changed since its last edge is skipped
+     - Developers: ``off`` makes a cycle region (``--cycle``) run every clocked process of a clock at each of its edges and the logic all of them reach, as before the skip of idle clocked processes (to measure it); ``on`` keeps every clock's processes watched for the skip even where it does not pay; ``flip`` watches each clock for two edges and then runs it unwatched for three, in turn (for the tests). Another value is error E4104.
+     - ``off``, ``on``, ``flip``
+     - unset: each clock's processes are watched for the skip while it pays
      - ``run``
    * - ``YAVS_CYCLE_DOWNSTREAM``
      - Developers: a file to write, under ``--cycle-report``, with the processes outside the region that read a signal the region drives, directly or through other processes outside, one a line as the console names them; the comparison gates use it to tell a library warning such a process gives or loses because of a value cycle mode reads as ``0`` from one any other process gives (``tools/difftest/README.md``).

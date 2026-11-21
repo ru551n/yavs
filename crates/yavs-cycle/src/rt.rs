@@ -360,9 +360,12 @@ pub(crate) struct RegionProc<const RAIL: bool> {
     /// Dirty again after this edge: the readers of inputs read in its delta (`in_edge`).
     pub later: Vec<u64>,
     pub in_edge: bool,
-    /// Per edge class: whether its tracking pays ([`Adapt`]); not changed in this run.
+    /// Per edge class: whether its tracking pays ([`Adapt`]); not changed in this run; how many
+    /// classes are tracked (none: nothing needs to be dirty, each class that comes back makes
+    /// its members dirty).
     pub adapt: Vec<Adapt>,
     pub frozen: bool,
+    pub tracked: usize,
     /// The edge each cone and reach of `skip` was last ORed in, and this edge: many members that
     /// changed share one.
     pub ored: (Vec<u32>, Vec<u32>, u32),
@@ -902,7 +905,9 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                 for (m, c) in (self.mark.iter_mut()).zip(&self.cones[c][..]) {
                     *m |= c;
                 }
-                if let Some(&h) = self.skip.chunk.get(c) {
+                if let Some(&h) = self.skip.chunk.get(c)
+                    && self.tracked > 0
+                {
                     // A reader sees the input at the next edge; one read in an edge's delta it
                     // sees through the settle it reaches only at the edge after.
                     or_into(&mut self.dirty, &self.skip.reach[h as usize]);
@@ -1967,7 +1972,7 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                                 .zip(&self.class_cones[k][..])
                                 .for_each(|(m, c)| *m |= c);
                         }
-                        if plain {
+                        if plain && self.tracked > 0 {
                             or_into(&mut self.dirty, &self.skip.class_reach[k]);
                             if self.stats {
                                 self.ex[22] += 1;
@@ -2156,6 +2161,7 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                 rest: a.rest,
                 ..Default::default()
             };
+            self.tracked += 1;
             self.img[s.modes[k] as usize] = 0;
             for_bits(&s.classes[k], |t| {
                 let r = s.tracks[t].0;
@@ -2163,7 +2169,12 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                     self.img[r as usize] = 0;
                 }
             });
+            // Dirty at the next edge too: an input of this edge's delta was read untracked.
             self.dirty
+                .iter_mut()
+                .zip(&s.classes[k][..])
+                .for_each(|(d, c)| *d |= c);
+            self.later
                 .iter_mut()
                 .zip(&s.classes[k][..])
                 .for_each(|(d, c)| *d |= c);
@@ -2187,7 +2198,9 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                 (self.mark.iter_mut())
                     .zip(&self.class_cones[k][..])
                     .for_each(|(m, c)| *m |= c);
-                or_into(&mut self.dirty, &s.class_reach[k]);
+                if self.tracked > 0 {
+                    or_into(&mut self.dirty, &s.class_reach[k]);
+                }
                 if self.stats {
                     self.ex[22] += 1;
                 }
@@ -2241,6 +2254,7 @@ impl<const RAIL: bool> RegionProc<RAIL> {
                     rest: a.rest,
                     ..Default::default()
                 };
+                self.tracked -= 1;
                 self.img[s.modes[k] as usize] = 1;
                 for_bits(&s.classes[k], |t| {
                     let r = s.tracks[t].0;

@@ -2560,6 +2560,7 @@ fn finish(
                     ored: (vec![0; skip.cones.len()], vec![0; skip.reach.len()], 0),
                     adapt: vec![rt::Adapt::default(); skip.modes.len()],
                     frozen: false,
+                    tracked: skip.modes.len(),
                     go: vec![0; skip.always.len()],
                     later: vec![0; skip.always.len()],
                     in_edge: false,

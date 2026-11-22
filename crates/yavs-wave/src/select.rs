@@ -37,18 +37,16 @@ impl Selection {
         any_match(&self.exclude, path)
     }
 
-    /// An include pattern matches `path` itself (not an ancestor).
-    pub(crate) fn hit_include(&self, path: &str) -> bool {
-        self.include
-            .iter()
-            .any(|p| glob(p.as_bytes(), path.as_bytes()))
+    /// An include pattern matches `path` or a prefix of it that ends at a dot at or after byte
+    /// `from` (a name that holds a dot, such as a generate alternative `g.alt`): the ancestors
+    /// before `from` were matched already.
+    pub(crate) fn hit_include(&self, path: &str, from: usize) -> bool {
+        hits(&self.include, path, from)
     }
 
-    /// An exclude pattern matches `path` itself (not an ancestor).
-    pub(crate) fn hit_exclude(&self, path: &str) -> bool {
-        self.exclude
-            .iter()
-            .any(|p| glob(p.as_bytes(), path.as_bytes()))
+    /// As [`Self::hit_include`] for the exclude patterns.
+    pub(crate) fn hit_exclude(&self, path: &str, from: usize) -> bool {
+        hits(&self.exclude, path, from)
     }
 }
 
@@ -67,6 +65,17 @@ fn any_match(patterns: &[String], path: &str) -> bool {
             }
             end += 1;
         }
+    })
+}
+
+/// A pattern matches `path` or one of its prefixes that end at a dot at or after byte `from`.
+fn hits(patterns: &[String], path: &str, from: usize) -> bool {
+    let mut ends = (path.match_indices('.').map(|(i, _)| i))
+        .filter(|&i| i >= from)
+        .chain([path.len()]);
+    ends.any(|end| {
+        let pre = &path.as_bytes()[..end];
+        patterns.iter().any(|p| glob(p.as_bytes(), pre))
     })
 }
 

@@ -319,8 +319,14 @@ impl HierarchyBuilder {
     /// Whether the selection keeps `path` in a scope that is not dropped: the scopes above
     /// were matched when they were opened, so only `path` itself is matched here.
     fn keeps(&self, path: &str) -> bool {
+        let from = self.own_from();
         let inc = self.sel.include.is_empty() || self.stack.last().is_some_and(|f| f.inc);
-        (inc || self.sel.hit_include(path)) && !self.sel.hit_exclude(path)
+        (inc || self.sel.hit_include(path, from)) && !self.sel.hit_exclude(path, from)
+    }
+
+    /// Where the name of what is declared next starts in its path (after the scopes' names).
+    fn own_from(&self) -> usize {
+        self.stack.iter().map(|f| f.name.len() + 1).sum()
     }
 
     fn put(&mut self, text: &str) -> Str {
@@ -336,9 +342,10 @@ impl HierarchyBuilder {
     pub fn scope(&mut self, name: &str, kind: ScopeKind, component: &str) {
         let path = self.globs.then(|| self.path_of(name));
         let path = path.as_deref().unwrap_or_default();
-        let keep = !self.dropped() && !(self.globs && self.sel.hit_exclude(path));
-        let inc =
-            self.stack.last().is_some_and(|f| f.inc) || self.globs && self.sel.hit_include(path);
+        let from = self.own_from();
+        let keep = !self.dropped() && !(self.globs && self.sel.hit_exclude(path, from));
+        let inc = self.stack.last().is_some_and(|f| f.inc)
+            || self.globs && self.sel.hit_include(path, from);
         let start = keep.then(|| {
             let start = (self.h.items.len(), self.h.names.len());
             let (name, comp) = (self.put(name), self.put(component));
@@ -561,8 +568,19 @@ mod tests {
             &["top.*.a"],
             &["*.u?.*"],
             &["**"],
+            &["top.g"],
+            &["top.u2.x"],
+            &["top.g.*"],
         ];
-        let paths = [["u1", "a"], ["u1", "b"], ["u2", "a"], ["u2", "b"]];
+        // `g.alt`: a generate alternative's scope; `x.y`: an extended identifier with a dot.
+        let paths = [
+            ["u1", "a"],
+            ["u1", "b"],
+            ["u2", "a"],
+            ["u2", "b"],
+            ["g.alt", "a"],
+            ["u2", "x.y"],
+        ];
         for inc in pats {
             for exc in pats {
                 let sel = Selection {

@@ -123,6 +123,15 @@ run stops when it differs:
 
     YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclegate.py [--warm]
 
+`cyclewave.py` compares waveforms instead of the console (A52): the `cycle` and `bench` designs of `cyclegate.py`
+run normal and `--cycle` (`--contract`) with `--wave`, and the comparer `crates/yavs-wave/examples/waveq.rs`
+(`cargo build --release -p yavs-wave --example waveq`, `--comparer`) compares the two files per signal at the end
+of each time step. A value that differs or a name recorded on one side only fails, except a memory W0802 names
+and the reviewed differences in `KNOWN` (by test, contract and signal). Under `--contract default` a value
+difference is bucket `contract` (two-state values by design): that run checks names and crashes only.
+
+    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclewave.py --comparer target/release/examples/waveq
+
 Every comparing tool here (`cyclegate.py`, `cyclereplay.py`, `cyclebig.py`, `cyclefuzz.py`, `seeddiff.py`) compares
 exactly by default, `--contract exact`: its cycle runs take `--cycle-exact-meta` and `YAVS_CYCLE_EXACT_CLOCKS=1`,
 which keep the normal mode's metavalue rules, a copied clock a clock of its own and the values in a failed check's

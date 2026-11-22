@@ -8909,6 +8909,14 @@ fn waves_of_signals_inside_the_region_follow_the_normal_mode_per_time_step() {
             // Per time step, a 'U' as 0 under two-state values.
             let n = wave_steps(&dir.join("n.fst"), !exact);
             let c = wave_steps(&dir.join("c.fst"), false);
+            // Four threads and each tier of the build record the same.
+            if w == 64 {
+                for t in tiers() {
+                    let (out, _) = wave(&[mode, &t[..]].concat(), "ct.fst", &[]);
+                    assert_eq!(out, c_out, "{t:?}");
+                    assert_eq!(wave_steps(&dir.join("ct.fst"), false), c, "{t:?}");
+                }
+            }
             let inside = [
                 "cycle_waves.dut.q",
                 "cycle_waves.dut.mix2",

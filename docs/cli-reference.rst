@@ -454,7 +454,7 @@ Arguments:
 
 .. option:: --init-x=0|1|random[:SEED]
 
-   The value of the metavalue literals the design assigns (``'U'``, ``'X'``, ``'W'`` anywhere, ``'-'`` in a default branch, alone or as ``(others => ...)``), in the processes below the top-level unit: ``0``, ``1``, or ``random[:SEED]`` as for ``--init-unset``. Literals in conditions, comparisons, calls, subprograms and the top-level unit stay as written.
+   The value of the metavalue literals the design assigns (``'U'``, ``'X'``, ``'W'`` anywhere, ``'-'`` in a default branch, alone or as ``(others => ...)``), in the processes below the top-level unit: ``0``, ``1``, or ``random[:SEED]`` as for ``--init-unset``. Literals in conditions, comparisons, calls, subprograms and the top-level unit stay as written; in cycle mode every metavalue literal of a cycle-based process below the top-level unit, compared ones too, takes this value (``0`` without the option).
 
 .. option:: --cov, --cov=LETTERS
 

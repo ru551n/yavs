@@ -1,2 +1,3 @@
 sim1 2008 REJECT
-sim2 2008 OK*
+sim2 2008 OK
+# 2026-11-23: sim2 OK (was OK*): sim2 prints the same messages as expected-yavs.

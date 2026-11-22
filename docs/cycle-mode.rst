@@ -745,7 +745,8 @@ region allows:
   processes in its own image.
 * Without ``--wave`` nothing changes. With it, recording costs what it costs in the normal mode, and the region also
   exports each recorded signal at every time step where it changes. It exports only the signals the selection keeps,
-  so ``--wave-include`` of a few signals avoids most of that second part.
+  so ``--wave-include`` of a few signals avoids most of that second part. The region of each selection is
+  analysed and compiled on its first run and taken from the cache after that, as the region without a wave is.
 
 .. _cycle-clock-copies:
 

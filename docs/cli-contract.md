@@ -529,7 +529,9 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
     unit assigns (user guide "Start values and metavalue literals" in `docs/cli.rst`). Each prints
     ``note: `--init-unset=V`: N signal elements ...; repeat the run with `--init-unset=V` `` (and the
     same for `--init-x`) on stderr at the start, with `random` as `random:SEED`. `random` without a
-    seed draws one from the time and the process id, the only time-based seed of a run; a bit is a
+    seed draws one from the time and the process id, the only time-based seed of a run (user decision
+    A62, 2026-11-22: allowed; in cycle mode such a `--init-x` is part of the region's cache key, so each
+    such run misses the cycle-mode cache and compiles its region again); a bit is a
     function of the seed, the object and the element, so tiers, `--threads` and cycle mode agree. A
     wrong value is a usage error (exit 2) naming the closest valid one. Without the options nothing
     changes.

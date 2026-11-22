@@ -467,9 +467,19 @@ A cycle-based process computes with ``0`` and ``1`` only.
   gives ``'0'`` there, and so does one that copies a tri-state line some process outside sets to ``'Z'``. A metavalue
   literal (``'U'``, ``'X'``, ``'W'``, ``'-'``) of a cycle-based process, assigned or compared, reads as the value of
   ``--init-x`` (:ref:`start-values`), ``0`` without it, as do values computed from it; the region report counts these
-  literals per process. So ``if d = "1X"`` tests ``d = "10"`` there, and a ``case`` choice ``"0X"`` is the choice
-  ``"00"`` (the first alternative that matches is taken). A ``'-'`` in ``std_match``, ``?=`` or a ``case?`` choice
-  still matches anything. This holds below the top-level unit: a process of the top-level unit that compares with a
+  literals per process. This holds for compares, ``case`` choices and asserts too, so with ``--init-x=0`` (or
+  without the option) ``x = 'X'`` is true where ``x`` is ``0``: ``if d = "1X"`` tests ``d = "10"`` there, an
+  ``assert x /= 'X'`` of the design fails where ``x`` is ``0``, and in
+
+  .. code-block:: vhdl
+
+      case sel is
+        when "0X" => c <= '1';  -- taken where sel is "00" under --cycle
+        when others => c <= '0';
+      end case;
+
+  the choice ``"0X"`` is the choice ``"00"`` (the first alternative that matches is taken). A ``'-'`` in
+  ``std_match``, ``?=`` or a ``case?`` choice still matches anything. This holds below the top-level unit: a process of the top-level unit that compares with a
   metavalue literal (a checker's ``assert q /= 'X'``) stays in the event kernel, where a two-state value never equals
   the literal, so its checks give the normal mode's results.
 * With ``--cycle-exact-meta`` the testbench sees what the normal mode gives it in those two cases: a process that
@@ -589,7 +599,9 @@ What can differ:
   In cycle mode it runs once per wake on settled values: such a message is made once, with the settled values, or
   not at all when the settled values satisfy the assert.
 * **Metavalues.** Under the default two-state values an assert sees ``'U'`` and ``'X'`` as ``0``
-  (:ref:`cycle-two-state`). An assert that fires in the normal mode only because a value is still ``'U'`` (a
+  (:ref:`cycle-two-state`), and below the top-level unit a metavalue literal it compares with reads as the
+  ``--init-x`` value: ``assert d /= 'X'`` fails where ``d`` is ``0`` (``1`` with ``--init-x=1``). ``--no-asserts``
+  removes such asserts with the others. An assert that fires in the normal mode only because a value is still ``'U'`` (a
   register before its reset, ``unsigned(addr) < DEPTH`` on an uninitialised address) does not fire in cycle mode,
   and one that holds only because of a metavalue may fire. A combinational process makes its messages when what
   it waits on changed as two-state values: a change from ``'1'`` to ``'H'`` or from ``'U'`` to ``'X'`` is none.

@@ -482,3 +482,100 @@ fn a_testbench_checker_keeps_its_metavalue_compares() {
         }
     }
 }
+
+/// The warnings of a run of `initxassert`, as `TIME W=.. what` (the delta left out), and stderr.
+fn warnings(dir: &Path, flags: &[&str]) -> (Vec<String>, String) {
+    let mut a = vec!["run", "--work=work:lib", "--no-cache"];
+    a.extend(flags);
+    a.push("initxassert");
+    let o = yavs(dir, &a);
+    let (out, err) = (
+        String::from_utf8_lossy(&o.stdout).into_owned(),
+        String::from_utf8_lossy(&o.stderr).into_owned(),
+    );
+    assert!(o.status.success(), "{flags:?}: {out}{err}");
+    let lines = (out.lines())
+        .filter_map(|l| l.strip_prefix("** Warning: "))
+        .map(|l| {
+            let (time, rest) = l.split_once('+').expect("time+delta");
+            format!("{time} {}", rest.split_once(": ").expect("message").1)
+        })
+        .collect();
+    (lines, err)
+}
+
+/// A62 with step 2: an assert below the top that compares with a metavalue literal is evaluated
+/// in a two-state region with the literal's `--init-x` bits, so `d /= (d'range => 'X')` fails
+/// where `d` is 0 (1 with `--init-x=1`); the normal mode and `--cycle-exact-meta` never fail, and
+/// `--no-asserts` drops them with any `--init-x`.
+#[test]
+fn design_asserts_compare_with_the_init_x_bits_in_a_two_state_region() {
+    let dir = tempdir("initxassert");
+    analyze(&dir, "initxassert.vhd");
+    // d is all 0 at the edges at 5 and 25 ns, all 1 at 15 and 35 ns.
+    let at = |times: [&str; 2]| -> Vec<String> {
+        let mut v = Vec::new();
+        for t in times {
+            for w in [1, 63, 64, 65, 128] {
+                v.push(format!("{t}fs W={w} d is X"));
+                v.push(format!("{t}fs W={w} d(0) is U"));
+            }
+        }
+        v.sort();
+        v
+    };
+    let sorted = |mut v: Vec<String>| {
+        v.sort();
+        v
+    };
+    for x in [
+        &[][..],
+        &["--init-x=0"],
+        &["--init-x=1"],
+        &["--no-asserts", "--init-x=1"],
+    ] {
+        let (lines, err) = warnings(&dir, x);
+        assert!(lines.is_empty(), "{x:?}: {lines:?}\n{err}");
+    }
+    for t in tiers() {
+        let cases: [(&[&str], Vec<String>); 7] = [
+            (&[], at(["5000000", "25000000"])),
+            (&["--init-x=0"], at(["5000000", "25000000"])),
+            (&["--init-x=1"], at(["15000000", "35000000"])),
+            (&["--no-asserts"], vec![]),
+            (&["--no-asserts", "--init-x=1"], vec![]),
+            (&["--cycle-exact-meta"], vec![]),
+            (&["--cycle-exact-meta", "--init-x=1"], vec![]),
+        ];
+        for (x, want) in cases {
+            let mut f = vec!["--cycle"];
+            f.extend(&t);
+            f.extend(x);
+            let (lines, err) = warnings(&dir, &f);
+            assert_eq!(sorted(lines), want, "{f:?}: {err}");
+            if !x.contains(&"--cycle-exact-meta") {
+                // The checking process of each instance joins the region.
+                assert!(err.contains("cycle mode: 5 of"), "{f:?}: {err}");
+            }
+            if x.contains(&"--no-asserts") {
+                assert!(err.contains("`--no-asserts`: 10 assert"), "{f:?}: {err}");
+            }
+            if x.contains(&"--init-x=1") {
+                assert!(err.contains("`--init-x=1`"), "{f:?}: {err}");
+            }
+        }
+        // random: the one-element literal has one bit in every instance, so `d(0) /= 'U'` fails
+        // at one pair of edges per width; a wide random `'X'` aggregate is neither all 0 nor all 1.
+        let mut f = vec!["--cycle", "--init-x=random:7"];
+        f.extend(&t);
+        let (lines, err) = warnings(&dir, &f);
+        for w in [1, 63, 64, 65, 128] {
+            let n = |what: &str| {
+                let s = format!(" W={w} {what}");
+                lines.iter().filter(|l| l.ends_with(&s)).count()
+            };
+            assert_eq!(n("d(0) is U"), 2, "{f:?}: {lines:?}\n{err}");
+            assert_eq!(n("d is X"), if w == 1 { 2 } else { 0 }, "{f:?}: {lines:?}");
+        }
+    }
+}

@@ -18077,3 +18077,10 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
   spreads one element over the vector (`Op::Splat`); an aggregate of a metavalue literal and other values is marked
   (`LIT_MIXED`), and a matching comparison with it keeps its process out. Before, both were compared with `0`, a
   wrong result of cycle mode (found 2026-11-21).
+- **Confirmed by the user (A62, 2026-11-22).** (1) In a two-state region a metavalue literal below the top-level
+  unit takes the `--init-x` value everywhere, compares, `case` choices and asserts included: `x = 'X'` is true where
+  `x` is 0, `assert x /= 'X'` of the design fails there. (2) The processes of the top-level unit keep their
+  metavalue compares. (3) `random` without a seed is time-based and printed; in cycle mode it misses the region
+  cache in every run (`docs/cli-contract.md`). (4) A variable's bits come from its declaration and the instance
+  path of its process (`start::inst_salt`), a literal's from its place only. (5) A `'-'` assigned in a default
+  branch is replaced like `'U'`, `'X'` and `'W'`.

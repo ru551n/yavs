@@ -98,12 +98,16 @@ choose a value instead, to find out whether a design depends on one:
   the top-level unit. Literals in conditions, comparisons and calls (``std_match(a, "1--0")``, ``if x = 'X'``),
   string literals, initial values, subprogram bodies and the statements of the top-level unit stay as written, so a
   ``'-'`` mask outside a default branch keeps its meaning, and so do the checks of a testbench. Verification
-  components instantiated below the top-level unit are part of the design for this rule.
+  components instantiated below the top-level unit are part of the design for this rule. A ``'-'`` in a default
+  branch is replaced like the others: what it assigns is no longer a "don't care" but the chosen value.
 
 VALUE is ``0``, ``1``, ``random`` or ``random:SEED``. With ``random`` every element gets a bit of its own, drawn
-from SEED, the object (a signal's instance path, a variable's or literal's place in the source) and the element:
-the same seed gives the same bits in every tier, at every ``--threads`` and in cycle mode. Without SEED each run
-draws a new one. The run prints what it chose at the start, so that a failing run can be repeated:
+from SEED, the object and the element. The object is a signal's instance path; a variable's declaration (file,
+name and place) together with the instance path of its process, so two instances of one entity give the same
+variable bits of their own; a literal's place in the source, the same in every instance.
+The same seed gives the same bits in every tier, at every ``--threads`` and in cycle mode. Without SEED each run
+draws a new one from the time and prints it; in cycle mode a ``--init-x=random`` without SEED then misses the
+compilation cache in every run, since its bits are compiled into the region's code. The run prints what it chose at the start, so that a failing run can be repeated:
 
 .. code-block:: text
 
@@ -116,7 +120,9 @@ gives: the signals' start values come from the same elaboration, and a clocked v
 mode (an array of records may get others). ``--init-x`` gives the literals above the normal mode's value too, and
 goes further there: cycle-based processes compute with ``0`` and ``1`` only, so every metavalue literal of one below
 the top-level unit, also one that is compared (``if d = "1X"``), a ``case`` choice or a string, reads as the value of
-``--init-x``, ``0`` without it. The processes of the top-level unit keep their literals' meaning, as in the normal
+``--init-x``, ``0`` without it. So there ``x = 'X'`` is true where ``x`` is ``0``, a ``case`` choice ``"0X"`` is
+taken where the value is ``"00"``, and an ``assert x /= 'X'`` of the design fails where ``x`` is ``0``
+(:ref:`cycle-two-state`). The processes of the top-level unit keep their literals' meaning, as in the normal
 mode. ``--cycle-report`` lists the registers ``--init-unset`` changes and counts the literals per process.
 
 Read the output

@@ -544,7 +544,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E4102",
-        "`yavs run --cycle` (or `--cycle-strict`) cannot be used with an option that shows, counts or changes signals or variables inside the cycle region: a debug session (`--dap`, `--interactive`, `--do`), `--surfer`, `--wave-variables`, `--cov`, `--vhpi` or `--activity`. Cycle mode keeps those signals and variables in an image of its own and updates the kernel only with what processes outside the region read. Run without `--cycle` for these. `--wave` is allowed: the region exports the signals it records, per time step. `--profile`, `--assert-summary`, `--shuffle`, `--hang-report` and `--time-report` are allowed: they do not read the signals of the region, but `--profile` shows the region's time as one entry and `--assert-summary` counts only the asserts that run.",
+        "`yavs run --cycle` (or `--cycle-strict`) cannot be used with an option that shows, counts or changes signals or variables inside the cycle region: a debug session (`--dap`, `--interactive`, `--do`), `--wave-variables`, `--cov`, `--vhpi` or `--activity`. Cycle mode keeps those signals and variables in an image of its own and updates the kernel only with what processes outside the region read. Run without `--cycle` for these. `--wave` and `--surfer` are allowed: the region exports the signals it records, per time step. `--profile`, `--assert-summary`, `--shuffle`, `--hang-report` and `--time-report` are allowed: they do not read the signals of the region, but `--profile` shows the region's time as one entry and `--assert-summary` counts only the asserts that run.",
     ),
     (
         "E4103",

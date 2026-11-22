@@ -239,9 +239,9 @@ pub struct RunArgs {
     /// with reasons. Cycle-based processes evaluate their asserts and reports, a clocked one at its
     /// clock edge, a combinational one once its inputs are settled, with the normal mode's text,
     /// severity, time and process; one cycle mode cannot evaluate keeps its process in the event
-    /// kernel (`--no-asserts` drops those below the top-level unit). `--wave` records the signals
-    /// inside the region per time step, without delta cycles. Not with a debug session,
-    /// `--wave-variables`, `--cov`, `--vhpi`, `--surfer` or `--activity` (E4102). The strict form
+    /// kernel (`--no-asserts` drops those below the top-level unit). `--wave` (and `--surfer`)
+    /// records the signals inside the region per time step, without delta cycles. Not with a debug session,
+    /// `--wave-variables`, `--cov`, `--vhpi` or `--activity` (E4102). The strict form
     /// is `--cycle-strict`, given instead of this option.
     #[arg(long, conflicts_with = "cycle_strict")]
     cycle: bool,
@@ -583,15 +583,14 @@ impl RunArgs {
     }
 
     /// The option `--cycle` cannot be used with: it shows, counts or changes signals or variables
-    /// inside the region. Left allowed: `--wave` (the region exports what it records, A52),
+    /// inside the region. Left allowed: `--wave` and `--surfer` (the region exports what it records,
+    /// A52),
     /// `--profile` (samples the interpreter, so the region's time is one entry of the kernel),
     /// `--assert-summary` (counts the asserts that run, and the region drops its own),
     /// `--shuffle`, `--hang-report`, `--time-report`; the other `--wave-*` options.
     fn not_with_cycle(&self) -> Option<&'static str> {
         if self.debugged() {
             Some("a debug session")
-        } else if self.surfer.is_some() {
-            Some("`--surfer`")
         } else if self.wave.is_some() && self.wave_variables {
             Some("`--wave-variables`")
         } else if self.cov.is_some() {

@@ -835,7 +835,6 @@ class YavsInterface(SimulatorInterface):
                 for name, on in (
                     ("--yavs-debug", self._debug_port is not None),
                     ("--yavs-interactive", interactive),
-                    ("--yavs-surfer (waves)", surfer),
                     ("coverage (--yavs-cov, enable_coverage)", coverage),
                 )
                 if on
@@ -843,7 +842,7 @@ class YavsInterface(SimulatorInterface):
             if blocked:
                 print(
                     f"error: the sim option yavs.cycle={cycle!r} cannot be combined with {', '.join(blocked)}: "
-                    "cycle mode does not keep signals, waves or coverage inside its region (yavs error E4102). "
+                    "cycle mode does not let a debugger or coverage see inside its region (yavs error E4102). "
                     'Fix: drop those, or set yavs.cycle to "off" for this test.'
                 )
                 return False

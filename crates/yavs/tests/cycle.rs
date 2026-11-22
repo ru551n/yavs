@@ -595,9 +595,6 @@ fn cycle_mode_refuses_the_options_that_see_inside_the_region() {
         ("--wave=x.fst --wave-variables", "--wave-variables"),
         ("--cov=s", "--cov"),
         ("--vhpi=nothing", "--vhpi"),
-        ("--surfer", "--surfer"),
-        ("--surfer=localhost:1", "--surfer"),
-        ("--wave=x.fst --surfer", "--surfer"),
         ("--activity", "--activity"),
         ("--activity=x.json", "--activity"),
     ] {

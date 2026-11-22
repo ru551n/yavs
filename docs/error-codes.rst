@@ -613,7 +613,7 @@ Cycle mode (E4 and W4)
    * - _`W4101`
      - Retired: cycle mode no longer gives this warning.
    * - _`E4102`
-     - ``yavs run --cycle`` (or ``--cycle-strict``) cannot be used with an option that shows, counts or changes signals or variables inside the cycle region: a debug session (``--dap``, ``--interactive``, ``--do``), ``--surfer``, ``--wave-variables``, ``--cov``, ``--vhpi`` or ``--activity``.
+     - ``yavs run --cycle`` (or ``--cycle-strict``) cannot be used with an option that shows, counts or changes signals or variables inside the cycle region: a debug session (``--dap``, ``--interactive``, ``--do``), ``--wave-variables``, ``--cov``, ``--vhpi`` or ``--activity``.
    * - _`E4103`
      - The file given to ``yavs run --cycle-report=FILE`` cannot be created or written (missing directory, permissions, full disk).
    * - _`E4104`

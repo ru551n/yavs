@@ -223,7 +223,8 @@ YAVS_CYCLE_CACHE_CHECK=1 YAVS_BIN=... python3 -I tools/difftest/cyclegate.py --w
   none of the library warnings by design, and no UART text in either mode (its built-in program does not print).
 
 - `E4102` (`yavs` `RunArgs::not_with_cycle`) refuses what shows, counts or changes region signals or variables: a
-  debug session, `--surfer`, `--wave-variables`, `--cov`, `--vhpi`, `--activity`. Allowed: `--wave` (A52(3), section 3);
+  debug session, `--wave-variables`, `--cov`, `--vhpi`, `--activity`. Allowed: `--wave` and `--surfer` (A52(3), section 3;
+  `--surfer` owner decision 2026-11-22);
   (user-visible reasons in `docs/cycle-mode.rst`): `--profile` (samples the interpreter; the region is one kernel
   entry), `--assert-summary` (counts the asserts that run), `--shuffle`, `--hang-report`, `--time-report`. A new
   option that observes signals goes into that one function, and into the vunit-yavs check if the package can set it.

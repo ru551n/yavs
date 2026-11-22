@@ -17881,8 +17881,8 @@ the parked retune package.
 - **Waves under `--cycle`** (owner decision A52(3), user 2026-11-21): `--wave` is allowed with `--cycle` and
   `--cycle-strict`; the region exports the signals the wave selection keeps, so the file has the normal mode's
   names and the region's value at the end of each time step (no delta cycles, two-state values by default). A
-  memory of integers the region writes at run-time indices is left out with W0802; `--surfer` and
-  `--wave-variables` stay refused (E4102). How: `crates/yavs-cycle/AGENTS.md` section 3.
+  memory of integers the region writes at run-time indices is left out with W0802; `--surfer` shows the file
+  (owner, 2026-11-22), `--wave-variables` stays refused (E4102, owner, 2026-11-22). How: `crates/yavs-cycle/AGENTS.md` section 3.
 
 ## Compiled code from the other libraries' stores (yavs-clift `cache.rs`, yavs `elab.rs`, 2026-11-19; widens the run-1 tier rule and the library stages)
 

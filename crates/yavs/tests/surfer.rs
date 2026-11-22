@@ -1367,3 +1367,79 @@ fn the_wave_layout_survives_a_new_run() {
     let o = session("wave sav; quit", &Fake::default());
     assert!(stderr(&o).contains("`save`"), "{}", stderr(&o));
 }
+
+/// `--surfer` under `--cycle` (owner decision 2026-11-22): the viewer is started as without it, and
+/// the file holds the register only the region reads, per time step.
+#[test]
+fn cycle_mode_shows_the_signals_inside_the_region() {
+    const DESIGN: &str = r#"
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+entity cyc_dut is
+  port (clk : in std_logic; q : out std_logic);
+end;
+architecture a of cyc_dut is
+  signal r : unsigned(3 downto 0) := (others => '0');
+begin
+  process (clk)
+  begin
+    if rising_edge(clk) then
+      r <= r + 1;
+    end if;
+  end process;
+  q <= r(3);
+end;
+library ieee;
+use ieee.std_logic_1164.all;
+entity cyc_tb is end;
+architecture a of cyc_tb is
+  signal clk, q : std_logic := '0';
+begin
+  dut : entity work.cyc_dut port map (clk, q);
+  p : process
+  begin
+    for k in 1 to 12 loop
+      clk <= '1';
+      wait for 5 ns;
+      clk <= '0';
+      wait for 5 ns;
+    end loop;
+    report "q=" & std_logic'image(q);
+    wait;
+  end process;
+end;
+"#;
+    let d = tempdir("surfer-cycle");
+    std::fs::write(d.join("cyc.vhd"), DESIGN).expect("write");
+    analyze(&d, "cyc.vhd");
+    let fake = Fake::default();
+    let (addr, t) = fake.listen(vec![]);
+    let o = yavs()
+        .current_dir(&d)
+        .args(["run", "--work=work:build/work", "--cycle"])
+        .arg(format!("--surfer={addr}"))
+        .arg("cyc_tb")
+        .stdin(Stdio::null())
+        .output()
+        .expect("yavs");
+    t.join().expect("fake");
+    let err = stderr(&o);
+    assert!(o.status.success(), "{err}");
+    assert!(
+        err.contains("cycle mode: 2 of 3 processes run cycle-based"),
+        "{err}"
+    );
+    assert!(stdout(&o).contains("q='1'"), "{}", stdout(&o));
+    assert_eq!(fake.first("load")["command"], "load");
+    // `r`: a change at each of the 12 edges.
+    let mut w = wellen::simple::read(d.join("build/cyc_tb.fst")).expect("readable");
+    let h = w.hierarchy();
+    let r = (h.all_vars())
+        .find(|&v| h[v].full_name(h).starts_with("cyc_tb.dut.r"))
+        .map(|v| h[v].signal_ref())
+        .expect("r recorded");
+    w.load_signals(&[r]);
+    let n = w.get_signal(r).expect("loaded").iter_changes().count();
+    assert!(n >= 12, "{n} changes of r");
+}

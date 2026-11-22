@@ -537,7 +537,7 @@ fn cycle_mode_page() {
     }
     // The page shows the files as relative paths.
     on_page(page, &relative(&err, &e.0));
-    let (code, _, err) = e.yavs(&["run", "--cycle", "--surfer", WORK, "tb_counter"]);
+    let (code, _, err) = e.yavs(&["run", "--cycle", "--activity", WORK, "tb_counter"]);
     assert_eq!(code, 2);
     assert!(err.contains("error[E4102]"), "{err}");
     on_page(page, &err);

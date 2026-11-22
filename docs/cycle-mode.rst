@@ -88,8 +88,8 @@ message of a failed check (:ref:`cycle-contract`):
 
 ``yavs analyze`` takes none of them, and ``yavs elab`` does not take them. The region is compiled whatever
 ``--tier`` says, and ``--threads`` and ``--shuffle`` are accepted. ``--wave`` records the signals inside the region
-too, per time step (:ref:`cycle-waves`). The options ``--cov``, ``--vhpi``, ``--surfer``, ``--wave-variables`` and a
-debug session are refused (:ref:`cycle-changes`).
+too, per time step (:ref:`cycle-waves`), and ``--surfer`` shows that file. The options ``--cov``, ``--vhpi``,
+``--wave-variables`` and a debug session are refused (:ref:`cycle-changes`).
 
 From a VUnit run script the sim option ``yavs.cycle`` does the same, per library, testbench, test or configuration:
 
@@ -102,8 +102,9 @@ From a VUnit run script the sim option ``yavs.cycle`` does the same, per library
 
 The values are ``"off"`` (the default), ``"on"`` (``--cycle``) and ``"strict"`` (``--cycle-strict``); anything else
 is an error at the time of the call. The line ``cycle mode: N of M processes run cycle-based`` is part of the test's
-output, shown with ``-v`` for a test that passes. A test that also asks for coverage, a debug session,
-``--yavs-interactive`` or ``--yavs-surfer`` fails before yavs starts, with a message that names both options. To see
+output, shown with ``-v`` for a test that passes. A test that also asks for coverage, a debug session or
+``--yavs-interactive`` fails before yavs starts, with a message that names both options; ``--yavs-surfer`` shows its
+waves. To see
 the report of one test, give it ``yavs.sim_flags`` ``["--cycle-report"]``: yavs prints the report and does not
 simulate, so that test fails on purpose. ``yavs.sim_flags`` ``["--cycle-exact-meta"]`` with ``yavs.cycle`` on gives a
 test the exact metavalue rules. :doc:`vunit-yavs` has the option in its table.
@@ -722,9 +723,9 @@ by timing instead of by delta order has nothing to change.
 Waveforms
 ~~~~~~~~~
 
-``--wave`` works with ``--cycle`` and ``--cycle-strict``, and so do ``--wave-include``, ``--wave-exclude`` and
-``--wave-max-array``. The file has the names of a normal-mode file and its values per time step, as far as the
-region allows:
+``--wave`` works with ``--cycle`` and ``--cycle-strict``, and so do ``--wave-include``, ``--wave-exclude``,
+``--wave-max-array`` and ``--surfer`` (which shows the file in Surfer while the run writes it). The file has the
+names of a normal-mode file and its values per time step, as far as the region allows:
 
 * Signals the event simulation holds (those of processes outside the region, the inputs of the region and the
   outputs the testbench reads) are recorded as in the normal mode.
@@ -739,8 +740,22 @@ region allows:
   ``0`` where the normal mode shows ``'U'`` (:ref:`cycle-two-state`). With ``--cycle-exact-meta`` the second set of
   values gives ``'U'`` and ``'X'`` where the testbench would read them, while it runs.
 * Memories are recorded like other arrays (up to ``--wave-max-array`` elements), the words written at each edge
-  exported. A memory of integers or enumerations of more than 64 elements that the region writes at run-time indices
-  cannot be exported and is left out of the file, with warning W0802 naming it.
+  exported. One kind cannot be exported and is left out of the file, with warning W0802 naming it: a signal whose
+  elements are integers or enumerations (other than ``std_ulogic``, ``std_logic``, ``bit`` and ``boolean``), of more
+  than 64 elements, that a clocked cycle-based process writes at an index computed at run time. The whole signal is
+  left out (a record holding such a field too, and a port connected to it); every other signal is recorded as usual:
+
+  .. code-block:: vhdl
+
+      type iram_t is array (0 to 127) of integer;
+      signal iram : iram_t;
+      ...
+      if rising_edge(clk) then
+        iram(cnt mod 128) <= cnt * 7;   -- iram is left out of the waveform under --cycle
+      end if;
+
+  A memory of ``std_logic`` vectors, an integer array of at most 64 elements, one written only at fixed indices or
+  as a whole, and one written by a process in the event kernel are recorded.
 * Variables are not recorded: ``--wave-variables`` is refused (E4102), as the region keeps the variables of its
   processes in its own image.
 * Without ``--wave`` nothing changes. With it, recording costs what it costs in the normal mode, and the region also
@@ -786,23 +801,24 @@ region, a process that reads the history of a signal other than its own clock st
 What is refused
 ~~~~~~~~~~~~~~~
 
-The signals inside the region are kept in an image of their own, and nothing can observe or change them there.
-So ``--cycle`` and ``--cycle-strict`` stop with E4102 before simulating when combined with ``--surfer`` (which shows
-a waveform as it is written), ``--wave-variables``, ``--cov``, ``--vhpi``, ``--activity`` (which counts the activations and events of every
+The signals inside the region are kept in an image of their own: the region exports what a waveform records, and
+nothing else can observe or change them there.
+So ``--cycle`` and ``--cycle-strict`` stop with E4102 before simulating when combined with ``--wave-variables``,
+``--cov``, ``--vhpi``, ``--activity`` (which counts the activations and events of every
 process and signal), or a debug session (``--dap``, ``--interactive``, ``--do``). The error names the option and
 nothing is written or run. It looks like this:
 
 .. code-block:: text
 
-    error[E4102]: `--cycle` cannot be used with `--surfer`
+    error[E4102]: `--cycle` cannot be used with `--activity`
      |
      = note: cycle mode keeps the signals inside its region in its own image, which this option would observe or change
      = help: run without `--cycle`
 
     error: aborting due to 1 previous error
 
-Run the design in the normal mode for coverage, activity counts, debugging, VHPI plugins, a waveform of variables or
-one shown in Surfer. ``--wave`` is allowed (:ref:`cycle-waves`).
+Run the design in the normal mode for coverage, activity counts, debugging, VHPI plugins or a waveform of variables.
+``--wave`` and ``--surfer`` are allowed (:ref:`cycle-waves`).
 
 Options that do not read the signals of the region stay allowed: ``--profile`` (it samples the interpreter, so the
 region's time shows as the kernel's and only the processes outside the region are listed), ``--assert-summary`` (it

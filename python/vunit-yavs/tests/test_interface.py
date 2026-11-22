@@ -831,11 +831,18 @@ class TestYavsInterface(unittest.TestCase):
             _, cmd, _ = self._simulate(make_config(sim_options=options))
             self.assertFalse(any(arg.startswith("--cycle") for arg in cmd))
 
+    def test_cycle_mode_passes_surfer_on(self):
+        # yavs records the region's signals for the viewer under --cycle (owner decision 2026-11-22)
+        config = make_config(sim_options={"yavs.cycle": "on"})
+        status, cmd, _ = self._simulate(config, surfer="")
+        self.assertTrue(status)
+        self.assertIn("--cycle", cmd)
+        self.assertIn("--surfer", cmd)
+
     def test_cycle_mode_refuses_what_the_simulator_refuses(self):
         cases = (
             ({"debug_port": 4711}, {}, "--yavs-debug"),
             ({"interactive": True}, {}, "--yavs-interactive"),
-            ({"surfer": ""}, {}, "--yavs-surfer"),
             ({}, {"enable_coverage": True}, "enable_coverage"),
             ({"coverage": CoverageArgs(enabled=True, letters="s")}, {}, "--yavs-cov"),
         )

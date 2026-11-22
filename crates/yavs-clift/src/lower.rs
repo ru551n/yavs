@@ -363,6 +363,20 @@ fn pin_mem(func: &mut ir::Function, at: usize, adopt: bool) {
     }
 }
 
+/// Marks in `to` the blocks the branches made since instruction `seen` lead to, and moves
+/// `seen` to the end.
+fn branched_to(func: &ir::Function, to: &mut Vec<bool>, seen: &mut usize) {
+    let dfg = &func.dfg;
+    to.resize(dfg.num_blocks(), false);
+    for i in *seen..dfg.num_insts() {
+        let d = &dfg.insts[ir::Inst::from_u32(i as u32)];
+        for t in d.branch_destination(&dfg.jump_tables, &dfg.exception_tables) {
+            to[t.block(&dfg.value_lists).as_u32() as usize] = true;
+        }
+    }
+    *seen = dfg.num_insts();
+}
+
 /// Per pc, whether it starts a block no cycle of the block graph reaches (`leader`: the block
 /// starts; `targets`: the block starts an instruction jumps to; `jumps`: it does not fall through).
 fn once_blocks(
@@ -5399,10 +5413,35 @@ fn gen_func(
             g.b.ins().jump(bb, &args);
         }
     }
+    // Frame mode, processes: a slow path no branch leads to (an access proved inside the frame)
+    // is not made. Slow paths may lead to others: what they reach is made after them.
+    let park = g.nat.is_none() && f.kind == FuncKind::Process;
+    let (mut reached, mut seen) = (Vec::new(), 0);
+    let mut parked: Vec<Slow> = Vec::new();
     let mut next_slow = 0;
-    while next_slow < g.slows.len() {
+    loop {
+        if park {
+            branched_to(g.b.func, &mut reached, &mut seen);
+        }
+        if next_slow == g.slows.len() {
+            if parked.is_empty() {
+                break;
+            }
+            let (now, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut parked)
+                .into_iter()
+                .partition(|s| reached[s.block.as_u32() as usize]);
+            parked = rest;
+            if now.is_empty() {
+                break;
+            }
+            g.slows.extend(now);
+        }
         let s = g.slows[next_slow];
         next_slow += 1;
+        if park && !reached[s.block.as_u32() as usize] {
+            parked.push(s);
+            continue;
+        }
         g.b.set_cold_block(s.block);
         g.b.switch_to_block(s.block);
         if srcmap() {

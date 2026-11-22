@@ -34,7 +34,8 @@ whose own value dies within `MAX_SPAN` instructions even when its register lives
 The drive compare's loads of guest memory are in the guest region (they were untagged, which the first change made
 unsafe). Forced compiled: a scalar copy-in/copy-out call 11 instructions fewer, the 26 bench designs -1.26 percent
 (geomean, `textio_heavy` +0.48 by allocator state), GRLIB and Microwatt -0.35 percent; `--tier=auto` within its
-noise. `docs/decisions.md` "Cranelift: the frame's slots pointer across untaken slow paths".
+noise. Follow-up: frame-mode process code no longer makes a slow path no branch leads to (same machine code, less
+compile work). `docs/decisions.md` "Cranelift: the frame's slots pointer across untaken slow paths".
 
 ### A warm run decodes only the cached analysis entries it reads (2026-11-19)
 

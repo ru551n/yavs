@@ -17988,6 +17988,18 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
   both in the guest region and by an untagged load) finds none over the difftest corpus under the count-1 policy
   (2780 functions) and full GRLIB and Microwatt runs; on the base it finds 136 functions on Microwatt, so the pair
   was there before and the per-block reads hid it. The invariant is in `crates/yavs-clift/AGENTS.md` section 4.
+- **Change 4 (follow-up, 2026-11-22).** A slow path no branch leads to is not made: an access proved inside the
+  frame never branches to its slow block, which Cranelift dropped later as dead code after the generator had built
+  it, so the compile paid for it. In frame-mode process code the slow blocks are made after the body as before, but
+  one whose block no branch emitted so far leads to is parked; a slow path may lead to other slow paths, so parked
+  ones are made when a later one branches to them, and the rest are never made. The branch scan is incremental (each
+  instruction is looked at once), so the cost is small on functions with many accesses. The machine code is the same
+  (a dead block has no code); the gain is compile time. Native variants and adapters are unchanged. Checked on
+  2026-11-22: the machine code of every bench design under `--tier=clift` is byte-identical to the base, so no design
+  runs slower or faster; what moves is the compiler's own instruction count (small, below one percent on the bench
+  designs, GRLIB and Microwatt). A few designs read higher or lower by up to a few percent in total instructions with
+  that same code (`textio_heavy`, `strings_heavy`, `file_io`): the count follows the allocator's state, not the code.
+  Whole GRLIB and Microwatt runs give the same output and exit status as the base.
 - **Measured** (bench builds, `instructions:u`, ASLR off, `--no-cache`, medians of 5 runs with the environment's
   size varied; base 38e095e70). Forced `--tier=clift`: the copy-in/copy-out loop `l4` 302.22 to 291.06 M per 1 M
   calls (its by-reference twin `l4t` 293.99 to 288.86 M; the gap between them 8.2 to 2.2 instructions per call); the

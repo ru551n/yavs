@@ -4687,7 +4687,8 @@ pub fn param_addrs(f: &Func) -> Vec<ParamAddr> {
 }
 
 /// `param_addrs` for code that holds a region over calls (`Gen::hold_recheck`): also a parameter
-/// used three times outside a loop.
+/// used three times outside a loop, or twice in a stable activation (its region costs a few
+/// tests at the entry and nothing after).
 pub fn hold_addrs(f: &Func) -> Vec<ParamAddr> {
     addr_params(f, true)
 }
@@ -4795,6 +4796,7 @@ fn addr_params(f: &Func, any: bool) -> Vec<ParamAddr> {
     if cands.is_empty() {
         return Vec::new();
     }
+    let stable = stable_activation(f);
     // Which candidate each register derives from (single definitions only).
     let mut origin: Vec<Option<usize>> = vec![None; n + 1];
     for (k, &(r, ..)) in cands.iter().enumerate() {
@@ -4837,24 +4839,8 @@ fn addr_params(f: &Func, any: bool) -> Vec<ParamAddr> {
         vec![false; cands.len()],
     );
     for (pc, i) in f.code.iter().enumerate() {
-        let (reads, writes): (&[Reg], &[Reg]) = match i {
-            Inst::Load { addr, .. } => (&[*addr], &[]),
-            Inst::Store { addr, .. } => (&[], &[*addr]),
-            Inst::Copy { dst, src, .. } => (&[*src], &[*dst]),
-            Inst::Fill { dst, .. } | Inst::Zero { addr: dst, .. } => (&[], &[*dst]),
-            Inst::Pos { dope, .. } | Inst::DopeLen { dope, .. } | Inst::SlicePos { dope, .. } => {
-                (&[*dope], &[])
-            }
-            Inst::SubtypeCheck { dope, want, .. } => (&[*dope, *want], &[]),
-            Inst::LGet { base, .. } => (&[*base], &[]),
-            Inst::LSet { base, .. } | Inst::LFill { base, .. } => (&[], &[*base]),
-            Inst::LCopy { dst, src, .. } => (&[*src], &[*dst]),
-            Inst::LEq { a, b, .. } | Inst::MemEq { a, b, .. } | Inst::ArrCmp { a, b, .. } => {
-                (&[*a, *b], &[])
-            }
-            Inst::LKey { a, .. } => (&[*a], &[]),
-            _ => (&[], &[]),
-        };
+        let (reads, writes) = addr_uses(i);
+        let (reads, writes) = (&reads[..], &writes[..]);
         let looped = loops.iter().any(|&(s, e)| s <= pc && pc <= e);
         for (rs, w) in [(reads, false), (writes, true)] {
             for r in rs {
@@ -4869,13 +4855,91 @@ fn addr_params(f: &Func, any: bool) -> Vec<ParamAddr> {
     cands
         .iter()
         .enumerate()
-        .filter(|&(k, _)| (any || in_loop[k] > 0) && uses[k] >= 3)
+        .filter(|&(k, _)| (any || in_loop[k] > 0) && (uses[k] >= 3 || stable && uses[k] >= 2))
         .map(|(k, &(reg, cell, _))| ParamAddr {
             reg,
             cell,
             write: write[k],
         })
         .collect()
+}
+
+/// The registers an instruction reads through and writes through as addresses.
+fn addr_uses(i: &Inst) -> (smallvec::SmallVec<[Reg; 2]>, smallvec::SmallVec<[Reg; 2]>) {
+    match i {
+        Inst::Load { addr, .. } => (smallvec![*addr], smallvec![]),
+        Inst::Store { addr, .. } => (smallvec![], smallvec![*addr]),
+        Inst::Copy { dst, src, .. } => (smallvec![*src], smallvec![*dst]),
+        Inst::Fill { dst, .. } | Inst::Zero { addr: dst, .. } => (smallvec![], smallvec![*dst]),
+        Inst::Pos { dope, .. } | Inst::DopeLen { dope, .. } | Inst::SlicePos { dope, .. } => {
+            (smallvec![*dope], smallvec![])
+        }
+        Inst::SubtypeCheck { dope, want, .. } => (smallvec![*dope, *want], smallvec![]),
+        Inst::LGet { base, .. } => (smallvec![*base], smallvec![]),
+        Inst::LSet { base, .. } | Inst::LFill { base, .. } => (smallvec![], smallvec![*base]),
+        Inst::LCopy { dst, src, .. } => (smallvec![*src], smallvec![*dst]),
+        Inst::LEq { a, b, .. } | Inst::MemEq { a, b, .. } | Inst::ArrCmp { a, b, .. } => {
+            (smallvec![*a, *b], smallvec![])
+        }
+        Inst::LKey { a, .. } => (smallvec![*a], smallvec![]),
+        _ => (smallvec![], smallvec![]),
+    }
+}
+
+/// The frames of enclosing subprograms (static links 1 and 2) a native frame holds the region of
+/// for the whole activation, as `hold_addrs` does for parameters (`Gen::hold_resolve`), with
+/// whether it writes there: those reached through `AddrOf Up` registers (and what `Index`,
+/// `Field` and `Move` make of them) twice or more, where the region stays put: a stable
+/// activation, or a process's frame (the root frame, held over calls).
+pub fn hold_ups(prog: &Program, f: &Func) -> Vec<(u8, bool)> {
+    if f.parent.is_none() {
+        return Vec::new();
+    }
+    let n = f.reg_ty.len();
+    let mut up: Vec<Option<u8>> = vec![None; n + 1];
+    for _ in 0..2 {
+        for i in &f.code {
+            let (dst, d) = match *i {
+                Inst::AddrOf {
+                    dst,
+                    space: AddrSpace::Up(d @ 1..=2),
+                    ..
+                } => (dst, Some(d)),
+                Inst::Index { dst, base: src, .. }
+                | Inst::Field { dst, base: src, .. }
+                | Inst::Move { dst, src } => (dst, up.get(src.0 as usize).copied().flatten()),
+                _ => continue,
+            };
+            if let (Some(d), Some(x)) = (d, up.get_mut(dst.0 as usize)) {
+                *x = Some(d);
+            }
+        }
+    }
+    let mut count = [(0u32, false); 2];
+    for i in &f.code {
+        let (reads, writes) = addr_uses(i);
+        let (reads, writes) = (&reads[..], &writes[..]);
+        for (rs, w) in [(reads, false), (writes, true)] {
+            for r in rs {
+                if let Some(Some(d)) = up.get(r.0 as usize).copied() {
+                    let c = &mut count[usize::from(d - 1)];
+                    c.0 += 1;
+                    c.1 |= w;
+                }
+            }
+        }
+    }
+    let stable = stable_activation(f);
+    let mut at = f.parent;
+    let mut out = Vec::new();
+    for (k, &(uses, write)) in count.iter().enumerate() {
+        let frame = at.and_then(|p| prog.func(p));
+        if uses >= 2 && (stable || frame.is_some_and(|g| g.kind == FuncKind::Process)) {
+            out.push((k as u8 + 1, write));
+        }
+        at = frame.and_then(|g| g.parent);
+    }
+    out
 }
 
 /// An element operand of a native call read where it is (#1122): `Alloc` of `tmp` at `alloc`

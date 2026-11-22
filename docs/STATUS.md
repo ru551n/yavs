@@ -12027,3 +12027,14 @@ rendered message on the interpreter, and on `auto` and `clift` in a build with C
 ## Range and index errors in VHDL form (yavs-ir, yavs-lower, yavs-interp, #1178, 2026-11-21)
 
 A failed range or index check names its values the way VHDL writes them: an enumeration value as its literal (`value WHITE outside of RGB range RED to BLUE`, character literals quoted), a physical value with its unit in the largest unit that divides it exactly (`value 20 NS outside of SHORT range 0 HR to 10 NS`; zero reads in the largest unit, as in the first reference simulator), the index of an array indexed by an enumeration or character likewise. Before, enumerations showed as positions and physical values as a count of the smallest unit. Reals already showed in full (`2.5`, `0.5`) and a descending subtype as `high downto low`; tests pin both. `CheckMsg` gained `ty`, set where the lowering knows an enumeration or physical type (`FuncCx::msg_ty`: scalar subtype checks, the signal-parameter check, index checks of elements, slices, `&` and aggregates, the delay of a waveform element and the timeout of a wait); the text is built only when a check fails (`Machine::msg_val`), and compiled code leaves to the interpreter at a failed check, so every tier prints the same. Integer and real checks are unchanged. Left: the operands of `result of A * B cannot be represented as T` print as integers; a signal parameter's message names the formal's type, not the actual's subtype (the caller passes bounds only). Tests: corpus `scalar/range_msg_enum`, `range_msg_enum_downto`, `range_msg_char`, `range_msg_phys`, `range_msg_phys_time`, `range_msg_real`, `range_msg_downto`, `range_msg_index_enum` (`ref=hand`).
+
+## Enclosing frames held by native frames (yavs-clift, yavs-rt, 2026-11-22)
+
+A Cranelift native-frame variant resolves the frame one or two static links up once at its entry when it reaches it twice
+or more (`rt::hold_ups`: a stable activation, or a process's frame), and tests the static link there instead of at every
+`AddrOf Up`; a stable activation also holds an address parameter used twice, tests the interpreter's top frame first and
+keeps the region in values (`docs/decisions.md` "Held regions of enclosing frames and of two-use parameters"). A
+process-local procedure called a million times (`x := x + 1; s := s + v;`) went from 188 to 102 instructions per call in
+the variant under `--tier=clift` (the whole run 290.8 to 203.0 M instructions). Test: corpus `process/uplevel_holds` (process-local procedures, a procedure's nested
+procedures reaching both frames above them, a procedure that waits, calls and allocations between the accesses); debug
+builds check every held access against the lookup.

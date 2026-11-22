@@ -532,6 +532,7 @@ const PASS: &[&str] = &[
     "process/timeout_resident",
     "process/wait_past_time_high",
     "process/unaffected_2019",
+    "process/uplevel_holds",
     "process/wait_forms",
     "protected/alloc_call_in_init",
     "protected/alloc_call_in_pkg_init",

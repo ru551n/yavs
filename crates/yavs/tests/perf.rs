@@ -113,7 +113,8 @@ fn check_bounds(design: &str, r: &Run, bounds: &[(&str, Bound)]) {
     for &(name, bound) in bounds {
         let Some(&v) = r.counters.get(name) else {
             // A plain release build without `op-census` collects no `ops`, `wake_sole_left`,
-            // `lean_late`, `resolutions` or `cb_*` counters; those bounds are skipped there. In a debug build they are
+            // `lean_late`, `resolutions` or `cb_*` counters, and checks no held access
+            // (`hold_checked`); those bounds are skipped there. In a debug build they are
             // collected, so a missing counter is a failure, not a vacuous pass (#732).
             if cfg!(debug_assertions) {
                 panic!("design `{design}`: no counter `{name}` in {:?}", r.counters);
@@ -125,6 +126,7 @@ fn check_bounds(design: &str, r: &Run, bounds: &[(&str, Bound)]) {
                     || name == "lean_late"
                     || name == "calls"
                     || name == "resolutions"
+                    || name == "hold_checked"
                     || name.starts_with("cb_"),
                 "design `{design}`: no counter `{name}` in {:?}",
                 r.counters
@@ -2245,6 +2247,20 @@ mod clift {
             ("cb_lcopy", Max(0)),
             ("cb_xstep", Max(1)),
             ("cb_region", Max(0))
+        ]
+    );
+
+    // A procedure local to a process (`rt::hold_ups`, two uses of its inout scalar in a stable
+    // activation): both regions held at the entry without a callback, five held accesses a call (the
+    // first of the 200 calls is the interpreter's).
+    clift_case!(
+        uplevel,
+        "clift_uplevel",
+        "v=200 s=598",
+        [
+            ("cb_region", Max(0)),
+            ("cb_host", Max(0)),
+            ("hold_checked", Min(990))
         ]
     );
 

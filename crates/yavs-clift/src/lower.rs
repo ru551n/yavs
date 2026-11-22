@@ -2319,10 +2319,13 @@ struct Slow {
 }
 
 /// A region an address parameter of a native frame points into (`Gen::pres`), `[host pointer of
-/// its start, length]` in a stack slot, length 0 where it is not held.
+/// its start, length]` in a stack slot, length 0 where it is not held. A stable activation never
+/// asks again: the pair is the values the entry resolved (`val`), which stay in registers where
+/// the allocator can keep them.
 #[derive(Clone, Copy)]
 struct Held {
     ss: StackSlot,
+    val: Option<(Value, Value)>,
     write: bool,
     /// The parameter's address.
     addr: Value,
@@ -2379,6 +2382,9 @@ struct Gen<'a> {
     /// the entry and asked again where a heap may have changed (`hold_recheck`):
     /// `Known::Param(k)` is `pres[k]`.
     pres: Vec<Held>,
+    /// The region of the frame one and two static links up held as `pres[k]` (`hold_ups`): what
+    /// `Known::Up` addresses of a native frame are tested against.
+    ups: [Option<u16>; 2],
     /// Where the heaps' generation the regions were resolved at is kept.
     hold_gen: Option<StackSlot>,
     /// The frame's size in bytes (`Func::frame`): the slots of every frame of the function.
@@ -3220,6 +3226,7 @@ fn gen_func(
         codes: Vec::new(),
         code_new: None,
         pres: Vec::new(),
+        ups: [None; 2],
         hold_gen: None,
         frame_len: u64::from(f.frame),
         objs: f
@@ -3303,7 +3310,8 @@ fn gen_func(
         }
     }
     if g.nat.is_some() {
-        g.native_entry(f, &p[if f.parent.is_some() { 5 } else { 3 }..])?;
+        let ups = hold_ups(prog, f);
+        g.native_entry(f, &p[if f.parent.is_some() { 5 } else { 3 }..], &ups)?;
         // The address parameters resolved at the entry hold for the whole activation.
         for (k, pa) in hold_addrs(f).iter().enumerate() {
             let r = pa.reg.0 as usize;
@@ -4114,6 +4122,19 @@ fn gen_func(
                     g.st(dst, v)
                 }
                 None => match space {
+                    // A held frame's static link was tested at the entry.
+                    AddrSpace::Up(d @ 1..=2)
+                        if g.nat.is_some() && g.ups[usize::from(d - 1)].is_some() =>
+                    {
+                        let hi = g
+                            .nat
+                            .as_ref()
+                            .map(|n| n.up[usize::from(d - 1)])
+                            .expect("nat");
+                        let hi = g.b.ins().ishl_imm_s(hi, 32);
+                        let v = g.b.ins().bor_imm_s(hi, i64::from(off));
+                        g.st(dst, v);
+                    }
                     AddrSpace::Up(d @ 1..=2) => {
                         let (slow, join) = g.slow_path(pc, &inst);
                         let hi = match &g.nat {
@@ -5820,7 +5841,7 @@ impl Gen<'_> {
 
     /// The prologue of a native-frame variant: zeroed slots (as a frame the interpreter pushes),
     /// the arguments stored into their parameter slots.
-    fn native_entry(&mut self, f: &Func, args: &[Value]) -> Result<(), String> {
+    fn native_entry(&mut self, f: &Func, args: &[Value], ups: &[(u8, bool)]) -> Result<(), String> {
         let slots = match &self.nat {
             Some(n) => n.slots,
             None => return Ok(()),
@@ -5905,12 +5926,43 @@ impl Gen<'_> {
             ));
             let held = Held {
                 ss,
+                val: None,
                 write: pa.write,
                 addr: a,
                 flags: u32::from(pa.write) | u32::from(stable) << 1 | 8,
             };
-            self.hold_resolve(held, stable, depth);
-            self.pres.push(held);
+            let val = self.hold_resolve(held, stable, depth);
+            self.pres.push(Held { val, ..held });
+        }
+        // The frames of enclosing subprograms, by the address of their first byte. Their static
+        // links are tested here once (`AddrOf Up` then needs no test): without one the interpreter
+        // runs the call.
+        for &(d, write) in ups {
+            let link = self.nat.as_ref().map(|n| n.up[usize::from(d - 1)]);
+            let Some(link) = link else { break };
+            let known = self.b.ins().icmp_imm_s(IntCC::NotEqual, link, -1);
+            let (go, out) = (self.b.create_block(), self.b.create_block());
+            self.b.set_cold_block(out);
+            self.brif_split(known, go, out);
+            self.b.switch_to_block(out);
+            self.leave_at(0);
+            self.b.switch_to_block(go);
+            let a = self.b.ins().ishl_imm_s(link, 32);
+            let ss = self.b.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                16,
+                3,
+            ));
+            let held = Held {
+                ss,
+                val: None,
+                write,
+                addr: a,
+                flags: u32::from(write) | u32::from(stable) << 1 | 8,
+            };
+            let val = self.hold_resolve(held, stable, depth);
+            self.ups[usize::from(d - 1)] = Some(self.pres.len() as u16);
+            self.pres.push(Held { val, ..held });
         }
         if !self.pres.is_empty() && !stable {
             let ss = self.b.create_sized_stack_slot(StackSlotData::new(
@@ -5928,13 +5980,31 @@ impl Gen<'_> {
     /// Fill a held region at a native frame's entry: inline for what needs no callback (a composite
     /// variable of the root frame, a native caller's slots, an object of the table), nothing for
     /// what is not held (`Mem::region`), else `yavs_rt_region`.
-    fn hold_resolve(&mut self, h: Held, stable: bool, depth: Value) {
+    fn hold_resolve(&mut self, h: Held, stable: bool, depth: Value) -> Option<(Value, Value)> {
         let a = h.addr;
         let done = self.b.create_block();
+        let val = stable.then(|| {
+            (
+                self.b.append_block_param(done, I64),
+                self.b.append_block_param(done, I64),
+            )
+        });
         let call = self.b.create_block();
         self.b.set_cold_block(call);
         let (fobj, other) = (self.b.create_block(), self.b.create_block());
         let hi = self.b.ins().ushr_imm_s(a, 32);
+        // A stable activation holds the interpreter's top frame (`Mem::region`): tested first, the
+        // frame of a frame-mode caller.
+        if stable {
+            let (topb, next) = (self.b.create_block(), self.b.create_block());
+            let fh = self.mem_ld(MEM_FRAME);
+            let is = self.b.ins().icmp(IntCC::Equal, hi, fh);
+            self.brif_split(is, topb, next);
+            self.b.switch_to_block(topb);
+            let (ptr, len) = (self.mem_ld(MEM_SLOTS), self.mem_ld(MEM_SLOTS_LEN));
+            self.hold_store(h, ptr, len, done);
+            self.b.switch_to_block(next);
+        }
         let top = self.b.ins().ushr_imm_s(hi, 28);
         let is = self.b.ins().icmp_imm_s(IntCC::Equal, top, 1);
         self.brif_split(is, fobj, other);
@@ -5969,24 +6039,20 @@ impl Gen<'_> {
         let len = self.b.ins().load(I64, MemFlagsData::trusted(), ent, 8);
         self.hold_store(h, ptr, len, done);
         self.b.switch_to_block(rest);
-        // The root frame by its own address: its slots when the view has them (`Mem::region`), else
-        // the callback's, as is whatever a stable activation holds besides.
-        let root_hi = self.b.ins().icmp_imm_s(IntCC::Equal, hi, 0);
+        // The root frame by its own address: its slots when the view has them, else the
+        // callback's, as is whatever a stable activation holds besides.
         let (none, nb) = (self.b.create_block(), self.b.create_block());
-        if stable {
-            self.b.ins().jump(call, &[]);
-        } else {
-            let root = self.b.create_block();
-            self.brif_split(root_hi, root, none);
-            self.b.switch_to_block(root);
-            let len = self.mem_ld(MEM_ROOT_LEN);
-            let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, len, 0);
-            let slots = self.b.create_block();
-            self.brif_split(has, slots, call);
-            self.b.switch_to_block(slots);
-            let ptr = self.mem_ld(MEM_ROOT_SLOTS);
-            self.hold_store(h, ptr, len, done);
-        }
+        let root_hi = self.b.ins().icmp_imm_s(IntCC::Equal, hi, 0);
+        let root = self.b.create_block();
+        self.brif_split(root_hi, root, if stable { call } else { none });
+        self.b.switch_to_block(root);
+        let len = self.mem_ld(MEM_ROOT_LEN);
+        let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, len, 0);
+        let slots = self.b.create_block();
+        self.brif_split(has, slots, call);
+        self.b.switch_to_block(slots);
+        let ptr = self.mem_ld(MEM_ROOT_SLOTS);
+        self.hold_store(h, ptr, len, done);
         self.b.switch_to_block(none);
         let z = self.c64(0);
         self.hold_store(h, z, z, done);
@@ -6039,14 +6105,31 @@ impl Gen<'_> {
         }
         self.b.switch_to_block(call);
         self.hold_call(h, depth);
-        self.b.ins().jump(done, &[]);
+        if stable {
+            let ptr = self.b.ins().stack_load(I64, I64, h.ss, 0);
+            let len = self.b.ins().stack_load(I64, I64, h.ss, 8);
+            self.b
+                .ins()
+                .jump(done, &[BlockArg::Value(ptr), BlockArg::Value(len)]);
+        } else {
+            self.b.ins().jump(done, &[]);
+        }
         self.b.switch_to_block(done);
+        val
     }
 
+    /// The pair of a held region to the join of `hold_resolve`: its parameters in a stable
+    /// activation, else the stack slot.
     fn hold_store(&mut self, h: Held, ptr: Value, len: Value, done: Block) {
-        self.b.ins().stack_store(I64, ptr, h.ss, 0);
-        self.b.ins().stack_store(I64, len, h.ss, 8);
-        self.b.ins().jump(done, &[]);
+        if self.b.func.dfg.num_block_params(done) == 2 {
+            self.b
+                .ins()
+                .jump(done, &[BlockArg::Value(ptr), BlockArg::Value(len)]);
+        } else {
+            self.b.ins().stack_store(I64, ptr, h.ss, 0);
+            self.b.ins().stack_store(I64, len, h.ss, 8);
+            self.b.ins().jump(done, &[]);
+        }
     }
 
     fn hold_call(&mut self, h: Held, depth: Value) {
@@ -7796,15 +7879,27 @@ impl Gen<'_> {
         }
         // An address parameter of a native frame (or an `Index` of one): a test against the region
         // resolved at the entry, the ordinary lookup when it fails.
+        // A held enclosing frame misses only where its region could not be resolved (the root
+        // frame's slots elsewhere): its miss is the runtime's lookup, not the inline chain.
+        let (held, up) = match reg.and_then(|r| self.known.get(r.0 as usize)) {
+            Some(Some(Known::Param(k))) => (Some(*k), false),
+            Some(Some(Known::Up(d))) => {
+                (self.ups.get(usize::from(*d) - 1).copied().flatten(), true)
+            }
+            _ => (None, false),
+        };
         if self.nat.is_some()
-            && let Some(Some(Known::Param(k))) = reg.and_then(|r| self.known.get(r.0 as usize))
-            && let Some(&h) = self.pres.get(usize::from(*k))
+            && let Some(k) = held
+            && let Some(&h) = self.pres.get(usize::from(k))
             && (h.write || !write)
         {
             let (ev, nv) = (self.op(extra), self.op(n));
             let lo = self.lo32(a);
             let off = self.b.ins().iadd(lo, ev);
-            let len = self.b.ins().stack_load(I64, I64, h.ss, 8);
+            let len = match h.val {
+                Some((_, l)) => l,
+                None => self.b.ins().stack_load(I64, I64, h.ss, 8),
+            };
             let okc = self.in_range(off, nv, len);
             let (fast, miss, done) = (
                 self.b.create_block(),
@@ -7815,7 +7910,10 @@ impl Gen<'_> {
             self.b.set_cold_block(miss);
             self.brif_split(okc, fast, miss);
             self.b.switch_to_block(fast);
-            let ptr = self.b.ins().stack_load(I64, I64, h.ss, 0);
+            let ptr = match h.val {
+                Some((p, _)) => p,
+                None => self.b.ins().stack_load(I64, I64, h.ss, 0),
+            };
             let pf = self.b.ins().iadd(ptr, off);
             if hold_check() {
                 let (w, depth) = (
@@ -7829,8 +7927,17 @@ impl Gen<'_> {
             }
             self.b.ins().jump(done, &[BlockArg::Value(pf)]);
             self.b.switch_to_block(miss);
-            let pm = self.host(a, None, Op::V(ev), Op::V(nv), write, slow);
-            self.b.ins().jump(done, &[BlockArg::Value(pm)]);
+            if up {
+                let got = self.b.create_block();
+                let pm = self.b.append_block_param(got, I64);
+                self.host_call(a, ev, nv, write, got, slow);
+                self.b.switch_to_block(got);
+                self.nonnull(pm, nv, slow);
+                self.b.ins().jump(done, &[BlockArg::Value(pm)]);
+            } else {
+                let pm = self.host(a, None, Op::V(ev), Op::V(nv), write, slow);
+                self.b.ins().jump(done, &[BlockArg::Value(pm)]);
+            }
             self.b.switch_to_block(done);
             return p;
         }

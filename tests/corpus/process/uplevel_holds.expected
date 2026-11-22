@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:uplevel_holds:p	step v=0 s=6000
+diag	note	0	0	:uplevel_holds:p	mix acc=62687 r.b=35331 arr(3)=251
+diag	note	0	0	:uplevel_holds:p	churn w=81888
+diag	note	0	0	:uplevel_holds:p	outer acc=38545 s=174600 w=100500
+diag	note	20000000	0	:uplevel_holds:p	waits acc=42835

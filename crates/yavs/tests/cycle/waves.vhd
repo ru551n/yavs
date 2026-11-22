@@ -1,6 +1,7 @@
 -- Cycle mode with `--wave`: signals only the region reads, of width W (a register, logic on it,
 -- logic on inputs that change between edges (`din2` reaches no output), a record, an array, a memory of logic and one of
--- integers, a register without a start value), recorded per time step as in the normal mode.
+-- integers, a register without a start value), recorded per time step as in the normal mode, with a
+-- clocked report and a combinational assert below the top that run in both.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -60,7 +61,17 @@ begin
     end if;
   end process;
 
+  rep : process (clk)
+  begin
+    if rising_edge(clk) then
+      if cnt mod 8 = 5 then
+        report "cnt=" & integer'image(cnt);
+      end if;
+    end if;
+  end process;
+
   c <= q xor shift_right(q, 1);
+  assert c(0) /= '1' report "c(0) set" severity note;
   mix <= unsigned(din) and not q;
   mix2 <= unsigned(din2) xor q;
   dout <= std_ulogic_vector(c) xor rd(0) xor std_ulogic_vector(mix)

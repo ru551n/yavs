@@ -41,6 +41,9 @@ What the file shows
   enumerations by their literal names, integers, ``time`` and ``real`` as numbers. Records and
   other arrays are scopes with one entry per field or element.
 * FST has no delta cycles: several deltas at one time give one change with the final value.
+* Under ``--cycle`` the signals inside the cycle region are recorded from its own values at the end of each
+  time step, two-state by default; a memory of integers it writes at run-time indices is left out (W0802), and
+  ``--wave-variables`` is refused. :ref:`cycle-waves` has the details.
 
 The file is finished at the end of the run, at ``--stop-time`` and on Ctrl-C. A run killed hard
 (a crash, SIGKILL) leaves the file readable up to its last written block; setting the environment

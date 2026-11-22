@@ -8881,9 +8881,16 @@ fn waves_of_signals_inside_the_region_follow_the_normal_mode_per_time_step() {
             };
             let stats = [("YAVS_CYCLE_STATS", "1")];
             let (c_out, c_err) = wave(mode, "c.fst", &stats);
-            assert_eq!(c_out, n_out, "{w} exact={exact}");
+            // The result line as in the normal mode (the notes of the asserts differ in their deltas
+            // and at time 0, cycle mode's own matter); the whole console as without `--wave`.
+            let done = |o: &str| o.lines().find(|l| l.contains("dout=")).map(String::from);
+            assert_eq!(done(&c_out), done(&n_out), "{w} exact={exact}");
             assert!(
-                c_err.contains("cycle mode: 6 of 7 processes run cycle-based"),
+                c_out.contains("cnt=13") && c_out.contains("c(0) set"),
+                "{c_out}"
+            );
+            assert!(
+                c_err.contains("cycle mode: 8 of 9 processes run cycle-based"),
                 "{w} exact={exact}: {c_err}"
             );
             assert!(
@@ -8897,7 +8904,7 @@ fn waves_of_signals_inside_the_region_follow_the_normal_mode_per_time_step() {
             let o = yavs_env(&dir, &args, &stats);
             let err = String::from_utf8_lossy(&o.stderr);
             assert_eq!(String::from_utf8_lossy(&o.stdout), c_out);
-            assert!(err.contains("cycle mode: 6 of 7 processes"), "{err}");
+            assert!(err.contains("cycle mode: 8 of 9 processes"), "{err}");
             let (none, full) = (outputs(&err), outputs(&c_err));
             // Per time step, a 'U' as 0 under two-state values.
             let n = wave_steps(&dir.join("n.fst"), !exact);

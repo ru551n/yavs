@@ -1198,6 +1198,10 @@ const NOTE_RESET: &str =
 /// kernel (A19): the testbench's checks of the values of every delta stay exact.
 const NOTE_COMB: &str = "an assert or report that runs outside a clock edge";
 
+/// `Part::lit` of an aggregate that holds a metavalue literal and other values: its codes are
+/// not kept, so any comparison with it keeps its process out.
+const LIT_MIXED: u32 = u32::MAX;
+
 /// Why a comparison or arithmetic with a literal holding a metavalue keeps its process out.
 const META_CMP: &str = "a comparison with a metavalue literal (`'U'`, `'X'`, `'-'`, ...), which two-state \
                         values never equal";
@@ -5101,7 +5105,21 @@ impl Lx<'_> {
                 a,
                 len: n,
             });
+            // `(others => '-')`: the literal's codes, every element (#1192).
+            if let Some(k) = v.lit.filter(|&k| k != LIT_MIXED) {
+                let c = self.lits[k as usize][0];
+                self.lits.push(vec![c; count]);
+                t.lit = Some(self.lits.len() as u32 - 1);
+            }
             return Ok(Val::Part(t));
+        }
+        if put
+            .iter()
+            .map(|p| &p.1)
+            .chain(pieces.iter().map(|p| &p.1))
+            .any(|v| v.lit.is_some())
+        {
+            t.lit = Some(LIT_MIXED);
         }
         self.ops.push(Op::Lit {
             dst: t.r,
@@ -6804,6 +6822,10 @@ impl Lx<'_> {
             }
             // Arrays of different lengths are never equal (LRM 9.2.3).
             return Ok(Val::Part(self.bool_lit(ne)));
+        }
+        if let Some(LIT_MIXED) = b.lit.or(a.lit) {
+            // An aggregate of a metavalue literal and other values: its codes are not kept.
+            return Err(META_CMP.into());
         }
         if let Some(k) = b.lit.or(a.lit) {
             // The literal's own codes decide (`'-'` as a mask when matching).

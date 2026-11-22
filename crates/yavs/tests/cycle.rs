@@ -3969,6 +3969,34 @@ fn bench_designs_cycle_mode_leaves_out_say_why() {
     }
 }
 
+/// `std_match` and `?=` with a `'-'` aggregate whose length a generic sets: it matches anything in
+/// the region too (it was compared with 0 there, a wrong result, #1192); an aggregate of a `'-'` and other
+/// values keeps a matching comparison out, under both contracts.
+#[test]
+fn a_dont_care_aggregate_of_a_generic_length_matches_anything() {
+    let dir = tempdir("cycle-matchagg");
+    analyze(&dir, "matchagg.vhd", include_str!("cycle/matchagg.vhd"));
+    let (normal, _) = run(&dir, &["--tier=interp"], "matchagg");
+    assert_eq!(normal.len(), 15, "{normal:?}");
+    assert!(
+        normal.iter().all(|l| l.contains("m='1' q='1'")),
+        "{normal:?}"
+    );
+    for t in tiers() {
+        for exact in [false, true] {
+            let mut f = t.clone();
+            f.push("--cycle");
+            if exact {
+                f.push("--cycle-exact-meta");
+            }
+            let (cycle, err) = run(&dir, &f, "matchagg");
+            assert_eq!(cycle, normal, "{f:?}: {err}");
+            // The first member of each instance joins, the one with the mixed aggregate stays out.
+            assert!(err.contains("cycle mode: 5 of"), "{f:?}: {err}");
+        }
+    }
+}
+
 /// A member that drives a null array (a pipeline of no stages under these generics): the region
 /// has nothing to read or drive of it (it once failed at initialisation with an invalid reference).
 const NULL_PIPE: &str = "\

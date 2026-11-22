@@ -289,22 +289,39 @@ pub static BREAK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 /// value live through the whole function, spilled and reloaded from the stack at most uses (8 bytes
 /// each, 8 to 14 percent of the code of big processes). One read serves the uses that follow it in
 /// the block (and in blocks that only it reaches) up to the next call, which would spill it;
-/// `get_pinned_reg` is a real `mov`, never merged or used as an address by Cranelift.
+/// `get_pinned_reg` is a real `mov`, never merged or used as an address by Cranelift. Outside
+/// native variants (`adopt`) an unreachable predecessor does not count, so the `Mem` loads after
+/// the join of an untaken slow path share their address with those before it and merge.
 fn pin_mem(func: &mut ir::Function, at: usize, adopt: bool) {
     use cranelift_codegen::cursor::{Cursor, FuncCursor};
+    use cranelift_codegen::entity::EntityRef;
     use cranelift_codegen::flowgraph::ControlFlowGraph;
     let Some(entry) = func.layout.entry_block() else {
         return;
     };
     let mem = func.dfg.block_params(entry)[at];
     let cfg = ControlFlowGraph::with_function(func);
+    let n = func.dfg.num_blocks();
+    // The blocks the entry reaches: the slow path of an access that never takes it is a block no
+    // branch leads to, and is no predecessor of its join.
+    let mut live = vec![false; n];
+    live[entry.index()] = true;
+    let mut todo = vec![entry];
+    while let Some(b) = todo.pop() {
+        for s in cfg.succ_iter(b) {
+            if !std::mem::replace(&mut live[s.index()], true) {
+                todo.push(s);
+            }
+        }
+    }
+    // Each block's instructions, before the entry's own reads are added.
     let blocks: Vec<(ir::Block, Vec<ir::Inst>)> = func
         .layout
         .blocks()
         .map(|b| (b, func.layout.block_insts(b).collect()))
         .collect();
     // The pinned-register read live at the end of each block, once the block is done.
-    let mut out: HashMap<ir::Block, Option<ir::Value>> = HashMap::new();
+    let mut out: Vec<Option<ir::Value>> = vec![None; n];
     let mut pos = FuncCursor::new(func);
     pos.goto_first_insertion_point(entry);
     let saved = (!adopt).then(|| {
@@ -314,9 +331,9 @@ fn pin_mem(func: &mut ir::Function, at: usize, adopt: bool) {
     });
     for (b, insts) in blocks {
         // A block with one predecessor, already done, continues its read (it dominates the block).
-        let mut preds = cfg.pred_iter(b);
+        let mut preds = cfg.pred_iter(b).filter(|p| adopt || live[p.block.index()]);
         let mut cur = match (preds.next(), preds.next()) {
-            (Some(p), None) if p.block != b => out.get(&p.block).copied().flatten(),
+            (Some(p), None) if p.block != b => out[p.block.index()],
             _ => None,
         };
         for inst in insts {
@@ -342,7 +359,7 @@ fn pin_mem(func: &mut ir::Function, at: usize, adopt: bool) {
                 cur = None;
             }
         }
-        out.insert(b, cur);
+        out[b.index()] = cur;
     }
 }
 
@@ -2416,8 +2433,12 @@ struct Gen<'a> {
     facts: Option<&'a yavs_ir::InstFacts>,
     /// Its pc.
     pc: u32,
-    /// Registers live over more than `MAX_SPAN` instructions: stored at the definition.
+    /// Registers live over more than `MAX_SPAN` instructions: stored at the definition, unless
+    /// the definition's own value dies soon (`short`).
     keep: Vec<bool>,
+    /// By pc, a quiet instruction whose definitions are all dead within `MAX_SPAN` instructions of
+    /// it in its block (`short_defs`): deferred even where their register is in `keep`.
+    short: Vec<bool>,
     /// What a slow path's block stores before the step (the deferred registers live at its pc),
     /// by slow block; and the registers its join takes as block parameters, by join block.
     snaps: HashMap<Block, Vec<(u32, Value)>>,
@@ -2435,6 +2456,46 @@ struct Gen<'a> {
 
 /// The instructions a deferred register may be live over and still be deferred (`Gen::keep`).
 const MAX_SPAN: u32 = 4;
+
+/// By pc, whether the instruction is quiet and every value it defines is dead within `MAX_SPAN`
+/// instructions of it in its block: no later use, or its register defined again. Such a value is
+/// stored only where the frame is looked at before it dies, whatever its register's other values do.
+fn short_defs(f: &Func, l: &Live) -> Vec<bool> {
+    let live = |pc: usize, r: Reg| {
+        let r = r.0 as usize;
+        l.row(pc)
+            .get(r / 64)
+            .is_some_and(|w| w >> (r % 64) & 1 != 0)
+    };
+    let defs = |i: &Inst| {
+        let mut d = Vec::new();
+        i.visit(&mut |r, role, t| {
+            if role == yavs_ir::Role::Def {
+                d.push(r);
+                if t == Some(yavs_ir::RegTy::Sig) {
+                    d.push(Reg(r.0 + 1));
+                }
+            }
+        });
+        d
+    };
+    let mut out = vec![false; f.code.len()];
+    for (_, bl) in f.blocks.iter() {
+        let end = bl.end as usize;
+        for (pc, i) in f.code.iter().enumerate().take(end).skip(bl.start as usize) {
+            if !quiet(i) {
+                continue;
+            }
+            let ds = defs(i);
+            out[pc] = !ds.is_empty()
+                && ds.iter().all(|&r| {
+                    (pc + 1..end.min(pc + 1 + MAX_SPAN as usize))
+                        .any(|q| !live(q, r) || defs(&f.code[q]).contains(&r))
+                });
+        }
+    }
+    out
+}
 
 /// Frame-mode instructions that leave the frame to the interpreter only through `leave_at` at
 /// their own pc or a slow path, and call out to nothing that reads the registers: deferred
@@ -3195,6 +3256,7 @@ fn gen_func(
             .filter(|_| !native && f.kind == FuncKind::Process),
         pc: 0,
         keep: vec![true; f.reg_ty.len()],
+        short: Vec::new(),
         snaps: HashMap::new(),
         jparams: HashMap::new(),
         nested: f.parent.is_some(),
@@ -3210,6 +3272,7 @@ fn gen_func(
             for (r, k) in g.keep.iter_mut().enumerate() {
                 *k = spans.get(r).is_none_or(|&s| s > MAX_SPAN);
             }
+            g.short = short_defs(f, l);
         }
     }
     if g.nat.is_some() {
@@ -5688,7 +5751,7 @@ impl Gen<'_> {
         if self.preset[k] {
             return;
         }
-        if self.defer && !self.keep[k] {
+        if self.defer && (!self.keep[k] || self.short.get(self.pc as usize) == Some(&true)) {
             if !self.fresh.contains(&r.0) {
                 self.fresh.push(r.0);
             }
@@ -11834,7 +11897,7 @@ impl Gen<'_> {
     /// Whether the waveform element at `w` has delay zero and is what the elements of `sv` hold:
     /// nonzero when not. A run of elements across two plane words goes to `other`.
     fn cur_differs(&mut self, sv: SigConst, f: yavs_ir::SigFact, w: Value, other: Block) -> Value {
-        let delay = self.b.ins().load(I64, MemFlagsData::trusted(), w, 0);
+        let delay = self.b.ins().load(I64, self.gf, w, 0);
         self.value_differs(sv, f, delay, w, 8, other)
     }
 
@@ -11854,7 +11917,9 @@ impl Gen<'_> {
             .load(I64, self.mf.with_readonly(), self.mem, MEM_SIGTAB as i32);
         let at_sig = i64::from(sv.sig) * SIG_ENT;
         let ero = MemFlagsData::trusted().with_readonly();
-        let t = MemFlagsData::trusted();
+        // The signal's bytes are the kernel's (a call changes them); `w` is guest memory, which
+        // compiled code writes in the guest region, so its loads are in that region too.
+        let (t, gm) = (MemFlagsData::trusted(), self.gf);
         let field = |g: &mut Self, k: i64| g.b.ins().load(I64, ero, tab, (at_sig + k) as i32);
         let first = field(self, SIG_OFF);
         let o = self.sv_off(sv);
@@ -11866,19 +11931,19 @@ impl Gen<'_> {
             let (a, b) = match f.es {
                 1 => (
                     self.b.ins().uload8(I64, t, p, 0),
-                    self.b.ins().uload8(I64, t, w, at),
+                    self.b.ins().uload8(I64, gm, w, at),
                 ),
                 2 => (
                     self.b.ins().uload16(I64, t, p, 0),
-                    self.b.ins().uload16(I64, t, w, at),
+                    self.b.ins().uload16(I64, gm, w, at),
                 ),
                 4 => (
                     self.b.ins().uload32(t, p, 0),
-                    self.b.ins().uload32(t, w, at),
+                    self.b.ins().uload32(gm, w, at),
                 ),
                 _ => (
                     self.b.ins().load(I64, t, p, 0),
-                    self.b.ins().load(I64, t, w, at),
+                    self.b.ins().load(I64, gm, w, at),
                 ),
             };
             let x = self.b.ins().bxor(a, b);
@@ -11899,7 +11964,7 @@ impl Gen<'_> {
         let mut acc = self.c64(0);
         for k in 0..4 {
             let c = self.b.ins().load(I64, t, pb, 8 * k);
-            let v = self.b.ins().load(I64, t, w, at + 8 * k);
+            let v = self.b.ins().load(I64, gm, w, at + 8 * k);
             let v = self.b.ins().ishl(v, sh);
             let x = self.b.ins().bxor(c, v);
             acc = self.b.ins().bor(acc, x);

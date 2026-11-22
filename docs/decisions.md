@@ -17956,3 +17956,42 @@ the parked retune package.
   instantiated inside itself. vunit-yavs: sim option `yavs.no_asserts` (`True`/`False`, checked when set).
 - **W4101 retired:** nothing is dropped by default, so there is nothing to warn about; the code stays in `--explain`
   so that `-Werror=W4101` keeps working as a no-op.
+
+## Cranelift: the frame's slots pointer across untaken slow paths, deferral per definition, one region for guest memory (yavs-clift `pin_mem`, `short_defs`, `value_differs`, 2026-11-22)
+
+Written by Claude. In frame-mode code every access of a frame slot reloaded the slots pointer from the `Mem` view (two
+instructions: the pinned register into a register, then the load), and a scalar copy in and out of a procedure cost
+about twice the four moves it needs. Cause: every `Load` and `Store` makes a slow path whose join starts a new
+Cranelift block; an access the generator proves inside the frame never branches to it, but `pin_mem` counted the
+dead slow block as a second predecessor and made a fresh `get_pinned_reg` in every join, so the `Mem` loads of
+neighbouring blocks had different address values and Cranelift's alias analysis could not merge them.
+
+- **Change 1.** `pin_mem` ignores predecessors the entry does not reach, in frame-mode code and adapters (native
+  variants keep the read per block: there the longer value raised register pressure, `strings_heavy` +2 percent
+  forced compiled). One view read, and so one slots pointer, serves a straight run of blocks up to a call; a call or
+  a store to the `mem` region still ends it, as before.
+- **Change 2.** A definition is deferred when its own value dies within `MAX_SPAN` instructions of it in its block
+  (`short_defs`: no later use, or the register defined again), even where its register is live longer elsewhere (a
+  scratch register reused for many short values), so the register array is not written for values nobody reads.
+- **Change 3 (a fix the first change needs).** The drive compare (`value_differs`, `cur_differs`) loaded the
+  waveform or value bytes in guest memory without an alias region while the code writes guest memory in the guest
+  region. Cranelift keys an untagged load on the last fence, so with one slots pointer across blocks it forwarded an
+  earlier load of a vector across the store of its new value: `sigassign/vector_forms` under the count-1 policy
+  (`yavs-clift-count1`) drove `cp` one cycle late, and Microwatt under `--tier=auto` never finished CoreMark. Those
+  loads are in the guest region now. A check over the Cranelift IR (every `Mem` field's derived addresses reached
+  both in the guest region and by an untagged load) finds none over the difftest corpus under the count-1 policy
+  (2780 functions) and full GRLIB and Microwatt runs; on the base it finds 136 functions on Microwatt, so the pair
+  was there before and the per-block reads hid it. The invariant is in `crates/yavs-clift/AGENTS.md` section 4.
+- **Measured** (bench builds, `instructions:u`, ASLR off, `--no-cache`, medians of 5 runs with the environment's
+  size varied; base 38e095e70). Forced `--tier=clift`: the copy-in/copy-out loop `l4` 302.22 to 291.06 M per 1 M
+  calls (its by-reference twin `l4t` 293.99 to 288.86 M; the gap between them 8.2 to 2.2 instructions per call); the
+  26 bench designs geomean -1.26 percent, `xor_sig` -7.5, `xor_types` -6.6, `calls` -4.4, `compute_h2h` -2.9,
+  `compute_loop` -2.3; one higher: `textio_heavy` +0.48 (1.5 percent of it is compiled code; its count moves with the
+  allocator's state: under other `malloc` padding the change is 0.03 to 0.1 percent below the base, and the runs
+  that are 5 to 12 percent higher show only `malloc` and `free` grown). GRLIB forced 317.05 to 315.95 G, its
+  machine code 24.22 to 24.18 MB; Microwatt short forced 243.24 to 242.40 G; their warm runs -0.3 and -0.7 percent.
+  `--tier=auto` on the 26 designs: geomean -0.28 percent against an A/A of +0.05 (single designs move by up to 8
+  percent between runs of either binary, bimodal by compile timing). GRLIB `--tier=auto` cold, 16 runs each in
+  worlds of each binary: median 175.96 G base, 177.48 G new, both bimodal (a mode of thousands of hand-overs to the
+  tier's loop, 181 to 186 G, in 3 of 16 base runs and 7 of 16 new ones; the low mode 172 to 174 base, 171.5 to 172.6
+  new); a rank test shows no shift (z = -0.08).

@@ -16035,7 +16035,7 @@ Written by Claude. `YAVS_CLIFT_LIST` (with `write`, `on` and `all`), `YAVS_CLIFT
   run 1 0.86 / 0.85 (A/A 1.00 / 0.97), run 2 1.33 / 1.16, run 3 1.06 / 1.01, run 4 1.04, runs 5 to 8 level; eight-run
   sum 1.03 / 0.98. On that test the factor acts as a switch: at 1.5 nothing changes, at 2 the whole tree waits for
   run 2. On `osvvm_axi4_random`, `neorv32_dual_full`, `neorv32_single_cache` and GRLIB the rule never fires
-  (`tier_tree_held` 0 in every run); on Microwatt's first run it holds five processes for a while and compiles the
+  (`tier_tree_held` 0 in every run; for GRLIB corrected 2026-11-22, see the next entry); on Microwatt's first run it holds five processes for a while and compiles the
   same 227 bodies (instructions 1.002, untimed, one run); `background` is level. Cold cap of `uvvm_axistream_vvc` (free cores, 10 pairs,
   host load 7 to 11): 1.14 of the pinned baseline's wall with the rule (95 percent band 7 percent; cycles 1.12),
   1.40 without; the other five cap tests and GRLIB's first run level in instructions and cycles.
@@ -16066,13 +16066,19 @@ Written by Claude. `YAVS_CLIFT_LIST` (with `write`, `on` and `all`), `YAVS_CLIFT
   `unrepaid` through run 6 or later. Eight-run sums 178.5 G against 171.0 (+4.4 percent), run 8 18.70 against 18.38.
   The ruling of 2026-11-10 (entry above) accepted run 2 at 1.33 on runs 5 to 8 being level; they are not quite.
 - **Elsewhere** (agent). `tier_tree_held` is 0 at 2 and at 3.3 on `osvvm_axi4_random`, `uvvm_sb_slv`,
-  `uvvm_func_cov`, `neorv32_dual_full`, GRLIB and the small cap tests, so their decisions do not change at 2.5;
+  `uvvm_func_cov`, `neorv32_dual_full`, GRLIB (corrected 2026-11-22, below) and the small cap tests, so their decisions do not change at 2.5;
   `background` never applies the rule (`unpaid` needs `stops`). Microwatt's first run holds five processes at every
   factor and is level at 2.5.
 - **Cold cap** (agent; day sitting on two locked free cores with an A/A, 22 clean pairs a cell): 1.051 of the pinned
   baseline's wall with 2.5 (no dear draw; 3.3 the same), main 1.07 to 1.11 (light runs 1.05, dear runs 1.33).
 - **Decided** (user, 2026-11-11): land 2.5; the cold cap keeps binding run 1 alone. The next night cap sitting
   confirms it; if 2.5 draws the dear mode even once there, the factor becomes 3.3 (1 / `WAIT_GAIN`).
+- **Correction** (agent, 2026-11-22). The rule does fire on GRLIB: `tier_tree_held` is 0 to 11 in cold first runs
+  at 7350fe330, and when it fires the first run is sometimes 3 to 6 percent slower. Cause: a process is held for
+  `WAIT_TREE` times its whole tree as soon as any callee has one sampled look, so a look that lands by chance in a
+  small helper (`TO_INTEGER` under the SDRAM model's `state_register`) holds a large process for seconds.
+- **Kept** (user, 2026-11-22): the rule stays as recorded, after seeing a candidate that prices only the callees'
+  part of the tree with the factor.
 
 ## Auto tier: the second-compile slot is removed (yavs-rt `auto.rs`, 2026-11-10)
 

@@ -644,6 +644,15 @@ impl Mem {
         st.at = self.wait_at;
     }
 
+    /// `save_tag` into a copy of the record the host keeps (`call_on`, `Tier::run`): `at` stays,
+    /// it is the activation's.
+    #[inline(always)]
+    pub fn save_call(&self, st: &mut yavs_interp::TierState) {
+        let at = st.at;
+        self.save_tag(st);
+        st.at = at;
+    }
+
     /// Enter object `o` (`o.hi`: the high half of its addresses) at its entry.
     #[inline(always)]
     pub fn put_obj(&mut self, mut o: Obj) {
@@ -3399,7 +3408,8 @@ pub unsafe fn yavs_rt_obj(env: *mut c_void, mem: *mut Mem, addr: u64, write: u32
 pub trait View {
     fn make_view(&mut self, fr: &mut TierFrame);
     fn as_host(&mut self) -> &mut dyn TierHost;
-    /// The tier's record of this process, which only an activation (`Tier::run_cached`) has.
+    /// The tier's record of this process, which only an activation (`Tier::run_cached`) has;
+    /// `None`: `enter_on` keeps a copy through `TierHost::tier_state` instead.
     fn record(&mut self) -> Option<*mut yavs_interp::TierState>;
 }
 
@@ -3537,11 +3547,14 @@ pub fn enter_on<H: View + ?Sized, const LEAN: bool>(
     let lean = LEAN && state.is_some();
     mem.wait_at = yavs_interp::NO_PC;
     mem.temp_seen = mem.fr.temp_len;
+    // Without a record of its own (`Tier::run`), a copy of the machine's through the host, as
+    // `call_on` takes it: the objects this machine found before stay found (#520).
+    let mut copy = state.is_none().then(|| host.as_host().tier_state());
     if !lean {
         mem.ndeopt = 0;
         // The objects this machine found before, on this thread, at this heap epoch.
         // SAFETY: the record lives in the machine `host` borrows; nothing holds it now.
-        mem.begin(state.map(|p| unsafe { &*p }));
+        mem.begin(state.map(|p| unsafe { &*p }).or(copy.as_ref()));
     }
     // A frame index beyond the address format is the interpreter's error.
     if mem.fr.nregs != nregs as u64 || mem.fr.frame >= 1 << 29 {
@@ -3577,6 +3590,10 @@ pub fn enter_on<H: View + ?Sized, const LEAN: bool>(
     mem.fr.kctx = std::ptr::null_mut();
     mem.sync(env.host);
     mem.forget_end();
+    if let Some(rec) = copy.as_mut() {
+        mem.save_call(rec);
+        env.host.set_tier_state(*rec);
+    }
     if let Some(p) = state {
         // SAFETY: as at `begin`; compiled code has returned.
         let slot = unsafe { &mut *p };
@@ -3826,10 +3843,7 @@ pub fn call_on(
     gate_skipped(mem);
     mem.fr.kctx = std::ptr::null_mut();
     mem.forget_end();
-    // (`at` is the activation's, not the call's.)
-    let at = rec.at;
-    mem.save_tag(&mut rec);
-    rec.at = at;
+    mem.save_call(&mut rec);
     env.host.set_tier_state(rec);
     match env.panic {
         Some(p) => Err(p),
@@ -5807,6 +5821,254 @@ mod tests {
         m.fr.heap_epoch = 4 + HEAP_LOG as u64;
         m.forget();
         assert!(!entered(&m, h, 3) && !entered(&m, s, 2));
+    }
+
+    /// A machine as `Tier::run` sees it: a host with no record of its own in the view, which
+    /// keeps the tier's record of the machine (`TierHost::tier_state`).
+    struct Machine {
+        owner: u64,
+        epoch: u64,
+        log: Box<[u32; HEAP_LOG]>,
+        rec: TierState,
+        regs: [u64; 1],
+    }
+
+    impl Machine {
+        fn new(n: u64) -> Machine {
+            let rec = TierState {
+                at: 7,
+                ..TierState::default()
+            };
+            let log = Box::new([0; HEAP_LOG]);
+            Machine {
+                owner: rt(1, n),
+                epoch: 0,
+                log,
+                rec,
+                regs: [0],
+            }
+        }
+
+        /// `Tier::run` of the test's compiled code from `pc`: what it returns.
+        fn run(&mut self, pc: u32) -> u32 {
+            let lookup: Lookup<'_> = &|_| None;
+            let host: &mut dyn TierHost = self;
+            enter(compiled, 1, pc, host, lookup, std::ptr::null(), false).expect("entered")
+        }
+    }
+
+    impl TierHost for Machine {
+        fn view(&mut self, fr: &mut TierFrame) {
+            *fr = TierFrame {
+                owner: self.owner,
+                heap_epoch: self.epoch,
+                heap_log: [self.log.as_ptr(), std::ptr::null()],
+                regs: self.regs.as_mut_ptr(),
+                nregs: 1,
+                max_depth: 4,
+                ..TierFrame::default()
+            };
+        }
+        fn view_again(&mut self, _: &mut TierFrame) -> bool {
+            false
+        }
+        fn tier_state(&self) -> TierState {
+            self.rec
+        }
+        fn set_tier_state(&mut self, st: TierState) {
+            self.rec = st;
+        }
+        fn step(&mut self, _: &mut TierFrame, _: u32) -> Stepped {
+            unreachable!()
+        }
+        fn ret(&mut self, _: &mut TierFrame, _: u32) -> bool {
+            unreachable!()
+        }
+        fn object(&mut self, _: u64, _: bool) -> Option<(*mut u8, usize)> {
+            unreachable!()
+        }
+        fn temp(&mut self) -> &mut Vec<u8> {
+            unreachable!()
+        }
+        fn signal(&mut self, _: &mut TierFrame, _: u32, _: u32) -> Stepped {
+            unreachable!()
+        }
+        fn image_check(&mut self, _: u32) -> Result<bool, String> {
+            unreachable!()
+        }
+        fn materialise(&mut self, _: &mut TierFrame, _: u32, _: &[NativeFrame]) -> Stepped {
+            unreachable!()
+        }
+        fn deref(&mut self, _: u64) -> Option<u64> {
+            unreachable!()
+        }
+        fn drive_bits(&mut self, _: &[[u64; 2]]) -> Option<u32> {
+            unreachable!()
+        }
+        fn wait_suspend(&mut self, _: &mut TierFrame, _: u32, _: [u64; 2]) -> Stepped {
+            unreachable!()
+        }
+        fn temp_root(&mut self, _: &mut TierFrame, _: u64, _: Option<u32>, _: &[u8]) -> bool {
+            unreachable!()
+        }
+        fn end_stmt(&mut self, _: &mut TierFrame, _: u64) {}
+        fn drive_bit(
+            &mut self,
+            _: &mut TierFrame,
+            _: u32,
+            _: u32,
+            _: [u64; 2],
+            _: i64,
+            _: u64,
+            _: bool,
+        ) -> Stepped {
+            unreachable!()
+        }
+        fn drive_block(
+            &mut self,
+            _: &mut TierFrame,
+            _: u32,
+            _: u32,
+            _: [u64; 2],
+            _: i64,
+            _: [u64; 4],
+            _: bool,
+        ) -> Stepped {
+            unreachable!()
+        }
+        fn drive_wide(
+            &mut self,
+            _: &mut TierFrame,
+            _: u32,
+            _: u32,
+            _: [u64; 2],
+            _: i64,
+            _: &[u8],
+            _: bool,
+        ) -> Stepped {
+            unreachable!()
+        }
+        fn native_direct(
+            &mut self,
+            _: &mut TierFrame,
+            _: u32,
+            _: &[u64],
+            _: u64,
+            _: &mut Slots,
+        ) -> NativeCall {
+            unreachable!()
+        }
+        fn native_frame(&mut self, _: &mut TierFrame, _: u32, _: u32, _: &[u64]) -> NativeCall {
+            unreachable!()
+        }
+        fn native_light(
+            &mut self,
+            _: &mut TierFrame,
+            _: u32,
+            _: &[u64],
+            _: Option<u32>,
+            _: u64,
+            _: &mut Slots,
+        ) -> NativeCall {
+            unreachable!()
+        }
+        fn native_step(
+            &mut self,
+            _: &mut TierFrame,
+            _: u32,
+            _: u32,
+            _: u64,
+            _: (&[u32], &[u32]),
+            _: &[u64],
+            _: &mut [u64],
+            _: &mut Slots,
+            _: u64,
+        ) -> NativeCall {
+            unreachable!()
+        }
+    }
+
+    type Slots = Option<Box<dyn yavs_interp::NativeSlots>>;
+
+    /// The test's compiled code. `pc` 0: find heap object 5 and instance object 3 of this
+    /// machine (pointer = owner); 1: what it finds of them, 1 heap and 2 instance, 0 when an
+    /// object is another machine's; 2: a nested `Tier::run` of the same machine at `pc` 0, then
+    /// the host frees slot 5 (logged) and compiled code forgets the changed heap, as after a step.
+    unsafe extern "C" fn compiled(env: *mut c_void, _: *mut u64, mem: *mut Mem, pc: u32) -> u32 {
+        // SAFETY: `enter` passes its `Mem` and `Env`; the host is a `Machine`.
+        let (m, env) = unsafe { (&mut *mem, &mut *(env as *mut Env<'_>)) };
+        let own = m.fr.owner as usize;
+        let at = |sp: u8, k: u64| u64::from(sp) << 29 | k;
+        match pc {
+            0 => {
+                for (sp, k) in [(space::HEAP, 5), (space::INST, 3)] {
+                    m.put_obj(Obj {
+                        ptr: std::ptr::without_provenance_mut(own),
+                        ..obj(sp, k)
+                    });
+                }
+                0
+            }
+            1 => {
+                let mine = |hi| m.get(hi).is_some_and(|o| o.ptr.addr() == own);
+                u32::from(mine(at(space::HEAP, 5))) | u32::from(mine(at(space::INST, 3))) << 1
+            }
+            _ => {
+                // SAFETY: the host of this activation is the `Machine` `run` passed.
+                let host = unsafe { &mut *(env.host as *mut dyn TierHost as *mut Machine) };
+                host.run(0);
+                host.epoch += 1;
+                host.log[host.epoch as usize % HEAP_LOG] = 5;
+                m.fr.heap_epoch = host.epoch;
+                m.forget();
+                0
+            }
+        }
+    }
+
+    /// `Tier::run` (a frame the interpreter runs, a call from it) begins with the machine's
+    /// record and keeps it after, as a process activation does: what the machine's compiled code
+    /// found stays found after another machine ran on the thread, the other machine never finds
+    /// it, a heap change drops the slots it names, and `at` stays the activation's (#520).
+    #[test]
+    fn tier_run_keeps_the_machine_record() {
+        let (mut a, mut b) = (Machine::new(1), Machine::new(2));
+        a.run(0);
+        assert!(a.rec.used && a.rec.at == 7, "{:?}", a.rec.words);
+        assert_eq!(b.run(1), 0, "another machine's objects");
+        b.run(0);
+        assert_eq!(a.run(1), 3, "its own objects after another machine ran");
+        assert_eq!(b.run(1), 3);
+        // Slot 5 deallocated: gone; the instance object stays.
+        a.epoch = 1;
+        a.log[1] = 5;
+        assert_eq!(a.run(1), 2);
+        a.run(0);
+        b.run(1);
+        // More heap changes than the log holds: no heap object is kept.
+        a.epoch += HEAP_LOG as u64 + 1;
+        assert_eq!(a.run(1), 2);
+        assert_eq!(a.rec.at, 7);
+    }
+
+    /// A nested `Tier::run` of the same machine (a step that runs the interpreter, which enters
+    /// compiled code again) gets a `Mem` of its own; the outer activation's record, written last,
+    /// names the outer table, and a slot freed after the nested one is never found again.
+    #[test]
+    fn a_nested_tier_run_leaves_no_stale_object() {
+        let (mut a, mut b) = (Machine::new(1), Machine::new(2));
+        a.run(0);
+        a.run(2);
+        assert_eq!(a.run(1) & 1, 0, "freed slot 5 found");
+        b.run(0);
+        assert_eq!(
+            a.run(1) & 1,
+            0,
+            "freed slot 5 found after another machine ran"
+        );
+        a.run(0);
+        b.run(1);
+        assert_eq!(a.run(1), 3);
     }
 
     /// When the tags run out the table starts again empty under a new identity, so a record

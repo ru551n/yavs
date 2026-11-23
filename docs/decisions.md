@@ -13323,6 +13323,15 @@ one claimed core of the second CCD, `perf stat` user counts; host load 13 to 43,
   runs); a process heap's log costs a kilobyte of memory, and a private heap never fell behind by more than 16 in the measured runs.
 - **Decision: `call_on` begins with the calling machine's record** (`TierHost::tier_state`, kept again with `set_tier_state` after the call,
   `TierState::at` left alone): the record names the machine's tags and epochs whoever ran in between.
+  **Amended (user approval, agent, 2026-11-23): `Tier::run` does the same.** `rt::enter_on` without a record of its own (the host is
+  `dyn TierHost`: a frame the interpreter runs, a deeper frame, a root frame not entered by `run_direct`) begins with a copy of the
+  machine's record and writes it back at the end (`Mem::save_call`, which `call_on` uses too; `at` left alone, `TIER_ROOT_WAIT` still
+  cleared, never `lean`). Before, each such entry after another machine's turn issued new machine and heap tags, so its objects were
+  found again on every entry (counted with temporary counters on forced compiled test-runner runs: nearly every begin of those runs).
+  Why it is safe: an activation always has a `Mem` of its own (a nested entry gets a fresh one, with an identity never reused), the
+  copy is written once at the end from that `Mem`'s current tags and epochs, the last writer wins as on the `run_cached` path, and a
+  record naming a dropped `Mem` is no record; heap changes between entries are dropped through the logs as for any record. Tests:
+  `yavs-rt` `rt::tests::tier_run_keeps_the_machine_record`, `a_nested_tier_run_leaves_no_stale_object`.
 - **Decision (#797): `Worker::publish` asks `Worker::ready`**, a walk over the native callees that stops at a callee that is `left` or was
   never seen running. Such a callee is compiled by no one until it runs; then it is seen and compiled like any other function, and until then
   a call to it materialises the frames (counted: up to 18 000 materialisations a run in the queue loop and 76 000 to 79 000 in the window

@@ -91,15 +91,15 @@ and more processes join:
 Without ``--two-state`` cycle mode keeps the metavalues the testbench would see (:ref:`cycle-contract`). The values
 come from ``--two-state`` alone, the same for ``--cycle``, ``--cycle-strict`` and ``--cycle-report``;
 ``--cycle-strict`` only changes what happens to a process that cannot join. ``--two-state`` without them makes the
-design below the top-level unit two-state in the event kernel, with the same values.
+design below the top-level unit two-state in the event kernel, with the same values: a diagnostic mode, slower than
+the default today (:ref:`two-state-normal`).
 
 .. note::
 
-   **Changed after 0.21.** In 0.21 plain ``--cycle`` was two-state, and ``--cycle-exact-meta`` kept the metavalues.
-   Now plain ``--cycle`` and ``--cycle-strict`` keep them (the rules of 0.21's ``--cycle-exact-meta``, so processes
-   that would hide a metavalue from the testbench stay in the event kernel again), and ``--cycle-exact-meta`` is
-   gone. To keep the results of 0.21, add ``--two-state`` (vunit-yavs: ``yavs.two_state``) where you gave plain
-   ``--cycle``, and drop ``--cycle-exact-meta`` where you gave it.
+   **Changed after 0.21.** In 0.21 plain ``--cycle`` was two-state. Now plain ``--cycle`` and ``--cycle-strict``
+   keep the metavalues (processes that would hide a metavalue from the testbench stay in the event kernel), and the
+   option of 0.21 that kept them is gone. To keep the results of 0.21, add ``--two-state`` (vunit-yavs:
+   ``yavs.two_state``) where you gave plain ``--cycle``.
 
 ``yavs analyze`` takes none of them, and ``yavs elab`` does not take them. The region is compiled whatever
 ``--tier`` says, and ``--threads`` and ``--shuffle`` are accepted. ``--wave`` records the signals inside the region
@@ -579,6 +579,85 @@ second set changed it (see above). The normal mode gives ``0``:
     cycle mode: 13 metavalue elements read as 0 (9 at initialisation, 4 at changes of the region's inputs)
     cycle mode: 'U' start values followed on a second image: still followed when the run ended, after 2 clock edges
     ** Note: 17000000fs+0: FINISH called with status 0
+
+.. _two-state-normal:
+
+Two-state values without cycle mode
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``--two-state`` is independent of cycle mode, which changes how a run is scheduled, not what it computes with:
+
+* ``--cycle --two-state`` is the fast combination: the region computes two-state code (above).
+* ``--two-state`` alone, in the normal mode, is a diagnostic mode. It changes the values only, so it tells apart a
+  difference that comes from metavalues from one that comes from the scheduling (`Splitting a difference`_ below).
+
+.. code-block:: text
+
+    yavs run --two-state --work=work:build/work tb_counter
+
+.. note::
+
+   In the normal mode ``--two-state`` aims to run as fast as the default; today it is slower. Most unit tests run
+   within a few percent of the default, some up to about half again as long, and large designs such as processor
+   cores take about one and a half to four times as long. Bringing it to parity is planned.
+
+Every process below the top-level unit, and every subprogram declared in an architecture below it, is two-state.
+The testbench (the top-level unit) keeps the nine values of ``std_ulogic``.
+
+* A value it reads from outside (a signal, a port, a generic, a constant of a package or an architecture, the result
+  of a package's subprogram, an ``out`` argument a package procedure such as ``read`` gives back) counts ``'1'`` and
+  ``'H'`` as ``'1'`` and every other value as ``'0'``. A port the testbench drives with ``'X'`` reads as ``'0'``.
+  The subprograms of packages themselves keep the nine values: their callers map what they give back.
+* A metavalue literal it assigns (``'U'``, ``'X'``, ``'Z'``, ``'W'``, ``'-'``) takes the ``--init-x`` value, ``'0'``
+  without the option. ``'L'`` is ``'0'`` and ``'H'`` is ``'1'``.
+* A metavalue literal it compares with keeps its meaning: a ``0`` or ``1`` never equals ``'U'``, ``'X'``, ``'Z'`` or
+  ``'W'``. So ``x = 'X'`` is false, ``x /= 'U'`` is true (an ``assert clk /= 'U'`` "is it connected" check holds),
+  ``x ?= 'X'`` is ``'0'``, and a ``case`` choice ``when "0X"`` is never taken. A ``'-'`` in ``std_match``, ``?=``,
+  ``?/=`` or a ``case?`` choice matches anything. The region does the same.
+* A ``'Z'`` literal or constant driven onto a resolved signal (``std_logic``, ``std_logic_vector``) stays ``'Z'``,
+  so tri-state buses and the event signals of verification components below the top work. Reading the bus back
+  gives ``'0'`` while nothing drives it.
+* A signal or process variable without an initial value starts at the ``--init-unset`` value, ``'0'`` without the
+  option. A variable of a subprogram starts at ``'0'``.
+
+``--init-x`` and ``--init-unset`` are options of their own (:doc:`start-values`): run the suite with ``0``, ``1``
+and ``random`` to see whether a result depends on them.
+
+What you give up, with or without ``--cycle``:
+
+* A bug that shows as ``'X'`` or ``'U'`` in the normal mode (a register without reset, an unconnected input, a
+  conflict on a bus) cannot show below the top-level unit. A testbench that expects ``'X'`` or ``'Z'`` from the
+  design sees ``'0'``.
+* A ``'Z'`` read below the top-level unit is a ``'0'``. A verification component or model below the top-level unit
+  that checks a line for ``'Z'`` (an MDIO, I2C or 1-wire model, a bidirectional bus monitor) reads the released line
+  as ``'0'``, so it can report protocol errors that are not there. Until ``--two-state`` can be limited to the design
+  under test (planned next, so that such components keep the nine values), do not use ``--two-state`` on such
+  testbenches.
+* Only a ``'Z'`` written in the driven value itself stays ``'Z'``: one kept in a variable first is a ``'0'`` when
+  driven. A pull-up or pull-down literal (``'H'``, ``'L'``) drives a strong ``'1'`` or ``'0'``, so pull-ups and
+  open-drain buses below the top-level unit break: a driver pulling the line low conflicts with the pull-up, and the
+  line reads as ``'0'``.
+* A clock copied below the testbench (``clk2 <= clk``) from a clock that starts at ``'U'`` starts at ``'0'``, so its
+  first rise is a ``rising_edge`` the normal mode does not see.
+
+Splitting a difference
+^^^^^^^^^^^^^^^^^^^^^^
+
+When a test gives another result under ``--cycle --two-state`` than in the normal mode, two more runs tell where it
+comes from:
+
+1. Run the normal mode with and without ``--two-state``. A difference there comes from the values: the design reads
+   or makes a metavalue that the two-state values turn into ``0`` or ``1``.
+2. Run ``--two-state`` with and without ``--cycle``. A difference there comes from the scheduling: the order and
+   deltas of cycle mode (:ref:`cycle-deltas`, :ref:`cycle-clock-copies`).
+
+.. code-block:: text
+
+    yavs run --work=work:build/work tb_counter
+    yavs run --two-state --work=work:build/work tb_counter
+    yavs run --cycle --two-state --work=work:build/work tb_counter
+
+The vunit-yavs sim option ``yavs.two_state`` set to ``True`` adds ``--two-state`` (:doc:`vunit-yavs`).
 
 .. _cycle-reports:
 

@@ -97,8 +97,26 @@ Cycle mode
 ----------
 
 ``--cycle`` runs the synchronous RTL of a design as compiled code evaluated once per clock edge, and gives up some
-detail for it (two-state values, no reports from the design's own processes). It is opt-in and experimental
-(its options may change): :doc:`cycle-mode`.
+detail for it (delta cycles inside the region, library warnings: :ref:`cycle-contract`). It is
+opt-in and experimental (its options may change): :doc:`cycle-mode`.
+
+Two-state values
+----------------
+
+``--two-state`` makes the design below the testbench compute with ``0`` and ``1`` only (:ref:`two-state-normal`).
+Together with ``--cycle`` it is part of what makes cycle mode fast; on its own, in the normal mode, it is a
+diagnostic mode.
+
+* **What it trades.** The metavalues: a register without a reset, an unconnected input or an ``'X'`` from the design
+  cannot show below the top-level unit, and the testbench reads ``0`` or ``1`` where the normal mode gives ``'U'`` or
+  ``'X'``. A ``'Z'`` read below the top-level unit is ``0``, so models there that check a line for ``'Z'`` can
+  report false errors, and pull-ups and open-drain buses below the top-level unit break.
+* **What it costs.** In the normal mode it aims to run as fast as the default; today it is slower: most unit tests
+  run within a few percent of the default, some up to about half again as long, and large designs such as processor
+  cores take about one and a half to four times as long. Bringing it to parity is planned.
+* **When to try it.** With ``--cycle``, for speed. Alone, to check that a design does not depend on metavalues
+  (with ``--init-unset`` and ``--init-x`` set to ``0``, ``1`` and ``random``, :doc:`start-values`), or to split a
+  difference between cycle mode and the normal mode (:ref:`two-state-normal`).
 
 Finding where the time goes
 ---------------------------

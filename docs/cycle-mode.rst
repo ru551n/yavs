@@ -629,8 +629,9 @@ What you give up, with or without ``--cycle``:
   conflict on a bus) cannot show below the top-level unit. A testbench that expects ``'X'`` or ``'Z'`` from the
   design sees ``'0'``.
 * A ``'Z'`` read below the top-level unit is a ``'0'``. A verification component or model below the top-level unit
-  that checks a line for ``'Z'`` (an MDIO, I2C or 1-wire model, a bidirectional bus monitor) reads the released line
-  as ``'0'``, so it can report protocol errors that are not there. Until ``--two-state`` can be limited to the design
+  that checks a line for ``'Z'`` or models its bus with ``'Z'`` and ``'X'`` (an MDIO, I2C, 1-wire or QSPI flash model,
+  a bidirectional bus monitor) reads the released line as ``'0'``, so it can report protocol errors that are not
+  there or answer with the wrong data. Until ``--two-state`` can be limited to the design
   under test (planned next, so that such components keep the nine values), do not use ``--two-state`` on such
   testbenches.
 * Only a ``'Z'`` written in the driven value itself stays ``'Z'``: one kept in a variable first is a ``'0'`` when

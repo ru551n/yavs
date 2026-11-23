@@ -109,7 +109,7 @@ diagnostic mode.
 
 * **What it trades.** The metavalues: a register without a reset, an unconnected input or an ``'X'`` from the design
   cannot show below the top-level unit, and the testbench reads ``0`` or ``1`` where the normal mode gives ``'U'`` or
-  ``'X'``. A ``'Z'`` read below the top-level unit is ``0``, so models there that check a line for ``'Z'`` can
+  ``'X'``. A ``'Z'`` read below the top-level unit is ``0``, so bus models there that rely on ``'Z'`` can
   report false errors, and pull-ups and open-drain buses below the top-level unit break.
 * **What it costs.** In the normal mode it aims to run as fast as the default; today it is slower: most unit tests
   run within a few percent of the default, some up to about half again as long, and large designs such as processor

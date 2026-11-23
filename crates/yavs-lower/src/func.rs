@@ -128,6 +128,9 @@ pub(crate) fn func_of(
     let f = pb.declare(&decl.name.to_string(), kind, parent.map(|p| p.0));
     let depth = parent.map_or(0, |p| p.1 + 1);
     cx.funcs.insert(d, f);
+    if cx.two_state && !in_package(db, decl.scope) {
+        cx.two_subs.insert(d);
+    }
     cx.queue.push((d, depth, false));
     Ok(f)
 }
@@ -1141,7 +1144,8 @@ impl<'a, 'b> Fx<'a, 'b> {
         let db = self.db;
         let decl = &db.decls[d];
         let scope = db.scopes[decl.scope].kind;
-        let no_init = !shared && matches!(&decl.kind, DeclKind::Object(o) if o.default.is_none());
+        let no_default = matches!(&decl.kind, DeclKind::Object(o) if o.default.is_none());
+        let no_init = !shared && no_default;
         // `--two-state`: a process variable of two-state code starts at `--init-unset`, 0
         // without it; one of a subprogram at 0.
         let unset = ((self.cx.opts.init_unset || self.two)
@@ -1151,7 +1155,9 @@ impl<'a, 'b> Fx<'a, 'b> {
                 let (file, line, col) = db.sources.get(decl.span.file).site(decl.span.start);
                 yavs_logic::start::var_salt(file, &decl.name.to_string(), line, col)
             });
-        let zero = self.two && no_init && scope != yavs_sem::scope::ScopeKind::Process;
+        // A shared variable of two-state code too (a memory written in place).
+        let zero =
+            self.two && no_default && (shared || scope != yavs_sem::scope::ScopeKind::Process);
         let saved = std::mem::replace(&mut self.unset, unset);
         let saved_zero = std::mem::replace(&mut self.unset_zero, zero);
         let r = self.var_init_in(d, shape, slot, shared);
@@ -1535,8 +1541,9 @@ fn subprogram_body(
         s = db.scopes[sc].parent;
     }
     let mut fx = Fx::new(db, cx, pb.define(f), depth, kind, decl.name.to_string());
-    // A package's subprograms are four-state: the top-level unit calls them too.
-    fx.two &= !in_package(db, decl.scope);
+    // Two-state as `func_of` declared it (a package's subprograms are four-state: the top-level
+    // unit calls them too).
+    fx.two = fx.cx.two_subs.contains(&d);
     if let Some((d, b)) = drivers {
         fx.drivers = d;
         fx.driver_base = b;

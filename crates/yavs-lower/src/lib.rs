@@ -454,6 +454,10 @@ pub(crate) struct Cx {
     /// `--two-state` for what is lowered from here on ([`Lowerer::two_state`]).
     #[serde(skip)]
     pub two_state: bool,
+    /// `--two-state`: the subprograms declared two-state (`func_of` decides when it declares one:
+    /// `two_state` and not a package's), which their callers need not map.
+    #[serde(skip)]
+    pub two_subs: std::collections::HashSet<DeclId>,
     /// `--init-x`: the literals it gives a value (`yavs_elab`'s `x_sites`), set for a design.
     #[serde(skip)]
     pub x_sites: std::collections::HashSet<ExprId>,
@@ -901,6 +905,7 @@ impl<'a> Lowerer<'a> {
                 diags: Vec::new(),
                 drop_asserts: false,
                 two_state: false,
+                two_subs: Default::default(),
                 x_sites: Default::default(),
                 tys: HashMap::default(),
                 natives: HashMap::default(),

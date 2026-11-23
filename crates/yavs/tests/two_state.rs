@@ -97,7 +97,7 @@ fn hexv(w: u32, hi: u8, mid: u8, lo: u8) -> String {
 fn want(w: u32, x: u8) -> String {
     let flags = if x == b'0' { "00110100" } else { "10100100" };
     format!(
-        "W={w} q={} nq={} z={} lit={} flags={flags} rout=01100 cnt=0001 d={}",
+        "W={w} q={} nq={} z={} lit={} flags={flags} rout=01100 cnt=0001 more=0011 d={}",
         hexv(w, b'1', b'0', b'1'),
         hexv(w, b'0', b'1', b'0'),
         hexv(w, b'0', b'0', b'0'),

@@ -308,7 +308,7 @@ impl<'a> Fx<'a, '_> {
         }
         let spine = self.chain_ahead(id)?;
         let mut v = self.expr_value(id)?;
-        if self.cx.opts.init_x && self.cx.x_sites.contains(&id) {
+        if self.cx.opts.init_x && !self.two && self.cx.x_sites.contains(&id) {
             v = self.x_value(id, v)?;
         }
         if self.two {
@@ -387,22 +387,35 @@ impl<'a> Fx<'a, '_> {
             ExprKind::Const(c) => Some(&db.consts[*c]),
             _ => None,
         });
-        if let Some(c) = folded {
-            if clean01(c) {
-                return Ok(v);
-            }
+        let dash = self.two_dash.contains(&id);
+        let from_outside = match &e.kind {
+            _ if folded.is_some() => false,
+            ExprKind::Obj(_)
+            | ExprKind::Index { .. }
+            | ExprKind::Slice { .. }
+            | ExprKind::Field { .. } => self.root_obj(id).is_none_or(|d| self.two_source(d)),
+            ExprKind::Attr { .. } | ExprKind::Deref { .. } | ExprKind::PrivateVar { .. } => true,
+            ExprKind::Call { callee, .. } => !self.two_callee(*callee),
+            _ => false,
+        };
+        if folded.is_some_and(clean01) {
+            return Ok(v);
+        }
+        // A literal, or a value read from outside for a matching comparison (a generic mask):
+        // `yavs.two.lit` keeps its `'-'` (mode bit 0), a read maps metavalues to `0` (bit 1).
+        if folded.is_some() || (from_outside && dash) {
             let salt = yavs_logic::start::salt(&[
                 b"lit",
                 db.sources.get(span.file).path.as_bytes(),
                 &span.start.to_le_bytes(),
             ]);
             let salt = self.int(salt as i64);
-            let dash = self.int(i64::from(self.two_dash.contains(&id)));
+            let mode = self.int(i64::from(dash) | if from_outside { 2 } else { 0 });
             return match (v, tid) {
                 (V::S(code), _) => match self.native(
                     "yavs.two.lit_code",
                     None,
-                    &[code, salt, dash],
+                    &[code, salt, mode],
                     Some(e.subtype),
                     span,
                 )? {
@@ -419,21 +432,12 @@ impl<'a> Fx<'a, '_> {
                         src: data,
                         bytes: size,
                     });
-                    self.native("yavs.two.lit", None, &[copy, count, salt, dash], None, span)?;
+                    self.native("yavs.two.lit", None, &[copy, count, salt, mode], None, span)?;
                     Ok(V::A(copy, desc))
                 }
                 (V::A(..), None) => Err(self.cx.ice(span, "a two-state array without a type")),
             };
         }
-        let from_outside = match &e.kind {
-            ExprKind::Obj(_)
-            | ExprKind::Index { .. }
-            | ExprKind::Slice { .. }
-            | ExprKind::Field { .. } => self.root_obj(id).is_none_or(|d| self.two_source(d)),
-            ExprKind::Attr { .. } | ExprKind::Deref { .. } | ExprKind::PrivateVar { .. } => true,
-            ExprKind::Call { callee, .. } => !self.two_callee(*callee),
-            _ => false,
-        };
         if !from_outside {
             return Ok(v);
         }
@@ -485,9 +489,7 @@ impl<'a> Fx<'a, '_> {
         let Some(sp) = db.decls[callee].kind.subprogram() else {
             return Ok(());
         };
-        if matches!(sp.body, Body::Hir { .. })
-            && !crate::func::in_package(db, db.decls[callee].scope)
-        {
+        if matches!(sp.body, Body::Hir { .. }) && self.cx.two_subs.contains(&callee) {
             return Ok(());
         }
         for a in args {
@@ -583,9 +585,7 @@ impl<'a> Fx<'a, '_> {
     fn two_callee(&self, callee: DeclId) -> bool {
         let db = self.db;
         match db.decls[callee].kind.subprogram() {
-            Some(sp) if matches!(sp.body, Body::Hir { .. }) => {
-                !crate::func::in_package(db, db.decls[callee].scope)
-            }
+            Some(sp) if matches!(sp.body, Body::Hir { .. }) => self.cx.two_subs.contains(&callee),
             // ponytail: implicit and native operations keep 0/1 on 0/1 operands; numeric_std
             // division by zero (an error already) gives `X`s, map it if that matters.
             _ => true,

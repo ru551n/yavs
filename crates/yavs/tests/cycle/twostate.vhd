@@ -32,7 +32,7 @@ use ieee.numeric_std.all;
 use work.twostate_pkg.all;
 
 entity twostate_dut is
-  generic (W : positive);
+  generic (W : positive; MASK : std_logic_vector(0 downto 0) := "-");
   port (
     clk : in std_logic;
     d   : in std_logic_vector(W - 1 downto 0);
@@ -44,7 +44,8 @@ entity twostate_dut is
     lit : out std_logic_vector(W - 1 downto 0);
     flags : out std_logic_vector(7 downto 0);
     rout : out rec;
-    cnt : out std_logic_vector(3 downto 0)
+    cnt : out std_logic_vector(3 downto 0);
+    more : out std_logic_vector(3 downto 0)
   );
 end entity;
 
@@ -80,6 +81,10 @@ begin
       end if;
       flags(6) <= a;
       flags(7) <= 'Z';
+      -- A generic mask keeps its '-'; chains of operators read their operands mapped.
+      more(0) <= '1' when std_match(d(0 downto 0), MASK) else '0';
+      more(1) <= a xor d(0) xor rin.a;
+      more(3 downto 2) <= a & rin.a;
     end if;
   end process;
 end architecture;
@@ -102,7 +107,7 @@ begin
     signal d, q, nq, z, lit : std_logic_vector(WS(i) - 1 downto 0);
     signal flags : std_logic_vector(7 downto 0);
     signal rout : rec;
-    signal cnt : std_logic_vector(3 downto 0);
+    signal cnt, more : std_logic_vector(3 downto 0);
   begin
     -- 'H' at the top and bit 0 '1', the rest metavalues.
     process
@@ -116,7 +121,7 @@ begin
     end process;
     u : entity work.twostate_dut
       generic map (W => WS(i))
-      port map (clk, d, a, rin, q, nq, z, lit, flags, rout, cnt);
+      port map (clk, d, a, rin, q, nq, z, lit, flags, rout, cnt, more);
     process
     begin
       wait for 1 ns;
@@ -125,6 +130,7 @@ begin
       report "W=" & integer'image(WS(i)) & " q=" & to_hstring(q) & " nq=" & to_hstring(nq)
         & " z=" & to_hstring(z) & " lit=" & to_hstring(lit) & " flags=" & to_string(flags)
         & " rout=" & to_string(rout.a) & to_string(rout.v) & " cnt=" & to_string(cnt)
+        & " more=" & to_string(more)
         & " d=" & to_string(d(0));
       wait;
     end process;

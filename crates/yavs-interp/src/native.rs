@@ -1115,12 +1115,14 @@ fn init_x_code(
 }
 
 /// `--two-state`: a literal's code as two-state code reads it: `L` is `0`, `H` is `1`, `U X Z W`
-/// (and `-` unless `dash` keeps it, a matching comparison) take `--init-x`, 0 without it.
-fn two_code(code: u64, salt: u64, i: u64, dash: bool) -> u64 {
+/// (and `-` unless `mode` bit 0 keeps it, a matching comparison) take `--init-x`, 0 without it;
+/// with `mode` bit 1 (a value read from outside for a matching comparison) they are `0`.
+fn two_code(code: u64, salt: u64, i: u64, mode: u64) -> u64 {
     match code {
         6 => 2,
         7 => 3,
-        8 if dash => 8,
+        8 if mode & 1 != 0 => 8,
+        0 | 1 | 4 | 5 | 8 if mode & 2 != 0 => 2,
         0 | 1 | 4 | 5 | 8 => {
             let f = yavs_logic::start::x().unwrap_or(yavs_logic::start::Fill::Zero);
             u64::from(f.code(salt, i))
@@ -1129,21 +1131,21 @@ fn two_code(code: u64, salt: u64, i: u64, dash: bool) -> u64 {
     }
 }
 
-/// `yavs.two.lit (data, n, salt, dash)`: [`two_code`] on the planes of a literal's value.
+/// `yavs.two.lit (data, n, salt, mode)`: [`two_code`] on the planes of a literal's value.
 fn two_lit(
     m: &mut Machine,
     _: &mut Option<&mut Ctx<'_>>,
     _: Option<TyId>,
     a: &[u64],
 ) -> R<Option<u64>> {
-    let (data, n, salt, dash) = (targ(a, 0)?, targ(a, 1)?, targ(a, 2)?, targ(a, 3)? != 0);
+    let (data, n, salt, mode) = (targ(a, 0)?, targ(a, 1)?, targ(a, 2)?, targ(a, 3)?);
     if n == 0 {
         return Ok(None);
     }
     let v = m.wr(data, n.div_ceil(64) * 32)?;
     for i in 0..n {
         let c = plane_get(v, i);
-        let t = two_code(c, salt, i, dash);
+        let t = two_code(c, salt, i, mode);
         if t != c {
             plane_set(v, i, t);
         }
@@ -1151,19 +1153,14 @@ fn two_lit(
     Ok(None)
 }
 
-/// `yavs.two.lit_code (code, salt, dash)`: [`two_code`] on a scalar literal.
+/// `yavs.two.lit_code (code, salt, mode)`: [`two_code`] on a scalar literal.
 fn two_lit_code(
     _: &mut Machine,
     _: &mut Option<&mut Ctx<'_>>,
     _: Option<TyId>,
     a: &[u64],
 ) -> R<Option<u64>> {
-    Ok(Some(two_code(
-        targ(a, 0)?,
-        targ(a, 1)?,
-        0,
-        targ(a, 2)? != 0,
-    )))
+    Ok(Some(two_code(targ(a, 0)?, targ(a, 1)?, 0, targ(a, 2)?)))
 }
 
 /// `yavs.two.map (data, desc)` of type `ty`: every `std_ulogic` element of the composite at

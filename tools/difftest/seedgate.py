@@ -31,7 +31,7 @@ def flags(seed):
 
 
 def one(item, a):
-    """(name, bucket, why, (pairs compared, pairs apart at a fixed value)): `same`, `differs` (a run of the mode
+    """(name, bucket, why, {(mode, mode): [compared, apart at a fixed value]}): `same`, `differs` (a run of the mode
     gave other output, the warm cycle run stored another analysis, or two modes the seed alone set apart) or
     `skipped` (the plain normal run fails before simulating)."""
     name, vhd, hdr, (tn, tc) = item
@@ -45,7 +45,7 @@ def one(item, a):
 
     first, rc = go(tn.replace("--threads=", "--tier=interp --threads="), "n")
     if rc in (97, 98):
-        return name, "skipped", "analysis or elaboration fails", (0, 0)
+        return name, "skipped", "analysis or elaboration fails", {}
     runs = {"normal interp": first}
     for t in a.tiers:
         runs[f"normal {t}"] = go(tn.replace("--threads=", f"--tier={t} --threads="), "n")[0]
@@ -63,28 +63,27 @@ def one(item, a):
     before = sorted(p.name for p in store.glob("cyc3-*.img"))
     cyc["cycle warm after another seed"] = go(tc, "w", fresh=False)[0]
     if sorted(p.name for p in store.glob("cyc3-*.img")) != before:
-        return name, "differs", "the warm cycle run with a new seed stored another analysis", (0, 0)
+        return name, "differs", "the warm cycle run with a new seed stored another analysis", {}
     for group in (runs, cyc):
         (k0, v0), *rest = group.items()
         for k, v in rest:
             if v != v0:
-                return name, "differs", f"{k} against {k0}: {G.first_diff(v0, v)}", (0, 0)
-    pairs = (0, 0)
+                return name, "differs", f"{k} against {k0}: {G.first_diff(v0, v)}", {}
+    pairs = {}  # (mode, mode) -> [compared, apart at a fixed value]
     if not TWO:
         two = lambda t: t.replace(G.CYC, "--two-state " + G.CYC)
-        modes = {"normal": tn, "--cycle": tc, "--cycle-strict": tc.replace("--cycle ", "--cycle-strict ", 1),
+        ex = "export YAVS_CYCLE_EXACT_CLOCKS=1; "  # a copied clock as in the normal mode, as the exact cycle gate
+        modes = {"normal": tn, "--cycle": ex + tc, "--cycle-strict": ex + tc.replace("--cycle ", "--cycle-strict ", 1),
                  "--two-state": two(tn), "--cycle --two-state": two(tc)}
         out = {s: {m: cross(go(t, f"x{i}", seed_flags=s)) for i, (m, t) in enumerate(modes.items())}
                for s in (f, FIXED[0], FIXED[1])}
         names = list(modes)
         for i, m1 in enumerate(names):
             for m2 in names[i + 1:]:
-                if any(out[s][m1] != out[s][m2] for s in FIXED):
-                    pairs = (pairs[0], pairs[1] + 1)
-                elif out[f][m1] != out[f][m2]:
+                apart = any(out[s][m1] != out[s][m2] for s in FIXED)
+                if not apart and out[f][m1] != out[f][m2]:
                     return name, "differs", f"{m2} against {m1} with the seed: {G.first_diff(out[f][m1], out[f][m2])}", pairs
-                else:
-                    pairs = (pairs[0] + 1, pairs[1])
+                pairs.setdefault((m1, m2), [0, 0])[apart] += 1
     if not a.keep:
         shutil.rmtree(base, ignore_errors=True)
     return name, "same", "", pairs
@@ -113,16 +112,19 @@ def main():
     TWO = a.two_state
     a.tiers = [t for t in a.tiers.split(",") if t]
     items = [i for i in G.items(a.only) if re.search(a.filter, i[0])]
-    counts, pairs = {}, [0, 0]
+    counts, pairs = {}, {}
     with cf.ThreadPoolExecutor(min(a.jobs, D.MAX_JOBS)) as ex:
-        for name, bucket, why, (same, apart) in ex.map(lambda i: one(i, a), items):
+        for name, bucket, why, pp in ex.map(lambda i: one(i, a), items):
             counts[bucket] = counts.get(bucket, 0) + 1
-            pairs[0] += same
-            pairs[1] += apart
+            for k, (n, m) in pp.items():
+                pairs.setdefault(k, [0, 0])
+                pairs[k][0] += n
+                pairs[k][1] += m
             if bucket == "differs":
                 print(f"DIFFERS {name}: {why}", flush=True)
-    print(f"seedgate: seed {a.seed}, {len(items)} tests: " + ", ".join(f"{v} {k}" for k, v in sorted(counts.items()))
-          + ("" if TWO else f"; across modes {pairs[0]} pairs compared, {pairs[1]} differ at a fixed value"))
+    for (m1, m2), (n, m) in pairs.items():
+        print(f"across modes: {m1} against {m2}: {n} tests compared, {m} differ at a fixed value")
+    print(f"seedgate: seed {a.seed}, {len(items)} tests: " + ", ".join(f"{v} {k}" for k, v in sorted(counts.items())))
     sys.exit(1 if counts.get("differs") else 0)
 
 

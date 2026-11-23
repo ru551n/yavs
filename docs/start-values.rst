@@ -58,7 +58,8 @@ With ``random`` every element gets a bit of its own, drawn from SEED and from wh
 instance path and element; a process variable's name and place in the source together with the instance path of its
 process, so two instances of one entity get bits of their own; a literal's place in the source, the same in every
 instance. A place in the source is the file's name without its directory, the line and the column, so the bits do
-not change with where the sources are checked out, the system's path separators or line ends. Nothing else enters:
+not change with where the sources are checked out, the system's path separators or line ends. Two files of the same
+name in different directories give literals at the same line and column the same bits. Nothing else enters:
 not the order of elaboration or of the processes, the threads or the cache.
 
 So one seed gives the same values in every run of the same design: in every tier, at every ``--threads``, with

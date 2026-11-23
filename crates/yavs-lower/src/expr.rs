@@ -585,6 +585,15 @@ impl<'a> Fx<'a, '_> {
     fn two_callee(&self, callee: DeclId) -> bool {
         let db = self.db;
         match db.decls[callee].kind.subprogram() {
+            // A native `ieee` operation keeps 0/1 on 0/1 operands, but a division (by zero: `X`s).
+            Some(sp)
+                if !self.cx.opts.no_native_ieee
+                    && let Some(sym) = yavs_ir::ieee::native_symbol(sp.mangled.as_str()) =>
+            {
+                !yavs_ir::ieee::symbol_key(&sym)
+                    .and_then(yavs_ir::ieee::parse)
+                    .is_none_or(|op| matches!(op, yavs_ir::ieee::Op::Div { .. }))
+            }
             Some(sp) if matches!(sp.body, Body::Hir { .. }) => self.cx.two_subs.contains(&callee),
             // ponytail: implicit and native operations keep 0/1 on 0/1 operands; numeric_std
             // division by zero (an error already) gives `X`s, map it if that matters.

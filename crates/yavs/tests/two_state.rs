@@ -166,24 +166,35 @@ fn a_random_init_x_gives_the_same_bits_in_both_modes() {
 /// A71: a `'Z'` driven onto a resolved signal below the top stays `'Z'`: an event net whose
 /// idle value a package drives from components below the top (it used to hang), and a tri-state
 /// bus two components drive in turn (it used to read `0`s and conflicts). The same output
-/// without the option, on every tier and under `--cycle --two-state`.
+/// without the option, on every tier, with either `--init-x` and under `--cycle --two-state`.
+/// A pull-up `'H'` is a strong `'1'` there (A65): pulling the line low gives `'X'`.
 #[test]
 fn a_z_driven_onto_a_resolved_signal_stays_z() {
     let dir = tempdir("twostate-bus");
     analyze(&dir, "twostate_bus.vhd");
-    let want = [
-        "events=6 ev=ZZ",
-        "turn=0 bus=ZZZZZZZZ",
-        "turn=1 bus=10100101",
-        "turn=2 bus=00111100",
-    ];
+    let want = |two: bool| {
+        let mut w = vec![
+            "events=6 ev=ZZ",
+            "turn=0 bus=ZZZZZZZZ",
+            "turn=1 bus=10100101",
+            "turn=2 bus=00111100",
+        ];
+        w.extend(if two {
+            ["pull=1", "low=X"]
+        } else {
+            ["pull=H", "low=0"]
+        });
+        w
+    };
     let mut runs = vec![vec!["--tier=interp"]];
     for t in tiers() {
         for mode in [None, Some("--cycle")] {
-            let mut f = vec!["--two-state"];
-            f.extend(mode);
-            f.extend(t.iter().copied());
-            runs.push(f);
+            for x in ["--init-x=0", "--init-x=1"] {
+                let mut f = vec!["--two-state", x];
+                f.extend(mode);
+                f.extend(t.iter().copied());
+                runs.push(f);
+            }
         }
     }
     for f in runs {
@@ -200,8 +211,12 @@ fn a_z_driven_onto_a_resolved_signal_stays_z() {
         let got: Vec<&str> = out
             .lines()
             .filter_map(|l| l.rsplit_once(": ").map(|x| x.1))
-            .filter(|l| l.starts_with("events=") || l.starts_with("turn="))
+            .filter(|l| {
+                ["events=", "turn=", "pull=", "low="]
+                    .iter()
+                    .any(|p| l.starts_with(p))
+            })
             .collect();
-        assert_eq!(got, want, "{f:?}: {out}");
+        assert_eq!(got, want(f[0] == "--two-state"), "{f:?}: {out}");
     }
 }

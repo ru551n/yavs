@@ -5248,14 +5248,39 @@ impl Lx<'_> {
             && ew == 1
             && at.len() == count
         {
-            let a = self.whole(*v);
-            self.ops.push(Op::Splat {
-                dst: t.r,
-                a,
-                len: n,
-            });
+            let lit = v.lit.filter(|&k| k != LIT_MIXED);
+            // `(others => 'X')` under `--init-x=random`: a bit of its own each element (A62).
+            let rand = match (
+                lit,
+                self.meta_joins(),
+                crate::region::meta_fill(),
+                self.lit_at,
+            ) {
+                (Some(_), true, f @ yavs_logic::start::Fill::Random(_), Some(at)) => {
+                    let salt = lit_salt(self.db, at);
+                    let mut val = vec![0u64; words(n) as usize];
+                    for el in 0..n {
+                        val[el as usize / 64] |= u64::from(f.bit(salt, u64::from(el))) << (el % 64);
+                    }
+                    let val: Box<[u64]> = val.into();
+                    self.ops.push(Op::Lit {
+                        dst: t.r,
+                        val: val.clone(),
+                    });
+                    Some(val)
+                }
+                _ => None,
+            };
+            if rand.is_none() {
+                let a = self.whole(*v);
+                self.ops.push(Op::Splat {
+                    dst: t.r,
+                    a,
+                    len: n,
+                });
+            }
             // `(others => '-')`: the literal's codes and bits, every element.
-            if let Some(k) = v.lit.filter(|&k| k != LIT_MIXED) {
+            if let Some(k) = lit {
                 let (c, b) = (self.lits[k as usize][0], self.lit_vals[k as usize][0] & 1);
                 self.lits.push(vec![c; count]);
                 let ones = (0..words(n)).map(|j| {
@@ -5265,7 +5290,7 @@ impl Lx<'_> {
                         0
                     }
                 });
-                self.lit_vals.push(ones.collect());
+                self.lit_vals.push(rand.unwrap_or_else(|| ones.collect()));
                 t.lit = Some(self.lits.len() as u32 - 1);
             }
             return Ok(Val::Part(t));

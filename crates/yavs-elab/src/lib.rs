@@ -612,6 +612,9 @@ pub struct Elaborated {
     pub(crate) elab_printed: usize,
     /// The signal elements `--init-unset` gave a start value.
     pub unset_elems: u64,
+    /// The signal leaves whose start value `--init-unset=random` drew: what reads start values
+    /// to compile (cycle mode) treats them as unknown, so another seed needs no other code (A68).
+    pub drawn: std::collections::BTreeSet<LeafId>,
     /// Under `--init-x`: the metavalue literals it gives a value (`xsites`), which the lowering
     /// and cycle mode take from `yavs_logic::start::x`.
     pub x_sites: std::collections::HashSet<yavs_sem::ExprId>,

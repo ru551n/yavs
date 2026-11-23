@@ -809,6 +809,7 @@ pub(crate) fn elaborate(
         elab_pkgs: std::mem::take(&mut e.m.session.order),
         elab_printed: e.m.session.init_printed,
         unset_elems: e.m.unset_elems,
+        drawn: e.m.drawn.iter().copied().collect(),
         x_sites: e.x_sites,
     })
 }
@@ -5586,7 +5587,8 @@ impl Model {
     }
 
     /// `--init-unset`: the `'U'` elements of the `std_ulogic` leaves of a signal without an
-    /// initial value get the chosen value, drawn per object path, leaf and element.
+    /// initial value get the chosen value, drawn per object path, leaf and element. The leaves
+    /// changed, by place.
     fn unset_starts(
         &mut self,
         db: &Db,
@@ -5595,7 +5597,8 @@ impl Model {
         shape: &Shape,
         vals: &mut [yavs_kernel::Value],
         f: yavs_logic::start::Fill,
-    ) {
+    ) -> Vec<usize> {
+        let mut changed = Vec::new();
         use yavs_logic::StdULogic;
         let path = self.hier.path_name(s, crate::Case::Lrm)
             + db.decls[decl].name.to_string().to_lowercase().as_str();
@@ -5615,8 +5618,10 @@ impl Model {
                 });
                 *lv = new;
                 self.unset_elems += n as u64;
+                changed.push(k);
             }
         }
+        changed
     }
 
     /// Create a signal object in `s` with its leaves.
@@ -5647,10 +5652,14 @@ impl Model {
             )
         })?;
         let mut vals = vals;
+        let mut drawn = Vec::new();
         if init.is_none()
             && let Some(f) = self.init_unset
         {
-            self.unset_starts(db, s, decl, &shape, &mut vals, f);
+            drawn = self.unset_starts(db, s, decl, &shape, &mut vals, f);
+            if !matches!(f, yavs_logic::start::Fill::Random(_)) {
+                drawn.clear();
+            }
         }
         // Composites resolved as a whole, the signal or its outermost resolved subelements:
         // their leaves are resolved together, resolution below them ignored (#193; LRM
@@ -5659,10 +5668,13 @@ impl Model {
         whole_nodes(&shape, &mut Vec::new(), 1, &mut wholes);
         let id = ObjId(self.nets.objs.len() as u32);
         let first = LeafId(self.nets.leaves.len() as u32);
-        for ((path, leaf, n), init) in shape.leaves().into_iter().zip(vals) {
+        for (k, ((path, leaf, n), init)) in shape.leaves().into_iter().zip(vals).enumerate() {
             let Shape::Scalar { elem, res, .. } = leaf else {
                 continue;
             };
+            if drawn.contains(&k) {
+                self.drawn.push(LeafId(self.nets.leaves.len() as u32));
+            }
             let len = u32::try_from(n).map_err(|_| {
                 Box::new(
                     Diagnostic::error(

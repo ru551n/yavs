@@ -331,6 +331,18 @@ impl SourceFile {
         &self.line_starts
     }
 
+    /// A source site named the same on every checkout and system: the file name without its
+    /// directory, the 0-based line and the byte column of `offset` (line ends do not move it).
+    pub fn site(&self, offset: u32) -> (&str, u32, u32) {
+        let name = std::path::Path::new(&self.path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&self.path);
+        let line = self.line_starts.partition_point(|&s| s <= offset).max(1) - 1;
+        let col = offset.saturating_sub(self.line_starts.get(line).copied().unwrap_or(0));
+        (name, line as u32, col)
+    }
+
     /// The file was read as ISO-8859-1 bytes rather than UTF-8.
     pub fn is_latin1(&self) -> bool {
         self.lazy

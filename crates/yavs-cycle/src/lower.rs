@@ -865,6 +865,11 @@ pub(crate) struct Body {
     /// The names of those variables, for `--cycle-report`.
     #[serde(default)]
     pub unset_names: Vec<String>,
+    /// Slots that hold the bits of a metavalue literal under `--init-x=random` (first word,
+    /// elements, the literal's salt), filled when the run starts: the seed is a run-time input
+    /// only, so a run with another seed reuses the code and the cache (A68).
+    #[serde(default)]
+    pub rands: Vec<(u32, u32, u64)>,
     /// Under `--cycle-exact-meta`: a comparison or conversion of logic values the code cannot
     /// give the normal mode's result on a metavalue (`Lx::differs`): the second image may take
     /// another branch, so its registers keep the region's values where only it changed them
@@ -1216,11 +1221,25 @@ const META_CMP: &str = "a comparison with a metavalue literal (`'U'`, `'X'`, `'-
 
 /// The salt of the bits a metavalue literal of a two-state region takes at `span` (A57).
 fn lit_salt(db: &Db, span: yavs_diag::Span) -> u64 {
-    yavs_logic::start::salt(&[
-        b"lit",
-        db.sources.get(span.file).path.as_bytes(),
-        &span.start.to_le_bytes(),
-    ])
+    let (file, line, col) = db.sources.get(span.file).site(span.start);
+    yavs_logic::start::lit_salt(file, line, col)
+}
+
+/// The bits of a literal value: those known when compiling, and the elements (a mask) that take
+/// the `--init-x=random` bits of a salt when the run starts (`Body::rands`).
+type Bits = (Box<[u64]>, Option<(u64, Box<[u64]>)>);
+
+/// `n` elements of fill `f` for the literal of `salt`: constant bits, or all from the run's seed.
+fn fill_bits(f: yavs_logic::start::Fill, salt: u64, n: u32) -> Bits {
+    let mut all = vec![0u64; words(n) as usize];
+    set_bits(&mut all, 0, n);
+    match f {
+        yavs_logic::start::Fill::Zero => (vec![0u64; all.len()].into(), None),
+        yavs_logic::start::Fill::One => (all.into(), None),
+        yavs_logic::start::Fill::Random(_) => {
+            (vec![0u64; all.len()].into(), Some((salt, all.into())))
+        }
+    }
 }
 
 /// Most elements of a logic value: 2**26 (a megaword), so element offsets stay far inside `u32`
@@ -1279,6 +1298,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         unrolled: 0,
         lits: Vec::new(),
         lit_vals: Vec::new(),
+        rands: Vec::new(),
         lit_at: None,
         lit_cmp: BTreeSet::new(),
         bounds: false,
@@ -1412,8 +1432,10 @@ struct Lx<'a> {
     lits: Vec<Vec<u8>>,
     /// The bits each of `lits` holds (a metavalue's as a two-state region reads it), and the place
     /// of the expression lowered last (`lit_salt`).
-    lit_vals: Vec<Box<[u64]>>,
+    lit_vals: Vec<Bits>,
     lit_at: Option<yavs_diag::Span>,
+    /// The slots of `random` literal bits (`Body::rands`).
+    rands: Vec<(u32, u32, u64)>,
     /// The literals of `lits` a comparison took.
     lit_cmp: BTreeSet<u32>,
     /// The calls folded from `Elaborated::region_calls` that reported (`Body::reports`).
@@ -1492,6 +1514,7 @@ impl Lx<'_> {
             useed: self.useed,
             unset: self.unset,
             unset_names: self.unset_names,
+            rands: self.rands,
             keep,
             checks: self.checks,
         }
@@ -1731,6 +1754,25 @@ impl Lx<'_> {
             }
         }
         r
+    }
+
+    /// `bits` (of `n` elements) into `dst`: the constant bits, then the run's random ones from a
+    /// slot of their own that no operation writes.
+    fn lit_value(&mut self, dst: Ref, n: u32, bits: &Bits) {
+        self.ops.push(Op::Lit {
+            dst,
+            val: bits.0.clone(),
+        });
+        if let Some((salt, mask)) = &bits.1 {
+            let w = self.locs;
+            let src = self.loc(words(n));
+            self.rands.push((w, n, *salt));
+            self.ops.push(Op::Blend {
+                dst,
+                src,
+                mask: mask.clone(),
+            });
+        }
     }
 
     fn loc(&mut self, words: u32) -> Ref {
@@ -2200,17 +2242,8 @@ impl Lx<'_> {
                         return Err("a `case` choice of another length than the selector".into());
                     }
                     // A metavalue of the choice takes the bits a literal there would.
-                    let fill = crate::region::meta_fill();
-                    let salt = match fill {
-                        yavs_logic::start::Fill::Random(_) => {
-                            lit_salt(self.db, self.db.exprs[*x].span)
-                        }
-                        _ => 0,
-                    };
-                    let mut bits = vec![0u64; words(codes.len() as u32) as usize];
-                    for el in 0..codes.len() {
-                        bits[el / 64] |= u64::from(fill.bit(salt, el as u64)) << (el % 64);
-                    }
+                    let salt = lit_salt(self.db, self.db.exprs[*x].span);
+                    let bits = fill_bits(crate::region::meta_fill(), salt, codes.len() as u32);
                     self.match_codes(*p, &codes, matching, &bits)?
                 }
                 _ => {
@@ -2238,26 +2271,38 @@ impl Lx<'_> {
     /// `p` against the `std_ulogic` codes of a literal (from the left): `'-'` matches anything
     /// in a matching comparison; any other metavalue keeps the process out (a two-state value
     /// is never one, while the normal mode can hold it).
-    fn match_codes(&mut self, p: Part, codes: &[u8], matching: bool, bits: &[u64]) -> R<Ref> {
+    fn match_codes(&mut self, p: Part, codes: &[u8], matching: bool, bits: &Bits) -> R<Ref> {
         let n = codes.len();
         let mut val = vec![0u64; words(n as u32) as usize];
         let mut care = vec![0u64; val.len()];
+        let mut rnd = vec![0u64; val.len()];
         let two = self.meta_joins();
+        let is = |m: &[u64], el: usize| (m[el / 64] >> (el % 64)) & 1;
         for (k, &c) in codes.iter().enumerate() {
             let el = n - 1 - k;
             let (bit, keep) = match c {
                 2 | 6 => (0, true),
                 3 | 7 => (1, true),
                 8 if matching => (0, false),
-                // A two-state region compares with the literal's bits (A57).
-                0 | 1 | 5 | 8 if two => ((bits[el / 64] >> (el % 64)) & 1, true),
+                // A two-state region compares with the literal's bits (A57), the run's random
+                // ones from their slot.
+                0 | 1 | 5 | 8 if two => {
+                    if bits.1.as_ref().is_some_and(|(_, m)| is(m, el) == 1) {
+                        rnd[el / 64] |= 1 << (el % 64);
+                    }
+                    (is(&bits.0, el), true)
+                }
                 _ => return Err(META_CMP.into()),
             };
             val[el / 64] |= bit << (el % 64);
             care[el / 64] |= u64::from(keep) << (el % 64);
         }
+        let expect: Bits = (
+            val.into(),
+            (rnd.iter().any(|&w| w != 0)).then(|| (bits.1.as_ref().map_or(0, |b| b.0), rnd.into())),
+        );
         let a = self.whole(p);
-        let mut all = vec![0u64; val.len()];
+        let mut all = vec![0u64; care.len()];
         set_bits(&mut all, 0, n as u32);
         let a = if care != all {
             let m = self.tmp(n as u32);
@@ -2278,10 +2323,7 @@ impl Lx<'_> {
             a
         };
         let l = self.tmp(n as u32);
-        self.ops.push(Op::Lit {
-            dst: l.r,
-            val: val.into(),
-        });
+        self.lit_value(l.r, n as u32, &expect);
         let t = self.tmp(1);
         self.ops.push(Op::VecEq {
             dst: t.r,
@@ -3875,11 +3917,10 @@ impl Lx<'_> {
         }
         let decl = &db.decls[d];
         let salt = yavs_logic::start::inst_salt(
-            yavs_logic::start::var_salt(
-                &db.sources.get(decl.span.file).path,
-                &decl.name.to_string(),
-                decl.span.start,
-            ),
+            {
+                let (file, line, col) = db.sources.get(decl.span.file).site(decl.span.start);
+                yavs_logic::start::var_salt(file, &decl.name.to_string(), line, col)
+            },
             &self.e.proc_label(self.p),
         );
         for (p, (_, leaf, _)) in ps.into_iter().zip(&leaves) {
@@ -4717,17 +4758,11 @@ impl Lx<'_> {
     /// Expression `x`; `hint`: the place it is assigned to, whose shape an aggregate takes.
     fn expr_h(&mut self, x: ExprId, hint: Option<&Val>) -> R<Val> {
         // An `--init-x` literal: its metavalues get the option's bits, as `yavs.init.x` gives them.
-        if self.x.is_none()
-            && let Some(f) = yavs_logic::start::x()
-            && self.e.x_sites.contains(&x)
-        {
+        if self.x.is_none() && yavs_logic::start::x().is_some() && self.e.x_sites.contains(&x) {
             let db = self.db;
             let span = db.exprs[x].span;
-            let salt = yavs_logic::start::salt(&[
-                b"x",
-                db.sources.get(span.file).path.as_bytes(),
-                &span.start.to_le_bytes(),
-            ]);
+            let salt = lit_salt(db, span);
+            let f = crate::region::meta_fill();
             self.x = Some((f, salt));
             let r = self.expr_in(x, hint);
             self.x = None;
@@ -4735,15 +4770,9 @@ impl Lx<'_> {
             // the lowering fills the vector with one element's value.
             return match r? {
                 Val::Part(p) if p.int.is_none() && p.len > 1 => {
-                    let mut val = vec![0u64; words(p.len) as usize];
-                    for el in 0..p.len {
-                        val[el as usize / 64] |= u64::from(f.bit(salt, u64::from(el))) << (el % 64);
-                    }
                     let mut t = self.tmp(p.len);
-                    self.ops.push(Op::Lit {
-                        dst: t.r,
-                        val: val.into(),
-                    });
+                    let bits = fill_bits(f, salt, p.len);
+                    self.lit_value(t.r, p.len, &bits);
                     t.dims = p.dims;
                     Ok(Val::Part(t))
                 }
@@ -5249,25 +5278,13 @@ impl Lx<'_> {
             && at.len() == count
         {
             let lit = v.lit.filter(|&k| k != LIT_MIXED);
-            // `(others => 'X')` under `--init-x=random`: a bit of its own each element (A62).
-            let rand = match (
-                lit,
-                self.meta_joins(),
-                crate::region::meta_fill(),
-                self.lit_at,
-            ) {
-                (Some(_), true, f @ yavs_logic::start::Fill::Random(_), Some(at)) => {
-                    let salt = lit_salt(self.db, at);
-                    let mut val = vec![0u64; words(n) as usize];
-                    for el in 0..n {
-                        val[el as usize / 64] |= u64::from(f.bit(salt, u64::from(el))) << (el % 64);
-                    }
-                    let val: Box<[u64]> = val.into();
-                    self.ops.push(Op::Lit {
-                        dst: t.r,
-                        val: val.clone(),
-                    });
-                    Some(val)
+            // `(others => 'X')` under `--init-x=random`: a bit of its own each element (A62),
+            // the salt of the aggregate.
+            let rand = match (lit, self.meta_joins(), crate::region::meta_fill()) {
+                (Some(_), true, f @ yavs_logic::start::Fill::Random(_)) => {
+                    let bits = fill_bits(f, lit_salt(db, db.exprs[x].span), n);
+                    self.lit_value(t.r, n, &bits);
+                    Some(bits)
                 }
                 _ => None,
             };
@@ -5281,16 +5298,24 @@ impl Lx<'_> {
             }
             // `(others => '-')`: the literal's codes and bits, every element.
             if let Some(k) = lit {
-                let (c, b) = (self.lits[k as usize][0], self.lit_vals[k as usize][0] & 1);
+                let (c, b) = (&self.lits[k as usize], &self.lit_vals[k as usize]);
+                let (c, one, own) = (c[0], b.0[0] & 1, b.1.as_ref().map(|r| r.0));
                 self.lits.push(vec![c; count]);
-                let ones = (0..words(n)).map(|j| {
-                    if b == 1 {
-                        crate::codegen::mask((n - 64 * j).min(64))
-                    } else {
-                        0
-                    }
-                });
-                self.lit_vals.push(rand.unwrap_or_else(|| ones.collect()));
+                let bits = match (rand, own) {
+                    (Some(r), _) => r,
+                    // A one-element literal of its own random bit (`--init-x`): that bit.
+                    (None, Some(salt)) => fill_bits(yavs_logic::start::Fill::Random(0), salt, n),
+                    (None, None) => fill_bits(
+                        if one == 1 {
+                            yavs_logic::start::Fill::One
+                        } else {
+                            yavs_logic::start::Fill::Zero
+                        },
+                        0,
+                        n,
+                    ),
+                };
+                self.lit_vals.push(bits);
                 t.lit = Some(self.lits.len() as u32 - 1);
             }
             return Ok(Val::Part(t));
@@ -5601,47 +5626,52 @@ impl Lx<'_> {
             return Ok(Val::Null(dims));
         }
         let mut val = vec![0u64; words(n) as usize];
+        let mut rnd = vec![0u64; val.len()];
         let mut meta = false;
         // A two-state region gives a metavalue the bits of `--init-x` (A57), 0 without it.
         let (two, fill) = (self.meta_joins(), crate::region::meta_fill());
-        let salt = match (two, fill, self.lit_at) {
-            (true, yavs_logic::start::Fill::Random(_), Some(at)) => lit_salt(self.db, at),
-            _ => 0,
-        };
+        let mut salt = self.lit_at.map_or(0, |at| lit_salt(self.db, at));
         for (p, &code) in codes.iter().enumerate() {
             // Row-major element `p` from the left is element `n - 1 - p`.
             let el = n as usize - 1 - p;
-            let bit = match (code, self.x) {
-                (2 | 6, _) => 0,
-                (3 | 7, _) => 1,
+            let f = match (code, self.x) {
+                (2 | 6, _) => yavs_logic::start::Fill::Zero,
+                (3 | 7, _) => yavs_logic::start::Fill::One,
                 (4, _) => {
                     return Err("a `'Z'` literal: two-state values have no high impedance".into());
                 }
-                (0 | 1 | 5 | 8, Some((f, salt))) => u64::from(f.bit(salt, el as u64)),
+                (0 | 1 | 5 | 8, Some((f, s))) => {
+                    salt = s;
+                    f
+                }
                 _ => {
                     meta = true;
                     if two {
-                        u64::from(fill.bit(salt, el as u64))
+                        fill
                     } else {
-                        0
+                        yavs_logic::start::Fill::Zero
                     }
                 }
             };
-            val[el / 64] |= bit << (el % 64);
+            match f {
+                yavs_logic::start::Fill::Zero => {}
+                yavs_logic::start::Fill::One => val[el / 64] |= 1 << (el % 64),
+                yavs_logic::start::Fill::Random(_) => rnd[el / 64] |= 1 << (el % 64),
+            }
         }
         if meta {
             self.metas += 1;
         }
         let mut t = self.tmp(n);
-        let val: Box<[u64]> = val.into();
-        self.ops.push(Op::Lit {
-            dst: t.r,
-            val: val.clone(),
-        });
+        let bits: Bits = (
+            val.into(),
+            (rnd.iter().any(|&w| w != 0)).then(|| (salt, rnd.into())),
+        );
+        self.lit_value(t.r, n, &bits);
         t.dims = dims;
         if meta {
             self.lits.push(codes);
-            self.lit_vals.push(val);
+            self.lit_vals.push(bits);
             t.lit = Some(self.lits.len() as u32 - 1);
         }
         Ok(Val::Part(t))

@@ -1282,18 +1282,10 @@ impl<const RAIL: bool> RegionProc<RAIL> {
 
     /// `--init-unset`: the start bits of clocked variables without an initial value, on the
     /// region's image and the rail's.
-    fn unset_vars(&mut self, f: yavs_logic::start::Fill, mut rail: Option<&mut Rail>) {
-        for &(w, c, salt) in self.unset.iter() {
-            for j in 0..words(c) {
-                let n = (c - 64 * j).min(64);
-                let v = (0..n).fold(0u64, |v, b| {
-                    v | (u64::from(f.bit(salt, u64::from(64 * j + b))) << b)
-                });
-                self.img[(w + j) as usize] = v;
-                if let Some(r) = rail.as_deref_mut() {
-                    r.img[(w + j) as usize] = v;
-                }
-            }
+    fn unset_vars(&mut self, f: yavs_logic::start::Fill, rail: Option<&mut Rail>) {
+        fill(&mut self.img, &self.unset, f);
+        if let Some(r) = rail {
+            fill(&mut r.img, &self.unset, f);
         }
     }
 
@@ -1990,6 +1982,19 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             }
         }
         self.export::<false>(ctx, None)
+    }
+}
+
+/// The bits of `f` into the slots `list` (first word, elements, salt) of an image: the start
+/// values of `--init-unset` and the literal bits of `--init-x=random`, element 0 the rightmost.
+pub(crate) fn fill(img: &mut [u64], list: &[(u32, u32, u64)], f: yavs_logic::start::Fill) {
+    for &(w, c, salt) in list {
+        for j in 0..words(c) {
+            let n = (c - 64 * j).min(64);
+            img[(w + j) as usize] = (0..n).fold(0u64, |v, b| {
+                v | (u64::from(f.bit(salt, u64::from(64 * j + b))) << b)
+            });
+        }
     }
 }
 

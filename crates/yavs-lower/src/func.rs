@@ -1118,8 +1118,8 @@ impl<'a, 'b> Fx<'a, 'b> {
             && db.scopes[decl.scope].kind == yavs_sem::scope::ScopeKind::Process
             && matches!(&decl.kind, DeclKind::Object(o) if o.default.is_none()))
         .then(|| {
-            let path = &db.sources.get(decl.span.file).path;
-            yavs_logic::start::var_salt(path, &decl.name.to_string(), decl.span.start)
+            let (file, line, col) = db.sources.get(decl.span.file).site(decl.span.start);
+            yavs_logic::start::var_salt(file, &decl.name.to_string(), line, col)
         });
         let saved = std::mem::replace(&mut self.unset, unset);
         let r = self.var_init_in(d, shape, slot, shared);

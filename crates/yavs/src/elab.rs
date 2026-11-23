@@ -445,6 +445,15 @@ pub(crate) fn parse_fill(s: &str) -> Result<yavs_logic::start::Fill, String> {
     ))
 }
 
+/// `0`, `1` or `random`: what of a start value the compiled code and its cache key may depend on.
+fn fill_kind(f: yavs_logic::start::Fill) -> &'static str {
+    match f {
+        yavs_logic::start::Fill::Zero => "0",
+        yavs_logic::start::Fill::One => "1",
+        yavs_logic::start::Fill::Random(_) => "random",
+    }
+}
+
 /// A seed for `random` without one: different in each run.
 fn fresh_seed() -> u64 {
     let t = std::time::SystemTime::now()
@@ -1648,9 +1657,9 @@ fn prepare(
             a.cycle_exact_meta,
         ) + &format!(
             "|{:?}|{:?}",
-            a.init_unset
-                .map(|f| f.text().split(':').next().map(str::to_string)),
-            a.init_x.map(|f| f.text()),
+            // The kind only: a seed is read when the run starts (A68).
+            a.init_unset.map(fill_kind),
+            a.init_x.map(fill_kind),
         );
         // `--wave` exports what it records (A52), so its selection is part of the key.
         let part = match &a.wave {

@@ -60,14 +60,27 @@ pub fn salt(parts: &[&[u8]]) -> u64 {
     h
 }
 
-/// The salt of a variable declaration: its file, name and place ([`inst_salt`] adds the process
-/// instance). Cycle mode and the normal mode give a vector or scalar variable the same bits.
-pub fn var_salt(path: &str, name: &str, start: u32) -> u64 {
+/// The salt of the metavalue literal at a source site (`yavs_diag::SourceFile::site`): file name,
+/// line and byte column, so every mode, tier, checkout and system draws the same bits for it.
+pub fn lit_salt(file: &str, line: u32, col: u32) -> u64 {
+    salt(&[
+        b"lit",
+        file.as_bytes(),
+        &line.to_le_bytes(),
+        &col.to_le_bytes(),
+    ])
+}
+
+/// The salt of a variable declaration: its name and source site, as [`lit_salt`]'s
+/// ([`inst_salt`] adds the process instance). Cycle mode and the normal mode give a vector or
+/// scalar variable the same bits.
+pub fn var_salt(file: &str, name: &str, line: u32, col: u32) -> u64 {
     salt(&[
         b"var",
-        path.as_bytes(),
+        file.as_bytes(),
         name.to_lowercase().as_bytes(),
-        &start.to_le_bytes(),
+        &line.to_le_bytes(),
+        &col.to_le_bytes(),
     ])
 }
 

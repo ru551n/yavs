@@ -526,13 +526,15 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   - `--init-unset=0|1|random[:SEED]` and `--init-x=0|1|random[:SEED]` (user decisions A52, A53,
     2026-11-21): the start value of the `std_ulogic` elements of signals, ports and process variables
     without an initial value, and the value of the metavalue literals the design below the top-level
-    unit assigns (user guide "Start values and metavalue literals" in `docs/cli.rst`). Each prints
+    unit assigns (user guide `docs/start-values.rst`). Each prints
     ``note: `--init-unset=V`: N signal elements ...; repeat the run with `--init-unset=V` `` (and the
     same for `--init-x`) on stderr at the start, with `random` as `random:SEED`. `random` without a
     seed draws one from the time and the process id, the only time-based seed of a run (user decision
-    A62, 2026-11-22: allowed; in cycle mode such a `--init-x` is part of the region's cache key, so each
-    such run misses the cycle-mode cache and compiles its region again); a bit is a
-    function of the seed, the object and the element, so tiers, `--threads` and cycle mode agree. A
+    A62, 2026-11-22: allowed). The seed is read when the run starts and is in no compiled code and no
+    cache key: runs that differ in the seed share the code and the caches (A68). A bit is a function of
+    the seed and a stable place (a signal's path and element; a variable's name and source site with its
+    process's path; a literal's source site: file name, line, byte column), so tiers, `--threads`,
+    `--shuffle`, cycle mode, warm and cold caches, checkouts and systems agree. A
     wrong value is a usage error (exit 2) naming the closest valid one. Without the options nothing
     changes.
 - `--no-collapse-ports` (`run` and `elab`): keep every port its own signal. By default the

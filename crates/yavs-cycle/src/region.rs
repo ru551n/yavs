@@ -247,9 +247,13 @@ pub(crate) fn two_state() -> bool {
     !exact_meta()
 }
 
-/// What a metavalue literal of a two-state region becomes: `--init-x`, else 0.
+/// What a metavalue literal of a two-state region becomes: `--init-x`, else 0. Only the kind:
+/// a `random` seed is a run-time input, never part of the code or its key (A68, `Body::rands`).
 pub(crate) fn meta_fill() -> yavs_logic::start::Fill {
-    yavs_logic::start::x().unwrap_or(yavs_logic::start::Fill::Zero)
+    match yavs_logic::start::x() {
+        Some(yavs_logic::start::Fill::Random(_)) => yavs_logic::start::Fill::Random(0),
+        f => f.unwrap_or(yavs_logic::start::Fill::Zero),
+    }
 }
 
 /// `YAVS_CYCLE_EXACT_CLOCKS=1` (tests and gates only): a clock copied by assignment stays a
@@ -485,6 +489,15 @@ fn int_of(db: &Db, e: &Elaborated, pi: usize, x: ExprId) -> Option<i64> {
     .as_int()
 }
 
+/// The start value of element `i` of leaf `l` as the analysis may use it: none (unknown) where
+/// `--init-unset=random` drew it, so the cached analysis holds for every seed (A68).
+fn start_char(e: &Elaborated, l: LeafId, i: u32) -> Option<char> {
+    if e.drawn.contains(&l) {
+        return None;
+    }
+    (e.nets.leaf(l).init.as_logic()).map(|v| v.get(i as usize).to_char())
+}
+
 /// The copy chain of clock `c` (`c` first): each a copy of the next, ending where a copy's start
 /// value would give it an edge at time 0 that its source does not have (`'event and c = '1'`
 /// sees one from any other start, `rising_edge` only from `'0'` or `'L'`), and before a source
@@ -495,9 +508,7 @@ fn copy_chain(
     made: &BTreeSet<LeafId>,
     c: Clock,
 ) -> Vec<(LeafId, u32)> {
-    let init = |(l, i): (LeafId, u32)| {
-        (e.nets.leaf(l).init.as_logic()).map(|v| v.get(i as usize).to_char())
-    };
+    let init = |(l, i): (LeafId, u32)| start_char(e, l, i);
     let (on, off) = if c.rising {
         (['1', 'H'], ['0', 'L'])
     } else {
@@ -536,7 +547,7 @@ fn same_clocks(
         .flat_map(|&pi| e.procs[pi].drivers.iter().map(|&d| e.nets.drivers[d].leaf))
         .collect();
     let history = |x: &El| e.bare.get(x.0.index()) != Some(&true);
-    let init = |x: El| (e.nets.leaf(x.0).init.as_logic()).map(|v| v.get(x.1 as usize).to_char());
+    let init = |x: El| start_char(e, x.0, x.1);
     let mut to: BTreeMap<usize, (Result<El, Sib>, Vec<El>)> = BTreeMap::new();
     for (&pi, (_, b)) in taken.iter() {
         let Some(c) = b.clock else { continue };

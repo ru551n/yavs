@@ -1188,6 +1188,7 @@ fn built(
     let mut uninit = 0u64;
     let mut useed: Vec<(u32, u32)> = Vec::new();
     let mut unset: Vec<(u32, u32, u64)> = Vec::new();
+    let mut rands: Vec<(u32, u32, u64)> = Vec::new();
     // The bits clocked members keep between edges (word, bits): their signals' elements, their
     // variables and their memory writes' words; only of members whose comparisons the second
     // image may decide otherwise than the normal mode (`Body::keep`).
@@ -1242,6 +1243,7 @@ fn built(
             (c, at.clone(), *pi)
         }));
         uninit += b.uninit;
+        rands.extend(b.rands.iter().map(|&(w, c, s)| (base + w, c, s)));
         let clocked = b.kind == Kind::Clocked;
         if clocked {
             state.extend(b.vars.iter().map(|&(w, c)| (base + w, c)));
@@ -2128,6 +2130,7 @@ fn built(
         uninit,
         useed,
         unset,
+        rands,
         state,
         regs: reg_runs(regs),
         oth: region::exact_meta().then_some(oth as usize),
@@ -2194,6 +2197,9 @@ pub(crate) struct Built {
     /// The `std_ulogic` leaves of clocked variables without an initial value (`Body::unset`).
     #[serde(default)]
     unset: Vec<(u32, u32, u64)>,
+    /// The slots of `--init-x=random` literal bits (`Body::rands`), filled when the run starts.
+    #[serde(default)]
+    rands: Vec<(u32, u32, u64)>,
     state: Vec<(u32, u32)>,
     /// The bits clocked members keep between edges: runs of words (first, count, bits).
     regs: Vec<(u32, u32, u64)>,
@@ -2264,6 +2270,7 @@ fn finish(
     let (words, init, clocks_only, err, log, uninit) =
         (b.words, b.init, b.clocks_only, b.err, b.log, b.uninit);
     let (useed, state, unset) = (Arc::new(b.useed), Arc::new(b.state), Arc::new(b.unset));
+    let rands = b.rands;
     let two_valued = b.two_valued;
     let regs = Arc::new(b.regs);
     // The second image of `--cycle-exact-meta` ('U' at start, A38): its region process is the
@@ -2329,6 +2336,10 @@ fn finish(
         let mut img = vec![0u64; words];
         for &(w, v) in &init {
             img[w as usize] = v;
+        }
+        // The seed is read here, at the start of each run, never compiled in (A68).
+        if let Some(f) = yavs_logic::start::x() {
+            rt::fill(&mut img, &rands, f);
         }
         let rail_cfg = match &rail {
             Some(Ok(c)) => *c,

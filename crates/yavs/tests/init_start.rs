@@ -579,3 +579,165 @@ fn design_asserts_compare_with_the_init_x_bits_in_a_two_state_region() {
         }
     }
 }
+
+/// A run with extra environment variables: its notes as [`run`] gives them, and stderr.
+fn run_env(dir: &Path, env: &[(&str, &str)], flags: &[&str], top: &str) -> (Vec<String>, String) {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_yavs"));
+    c.current_dir(dir)
+        .env("YAVS_STD_CACHE", "off")
+        .envs(env.iter().copied())
+        .args(["--color", "never", "run", "--work=work:lib"])
+        .args(flags)
+        .arg(top);
+    let o = c.output().expect("run yavs");
+    let lines = String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .filter(|l| l.starts_with("** Note: "))
+        .filter_map(|l| l.split_once(": W=").map(|(_, r)| format!("W={r}")))
+        .collect();
+    (lines, String::from_utf8_lossy(&o.stderr).into_owned())
+}
+
+fn strs(f: &[String]) -> Vec<&str> {
+    f.iter().map(String::as_str).collect()
+}
+
+/// The files of a directory tree, by path and size.
+fn files(dir: &Path) -> std::collections::BTreeSet<(std::path::PathBuf, u64)> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                todo.push(p);
+            } else {
+                out.insert((p.clone(), std::fs::metadata(&p).unwrap().len()));
+            }
+        }
+    }
+    out
+}
+
+/// A68: the seed is a run-time input. A second seed reuses every cache entry the first one made
+/// (nothing compiled again, the cycle analysis and region from the cache) and gives the values of
+/// a cold run with that seed.
+#[test]
+fn a_second_seed_reuses_the_compiled_code() {
+    let dir = tempdir("initreuse");
+    analyze(&dir, "initx.vhd");
+    for mode in [&["--tier=interp"][..], &["--cycle"][..]] {
+        let seed = |s: u32| {
+            let mut f: Vec<String> = mode.iter().map(|m| m.to_string()).collect();
+            f.push(format!("--init-x=random:{s}"));
+            f.push(format!("--init-unset=random:{s}"));
+            f
+        };
+        let (first, _) = run_env(&dir, &[], &strs(&seed(1)), "initx");
+        let before = files(&dir.join("lib"));
+        let stats = [("YAVS_CYCLE_STATS", "1")];
+        let (second, err) = run_env(&dir, &stats, &strs(&seed(2)), "initx");
+        assert_eq!(
+            files(&dir.join("lib")),
+            before,
+            "{mode:?}: a new seed wrote to the cache"
+        );
+        if mode == ["--cycle"] {
+            for hit in ["analysis from the cache", "region from the cache"] {
+                assert!(err.contains(&format!("cycle stats: {hit}")), "{hit}: {err}");
+            }
+        }
+        let (cold, _) = run_env(
+            &dir,
+            &[],
+            &[&strs(&seed(2))[..], &["--no-cache"]].concat(),
+            "initx",
+        );
+        assert_eq!(second, cold, "{mode:?}");
+        assert_eq!(second.len(), 15, "{mode:?}: {err}");
+        assert_ne!(first, second, "{mode:?}: the seed changed nothing");
+    }
+}
+
+/// A68: the bits depend on a source site by file name, line and column, so a checkout elsewhere,
+/// in a directory of another depth and with CRLF line ends, gives the same values.
+#[test]
+fn random_bits_do_not_depend_on_the_checkout() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/cycle");
+    let mut seen: Option<Vec<String>> = None;
+    for (sub, crlf) in [("a", false), ("b/c/d", true)] {
+        let dir = tempdir("initcheckout");
+        let at = dir.join(sub);
+        std::fs::create_dir_all(&at).unwrap();
+        for name in ["initunset.vhd", "initx.vhd"] {
+            let text = std::fs::read_to_string(src.join(name))
+                .unwrap()
+                .replace("\r\n", "\n");
+            let text = if crlf {
+                text.replace('\n', "\r\n")
+            } else {
+                text
+            };
+            std::fs::write(at.join(name), text).unwrap();
+            let file = format!("{sub}/{name}");
+            let o = yavs(&dir, &["analyze", "--std=2008", "--work=work:lib", &file]);
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        }
+        let mut lines = Vec::new();
+        for (top, mode) in [
+            ("initunset", &[][..]),
+            ("initx", &[][..]),
+            ("initx", &["--cycle"][..]),
+        ] {
+            let mut f = vec!["--no-cache", "--init-unset=random:7", "--init-x=random:7"];
+            f.extend(mode);
+            let (l, _, err) = run(&dir, &f, top);
+            assert!(!l.is_empty(), "{err}");
+            lines.extend(if top == "initx" { no_mask(&l) } else { l });
+        }
+        match &seen {
+            None => seen = Some(lines),
+            Some(s) => assert_eq!(&lines, s, "{sub} with CRLF line ends"),
+        }
+    }
+}
+
+/// A68: the drawn start of a copied clock decides whether it has an edge at time 0. Cycle mode
+/// reaches the normal mode's count for each seed, also where its cache holds the analysis of a
+/// seed whose start gave the other count.
+#[test]
+fn a_drawn_clock_start_keeps_the_cached_analysis_right() {
+    let dir = tempdir("initclk");
+    analyze(&dir, "initclk.vhd");
+    // One seed of each start: a copy that starts at '0' counts the edge at time 0.
+    let mut by: std::collections::BTreeMap<String, u32> = Default::default();
+    for s in 1..64 {
+        let opt = format!("--init-unset=random:{s}");
+        let (l, code, err) = run(&dir, &["--no-cache", "--tier=interp", &opt], "initclk");
+        assert_eq!((code, l.len()), (0, 1), "{err}");
+        by.entry(l[0].clone()).or_insert(s);
+        if by.len() == 2 {
+            break;
+        }
+    }
+    assert_eq!(
+        by.keys().cloned().collect::<Vec<_>>(),
+        ["W=1 n=3", "W=1 n=4"],
+        "both starts among the seeds"
+    );
+    let seeds: Vec<(String, u32)> = by.into_iter().collect();
+    for order in [[0, 1], [1, 0]] {
+        let dir = tempdir("initclkw");
+        analyze(&dir, "initclk.vhd");
+        for &k in &order {
+            let (want, s) = &seeds[k];
+            let opt = format!("--init-unset=random:{s}");
+            let (l, code, err) = run(&dir, &["--cycle", &opt], "initclk");
+            assert_eq!(
+                (code, l.join("")),
+                (0, want.clone()),
+                "seed {s} after {order:?}: {err}"
+            );
+        }
+    }
+}

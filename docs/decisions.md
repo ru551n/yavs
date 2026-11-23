@@ -18080,7 +18080,18 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
 - **Confirmed by the user (A62, 2026-11-22).** (1) In a two-state region a metavalue literal below the top-level
   unit takes the `--init-x` value everywhere, compares, `case` choices and asserts included: `x = 'X'` is true where
   `x` is 0, `assert x /= 'X'` of the design fails there. (2) The processes of the top-level unit keep their
-  metavalue compares. (3) `random` without a seed is time-based and printed; in cycle mode it misses the region
-  cache in every run (`docs/cli-contract.md`). (4) A variable's bits come from its declaration and the instance
+  metavalue compares. (3) `random` without a seed is time-based and printed (its cache miss in cycle mode is gone,
+  A68 below). (4) A variable's bits come from its declaration and the instance
   path of its process (`start::inst_salt`), a literal's from its place only. (5) A `'-'` assigned in a default
   branch is replaced like `'U'`, `'X'` and `'W'`.
+- **Seeds are run-time inputs, fully deterministic (user, A68, 2026-11-23).** (1) The seed of `random` never enters
+  compiled code or a cache key; only the kind (`0`, `1`, `random`) does. Cycle mode puts the bits of a random literal
+  in image slots no operation writes (`Body::rands`), filled when the run starts (`rt::fill`), and its analysis
+  treats a start value drawn by `--init-unset=random` as unknown (`Elaborated::drawn`, `region::start_char`), so
+  runs that differ in the seed share the code and every cache. (2) One seed gives the same values in every mode,
+  tier, thread count, process order and cache state, and on every system: the bits come only from the seed and a
+  stable place: a signal's path and element, a variable's name and source site with its process's path, a
+  literal's source site. A source site is the file name without its directory, the line and the byte column
+  (`SourceFile::site`): checkout location, path separators and line ends change nothing. One salt per literal for
+  both modes (`start::lit_salt`). Owner, same day: a literal's bits stay per source site (one for every instance);
+  subprogram, protected, shared and allocated variables stay outside `--init-unset`.

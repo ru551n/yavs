@@ -295,11 +295,8 @@ impl<'a> Fx<'a, '_> {
     fn x_value(&mut self, id: ExprId, v: V) -> R<V> {
         let db = self.db;
         let e = &db.exprs[id];
-        let salt = yavs_logic::start::salt(&[
-            b"x",
-            db.sources.get(e.span.file).path.as_bytes(),
-            &e.span.start.to_le_bytes(),
-        ]);
+        let (file, line, col) = db.sources.get(e.span.file).site(e.span.start);
+        let salt = yavs_logic::start::lit_salt(file, line, col);
         let salt = self.int(salt as i64);
         match v {
             V::S(code) => match self.native(

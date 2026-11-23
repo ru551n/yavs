@@ -13315,6 +13315,12 @@ one claimed core of the second CCD, `perf stat` user counts; host load 13 to 43,
   further behind it takes a new heap tag as before. The process record keeps both epochs (`TierState` words: identity, process heap epoch,
   heap tag and machine tag in one word (tags are below 2^31), shared heap epoch; still four words, the fifth cache line of the machine is full).
   Why: an object's host bytes move or go only at its own deallocation or edit (objects never move otherwise), so the other entries stay true.
+  **Amended (agent, 2026-11-23): `HEAP_LOG` is 256**, for every heap. Every process frees in the shared heap, so under `--tier=auto` a
+  test runner's message passing resumed its processes more than 16 shared changes behind for nearly every new heap tag (counted with
+  temporary counters: the overflow, not a full table or a missing record, was what dropped the objects there), and its next `Deref`s
+  missed into the runtime. Within 256 the walk drops only the logged slots; further behind a new tag still drops all. One length for
+  every heap keeps the log inline (a boxed or per-heap length cost a load on every refresh of the view, measurable on forced compiled
+  runs); a process heap's log costs a kilobyte of memory, and a private heap never fell behind by more than 16 in the measured runs.
 - **Decision: `call_on` begins with the calling machine's record** (`TierHost::tier_state`, kept again with `set_tier_state` after the call,
   `TierState::at` left alone): the record names the machine's tags and epochs whoever ran in between.
 - **Decision (#797): `Worker::publish` asks `Worker::ready`**, a walk over the native callees that stops at a callee that is `left` or was

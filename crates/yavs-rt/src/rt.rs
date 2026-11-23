@@ -5772,7 +5772,7 @@ mod tests {
     fn a_heap_change_drops_only_the_slots_it_names() {
         let (h, s) = (space::HEAP, space::SHARED_HEAP);
         let mut m = Mem::new(TierFrame::default());
-        let (mut log, mut slog) = ([0u32; HEAP_LOG], [0u32; HEAP_LOG]);
+        let (mut log, mut slog) = ([0u32; HEAP_LOG], vec![0u32; HEAP_LOG.max(256)]);
         let mut r = TierState::default();
         activate(&mut m, rt(1, 1), 0, &mut r);
         for k in 1..=4 {
@@ -5794,10 +5794,19 @@ mod tests {
         activate(&mut m, rt(1, 1), 3, &mut r);
         assert!(entered(&m, h, 3) && !entered(&m, h, 4) && !entered(&m, h, 1));
         assert!(entered(&m, s, 1) && entered(&m, s, 4));
+        // 200 shared changes on (a test runner's message passing): only the named slots go.
+        for (e, x) in slog.iter_mut().enumerate().take(202).skip(2) {
+            *x = 100 + e as u32;
+        }
+        slog[150] = 1;
+        m.fr.heap_log = [log.as_ptr(), slog.as_ptr()];
+        m.fr.shared_epoch = 201;
+        m.forget();
+        assert!(!entered(&m, s, 1) && entered(&m, s, 2) && entered(&m, s, 4) && entered(&m, h, 3));
         // More changes than the log holds: nothing is kept.
         m.fr.heap_epoch = 4 + HEAP_LOG as u64;
         m.forget();
-        assert!(!entered(&m, h, 3) && !entered(&m, s, 1));
+        assert!(!entered(&m, h, 3) && !entered(&m, s, 2));
     }
 
     /// When the tags run out the table starts again empty under a new identity, so a record

@@ -36,8 +36,16 @@ pub const SHARED: u8 = 2;
 const MAX_INDEX: u32 = (1 << 24) - 1;
 
 /// Epoch changes a heap remembers the slot of ([`Heap::log`]): a holder of host addresses that
-/// is at most this many changes behind drops only the objects of those slots.
-pub const HEAP_LOG: usize = 16;
+/// is at most this many changes behind drops only the objects of those slots. Every process
+/// frees in the shared heap, so one that resumes is often more than 16 changes behind there (a
+/// test runner's message passing: up to a few hundred). ponytail: one length for every heap
+/// (a kilobyte each, never walked further than the changes); a shorter private log if the
+/// machines' memory matters.
+pub const HEAP_LOG: usize = 256;
+
+fn no_log() -> [u32; HEAP_LOG] {
+    [0; HEAP_LOG]
+}
 
 /// Quarantined slots that make an in-activation [`Heap::recycle`] due, at least.
 const RECLAIM_MIN: usize = 4096;
@@ -102,7 +110,7 @@ pub struct Heap {
     epoch: u64,
     slots: Vec<Slot>,
     /// The slot of each of the last [`HEAP_LOG`] epoch changes, at `epoch % HEAP_LOG`.
-    #[serde(skip)]
+    #[serde(skip, default = "no_log")]
     log: [u32; HEAP_LOG],
     free: Vec<u32>,
     /// Handles that are roots for good ([`Heap::seal`]).

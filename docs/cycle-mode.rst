@@ -90,8 +90,8 @@ and more processes join:
 
 Without ``--two-state`` cycle mode keeps the metavalues the testbench would see (:ref:`cycle-contract`). The values
 come from ``--two-state`` alone, the same for ``--cycle``, ``--cycle-strict`` and ``--cycle-report``;
-``--cycle-strict`` only changes what happens to a process that cannot join. ``--two-state`` without one of the three
-is not implemented yet (E0199).
+``--cycle-strict`` only changes what happens to a process that cannot join. ``--two-state`` without them makes the
+design below the top-level unit two-state in the event kernel, with the same values.
 
 .. note::
 
@@ -402,8 +402,8 @@ With ``--two-state`` a cycle-based process computes with ``0`` and ``1`` only. W
 computes with them too, but the region keeps what the testbench would see of the metavalues: the processes that
 would hide one stay out (below), and the start values are followed on a second set of values.
 
-* A signal or variable without an initial value starts as ``0``, not ``'U'``. The testbench still reads ``'U'`` at
-  time 0, delta 0, and ``0`` from the next delta on.
+* A signal or variable below the top-level unit without an initial value starts as ``0``, not ``'U'``, from time 0
+  on, as in a normal-mode run with ``--two-state``.
 * ``--init-unset`` and ``--init-x`` set these start values and literals in both modes (:doc:`start-values`).
 * Without ``--two-state`` the region follows those start values for a while: it runs the same code a second
   time on a second set of values, where every ``'U'`` at the start (and every metavalue that reaches an input in that
@@ -561,13 +561,13 @@ would hide one stay out (below), and the start values are followed on a second s
 .. code-block:: text
 
     cycle mode: 2 of 4 processes run cycle-based, 2 in the event kernel (see --cycle-report)
-    ** Note: 0fs+0: at 0 ns:  ticks=UUUU
+    ** Note: 0fs+0: at 0 ns:  ticks=0000
         Process tb_metavalue.main
     ** Note: 1000000fs+0: at 1 ns:  ticks=0000
         Process tb_metavalue.main
     ** Note: 17000000fs+0: at 17 ns: eq=1 with 'X' on a
         Process tb_metavalue.main
-    cycle mode: 13 metavalue elements read as 0 (9 at initialisation, 4 at changes of the region's inputs)
+    cycle mode: 4 metavalue elements read as 0 (0 at initialisation, 4 at changes of the region's inputs)
     ** Note: 17000000fs+0: FINISH called with status 0
 
 The first block is the normal mode, the second ``--cycle --two-state``. The comparison of ``a`` with ``b`` is true in
@@ -1180,8 +1180,8 @@ Troubleshooting
 3. Does the testbench read a value a delta after the edge, or depend on delta numbers? Sample later. Does the
    design copy a clock by an assignment and read registers of the source on the copy? See
    :ref:`cycle-clock-copies`.
-4. Does the testbench read a signal that has no initial value at time 0? It reads ``'U'`` at delta 0 in both modes
-   and ``0`` from the next delta on in cycle mode.
+4. Does the testbench read a signal of the design that has no initial value? With ``--two-state`` it starts at
+   ``0`` in both modes; compare with a normal-mode run with ``--two-state``.
 
 If none of these explains it, it is a bug in cycle mode: a wrong result is never an accepted loss. Report it with
 the smallest design that shows it.

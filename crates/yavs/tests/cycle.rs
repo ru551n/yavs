@@ -338,7 +338,7 @@ fn external_names_export_only_what_they_name() {
     ];
     for (d, top, sum, members, exported) in cases {
         for t in tiers() {
-            let (normal, _) = run(d, &t, top);
+            let (normal, _) = run(d, &[&t[..], &["--two-state"]].concat(), top);
             assert!(
                 normal.last().is_some_and(|l| l.ends_with(sum)),
                 "{t:?} {normal:?}"
@@ -4192,7 +4192,13 @@ fn a_dont_care_aggregate_of_a_generic_length_matches_anything() {
                 f.push("--two-state");
             }
             let (cycle, err) = run(&dir, &f, "matchagg");
-            assert_eq!(cycle, normal, "{f:?}: {err}");
+            // The two-state contract against the normal mode's two-state run.
+            let want = if exact {
+                normal.clone()
+            } else {
+                run(&dir, &["--tier=interp", "--two-state"], "matchagg").0
+            };
+            assert_eq!(cycle, want, "{f:?}: {err}");
             // The first member of each instance joins, the one with the mixed aggregate stays out.
             assert!(err.contains("cycle mode: 5 of"), "{f:?}: {err}");
         }
@@ -4515,7 +4521,7 @@ fn forces_keep_out_only_the_drivers_of_what_they_force() {
         ];
         for (d, top, flags, n, members) in cases {
             for t in tiers() {
-                let (normal, _) = run(d, &[&t[..], flags].concat(), top);
+                let (normal, _) = run(d, &[&t[..], flags, &["--two-state"]].concat(), top);
                 let (cycle, err) = run(
                     d,
                     &[&t[..], flags, &["--cycle", "--two-state"]].concat(),
@@ -4531,7 +4537,8 @@ fn forces_keep_out_only_the_drivers_of_what_they_force() {
                 if top == "fsc_ext_tb" {
                     let ex = [&t[..], &["--cycle"]].concat();
                     let (exact, err) = run(d, &ex, top);
-                    assert_eq!(exact, normal, "width {w} {top} {t:?}\n{err}");
+                    let (four, _) = run(d, &[&t[..], flags].concat(), top);
+                    assert_eq!(exact, four, "width {w} {top} {t:?}\n{err}");
                     assert!(err.contains("cycle mode: 0 of 9 processes"), "{err}");
                     assert!(
                         err.contains("without `--two-state` no process joins"),
@@ -5443,6 +5450,8 @@ fn asserts_and_reports_of_the_top_level_unit_are_evaluated() {
         }
         assert!(!normal.contains("never"), "{normal}");
         assert_eq!(code, Some(1), "{normal}");
+        // The two-state contract against the normal mode's two-state run.
+        let (code, normal, _) = go(&["--two-state"], "cycle_topcheck");
         let (stop_code, stop, _) = go(&[], "cycle_topstop");
         assert!(stop.contains("q reached 5"), "{stop}");
         for mode in ["--cycle", "--cycle-strict"] {
@@ -7099,7 +7108,7 @@ fn logic_feeding_a_process_that_counts_its_runs_stays_out() {
             &with_width(include_str!("cycle/runcount.vhd"), w),
         );
         for t in tiers() {
-            let (normal, _) = run(&dir, &t, "cycle_runcount");
+            let (normal, _) = run(&dir, &[&t[..], &["--two-state"]].concat(), "cycle_runcount");
             let (cycle, err) = run(
                 &dir,
                 &[&t[..], &["--cycle", "--two-state"]].concat(),

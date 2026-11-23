@@ -286,9 +286,23 @@ impl<'a> Fx<'a, '_> {
                 "std_match" | "?=" | "?/="
             )
         {
-            for a in args.iter() {
-                if let Actual::Expr(x) = a.actual {
-                    self.two_dash.insert(x);
+            // The operands, and the elements of an aggregate or qualified operand
+            // (`(d'range => '-')`).
+            let mut todo: Vec<ExprId> = args
+                .iter()
+                .filter_map(|a| match a.actual {
+                    Actual::Expr(x) => Some(x),
+                    _ => None,
+                })
+                .collect();
+            while let Some(x) = todo.pop() {
+                self.two_dash.insert(x);
+                match &self.db.exprs[x].kind {
+                    ExprKind::Aggregate { assocs, .. } => {
+                        todo.extend(assocs.iter().map(|a| a.value))
+                    }
+                    ExprKind::Qualified { operand, .. } => todo.push(*operand),
+                    _ => {}
                 }
             }
         }

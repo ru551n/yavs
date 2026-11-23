@@ -837,6 +837,11 @@ Compiled tiers: Cranelift
      - ``all``
      - only processes large enough to repay the comparison
      - ``run``
+   * - ``YAVS_TWO_CHECK``
+     - For testing only. Set: under ``--two-state`` the interpreter checks that every operand of a logic operation of two-state code is ``0`` or ``1`` and stops with an internal error if not (debug builds always check).
+     - ``1``
+     - unset
+     - ``run``
    * - ``YAVS_CYCLE_IMPORT_CHECK``
      - For testing only. ``1``: a cycle region (``--cycle``), which reads only the inputs that changed since its last wake, reads all of them again after each wake and stops with an internal error if one differs.
      - ``1``

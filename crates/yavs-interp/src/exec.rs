@@ -135,7 +135,8 @@ pub(crate) fn rt_err<T>(m: impl Into<String>) -> R<T> {
 }
 
 /// `--two-state` invariant check (debug builds, or `YAVS_TWO_CHECK=1`): every logic operand of
-/// two-state code is `0` or `1`.
+/// two-state code is `0` or `1` (in a function that inlined nothing: four-state code inlined into
+/// it keeps its own values).
 fn two_check() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| cfg!(debug_assertions) || std::env::var_os("YAVS_TWO_CHECK").is_some())
@@ -11620,7 +11621,7 @@ impl Machine {
             }
             Inst::LogicOp { op, dst, a, b, n } => {
                 let n = self.r(n);
-                if f.two_state && two_check() && op != LOp::To01 {
+                if f.two_state && f.via.is_empty() && two_check() && op != LOp::To01 {
                     self.two_clean(self.r(a), n)?;
                     if !op.unary() {
                         self.two_clean(self.r(b), n)?;
@@ -11661,7 +11662,7 @@ impl Machine {
                 signed,
             } => {
                 let n = self.r(n);
-                if f.two_state && two_check() {
+                if f.two_state && f.via.is_empty() && two_check() {
                     self.two_clean(self.r(a), n)?;
                     self.two_clean(self.r(b), n)?;
                 }

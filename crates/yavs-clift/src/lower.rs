@@ -2334,6 +2334,9 @@ struct Held {
 }
 
 struct Gen<'a> {
+    /// `--two-state`: the instruction being lowered is two-state code's own (not one inlined from
+    /// four-state code), so its logic operands are `0` or `1`: plane 0 holds the value.
+    two: bool,
     b: FunctionBuilder<'a>,
     /// The program (the constant pool: descriptors `const_dim` reads at compile time).
     prog: &'a Program,
@@ -3212,6 +3215,7 @@ fn gen_func(
         }
     }
     let mut g = Gen {
+        two: false,
         prog,
         known: base_known.clone(),
         iv: vec![None; f.reg_ty.len()],
@@ -3444,6 +3448,7 @@ fn gen_func(
     };
     for (i, &inst) in f.code.iter().enumerate() {
         let pc = i as u32;
+        g.two = f.two_state && f.via.get(i).is_none_or(|&v| v == 0);
         if bbs[i].is_some() {
             // A native frame's first block stays: `all` would leave every call at once.
             cheap_now = cheap.as_ref().is_some_and(|c| c.has(pc, nth)) && !(native && nth == 0);
@@ -8953,6 +8958,11 @@ impl Gen<'_> {
     /// `0 1 L H` (and, with `pure`, no `L` or `H`): `(n, bits, mask)`, taking `fb` for any other.
     fn small_operand(&mut self, r: &[Reg], pure: bool, fb: Block) -> (Value, Value, Value) {
         let (n, mask, w) = self.plane_operand(r, fb);
+        if self.two {
+            // Two-state code: every element is `0` or `1`, plane 0 holds the bits.
+            let bits = self.b.ins().band(w[0], mask);
+            return (n, bits, mask);
+        }
         let live = self.b.ins().band_not(w[1], w[3]);
         // `0 L`: plane 1 only; `1 H`: planes 0 and 1.
         let zero = self.b.ins().band_not(live, w[0]);
@@ -9082,6 +9092,12 @@ impl Gen<'_> {
         let a = self.ld(r[0]);
         let p = self.host(a, Some(r[0]), Op::C(0), Op::C(32), false, fb);
         let gf = self.gf;
+        if self.two {
+            // `0 1` only: plane 1 is the mask, planes 2 and 3 are zero.
+            let w0 = self.b.ins().load(I64, gf, p, 0);
+            let z = self.c64(0);
+            return (n, mask, vec![w0, mask, z, z]);
+        }
         let w: Vec<Value> = (0..4)
             .map(|k| self.b.ins().load(I64, gf, p, 8 * k))
             .collect();
@@ -9654,6 +9670,10 @@ impl Gen<'_> {
         dst: Option<Reg>,
     ) -> Result<(), String> {
         use yavs_ir::ieee::{ARRAY_REGS, Cmp, Form, Op, Opd, Shift, Syn, SynKind};
+        // A matching comparison of two-state code keeps the `'-'` of its literal operand.
+        if matches!(op, Op::Match | Op::MatchEq { .. } | Op::QCompare { .. }) {
+            self.two = false;
+        }
         let rs = ok(f.regs(args), "operand list out of range")?.to_vec();
         let d = ok(dst, "a native without a result")?;
         let layout = ok(ieee_layout(op), "not a native computed in place")?;
@@ -10599,6 +10619,33 @@ impl Gen<'_> {
         self.b.ins().band(nd, x[0])
     }
 
+    /// `--two-state`: `op` on the plane-0 words of `0 1` operands (bits above the length are
+    /// masked by the caller).
+    fn two_op(&mut self, op: yavs_ir::LOp, x: Value, y: Value) -> Value {
+        use yavs_ir::LOp::*;
+        let ins = self.b.ins();
+        match op {
+            And => ins.band(x, y),
+            Or => ins.bor(x, y),
+            Xor => ins.bxor(x, y),
+            Nand => {
+                let a = ins.band(x, y);
+                self.b.ins().bnot(a)
+            }
+            Nor => {
+                let a = ins.bor(x, y);
+                self.b.ins().bnot(a)
+            }
+            Xnor => {
+                let a = ins.bxor(x, y);
+                self.b.ins().bnot(a)
+            }
+            Not => ins.bnot(x),
+            // `ToX01`, `ToUx01` of `0 1` keep it.
+            _ => x,
+        }
+    }
+
     /// One block of `op`: planes 0 and 1 of the result (2 and 3 are zero).
     fn logic_block(&mut self, op: yavs_ir::LOp, x: [Value; 4], y: [Value; 4]) -> [Value; 2] {
         use yavs_ir::LOp::*;
@@ -10712,6 +10759,30 @@ impl Gen<'_> {
             let pd = self.host(dv, Some(dst), Op::C(0), Op::C(32), true, slow);
             let gf = self.gf;
             let zero = self.c64(0);
+            // Two-state code: plane 0 in, plane 0 and the constant planes out (`To01` reads
+            // values from outside, so it keeps the four planes).
+            if self.two && op != yavs_ir::LOp::To01 {
+                let x0 = self.b.ins().load(I64, gf, pa, 0);
+                let y0 = if unary {
+                    x0
+                } else {
+                    self.b.ins().load(I64, gf, pb, 0)
+                };
+                let r0 = self.two_op(op, x0, y0);
+                let mask = (u64::MAX >> (64 - k)) as i64;
+                let r0 = if k == 64 {
+                    r0
+                } else {
+                    self.b.ins().band_imm_s(r0, mask)
+                };
+                let m = self.c64(mask);
+                self.b.ins().store(gf, r0, pd, 0);
+                self.b.ins().store(gf, m, pd, 8);
+                self.b.ins().store(gf, zero, pd, 16);
+                self.b.ins().store(gf, zero, pd, 24);
+                self.join(join);
+                return;
+            }
             let (mut x, mut y) = ([zero; 4], [zero; 4]);
             for j in 0..4 {
                 x[j] = self.b.ins().load(I64, gf, pa, j as i32 * 8);
@@ -10774,17 +10845,28 @@ impl Gen<'_> {
             self.b.ins().iadd(pd, off),
         );
         let gf = self.gf;
-        let mut x = [zero; 4];
-        let mut y = [zero; 4];
-        for k in 0..4 {
-            x[k] = self.b.ins().load(I64, gf, qa, k as i32 * 8);
-            y[k] = if unary {
-                x[k]
+        let r = if self.two && op != yavs_ir::LOp::To01 {
+            // Two-state code: plane 0 in; plane 1 of the result is the mask.
+            let x0 = self.b.ins().load(I64, gf, qa, 0);
+            let y0 = if unary {
+                x0
             } else {
-                self.b.ins().load(I64, gf, qb, k as i32 * 8)
+                self.b.ins().load(I64, gf, qb, 0)
             };
-        }
-        let r = self.logic_block(op, x, y);
+            [self.two_op(op, x0, y0), self.c64(-1)]
+        } else {
+            let mut x = [zero; 4];
+            let mut y = [zero; 4];
+            for k in 0..4 {
+                x[k] = self.b.ins().load(I64, gf, qa, k as i32 * 8);
+                y[k] = if unary {
+                    x[k]
+                } else {
+                    self.b.ins().load(I64, gf, qb, k as i32 * 8)
+                };
+            }
+            self.logic_block(op, x, y)
+        };
         // The last block keeps its elements only.
         let base = self.b.ins().ishl_imm_s(i, 6);
         let rem = self.b.ins().isub(cnt, base);

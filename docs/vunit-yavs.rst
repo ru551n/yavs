@@ -53,11 +53,9 @@ as ``--name=value``.
        ``--yavs-debug`` or ``--yavs-interactive`` fails before yavs starts, naming both. Not passed
        to ``elab``. To see what would join, set ``yavs.sim_flags`` to ``["--cycle-report"]`` for one test with ``yavs.cycle`` ``"off"``: yavs prints the report and does not simulate, so that test fails. Without ``yavs.two_state`` cycle mode keeps the metavalues the testbench would see.
    * - ``yavs.two_state``
-     - Experimental. ``yavs run --two-state`` for ``True``: cycle mode on two-state values, metavalues read as ``'0'``
-       and no process kept out for one (faster, and more processes join). Needs ``yavs.cycle`` ``"on"`` or
-       ``"strict"``: with ``"off"`` the test fails before yavs starts, naming both (two-state values without cycle
-       mode are not implemented yet). Default ``False``; a value other than ``True`` or ``False`` is refused when it
-       is set. Not passed to ``elab`` (:doc:`cycle-mode`, :doc:`cli-reference`, ``--two-state``).
+     - Experimental. ``yavs run --two-state`` for ``True``: the design below the testbench holds only ``0`` and
+       ``1`` (metavalues it reads count as ``'0'``), with or without ``yavs.cycle``; in cycle mode no process is kept
+       out for a metavalue. Default ``False``; a value other than ``True`` or ``False`` is refused when it is set. Not passed to ``elab`` (:doc:`cycle-mode`, :doc:`cli-reference`, ``--two-state``).
    * - ``yavs.no_asserts``
      - ``yavs run --no-asserts`` for ``True``: the ``assert`` and ``report`` statements of the processes below the test
        bench entity are not evaluated, in the normal mode and in cycle mode alike. Below the test bench entity is

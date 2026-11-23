@@ -406,12 +406,9 @@ impl<'a> Fx<'a, '_> {
         // A literal, or a value read from outside for a matching comparison (a generic mask):
         // `yavs.two.lit` keeps its `'-'` (mode bit 0), a read maps metavalues to `0` (bit 1).
         if folded.is_some() || splat || (from_outside && dash) {
-            let salt = yavs_logic::start::salt(&[
-                b"lit",
-                db.sources.get(span.file).path.as_bytes(),
-                &span.start.to_le_bytes(),
-            ]);
-            let salt = self.int(salt as i64);
+            // The literal's source site, as `x_value` and cycle mode's region draw from (A68).
+            let (file, line, col) = db.sources.get(span.file).site(span.start);
+            let salt = self.int(yavs_logic::start::lit_salt(file, line, col) as i64);
             let mode = self.int(
                 i64::from(dash) | if from_outside { 2 } else { 0 } | if zkeep { 4 } else { 0 },
             );

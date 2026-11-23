@@ -142,7 +142,6 @@ fn two_state_maps_what_the_design_below_the_top_reads() {
 /// A random `--init-x`: the bits come from the seed at run time, the same in every tier and in
 /// cycle mode; another seed gives other bits.
 #[test]
-#[ignore = "until step 1's A68 literal identity lands: both modes then draw from one site salt"]
 fn a_random_init_x_gives_the_same_bits_in_both_modes() {
     let dir = tempdir("twostate-random");
     analyze(&dir, "twostate.vhd");

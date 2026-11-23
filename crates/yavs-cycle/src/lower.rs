@@ -5306,7 +5306,7 @@ impl Lx<'_> {
             let lit = v.lit.filter(|&k| k != LIT_MIXED);
             // `(others => 'X')` under `--init-x=random`: a bit of its own each element (A62),
             // the salt of the aggregate.
-            let rand = match (lit, self.meta_joins(), crate::region::meta_fill()) {
+            let rand = match (lit, self.meta_joins(), self.lit_fill()) {
                 (Some(_), true, f @ yavs_logic::start::Fill::Random(_)) => {
                     let bits = fill_bits(f, lit_salt(db, db.exprs[x].span), n);
                     self.lit_value(t.r, n, &bits);

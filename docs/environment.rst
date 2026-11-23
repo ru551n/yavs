@@ -798,7 +798,7 @@ Compiled tiers: Cranelift
      - unset
      - ``run``
    * - ``YAVS_CYCLE_EXACT_CLOCKS``
-     - For testing only: ``1`` keeps every clock copied by an assignment a clock of its own in a cycle region (``--cycle``), so its edges come a delta cycle after its source's as in the normal mode, and the logic between the two stays in the event simulation. The comparison gates and the fuzzer use it, with ``--cycle-exact-meta``, to compare cycle mode with the normal mode exactly. Another value is an error (E4104).
+     - For testing only: ``1`` keeps every clock copied by an assignment a clock of its own in a cycle region (``--cycle``), so its edges come a delta cycle after its source's as in the normal mode, and the logic between the two stays in the event simulation. The comparison gates and the fuzzer use it to compare cycle mode with the normal mode exactly. Another value is an error (E4104).
      - ``1``
      - unset
      - ``run``

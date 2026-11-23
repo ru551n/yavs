@@ -526,8 +526,8 @@ would hide one stay out (below), and the start values are followed on a second s
   An unused field of a record port that nothing drives is counted too; it changes nothing.
 * So a bug that shows as an ``'X'`` or a ``'U'`` in the normal mode (a register without reset, an
   unconnected input, a metavalue in a comparison) cannot show. A test that checks for it passes. Run such checks
-  in the normal mode. A process that compares with a metavalue literal joins and compares with ``--init-x``'s bits
-  (above) with ``--two-state``; without it it stays out, because a two-state value never equals the literal.
+  in the normal mode. A process that compares with a metavalue literal joins with ``--two-state``, where the
+  comparison is false (above); without it it stays out, because a two-state value never equals the literal.
 
 ``metavalue.vhd`` shows two of these: ``ticks`` has no initial value and an ``'X'`` reaches a comparison.
 

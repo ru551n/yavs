@@ -38,9 +38,11 @@ CRASH = re.compile(r"E9999|this is a bug in yavs|panicked")
 
 
 def exact(on):
-    """Run every cycle run under the exact rules (`--contract exact`) or the two-state contract."""
-    global CYCLE
+    """Run every cycle run under the exact rules (`--contract exact`) or the two-state contract, whose
+    reference is the normal mode with `--two-state` (the design below the top two-state there too)."""
+    global CYCLE, NORMAL
     CYCLE = D.YAVS.replace(CYC, "--cycle " + ("" if on else TWO + " ") + CYC)
+    NORMAL = D.YAVS.replace(CYC, ("" if on else TWO + " ") + CYC)
     if on:
         os.environ["YAVS_CYCLE_EXACT_CLOCKS"] = "1"
     else:
@@ -569,7 +571,7 @@ def selftest():
     exact(True)
     assert TWO not in CYCLE and os.environ.get("YAVS_CYCLE_EXACT_CLOCKS") == "1"
     exact(False)
-    assert TWO in CYCLE and "YAVS_CYCLE_EXACT_CLOCKS" not in os.environ
+    assert TWO in CYCLE and TWO in NORMAL and "YAVS_CYCLE_EXACT_CLOCKS" not in os.environ
     # The contract classes: each explains only its own shape, one way.
     assert meta_pair("q=ZZ x='U' h='H'", "q=3F x='0' h='1'") and meta_pair("v=0X", "v=0A")
     assert not meta_pair("q=3F", "q=ZZ") and not meta_pair("q=10", "q=11") and not meta_pair("q=Z", "q=00")

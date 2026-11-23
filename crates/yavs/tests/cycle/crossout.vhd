@@ -1,6 +1,6 @@
 -- Logic between registers of clocks whose edges come in different deltas, on paths through
 -- processes outside the region: one whose history the testbench reads, one assigning a
--- metavalue literal the testbench sees (--cycle-exact-meta), a register outside as the source,
+-- metavalue literal the testbench sees (without --two-state), a register outside as the source,
 -- a converted port. The clock cg2 is ca gated twice in the kernel, so its edges come two deltas
 -- after those of ca. The logic stays out; logic between registers of ca alone joins.
 library ieee;

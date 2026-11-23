@@ -22,7 +22,7 @@ cycle-based processes are taken out, or the normal run ended on a failure of suc
 (the normal run does not finish or fails to start). Each test shows how many processes joined the region.
 
 `--contract exact` (the default) runs cycle mode under the exact rules, as cyclegate.py does
-(`--cycle-exact-meta`, YAVS_CYCLE_EXACT_CLOCKS=1). `--contract default` runs plain `--cycle` and a report
+(`--cycle` alone, YAVS_CYCLE_EXACT_CLOCKS=1). `--contract two-state` runs `--cycle --two-state` and a report
 under the exact rules too: a difference where the two regions differ is bucket `contract` (listed, not
 failing), a crash or an internal error always fails; a failed check (E3009) is compared by its code and
 source place only (no values in its message).
@@ -186,7 +186,7 @@ def ends(lines):
 def same_text(a, b, ra="", rb="", meta=False):
     """None when file a (normal) and b (cycle) are equal, a `?` in a matching any character (a metavalue
     digit, read as 0 in cycle mode), the run directories ra and rb (in the texts) taken as one, with `meta` a line
-    `G.meta_pair` explains (the default contract read a metavalue two-state); else where they differ."""
+    `G.meta_pair` explains (the two-state contract read a metavalue two-state); else where they differ."""
     xa, xb = a.read_bytes(), b.read_bytes()
     if ra and rb:
         xa, xb = xa.replace(ra.encode(), b"<dir>"), xb.replace(rb.encode(), b"<dir>")
@@ -334,7 +334,7 @@ def one_run(e, mode, base, a, stats=True, perf=None):
 
     exact = a.contract == "exact"
     flag = {"normal": [], "cycle": ["--cycle"], "report": ["--cycle-report"]}[mode]
-    flag += [G.EXACT] if exact and mode != "normal" else []
+    flag += [G.TWO] if not exact and mode != "normal" else []
     argv = [a.bin, "run", *flag, *[fix(x) for x in e["argv"][2:]]]
     env = {**os.environ, **{k: fix(v) for k, v in e.get("env", {}).items()}, **dict(x.split("=", 1) for x in a.env),
            "YAVS_STD_CACHE": str(a.std)}
@@ -383,7 +383,7 @@ def one(e, a):
             res["members"], res["procs"] = G.count_members(rep)
             lost = lambda path: dropped > 0 and path != "-" and path in held
             hr, mr = raw_names(rep)
-            default = a.contract == "default"
+            default = a.contract == "two-state"
             if default:  # a failed check by code and place (A34)
                 nerr, cerr = D.code_loc(nerr), D.code_loc(cerr)
             down = G.read_down(base / "down.txt")
@@ -566,9 +566,9 @@ def main():
                     "(instructions, cycles, branch and L1 cache misses, user space; warm-up runs first); pin with --prefix 'tools/claim core --'")
     ap.add_argument("--count-warmups", type=int, default=2, metavar="N", help="with --count: uncounted runs per mode first (default 2: "
                     "the cache stores a design on its second run)")
-    ap.add_argument("--contract", choices=("exact", "default"), default="exact",
-                    help="exact (default): cycle runs under the exact rules (--cycle-exact-meta, YAVS_CYCLE_EXACT_CLOCKS=1); "
-                         "default: plain --cycle, a difference where the exact rules give another region is bucket contract")
+    ap.add_argument("--contract", choices=("exact", "two-state"), default="exact",
+                    help="exact (default): cycle runs under the exact rules (--cycle alone, YAVS_CYCLE_EXACT_CLOCKS=1); "
+                         "two-state: --cycle --two-state, a difference where the exact rules give another region is bucket contract")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("-v", "--verbose", action="store_true", help="one line per test")
     a = ap.parse_args()
@@ -622,7 +622,7 @@ def main():
     budget = sum(r["why"][:1] == ["not started: the time budget is spent"] for r in res)
     with_m = sum(r["members"] > 0 for r in ran)
     print(f"cycle replay: {len(res)} tests: {c['identical']} identical, {c['documented']} documented losses only, "
-          + (f"{c['contract']} differ by the default contract, " if a.contract == "default" else "")
+          + (f"{c['contract']} differ by the two-state contract, " if a.contract == "two-state" else "")
           + f"{c['differs']} differ, {c['timeout']} cycle runs timed out (not compared), {c['skipped'] - budget} skipped, {budget} not started (budget); {with_m} of {len(ran)} compared tests have at least one process "
           f"in the region ({sum(r['members'] for r in ran)} of {sum(r['procs'] for r in ran)} processes)")
     hs = [r.get("hits", {}) for r in ran if r["members"]]

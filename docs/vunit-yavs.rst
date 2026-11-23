@@ -48,10 +48,16 @@ as ``--name=value``.
        the rest stays in the event kernel; the test output gets the line ``cycle mode: N of M processes run
        cycle-based``, shown with ``-v`` for a passing test) or ``"strict"`` (the same, but a clocked or combinational process below the top-level unit that does
        not fit is an error that lists them all). Set it per library, testbench, test or configuration. Cycle-based
-       processes evaluate their ``report`` and ``assert`` statements but give no library warnings, read metavalues as ``'0'``, and
+       processes evaluate their ``report`` and ``assert`` statements but give no library warnings, read metavalues as ``'0'`` with ``yavs.two_state``, and
        their signals are recorded per time step only (``--yavs-surfer`` shows them); what it changes is in :doc:`cycle-mode`, and the flags are in the :doc:`cli-reference` (``--cycle``). A test that also has coverage,
        ``--yavs-debug`` or ``--yavs-interactive`` fails before yavs starts, naming both. Not passed
-       to ``elab``. To see what would join, set ``yavs.sim_flags`` to ``["--cycle-report"]`` for one test with ``yavs.cycle`` ``"off"``: yavs prints the report and does not simulate, so that test fails. ``yavs.sim_flags`` ``["--cycle-exact-meta"]`` with ``yavs.cycle`` ``"on"`` or ``"strict"`` keeps the exact metavalue rules for a test, and the values in the message of a failed check.
+       to ``elab``. To see what would join, set ``yavs.sim_flags`` to ``["--cycle-report"]`` for one test with ``yavs.cycle`` ``"off"``: yavs prints the report and does not simulate, so that test fails. Without ``yavs.two_state`` cycle mode keeps the metavalues the testbench would see.
+   * - ``yavs.two_state``
+     - Experimental. ``yavs run --two-state`` for ``True``: cycle mode on two-state values, metavalues read as ``'0'``
+       and no process kept out for one (faster, and more processes join). Needs ``yavs.cycle`` ``"on"`` or
+       ``"strict"``: with ``"off"`` the test fails before yavs starts, naming both (two-state values without cycle
+       mode are not implemented yet). Default ``False``; a value other than ``True`` or ``False`` is refused when it
+       is set. Not passed to ``elab`` (:doc:`cycle-mode`, :doc:`cli-reference`, ``--two-state``).
    * - ``yavs.no_asserts``
      - ``yavs run --no-asserts`` for ``True``: the ``assert`` and ``report`` statements of the processes below the test
        bench entity are not evaluated, in the normal mode and in cycle mode alike. Below the test bench entity is
@@ -67,7 +73,7 @@ as ``--name=value``.
        names the closest one. Not passed to ``elab``. A ``--init-unset`` in ``yavs.sim_flags`` wins.
    * - ``yavs.init_x``
      - ``yavs run --init-x=VALUE``: the value of the metavalue literals the design assigns (:ref:`start-values`), the
-       same values as ``yavs.init_unset``; with ``yavs.cycle`` every metavalue literal of a cycle-based process below
+       same values as ``yavs.init_unset``; with ``yavs.cycle`` and ``yavs.two_state`` every metavalue literal of a cycle-based process below
        the top-level unit takes it. Not passed to ``elab``. A ``--init-x`` in ``yavs.sim_flags`` wins.
    * - ``yavs.cov_embed_sources``
      - ``yavs run --cov-embed-sources``: store the source text in the database, so the HTML report needs no

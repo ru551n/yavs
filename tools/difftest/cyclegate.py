@@ -12,9 +12,9 @@ difference that changed; the bucket that fails the gate); refused (E41xx under -
 skipped (the normal mode does not run it). Each test also reports how many processes joined
 the region, so a pass is not vacuous. See README.md.
 
-The gate compares exactly (`--contract exact`, the default): cycle runs take `--cycle-exact-meta`
-and YAVS_CYCLE_EXACT_CLOCKS=1, which keep the metavalue rules and copied clocks of the normal
-mode. `--contract default` runs plain `--cycle` (two-state metavalues, a copied clock is its
+The gate compares exactly (`--contract exact`, the default): cycle runs take plain `--cycle` (no
+`--two-state`) and YAVS_CYCLE_EXACT_CLOCKS=1, which keep the metavalue rules and copied clocks of the normal
+mode. `--contract two-state` runs `--cycle --two-state` (two-state metavalues, a copied clock is its
 source: docs/cycle-mode.rst "The contract in short") and also reports the region under the exact
 rules: where the two reports agree the test must pass as under the exact gate; where they differ
 a difference of the output is bucket `contract` (listed, not failing) and only a crash fails it. A
@@ -33,14 +33,14 @@ BENCH_DIR = ROOT / "tools" / "bench" / "designs"
 CYC = "$YAVS_RUN_FLAGS"  # the one place `yavs run` takes its extra flags in D.YAVS
 NORMAL = D.YAVS
 CYCLE = D.YAVS.replace(CYC, "--cycle " + CYC)
-EXACT = "--cycle-exact-meta"  # with YAVS_CYCLE_EXACT_CLOCKS=1: the exact rules (`exact`)
+TWO = "--two-state"  # the two-state contract; without it and with YAVS_CYCLE_EXACT_CLOCKS=1: `exact`
 CRASH = re.compile(r"E9999|this is a bug in yavs|panicked")
 
 
 def exact(on):
-    """Run every cycle run under the exact rules (`--contract exact`) or the default contract."""
+    """Run every cycle run under the exact rules (`--contract exact`) or the two-state contract."""
     global CYCLE
-    CYCLE = D.YAVS.replace(CYC, "--cycle " + (EXACT + " " if on else "") + CYC)
+    CYCLE = D.YAVS.replace(CYC, "--cycle " + ("" if on else TWO + " ") + CYC)
     if on:
         os.environ["YAVS_CYCLE_EXACT_CLOCKS"] = "1"
     else:
@@ -217,7 +217,7 @@ def settled(lines, lost):
 
 
 def settled_meta(nl, cl):
-    """Default contract, `settled` of each process (unlabelled ones by their place): equal, or each
+    """Two-state contract, `settled` of each process (unlabelled ones by their place): equal, or each
     cycle line the normal one with its metavalues read two-state (`meta_pair`); a time where only
     the normal run reports pairs so with the process's last cycle report before it (an event between
     two values of one two-state value, which the region does not see)."""
@@ -389,7 +389,7 @@ def lib_class(gone_n, gone_c):
 def contract_lines(nrc, nout, nerr, crc, cout, cerr, raw_cerr, rep, down, default, names=False):
     """(normal lines, cycle lines, classes used): the canonical lines of both runs without the library
     warnings of members (A33) and, where the runs differ in them, those of processes outside reading
-    the region (`down`); under the default contract with the cycle line of a metavalue read two-state
+    the region (`down`); under the two-state contract with the cycle line of a metavalue read two-state
     replaced by the normal one (`meta_pair`) when the run shows it read one (`meta_evidence`). `names`:
     an unlabelled process by its path and place, not `-` (`D.process_path`)."""
     nout, a = drop_down(nout, down)
@@ -408,7 +408,7 @@ def contract_lines(nrc, nout, nerr, crc, cout, cerr, raw_cerr, rep, down, defaul
 
 
 def contract_bucket(bucket, why, classes, default):
-    """A test the classes explained: `contract` under the default contract, `documented` under the exact
+    """A test the classes explained: `contract` under the two-state contract, `documented` under the exact
     one (only the library warning class applies there); else as it was."""
     if bucket in ("identical", "documented") and classes:
         return ("contract" if default else "documented"), "explained by " + "; ".join(classes) + (f" ({why})" if why else "")
@@ -487,7 +487,7 @@ def one(item, jobs_args):
             if crc != 0 and nrc == 0 and re.search(r"E41\d\d", cerr) and "E9999" not in cerr:
                 res.update(bucket="refused", why=re.search(r"E41\d\d", cerr).group(0))
             else:
-                default = jobs_args.contract == "default"
+                default = jobs_args.contract == "two-state"
                 if default:  # a failed check by code and place (A34)
                     nerr, cerr = D.code_loc(nerr), D.code_loc(cerr)
                 nl, cl, classes = contract_lines(nrc, nout, nerr, crc, cout, cerr, outs[1][2], rep,
@@ -567,9 +567,9 @@ def selftest():
     c = "\x1b[1m\x1b[33mwarning[W4101]\x1b[0m\x1b[1m: 2 asserts\x1b[0m\n \x1b[1m\x1b[34m|\x1b[0m\n = note: x\n\x1b[0m\n"
     assert split_report("cycle mode: 2 of 5 processes run cycle-based\n" + c + "real\n")[0] == "real"
     exact(True)
-    assert EXACT in CYCLE and os.environ.get("YAVS_CYCLE_EXACT_CLOCKS") == "1"
+    assert TWO not in CYCLE and os.environ.get("YAVS_CYCLE_EXACT_CLOCKS") == "1"
     exact(False)
-    assert EXACT not in CYCLE and "YAVS_CYCLE_EXACT_CLOCKS" not in os.environ
+    assert TWO in CYCLE and "YAVS_CYCLE_EXACT_CLOCKS" not in os.environ
     # The contract classes: each explains only its own shape, one way.
     assert meta_pair("q=ZZ x='U' h='H'", "q=3F x='0' h='1'") and meta_pair("v=0X", "v=0A")
     assert not meta_pair("q=3F", "q=ZZ") and not meta_pair("q=10", "q=11") and not meta_pair("q=Z", "q=00")
@@ -621,9 +621,9 @@ def main():
     ap.add_argument("--warm", action="store_true",
                     help="run each cycle run first in a library of its own, then the compared run on a copy of that "
                          "library, with the region's code from the compilation cache, and fail when the two differ")
-    ap.add_argument("--contract", choices=("exact", "default"), default="exact",
+    ap.add_argument("--contract", choices=("exact", "two-state"), default="exact",
                     help="exact (default): cycle runs keep the normal mode's metavalue rules and copied clocks "
-                         "(--cycle-exact-meta, YAVS_CYCLE_EXACT_CLOCKS=1); default: plain --cycle, a difference the "
+                         "(--cycle alone, YAVS_CYCLE_EXACT_CLOCKS=1); two-state: --cycle --two-state, a difference the "
                          "contract classes explain fully is bucket contract (README), any other fails")
     ap.add_argument("-v", "--verbose", action="store_true", help="one line per test with its membership")
     a = ap.parse_args()
@@ -656,7 +656,7 @@ def main():
             raise
     if a.json:
         a.json.write_text("\n".join(json.dumps(r) for r in res) + "\n")
-    mine = lambda cause: cause.startswith("default contract") == (a.contract == "default")  # the entries of this contract
+    mine = lambda cause: cause.startswith("two-state contract") == (a.contract == "two-state")  # the entries of this contract
     for r in res:
         if any(mine(c) for c in expected.get(r["name"], {}).values()) and r["bucket"] in ("identical", "documented", "contract"):
             print(f"note: {r['name']} no longer differs: remove its entry for this contract from cyclegate.expected")
@@ -665,7 +665,7 @@ def main():
     with_m = sum(r["members"] > 0 for r in ran)
     print(f"cycle gate: {len(res)} tests: {c['identical']} identical, {c['documented']} documented losses only, "
           f"{c['known']} known differences, "
-          + (f"{c['contract']} differ by the default contract, " if a.contract == "default" else "")
+          + (f"{c['contract']} differ by the two-state contract, " if a.contract == "two-state" else "")
           + f"{c['differs']} differ otherwise, {c['refused']} refused, {c['skipped']} skipped; "
           f"{with_m} of {len(ran)} compared tests have at least one process in the region "
           f"({sum(r['members'] for r in ran)} of {sum(r['procs'] for r in ran)} processes)"

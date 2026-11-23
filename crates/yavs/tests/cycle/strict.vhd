@@ -394,7 +394,7 @@ begin
   q(0) <= not a;
 end architecture;
 
--- E4137: a metavalue literal the testbench reads (with --cycle-exact-meta).
+-- E4137: a metavalue literal the testbench reads (without --two-state).
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;

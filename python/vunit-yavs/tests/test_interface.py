@@ -315,6 +315,15 @@ class TestPackage(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, f"yavs.cycle.*\"off\".*\"on\".*\"strict\".*{hint}"):
                 self.factory.check_sim_option("yavs.cycle", value)
 
+    def test_two_state_option_is_validated(self):
+        self._vunit().get_simulator_name()
+        for value in (True, False):
+            self.factory.check_sim_option("yavs.two_state", value)
+        wrong = (("on", "Did you mean True"), ("off", "Did you mean False"), ("twostate", ""))
+        for value, hint in wrong:
+            with self.assertRaisesRegex(ValueError, f"yavs.two_state.*must be True.*--two-state.*or False.*{hint}"):
+                self.factory.check_sim_option("yavs.two_state", value)
+
     def test_no_asserts_option_is_validated(self):
         self._vunit().get_simulator_name()
         for value in (True, False):
@@ -835,6 +844,27 @@ class TestYavsInterface(unittest.TestCase):
         for options in ({}, {"yavs.no_asserts": False}):
             _, cmd, _ = self._simulate(make_config(sim_options=options))
             self.assertNotIn("--no-asserts", cmd)
+
+    def test_two_state_flag(self):
+        config = make_config(sim_options={"yavs.cycle": "on", "yavs.two_state": True, "yavs.sim_flags": ["--stop-time=1ms"]})
+        _, cmd, _ = self._simulate(config)
+        self.assertEqual(cmd.count("--two-state"), 1)
+        self.assertLess(cmd.index("--cycle"), cmd.index("--two-state"))
+        self.assertLess(cmd.index("--two-state"), cmd.index("--stop-time=1ms"))
+        _, cmd, _ = self._simulate(config, elaborate_only=True)
+        self.assertNotIn("--two-state", cmd)
+        for options in ({"yavs.cycle": "on"}, {"yavs.cycle": "strict", "yavs.two_state": False}):
+            _, cmd, _ = self._simulate(make_config(sim_options=options))
+            self.assertNotIn("--two-state", cmd)
+
+    def test_two_state_needs_cycle_mode(self):
+        with mock.patch("vunit_yavs.Process", autospec=True) as process, mock.patch("sys.stdout", new=io.StringIO()) as out:
+            self.simif.setup_library_mapping(self._project("2008"))
+            config = make_config(sim_options={"yavs.two_state": True})
+            self.assertFalse(self.simif.simulate(self.output_path, "lib.tb", config, False))
+        process.assert_not_called()
+        for text in ("yavs.two_state=True", "yavs.cycle", "E0199"):
+            self.assertIn(text, out.getvalue())
 
     def test_init_flags(self):
         config = make_config(

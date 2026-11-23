@@ -22,7 +22,7 @@ use yavs_sem::Db;
 
 pub use codegen::{set_cache, set_threads};
 use lower::{Kind, Op, Ref};
-pub use region::{set_exact_meta, set_no_asserts, set_wave};
+pub use region::{set_no_asserts, set_two_state, set_wave};
 pub use store::analysis_cache;
 
 /// Codes of cycle mode. Under `--cycle-strict` every reason a process below the top-level unit
@@ -99,7 +99,7 @@ pub mod codes {
     pub const PORT_SOURCE: &str = "E4135";
     /// An assert of the top-level unit reading a signal the region does not drive alone.
     pub const CHECK_OUTSIDE: &str = "E4136";
-    /// Under `--cycle-exact-meta`: a metavalue the testbench would see as '0' or '1'.
+    /// Without `--two-state`: a metavalue the testbench would see as '0' or '1'.
     pub const META_OUT: &str = "E4137";
     /// An external name (a limitation).
     pub const EXTERNAL: &str = "E4138";
@@ -108,7 +108,7 @@ pub mod codes {
     pub const LOOP_BOUND: &str = "E4139";
     /// An assert or report region code cannot evaluate (A52): a message of another form, a
     /// severity known only at run time, the reset branch, a sensitivity list naming more than the
-    /// process reads (a limitation); under `--cycle-exact-meta` one reading a signal the region
+    /// process reads (a limitation); without `--two-state` one reading a signal the region
     /// does not drive alone.
     pub const ASSERT: &str = "E4140";
     /// A reason no design can reach (the analysis or an earlier check rules it out): a bug in
@@ -317,8 +317,8 @@ pub mod codes {
         (
             ASSERT,
             "an assert or report cycle mode cannot evaluate",
-            "cycle mode evaluates the assert and report statements of its processes in compiled code, which takes only some forms of them, and under `--cycle-exact-meta` only on values the region makes",
-            "write the message with string literals, `&`, `'image` and `to_string`, `to_hstring` or `to_ostring` of its values, give the severity as a literal, move the check out of the reset branch, write an edge test as `assert not (rising_edge(clk) and ...)`, name only what the process reads in its sensitivity list, run without `--cycle-exact-meta` for one that reads a signal from outside the region, or run with `--no-asserts` to drop the asserts and reports below the top-level unit",
+            "cycle mode evaluates the assert and report statements of its processes in compiled code, which takes only some forms of them, and without `--two-state` only on values the region makes",
+            "write the message with string literals, `&`, `'image` and `to_string`, `to_hstring` or `to_ostring` of its values, give the severity as a literal, move the check out of the reset branch, write an edge test as `assert not (rising_edge(clk) and ...)`, name only what the process reads in its sensitivity list, run with `--two-state` for one that reads a signal from outside the region, or run with `--no-asserts` to drop the asserts and reports below the top-level unit",
             true,
         ),
         (
@@ -331,8 +331,8 @@ pub mod codes {
         (
             META_OUT,
             "a metavalue the testbench would see as '0' or '1'",
-            "under `--cycle-exact-meta` the testbench must see the metavalues the event simulation gives it, and cycle-based code gives only '0' and '1'",
-            "run without `--cycle-exact-meta`, or assign '0' or '1' instead of the metavalue",
+            "without `--two-state` the testbench must see the metavalues the event simulation gives it, and cycle-based code gives only '0' and '1'",
+            "run with `--two-state`, or assign '0' or '1' instead of the metavalue",
             false,
         ),
         (
@@ -410,7 +410,7 @@ pub struct Metas {
     pub inputs: AtomicU64,
     /// `YAVS_CYCLE_STATS=1`: the region's counts, printed with the summary.
     pub(crate) stats: std::sync::Mutex<Option<rt::Stats>>,
-    /// The second image of `--cycle-exact-meta` (`rt::Rail`): made, its clock edges, and how it
+    /// The second image (no `--two-state`) (`rt::Rail`): made, its clock edges, and how it
     /// ended (none while it runs).
     pub(crate) rail: std::sync::atomic::AtomicBool,
     pub(crate) rail_edges: AtomicU64,
@@ -1134,7 +1134,7 @@ fn built(
     // members).
     let edge_words: Vec<u32> = (0..sel.clocks.len() as u32).map(|k| n + k).collect();
     n += sel.clocks.len().max(1) as u32;
-    // Under `--cycle-exact-meta` the two words of `Ref::Oth` (`rt::Rail`).
+    // Without `--two-state` the two words of `Ref::Oth` (`rt::Rail`).
     let oth = n;
     if region::exact_meta() {
         n += 2;
@@ -2192,7 +2192,7 @@ pub(crate) struct Built {
     reports: Vec<(usize, u8, String)>,
     uninit: u64,
     /// The words of clocked variables without an initial value (first, elements), and the
-    /// words that hold state (first, count): the second image of `--cycle-exact-meta`.
+    /// words that hold state (first, count): the second image (no `--two-state`).
     useed: Vec<(u32, u32)>,
     /// The `std_ulogic` leaves of clocked variables without an initial value (`Body::unset`).
     #[serde(default)]
@@ -2203,7 +2203,7 @@ pub(crate) struct Built {
     state: Vec<(u32, u32)>,
     /// The bits clocked members keep between edges: runs of words (first, count, bits).
     regs: Vec<(u32, u32, u64)>,
-    /// Under `--cycle-exact-meta`: the word of `Ref::Oth`; whether the code has `Op::Seed`.
+    /// Without `--two-state`: the word of `Ref::Oth`; whether the code has `Op::Seed`.
     oth: Option<usize>,
     seeds: bool,
     chunk_cone: Vec<u32>,
@@ -2273,7 +2273,7 @@ fn finish(
     let rands = b.rands;
     let two_valued = b.two_valued;
     let regs = Arc::new(b.regs);
-    // The second image of `--cycle-exact-meta` ('U' at start, A38): its region process is the
+    // The second image (no `--two-state`) ('U' at start, A38): its region process is the
     // one with the rail's code; the default's has none of it.
     let rail = region::exact_meta().then(rt::rail_knob);
     let checks = Arc::new(sites);

@@ -1,4 +1,4 @@
--- A check that fails only on the second image of --cycle-exact-meta (A38): `idx` of a register
+-- A check that fails only on the second image of the metavalue contract (no --two-state) (A38): `idx` of a register
 -- still 'U' (0 in the region, all ones in the second image), copied to a variable first (a
 -- `to_integer` of a signal gives 0 there, as the normal mode, A43), is out of its range there.
 -- With MID false it fails at initialisation, with MID true at the clock edge where `go` rises,

@@ -1,4 +1,4 @@
--- A clocked member keeping a register file of more than 64 words under --cycle-exact-meta:
+-- A clocked member keeping a register file of more than 64 words without --two-state:
 -- `en` is 'U', so the normal mode shifts nothing and every word keeps its start value; the
 -- second image reads `en` as 1 and shifts all 80 words, which `rail_keep` must give back their
 -- values (each word starts with its own; word `I` is shown).

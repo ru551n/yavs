@@ -18065,8 +18065,8 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
   are untouched, so the checks of a testbench keep their literals.
 - **`random` without a seed** draws one from the time and the process id and prints it, so a failure can be
   repeated with `random:SEED`.
-- **Metavalue literals of a two-state region (user decisions A57, A58, 2026-11-21).** In a two-state region (today
-  every cycle run but `--cycle-exact-meta`, `region::two_state`; step 4 ties it to `--two-state`) a metavalue
+- **Metavalue literals of a two-state region (user decisions A57, A58, 2026-11-21).** In a two-state region
+  (`region::two_state`: `--two-state`, decoupled from `--cycle` on 2026-11-23, below) a metavalue
   literal in an assignment, a comparison, a `case` choice or a `numeric_std` operator no longer keeps its process
   out: it takes the bits of `--init-x`, `0` without it (A58: as the default contract read it before), counted per
   process in the region report. Only below the top-level unit (`Lx::meta_joins`): a process of the top-level unit
@@ -18095,3 +18095,22 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
   (`SourceFile::site`): checkout location, path separators and line ends change nothing. One salt per literal for
   both modes (`start::lit_salt`). Owner, same day: a literal's bits stay per source site (one for every instance);
   subprogram, protected, shared and allocated variables stay outside `--init-unset`.
+
+## `--two-state` decoupled from `--cycle` (yavs, yavs-cycle, vunit-yavs; user decisions A53 (2), A57, 2026-11-21)
+
+- **`--two-state` is a flag of its own.** Value semantics come from it alone, the same for `--cycle`,
+  `--cycle-strict` and `--cycle-report`; `--cycle-strict` only changes selection (A57 (1)). Without it cycle mode
+  keeps the metavalues with the mechanism 0.21 had under `--cycle-exact-meta` (the stay-out rules, the second image
+  of the `'U'` start values for up to 1024 clock edges, the values in a failed check's message): the A57 addendum,
+  until a metavalue-exact region of its own exists. `--cycle-exact-meta` is removed, so bare `--cycle` is no longer
+  two-state: a breaking change against 0.21, with a release note and a note in the cycle mode guide.
+- **The region's "two-state" predicate** (`region::two_state`, A57 (2)) and with it the `--init-x` value of every
+  metavalue literal below the top-level unit are tied to `--two-state`; `--init-x` not given reads as 0 there (A58);
+  the top-level unit keeps its literals (A62). Without `--two-state`, `--init-x` changes the assigned literals only,
+  as in the normal mode.
+- **`--two-state` without a cycle option** is E0199 (not implemented yet) until the event kernel has two-state
+  values (A53 (2): semantics and speed there, planned separately); the test runner refuses `yavs.two_state` with
+  `yavs.cycle` `off` before starting yavs, naming both.
+- **The comparison tools** (`tools/difftest` cycle tools) call their contracts `exact` (plain `--cycle`) and
+  `two-state` (`--cycle --two-state`); the reviewed entries of the second start with `two-state contract:`.
+

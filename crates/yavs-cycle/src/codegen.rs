@@ -4,7 +4,7 @@
 //! is one word.
 //!
 //! A check that fails (`Op::Int`, `Op::Range`, the dynamic indices) returns its site number plus
-//! one through the function's one exit of failed checks; `RegionProc` makes the error. Under `--cycle-exact-meta` it first stores its operands in
+//! one through the function's one exit of failed checks; `RegionProc` makes the error. Without `--two-state` it first stores its operands in
 //! the two error words, for the message's values (A34: the default drops them). With
 //! `YAVS_CYCLE_CHECKS=off` (developers, to measure them) range and overflow checks are left out
 //! and a dynamic index is clamped into its vector, so the code stays memory safe.
@@ -207,7 +207,7 @@ impl Code {
         self.run_as(img, f, mark, true)
     }
 
-    /// A run on the second image of `--cycle-exact-meta` (`rt::Rail`): no guards (its members
+    /// A run on the second image (no `--two-state`) (`rt::Rail`): no guards (its members
     /// read the region's image too, which a guard does not compare) and never on a copy (its
     /// `Ref::Oth` word is a distance from this image). Of `Fun::Edge` the edge's own steps
     /// (`edge`), or the settle's after them.
@@ -1897,7 +1897,7 @@ struct Env<'a> {
     err: u32,
     log: (u32, u32),
     checks: bool,
-    /// Failed checks store their operands (`--cycle-exact-meta`).
+    /// Failed checks store their operands (no `--two-state`).
     vals: bool,
     disasm: bool,
 }
@@ -2623,7 +2623,7 @@ impl Gen<'_> {
     }
 
     /// A check: `fail` (an `I8` truth value) jumps to a cold block that stores `vals` in the
-    /// error words (only under `--cycle-exact-meta`) and goes to the function's one exit of failed
+    /// error words (only without `--two-state`) and goes to the function's one exit of failed
     /// checks with `site + 1` (one epilogue for all of them).
     /// The divisor `y` of `x`: a failed check where `fail` (zero, or `MIN / -1`); without exits,
     /// one instead, so the machine division never traps.

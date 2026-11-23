@@ -73,11 +73,12 @@ fn run(dir: &Path, flags: &[&str], top: &str) -> (Vec<String>, i32, String) {
     )
 }
 
-/// The modes each value runs in: normal, cycle mode, its exact contract and uncollapsed ports.
+/// The modes each value runs in: normal, two-state cycle mode, cycle mode with metavalues and
+/// uncollapsed ports.
 const MODES: [&[&str]; 4] = [
     &[],
+    &["--cycle", "--two-state"],
     &["--cycle"],
-    &["--cycle", "--cycle-exact-meta"],
     &["--no-collapse-ports"],
 ];
 
@@ -248,7 +249,7 @@ fn init_unset_random_prints_a_new_seed_that_repeats_the_run() {
 fn init_unset_warm_runs_follow_the_option() {
     let dir = tempdir("initwarm");
     analyze(&dir, "initunset.vhd");
-    for cycle in [&[][..], &["--cycle"][..]] {
+    for cycle in [&[][..], &["--cycle", "--two-state"][..]] {
         // Each value after runs with others and without one, so each reads what one stored; the
         // run without the option must find no code that calls the option's natives.
         let values = [
@@ -282,6 +283,7 @@ fn cycle_report_lists_the_registers_init_unset_sets() {
             "--work=work:lib",
             "--no-cache",
             "--cycle-report",
+            "--two-state",
             "initunset",
         ],
     );
@@ -353,7 +355,7 @@ fn init_x_gives_metavalue_literals_a_value() {
                 let mut fl = vec!["--no-cache", opt.as_str()];
                 fl.extend(&t);
                 if cycle {
-                    fl.push("--cycle");
+                    fl.extend(["--cycle", "--two-state"]);
                 }
                 let (lines, code, err) = run(&dir, &fl, "initx");
                 assert_eq!((code, lines.len()), (0, 15), "{fl:?}: {err}");
@@ -441,7 +443,7 @@ fn a_two_state_region_compares_with_init_x_bits() {
             (Some("--init-x=1"), "-gONES=true", "'1'"),
             (Some("--init-x=1"), "-gONES=false", "'0'"),
         ] {
-            let mut f = vec!["--no-cache", "--cycle", g];
+            let mut f = vec!["--no-cache", "--cycle", "--two-state", g];
             f.extend(&t);
             f.extend(x);
             let (lines, code, err) = run(&dir, &f, "metacmp");
@@ -463,10 +465,10 @@ fn a_two_state_region_compares_with_init_x_bits() {
         a.extend(["--cycle-report", "metacmp"]);
         String::from_utf8_lossy(&yavs(&dir, &a).stderr).into_owned()
     };
-    let r = report(&["--init-x=1"]);
+    let r = report(&["--two-state", "--init-x=1"]);
     assert!(r.contains("literals with a metavalue read as 1"), "{r}");
-    assert!(report(&[]).contains("literals with a metavalue read as 0"));
-    let r = report(&["--cycle-exact-meta"]);
+    assert!(report(&["--two-state"]).contains("literals with a metavalue read as 0"));
+    let r = report(&[]);
     assert!(r.contains("a comparison with a metavalue literal"), "{r}");
 }
 
@@ -476,7 +478,7 @@ fn a_testbench_checker_keeps_its_metavalue_compares() {
     analyze(&dir, "topmeta.vhd");
     for t in tiers() {
         for x in [None, Some("--init-x=0"), Some("--init-x=1")] {
-            let mut f = vec!["--no-cache", "--cycle"];
+            let mut f = vec!["--no-cache", "--cycle", "--two-state"];
             f.extend(&t);
             f.extend(x);
             let mut a = vec!["run", "--work=work:lib"];
@@ -520,7 +522,8 @@ fn warnings(dir: &Path, flags: &[&str]) -> (Vec<String>, String) {
 
 /// A62 with step 2: an assert below the top that compares with a metavalue literal is evaluated
 /// in a two-state region with the literal's `--init-x` bits, so `d /= (d'range => 'X')` fails
-/// where `d` is 0 (1 with `--init-x=1`); the normal mode and `--cycle-exact-meta` never fail, and
+/// where `d` is 0 (1 with `--init-x=1`); the normal mode and cycle mode without `--two-state` never
+/// fail, and
 /// `--no-asserts` drops them with any `--init-x`.
 #[test]
 fn design_asserts_compare_with_the_init_x_bits_in_a_two_state_region() {
@@ -553,13 +556,13 @@ fn design_asserts_compare_with_the_init_x_bits_in_a_two_state_region() {
     }
     for t in tiers() {
         let cases: [(&[&str], Vec<String>); 7] = [
-            (&[], at(["5000000", "25000000"])),
-            (&["--init-x=0"], at(["5000000", "25000000"])),
-            (&["--init-x=1"], at(["15000000", "35000000"])),
-            (&["--no-asserts"], vec![]),
-            (&["--no-asserts", "--init-x=1"], vec![]),
-            (&["--cycle-exact-meta"], vec![]),
-            (&["--cycle-exact-meta", "--init-x=1"], vec![]),
+            (&["--two-state"], at(["5000000", "25000000"])),
+            (&["--two-state", "--init-x=0"], at(["5000000", "25000000"])),
+            (&["--two-state", "--init-x=1"], at(["15000000", "35000000"])),
+            (&["--two-state", "--no-asserts"], vec![]),
+            (&["--two-state", "--no-asserts", "--init-x=1"], vec![]),
+            (&[], vec![]),
+            (&["--init-x=1"], vec![]),
         ];
         for (x, want) in cases {
             let mut f = vec!["--cycle"];
@@ -567,7 +570,7 @@ fn design_asserts_compare_with_the_init_x_bits_in_a_two_state_region() {
             f.extend(x);
             let (lines, err) = warnings(&dir, &f);
             assert_eq!(sorted(lines), want, "{f:?}: {err}");
-            if !x.contains(&"--cycle-exact-meta") {
+            if x.contains(&"--two-state") {
                 // The checking process of each instance joins the region.
                 assert!(err.contains("cycle mode: 5 of"), "{f:?}: {err}");
             }
@@ -580,7 +583,7 @@ fn design_asserts_compare_with_the_init_x_bits_in_a_two_state_region() {
         }
         // random: the one-element literal has one bit in every instance, so `d(0) /= 'U'` fails
         // at one pair of edges per width; a wide random `'X'` aggregate is neither all 0 nor all 1.
-        let mut f = vec!["--cycle", "--init-x=random:7"];
+        let mut f = vec!["--cycle", "--two-state", "--init-x=random:7"];
         f.extend(&t);
         let (lines, err) = warnings(&dir, &f);
         for w in [1, 63, 64, 65, 128] {

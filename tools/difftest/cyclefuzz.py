@@ -3,7 +3,7 @@
 seeded testbench printing every output twice a clock, run normal and `--cycle` by one binary.
 Every difference is a bug: the designs have no metavalues (every signal initialised, inputs
 '0'/'1') and no asserts or reports in the region, the testbench samples between clock edges; under
-the default contract only differences the contract classes explain are not (verdict `contract`:
+the two-state contract only differences the contract classes explain are not (verdict `contract`:
 metavalues of the `zpass` inputs read two-state, a copied clock that is its source).
 Stdlib only. See README.md "Cycle mode fuzzer".
 
@@ -2042,7 +2042,7 @@ def render_tb(g, top, cycles):
         n_tb = 4
     chk = ""
     # A checker of the top-level unit: evaluated at the clock edge, same messages. Not on a zpass output: its
-    # 'Z' reads '0' under the default contract, so the check would decide another way (README "Contract classes").
+    # 'Z' reads '0' under the two-state contract, so the check would decide another way (README "Contract classes").
     checked = [o for o in shown if not o.name.startswith("zo")]
     if "assert" in g.feat and checked:
         o = rng.choice(checked)
@@ -2170,7 +2170,7 @@ def mem_ok():
 
 
 # The cycle runs compare exactly (`--contract exact`): the normal mode's metavalue rules and copied clocks.
-EXACT = "--cycle-exact-meta"
+TWO = "--two-state"
 CONTRACT = {"exact": True}
 
 
@@ -2178,7 +2178,7 @@ def script(binary, tiers, warm, checks, std="2008"):
     """bash steps of one design in its directory: analysis, elaboration, then the runs; each
     run's stdout, stderr and status in files named after it."""
     x = CONTRACT["exact"]
-    y = ("export YAVS_CYCLE_EXACT_CLOCKS=1; " if x else "unset YAVS_CYCLE_EXACT_CLOCKS; ") + f"Y={binary}; S='--std={std} --work=work:lib{' ' + EXACT if x else ''}'; "
+    y = ("export YAVS_CYCLE_EXACT_CLOCKS=1; " if x else "unset YAVS_CYCLE_EXACT_CLOCKS; ") + f"Y={binary}; S='--std={std} --work=work:lib{'' if x else ' ' + TWO}'; "
     st = ['$Y analyze $S d.vhd > a.out 2>&1 || exit 97', '$Y elab $S fz_tb > e.out 2>&1 || exit 98',
           'YAVS_CYCLE_DOWNSTREAM=down.txt $Y run $S --cycle-report fz_tb > report.out 2> report.err']
     st[:2] = [c.replace("$S", "$A") for c in st[:2]]  # analyze and elab take no cycle flag
@@ -2303,7 +2303,7 @@ def check(d, a, binary, seed=None):
 def explained(ref, got, d, rep, src=None):
     """(whether the contract classes explain every difference of a cycle run `got` from the normal run
     `ref`, the classes used): library metavalue warnings of processes outside that read the region, and
-    under the default contract metavalues read two-state (tools/difftest/cyclegate.py, README), and a
+    under the two-state contract metavalues read two-state (tools/difftest/cyclegate.py, README), and a
     copied clock that is its source (A32): `src()` gives the normal run of the design with each copy
     replaced by its source (`copy_variant`), which the cycle run must then equal."""
     if got[0] != ref[0] or strip(got[2]) != strip(ref[2]):
@@ -2479,8 +2479,8 @@ def main():
         r.add_argument("--cycles", type=int, default=40)
         r.add_argument("--keep", action="store_true", help="keep the directories of passing seeds")
         r.add_argument("--json", help="append one line per seed to this file")
-        r.add_argument("--contract", choices=("exact", "default"), default="exact",
-                       help="exact (default): cycle runs with --cycle-exact-meta and YAVS_CYCLE_EXACT_CLOCKS=1; default: plain --cycle")
+        r.add_argument("--contract", choices=("exact", "two-state"), default="exact",
+                       help="exact (default): cycle runs with --cycle alone and YAVS_CYCLE_EXACT_CLOCKS=1; two-state: --cycle --two-state")
         if name == "run":
             r.add_argument("--min-share", type=float, default=60.0, help="fail when fewer percent of the processes joined")
     g.add_argument("--feat", type=feat, default=None)

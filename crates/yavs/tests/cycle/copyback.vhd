@@ -1,7 +1,7 @@
 -- Two copies of one clock (`W` replaced by a width): a register on the inner copy moves onto the
 -- source (A32); one on the outer copy goes back to that copy, which a register outside waits on.
 -- It reads the moved register, which must then go back too, or it reads the new value a delta
--- early (fuzzer, seed 327 of the default contract). The direct register on the source stays.
+-- early (fuzzer, seed 327 of the two-state contract). The direct register on the source stays.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;

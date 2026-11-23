@@ -284,7 +284,7 @@ pub(crate) fn spans(outs: &mut [Out]) -> (Vec<Span>, usize) {
     (v, n)
 }
 
-/// The region's kernel process; with `RAIL` (`--cycle-exact-meta`) it may run a [`Rail`], the
+/// The region's kernel process; with `RAIL` (no `--two-state`) it may run a [`Rail`], the
 /// default's code has none of it.
 pub(crate) struct RegionProc<const RAIL: bool> {
     pub code: Arc<Code>,
@@ -368,7 +368,7 @@ pub(crate) struct RegionProc<const RAIL: bool> {
     pub two: BTreeMap<u32, Vec<(u32, u32)>>,
     /// The bits clocked members keep between edges: runs of words (first, count, bits).
     pub regs: Arc<Vec<(u32, u32, u64)>>,
-    /// Under `--cycle-exact-meta`: the word of `Ref::Oth` (0 in the region's image), and
+    /// Without `--two-state`: the word of `Ref::Oth` (0 in the region's image), and
     /// whether the code seeds `'U'` start values itself (`Op::Seed`).
     pub oth: Option<usize>,
     pub seeds: bool,
@@ -434,7 +434,7 @@ pub(crate) fn edges(n: u64) -> String {
     format!("{n} clock edge{}", if n == 1 { "" } else { "s" })
 }
 
-/// The second image of `--cycle-exact-meta` ('U' at start, owner decision A38): the same code
+/// The second image (no `--two-state`) ('U' at start, owner decision A38): the same code
 /// run on an image whose start metavalues (and, with `reseed`, the metavalues arriving at the
 /// inputs) are 1 where the region's are 0. An output bit the two differ in depends on them and
 /// is driven `'U'`. It ends when the state words agree, at `cap` edges, or at a failed check on
@@ -1440,7 +1440,7 @@ impl<const RAIL: bool> RegionProc<RAIL> {
             RailEnd::Equal => format!("the images agreed after {e}"),
             RailEnd::Cap => format!("stopped at the cap of {e}"),
             RailEnd::Check(site) => match self.checks.get(site as usize) {
-                // Its operands are stored: the rail runs under `--cycle-exact-meta` only.
+                // Its operands are stored: the rail runs without `--two-state` only.
                 Some((c, _, _, name)) => format!(
                     "stopped after {e}: a check failed on it in {name} ({}), which the region's own values pass",
                     c.message(Some((r.img[self.err] as i64, r.img[self.err + 1] as i64)))
@@ -1730,7 +1730,7 @@ fn blocks(v: &[u64], len: u32) -> Vec<u8> {
 
 impl<const RAIL: bool> Process for RegionProc<RAIL> {
     fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
-        // One test per wake under `RAIL` (`--cycle-exact-meta`), none in the default.
+        // One test per wake under `RAIL` (no `--two-state`), none in the default.
         if RAIL && (!self.started || self.rail.is_some()) {
             self.wake::<true>(ctx)
         } else {

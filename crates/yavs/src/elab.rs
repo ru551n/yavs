@@ -202,7 +202,7 @@ pub struct RunArgs {
     /// The value of the metavalue literals the design assigns (`'U'`, `'X'`, `'W'` anywhere,
     /// `'-'` in a default branch, alone or as `(others => ...)`), in the processes below the
     /// top-level unit: `0`, `1`, or `random[:SEED]` as for `--init-unset`. Literals in conditions,
-    /// comparisons, calls, subprograms and the top-level unit stay as written; in cycle mode
+    /// comparisons, calls, subprograms and the top-level unit stay as written; with `--two-state`
     /// every metavalue literal of a cycle-based process below the top-level unit, compared ones
     /// too, takes this value (`0` without the option).
     #[arg(long, value_name = "0|1|random[:SEED]", value_parser = parse_fill)]
@@ -255,7 +255,8 @@ pub struct RunArgs {
     /// clock edge, a combinational one once its inputs are settled, with the normal mode's text,
     /// severity, time and process; one cycle mode cannot evaluate keeps its process in the event
     /// kernel (`--no-asserts` drops those below the top-level unit). `--wave` (and `--surfer`)
-    /// records the signals inside the region per time step, without delta cycles. Not with a debug session,
+    /// records the signals inside the region per time step, without delta cycles. Values keep the
+    /// metavalues unless `--two-state` is given. Not with a debug session,
     /// `--wave-variables`, `--cov`, `--vhpi` or `--activity` (E4102). The strict form
     /// is `--cycle-strict`, given instead of this option.
     #[arg(long, conflicts_with = "cycle_strict")]
@@ -277,16 +278,17 @@ pub struct RunArgs {
     #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true,
           conflicts_with_all = ["cycle", "cycle_strict"])]
     cycle_report: Option<Option<String>>,
-    /// With `--cycle`, `--cycle-strict` or `--cycle-report` (experimental): keep the exact
-    /// metavalue rules. By default a metavalue (`'U'`, `'X'`, `'Z'`, ...) reaching the region is
-    /// read as `0` and no process stays out for one; with this option a process that would hide a
-    /// metavalue from the testbench (it assigns a metavalue literal to a signal the testbench
-    /// reads, or passes on a `'Z'` from outside) stays in the event kernel, so the testbench sees
-    /// what the normal mode gives it. A register or variable without a start value shows the
-    /// testbench `'U'` while its value depends on it, for up to 1024 clock edges. A failed
-    /// check's message then also gives its values, as in the normal mode.
-    #[arg(long, requires = "cycle_mode")]
-    cycle_exact_meta: bool,
+    /// Two-state values (experimental), with `--cycle`, `--cycle-strict` or `--cycle-report` (without
+    /// them not implemented yet, E0199): cycle-based processes hold only `0` and `1`. A metavalue
+    /// (`'U'`, `'X'`, `'Z'`, ...) they read from outside counts as `0` (`'H'` as `1`), one below the
+    /// top-level unit written as a literal takes the `--init-x` value (`0` without it), and no
+    /// process stays out for a metavalue. Processes in the event kernel, the top-level unit's
+    /// among them, keep the nine values. Without this option cycle mode keeps
+    /// the metavalues: a process that would hide one from the testbench stays in the event kernel,
+    /// a register or variable without a start value shows `'U'` while its value depends on it (for
+    /// up to 1024 clock edges), and a failed check's message gives its values.
+    #[arg(long)]
+    two_state: bool,
     // The text names the tiers this build has, so it is built by `tier_help`.
     #[arg(long, value_enum, help = tier_help())]
     tier: Option<TierArg>,
@@ -1654,7 +1656,7 @@ fn prepare(
             c.load,
             a.plusargs,
             a.source_map,
-            a.cycle_exact_meta,
+            a.two_state,
         ) + &format!(
             "|{:?}|{:?}",
             // The kind only: a seed is read when the run starts (A68).
@@ -1974,6 +1976,20 @@ fn run_design(
         out.emit(&SourceMap::default(), &d);
         return out.finish(2);
     }
+    // Two-state values in the event kernel are not implemented yet: only with cycle mode.
+    if a.two_state && !a.cycle_on() {
+        let mut out = Out::new(format, color);
+        out.emit(
+            &SourceMap::default(),
+            &Diagnostic::error(
+                "E0199",
+                "`--two-state` without `--cycle` is not implemented yet in yavs",
+            )
+            .with_note("this is a limitation of yavs, not an error in the design")
+            .with_help("add `--cycle` (or `--cycle-strict`), or run without `--two-state`"),
+        );
+        return out.finish(2);
+    }
     // A report file that cannot be written fails before any work.
     let mut report_file = None;
     if let Some(Some(path)) = &a.cycle_report {
@@ -2151,7 +2167,7 @@ fn run_design(
                 .clone()
                 .map(|p| p as std::sync::Arc<dyn yavs_kernel::Tokens>),
         );
-        yavs_cycle::set_exact_meta(a.cycle_exact_meta);
+        yavs_cycle::set_two_state(a.two_state);
         yavs_cycle::set_no_asserts(a.no_asserts);
         yavs_cycle::set_wave(
             a.wave

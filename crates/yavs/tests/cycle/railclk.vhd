@@ -1,4 +1,4 @@
--- Clocked choices on a 'U' under --cycle-exact-meta: each image takes its own branch. The region's
+-- Clocked choices on a 'U' without --two-state: each image takes its own branch. The region's
 -- image reads 'U' as 0, so `s = '0'`, `unsigned(ad) < 2` and `when "00"` are true there while the
 -- normal mode takes the other branch (a known value). Following the region's branch on the second
 -- image too would copy `uu` (0 there, 1 on the second) and show 'U' (Microwatt's icache, A43).

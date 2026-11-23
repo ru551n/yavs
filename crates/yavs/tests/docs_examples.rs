@@ -478,7 +478,8 @@ fn time_and_exit_status() {
     assert!(!out.contains("more"), "{out}");
 }
 
-/// `docs/cycle-mode.rst`: its examples, normal mode and `--cycle`, print what the page shows.
+/// `docs/cycle-mode.rst`: its examples, normal mode, `--cycle` and `--cycle --two-state`, print what the page
+/// shows.
 #[test]
 fn cycle_mode_page() {
     let e = Env::new("docs_cycle");
@@ -496,28 +497,36 @@ fn cycle_mode_page() {
     args.extend(files);
     e.ok(&args);
     let page = "cycle-mode.rst";
-    // (top, exit status of the normal mode, of --cycle)
-    for (top, normal, cycle) in [
-        ("tb_counter", 0, 0),
-        ("tb_left_out", 0, 0),
-        ("tb_rtl_failure", 1, 1),
-        ("tb_delta", 0, 0),
-        ("tb_metavalue", 0, 0),
+    // (top, exit status of the normal mode, of --cycle, whether the page shows plain --cycle's output)
+    for (top, normal, cycle, plain) in [
+        ("tb_counter", 0, 0, true),
+        ("tb_left_out", 0, 0, false),
+        ("tb_rtl_failure", 1, 1, false),
+        ("tb_delta", 0, 0, false),
+        ("tb_metavalue", 0, 0, true),
     ] {
-        for (flag, want) in [(None, normal), (Some("--cycle"), cycle)] {
+        let modes: [(&[&str], i32, bool); 3] = [
+            (&[], normal, true),
+            (&["--cycle"], cycle, plain),
+            (&["--cycle", "--two-state"], cycle, true),
+        ];
+        for (flag, want, shown) in modes {
             let mut args = vec!["run", WORK];
             args.extend(flag);
             args.push(top);
             let (code, out, err) = e.yavs(&args);
             assert_eq!(code, want, "{top} {flag:?}\n{out}\n{err}");
-            if top != "tb_left_out" {
+            if top != "tb_left_out" && shown {
                 on_page(page, &out);
                 on_page(page, &err);
             }
         }
     }
     // `--no-asserts`, both modes: the design's failure is dropped.
-    for flags in [&["--no-asserts"][..], &["--no-asserts", "--cycle"]] {
+    for flags in [
+        &["--no-asserts"][..],
+        &["--no-asserts", "--cycle", "--two-state"],
+    ] {
         let mut args = vec!["run", WORK];
         args.extend(flags);
         args.push("tb_rtl_failure");
@@ -541,7 +550,7 @@ fn cycle_mode_page() {
     assert_eq!(code, 2);
     assert!(err.contains("error[E4102]"), "{err}");
     on_page(page, &err);
-    let (code, _, err) = e.yavs(&["run", "--cycle", WORK, "tb_overflow"]);
+    let (code, _, err) = e.yavs(&["run", "--cycle", "--two-state", WORK, "tb_overflow"]);
     assert_eq!(code, 1, "{err}");
     // The page shows the path relative to where the files are.
     on_page(page, &relative(&err, &e.0));

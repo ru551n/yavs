@@ -13,8 +13,8 @@ error[E4137]: a metavalue literal assigned to a signal the testbench reads is no
     | |______________- t_e4137.stim reads t_e4137.q
     |
     = note: in process t_e4137.dut.q <= ... (strict.vhd:406)
-    = note: why: under `--cycle-exact-meta` the testbench must see the metavalues the event simulation gives it, and cycle-based code gives only '0' and '1'
-    = help: run without `--cycle-exact-meta`, or assign '0' or '1' instead of the metavalue; or run with `--cycle` to leave this process in the event simulation
+    = note: why: without `--two-state` the testbench must see the metavalues the event simulation gives it, and cycle-based code gives only '0' and '1'
+    = help: run with `--two-state`, or assign '0' or '1' instead of the metavalue; or run with `--cycle` to leave this process in the event simulation
 
 error: aborting due to 1 previous error
 

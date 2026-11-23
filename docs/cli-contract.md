@@ -268,12 +268,14 @@ identical to a run without it, at any `--threads`.
   16384 objects and 256 MiB, apart from the 4 GiB of entries, under the same rule at the limit. (The removed
   LLVM tier kept its modules there as `obj-<key>.img`.) `route-<key>.img`, one per design, holds how each compiled function
   first called the others, so that an unchanged design makes the same bodies in every run (#1035).
-- `--cycle-exact-meta` (with `--cycle`, `--cycle-strict` or `--cycle-report`, else a usage error, exit 2) keeps the
-  metavalue rules that hold processes out of the cycle region so the testbench sees the normal mode's metavalues;
-  without it metavalues read as `0` at the region's boundary (user, 2026-11-17). It is part of the key
-  of the cached analysis. With it the region also follows the `'U'` start values on a second image for up to
-  1024 clock edges and drives `'U'` where the output depends on them (owner decision A38, 2026-11-17); its end is
-  a line of the summary on standard error starting `cycle mode: 'U' start values`.
+- `--two-state` (user, 2026-11-21, A53 and A57; replaces 0.21's `--cycle-exact-meta`, removed, an unknown option
+  now): cycle mode on two-state values, metavalues read as `0` at the region's boundary and no process kept out for
+  one. Without it (the default of `--cycle`, `--cycle-strict` and `--cycle-report` alike) cycle mode keeps the
+  metavalue rules that hold processes out of the cycle region so the testbench sees the normal mode's metavalues,
+  follows the `'U'` start values on a second image for up to 1024 clock edges and drives `'U'` where the output
+  depends on them (owner decision A38, 2026-11-17); its end is a line of the summary on standard error starting
+  `cycle mode: 'U' start values`. It is part of the key of the cached analysis. `--two-state` without one of the
+  three cycle options is E0199 (not implemented yet), exit 2.
 - `yavs run --no-asserts` (owner decision A54, 2026-11-21) drops the `assert` and `report` statements of the
   processes below the top-level design unit (whose instance's architecture is not the top's), in the normal mode
   and in cycle mode; the statements inside subprograms and those of the top-level unit's processes run. The run
@@ -759,8 +761,9 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   `yavs.tier_compile` (before `yavs.sim_flags`, which win).
 - Cycle mode: the sim option `yavs.cycle` (`off`, `on`, `strict`) becomes `--cycle` or `--cycle-strict` on `yavs run`
   (never `elab`), before `yavs.sim_flags`. With a debug session or coverage the runner fails the test before
-  starting yavs, naming both (yavs itself answers E4102). `--cycle-exact-meta` has no sim option of its own:
-  `yavs.sim_flags` passes it after the cycle flag.
+  starting yavs, naming both (yavs itself answers E4102). The sim option `yavs.two_state` (`True` or `False`,
+  checked when set) adds `--two-state` after the cycle flag; with `yavs.cycle` `off` the runner fails the test
+  before starting yavs, naming both (yavs itself answers E0199).
 - Threads: yavs defaults to `--threads=1`. The sim
   option `yavs.max_threads` (or the runner argument `--yavs-max-threads N` for every test; both
   take a number or `auto`) becomes `--threads=N` before the raw flags, so `--threads` in

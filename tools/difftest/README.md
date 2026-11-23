@@ -250,9 +250,11 @@ outside the output directory, or relative to the working directory, are not isol
 seed runs (user decision A68): the designs of the cycle gate, each in every tier, at one and four threads and with
 `--shuffle`, normal and `--cycle`; within each mode every run must give the first one's canonical output. The warm
 cycle run follows a run with another seed in the same library: it must store no other analysis (the seed is in no
-cache key) and give the cold output. Normal against cycle mode is left to the cycle gate and to
-`crates/yavs/tests/init_start.rs`, since metavalues differ there by contract. `--two-state` adds the option to every
-run (both modes); run the gate with and without it.
+cache key) and give the cold output. Across modes (normal, `--cycle`, `--cycle-strict`, `--two-state` and
+`--cycle --two-state`) the same seed must give the same output wherever two modes give the same output with
+`--init-unset=0 --init-x=0` and with `=1`; pairs that differ at a fixed value already differ by contract and are
+counted, not compared (the summary line gives both numbers). `--two-state` adds the option to every run (both
+modes) and leaves out the cross-mode runs; run the gate with and without it.
 
 ```sh
 YAVS_BIN=<yavs built with --features clift> python3 -I tools/difftest/seedgate.py --seed 11 --jobs 2

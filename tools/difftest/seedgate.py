@@ -9,9 +9,10 @@ analysis from the cache (no other analysis stored) and give the cold run's outpu
 
 `--two-state` adds the option to every run, normal and cycle mode alike.
 
-Normal mode against cycle mode is not compared here: their values differ by contract where a design reads a
-metavalue (docs/cycle-mode.rst); the tests in crates/yavs/tests/init_start.rs compare them on designs where both
-give the same values.
+Across modes (normal, `--cycle`, `--cycle-strict`, `--two-state`, `--cycle --two-state`, A68(2)): two modes that
+give the same output with `--init-unset=0 --init-x=0` and with `=1` must also give the same output with the seed.
+Pairs that differ at a fixed value already differ by contract (docs/cycle-mode.rst) and are counted, not compared.
+The cross-mode runs are left out under `--two-state`, which they cover.
 """
 import argparse, re, shutil, sys, concurrent.futures as cf
 from pathlib import Path
@@ -30,8 +31,9 @@ def flags(seed):
 
 
 def one(item, a):
-    """(name, bucket, why): `same`, `differs` (a run of the mode gave other output, or the warm cycle run
-    stored another analysis) or `skipped` (the plain normal run fails before simulating)."""
+    """(name, bucket, why, (pairs compared, pairs apart at a fixed value)): `same`, `differs` (a run of the mode
+    gave other output, the warm cycle run stored another analysis, or two modes the seed alone set apart) or
+    `skipped` (the plain normal run fails before simulating)."""
     name, vhd, hdr, (tn, tc) = item
     base = D.CACHE / "seed" / re.sub(r"\W+", "_", name)
     f = flags(a.seed)
@@ -43,7 +45,7 @@ def one(item, a):
 
     first, rc = go(tn.replace("--threads=", "--tier=interp --threads="), "n")
     if rc in (97, 98):
-        return name, "skipped", "analysis or elaboration fails"
+        return name, "skipped", "analysis or elaboration fails", (0, 0)
     runs = {"normal interp": first}
     for t in a.tiers:
         runs[f"normal {t}"] = go(tn.replace("--threads=", f"--tier={t} --threads="), "n")[0]
@@ -61,15 +63,39 @@ def one(item, a):
     before = sorted(p.name for p in store.glob("cyc3-*.img"))
     cyc["cycle warm after another seed"] = go(tc, "w", fresh=False)[0]
     if sorted(p.name for p in store.glob("cyc3-*.img")) != before:
-        return name, "differs", "the warm cycle run with a new seed stored another analysis"
+        return name, "differs", "the warm cycle run with a new seed stored another analysis", (0, 0)
     for group in (runs, cyc):
         (k0, v0), *rest = group.items()
         for k, v in rest:
             if v != v0:
-                return name, "differs", f"{k} against {k0}: {G.first_diff(v0, v)}"
+                return name, "differs", f"{k} against {k0}: {G.first_diff(v0, v)}", (0, 0)
+    pairs = (0, 0)
+    if not TWO:
+        two = lambda t: t.replace(G.CYC, "--two-state " + G.CYC)
+        modes = {"normal": tn, "--cycle": tc, "--cycle-strict": tc.replace("--cycle ", "--cycle-strict ", 1),
+                 "--two-state": two(tn), "--cycle --two-state": two(tc)}
+        out = {s: {m: cross(go(t, f"x{i}", seed_flags=s)) for i, (m, t) in enumerate(modes.items())}
+               for s in (f, FIXED[0], FIXED[1])}
+        names = list(modes)
+        for i, m1 in enumerate(names):
+            for m2 in names[i + 1:]:
+                if any(out[s][m1] != out[s][m2] for s in FIXED):
+                    pairs = (pairs[0], pairs[1] + 1)
+                elif out[f][m1] != out[f][m2]:
+                    return name, "differs", f"{m2} against {m1} with the seed: {G.first_diff(out[f][m1], out[f][m2])}", pairs
+                else:
+                    pairs = (pairs[0] + 1, pairs[1])
     if not a.keep:
         shutil.rmtree(base, ignore_errors=True)
-    return name, "same", ""
+    return name, "same", "", pairs
+
+
+FIXED = ("--init-unset=0 --init-x=0", "--init-unset=1 --init-x=1")
+
+
+def cross(r):
+    """A run's canonical output without the line cycle mode adds (how many processes joined)."""
+    return [l for l in r[0] if not l.startswith("err\tcycle mode: ")]
 
 
 def main():
@@ -87,13 +113,16 @@ def main():
     TWO = a.two_state
     a.tiers = [t for t in a.tiers.split(",") if t]
     items = [i for i in G.items(a.only) if re.search(a.filter, i[0])]
-    counts = {}
+    counts, pairs = {}, [0, 0]
     with cf.ThreadPoolExecutor(min(a.jobs, D.MAX_JOBS)) as ex:
-        for name, bucket, why in ex.map(lambda i: one(i, a), items):
+        for name, bucket, why, (same, apart) in ex.map(lambda i: one(i, a), items):
             counts[bucket] = counts.get(bucket, 0) + 1
+            pairs[0] += same
+            pairs[1] += apart
             if bucket == "differs":
                 print(f"DIFFERS {name}: {why}", flush=True)
-    print(f"seedgate: seed {a.seed}, {len(items)} tests: " + ", ".join(f"{v} {k}" for k, v in sorted(counts.items())))
+    print(f"seedgate: seed {a.seed}, {len(items)} tests: " + ", ".join(f"{v} {k}" for k, v in sorted(counts.items()))
+          + ("" if TWO else f"; across modes {pairs[0]} pairs compared, {pairs[1]} differ at a fixed value"))
     sys.exit(1 if counts.get("differs") else 0)
 
 

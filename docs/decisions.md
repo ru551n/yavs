@@ -18108,9 +18108,21 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
   metavalue literal below the top-level unit are tied to `--two-state`; `--init-x` not given reads as 0 there (A58);
   the top-level unit keeps its literals (A62). Without `--two-state`, `--init-x` changes the assigned literals only,
   as in the normal mode.
-- **`--two-state` without a cycle option** is E0199 (not implemented yet) until the event kernel has two-state
-  values (A53 (2): semantics and speed there, planned separately); the test runner refuses `yavs.two_state` with
-  `yavs.cycle` `off` before starting yavs, naming both.
+- **`--two-state` in the event kernel** (user decisions A53 (2), A64, A65, 2026-11-23): every process below the
+  top-level unit, and every subprogram an architecture below it declares, is two-state (`Func::two_state`, lowered
+  with `Lowerer::two_state`, decided per subprogram when `func_of` declares it, `Cx::two_subs`; a package's
+  subprograms stay four-state, the top-level unit calls them too). The values come into two-state code mapped as the
+  cycle boundary maps them (`'1'`, `'H'` to `1`, anything else to `0`, `LOp::To01`): reads of signals, generics,
+  constants outside the frame, attributes, results of four-state subprograms, `out` actuals of four-state procedures
+  (records through `yavs.two.map`); metavalue literals take `--init-x` (0 without it), `'L'` and `'H'` their strong
+  values, `'-'` kept in `std_match`, `?=`, `?/=` (`yavs.two.lit`); signals and process variables without an initial
+  value start at `--init-unset` (0 without it), subprogram and shared variables at `'0'`. The top-level unit keeps
+  nine values. Rationale: one rule for both modes, so a normal `--two-state` run is the reference of the region's
+  two-state contract (`cyclegate.py --contract two-state` compares with it). Known gaps: `case` choices with
+  metavalues are not mapped; the kernel-native statements (copies, gates) below the top run as lowered code under the
+  option. Compiled two-state code computes logic on plane 0 alone where the operands are its own (`Gen::two`; code
+  inlined from four-state callees and matching comparisons keep four planes). The test runner passes
+  `yavs.two_state` with or without `yavs.cycle`.
 - **The comparison tools** (`tools/difftest` cycle tools) call their contracts `exact` (plain `--cycle`) and
   `two-state` (`--cycle --two-state`); the reviewed entries of the second start with `two-state contract:`.
 

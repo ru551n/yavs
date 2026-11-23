@@ -448,6 +448,14 @@ Arguments:
 
    Run the processes of a delta cycle in a random order, to find testbenches that depend on the order. SEED defaults to 1; the seed is printed at the start so that a failing run can be replayed with ``--shuffle=SEED``.
 
+.. option:: --init-unset=0|1|random[:SEED]
+
+   The start value of what VHDL leaves at ``'U'`` because no initial value is given: the ``std_ulogic`` elements (vectors, records and arrays of them too) of signals, ports and process variables without an initial value. ``0``, ``1``, or ``random[:SEED]``: a bit per element drawn from SEED (a new one each run when none is given; the seed is printed so that a run can be repeated). Integers and enumerations keep ``'left``. Default: ``'U'``.
+
+.. option:: --init-x=0|1|random[:SEED]
+
+   The value of the metavalue literals the design assigns (``'U'``, ``'X'``, ``'W'`` anywhere, ``'-'`` in a default branch, alone or as ``(others => ...)``), in the processes below the top-level unit: ``0``, ``1``, or ``random[:SEED]`` as for ``--init-unset``. Literals in conditions, comparisons, calls, subprograms and the top-level unit stay as written; in cycle mode every metavalue literal of a cycle-based process below the top-level unit, compared ones too, takes this value (``0`` without the option).
+
 .. option:: --cov, --cov=LETTERS
 
    Count coverage and write the run's coverage database (``--cov-file``). LETTERS selects the kinds, in any order: ``s`` statement, ``b`` branch, ``c`` condition, ``e`` expression, ``t`` toggle, ``f`` fsm, ``a`` assert, ``m`` combination; for example ``--cov=sbt``. No kind is on by default.

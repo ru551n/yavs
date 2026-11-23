@@ -191,6 +191,11 @@ pub struct Model {
     /// While the initial value of a signal is evaluated: a signal of the instance reads as
     /// its initial value (an `in` port's is its actual's, see `walk::Elab::edges`).
     pub(crate) sig_init: bool,
+    /// `--init-unset` (`ElabConfig::init_unset`), and the elements it gave a value.
+    pub(crate) init_unset: Option<yavs_logic::start::Fill>,
+    pub(crate) unset_elems: u64,
+    /// The signal leaves whose start value a `random` seed drew, in order.
+    pub(crate) drawn: Vec<crate::LeafId>,
     /// The ranges of types and subtypes with a bound that is not globally static
     /// (`Db::dynamic_range`), evaluated once at their declaration in an elaborated scope, by
     /// left bound (#612); those of packages by left bound, read from the package data.

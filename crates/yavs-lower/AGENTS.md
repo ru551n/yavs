@@ -140,6 +140,8 @@ VHDL resolution bodies continue through normal subprogram lowering (#608).
 Module-local decisions go in this section and DESIGN.md in the same commit (root `AGENTS.md`
 rule 24).
 
+| `--init-unset` (`LowerOptions::init_unset`): a process variable without an initial value (`Fx::unset`, its salt from `yavs_logic::start::var_salt`) gets the natives `yavs.init.unset` (its planes) and `yavs.init.unset_code` (a scalar) after its default (`Fx::unset_planes`, `unset_code`; the all-zero fast paths are off then). `--init-x` (`LowerOptions::init_x`, `Lowerer::x_sites`): a literal of the set is lowered as before, then `yavs.init.x` on a copy of its planes or `yavs.init.x_code` (`Fx::x_value`). The values are read at run time, so the seed is in no stage key | User decisions A52, A53; nothing is emitted without the options | `docs/decisions.md` "Start values" |
+
 ## 4. Invariants and pitfalls
 
 - **The lowering state is written into the `low` cache entry, in the order of its maps.** A map or set in `Cx` is an `FxHashMap`/`FxHashSet`, never a std one (seeded per process), or the entry differs in every process (`cache.rs` `entries_do_not_depend_on_who_made_the_std_units`, #973).

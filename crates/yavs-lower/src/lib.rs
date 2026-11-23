@@ -68,6 +68,11 @@ pub struct LowerOptions {
     /// `--no-asserts` (A54): the architectures [`Lowerer::drop_asserts`] names lower the assert
     /// and report statements of their processes to nothing; subprograms keep theirs.
     pub no_asserts: bool,
+    /// `--init-unset`: process variables without an initial value get their `std_ulogic`
+    /// elements from the native `yavs.init.unset` (`yavs_logic::start`).
+    pub init_unset: bool,
+    /// `--init-x`: the metavalue literals of `yavs_sem::Db::x_sites` come from `yavs.init.x`.
+    pub init_x: bool,
 }
 
 impl LowerOptions {
@@ -94,6 +99,8 @@ impl Default for LowerOptions {
             cov_directives: true,
             no_native_ieee: std::env::var_os("YAVS_NO_NATIVE_IEEE").is_some(),
             no_asserts: false,
+            init_unset: false,
+            init_x: false,
         }
     }
 }
@@ -441,6 +448,9 @@ pub(crate) struct Cx {
     /// (`--no-asserts`, [`Lowerer::drop_asserts`]).
     #[serde(skip)]
     pub drop_asserts: bool,
+    /// `--init-x`: the literals it gives a value (`yavs_elab`'s `x_sites`), set for a design.
+    #[serde(skip)]
+    pub x_sites: std::collections::HashSet<ExprId>,
     pub tys: HashMap<TypeId, TyId>,
     pub natives: HashMap<(String, Option<TyId>), NativeId>,
     pub foreigns: HashMap<DeclId, yavs_ir::ForeignId>,
@@ -850,6 +860,18 @@ pub struct Lowerer<'a> {
 }
 
 impl<'a> Lowerer<'a> {
+    /// `--init-x`: the literals of the design it gives a value.
+    pub fn x_sites(&mut self, sites: std::collections::HashSet<ExprId>) {
+        self.cx.x_sites = sites;
+    }
+
+    /// `--init-unset` and `--init-x` for what is lowered from here on (the architectures):
+    /// packages are lowered without them, so their stored images serve every run.
+    pub fn start_options(&mut self, init_unset: bool, init_x: bool) {
+        self.cx.opts.init_unset = init_unset;
+        self.cx.opts.init_x = init_x;
+    }
+
     /// `db` must hold no error diagnostics (fail early: nothing after a failed stage).
     pub fn new(db: &'a Db, opts: LowerOptions) -> Self {
         Lowerer {
@@ -872,6 +894,7 @@ impl<'a> Lowerer<'a> {
                 named_entities: None,
                 diags: Vec::new(),
                 drop_asserts: false,
+                x_sites: Default::default(),
                 tys: HashMap::default(),
                 natives: HashMap::default(),
                 foreigns: HashMap::default(),

@@ -102,7 +102,9 @@ The testbench's output is the same. The two ``cycle mode`` lines go to standard 
 
 ``--cycle-exact-meta`` goes with one of them and keeps more of the normal mode's metavalues (:ref:`cycle-exact-meta`).
 ``--no-asserts`` is a flag of every run, not of cycle mode: it drops the design's own asserts, and is described with
-the other speed options (:ref:`no-asserts`).
+the other speed options (:ref:`no-asserts`). ``--init-unset`` and ``--init-x`` are flags of every run too, for
+checking a design's reset (:doc:`start-values`); with ``--cycle`` they give the region the start values and literal
+values the normal mode gets (:doc:`two-state`).
 
 In VUnit
 ~~~~~~~~
@@ -144,7 +146,8 @@ configurations of its own needs each of them twice):
 * To see the report of one test, set ``yavs.sim_flags`` to ``["--cycle-report"]`` for that test, with
   ``yavs.cycle`` ``"off"`` (the two flags cannot be combined). yavs prints the report and simulates nothing, so the
   test fails on purpose: use it for a look on your machine, with ``-v``, not in CI.
-* ``yavs.no_asserts`` is the sim option of ``--no-asserts`` (:ref:`no-asserts`). ``yavs.sim_flags``
+* ``yavs.no_asserts`` is the sim option of ``--no-asserts`` (:ref:`no-asserts`), and ``yavs.init_unset`` and
+  ``yavs.init_x`` those of the start-value flags (:doc:`start-values`). ``yavs.sim_flags``
   ``["--cycle-exact-meta"]`` with ``yavs.cycle`` ``"on"`` or ``"strict"`` is the option of :ref:`cycle-exact-meta`.
 
 .. _cycle-changes:
@@ -571,7 +574,8 @@ The report and ``--cycle-strict`` give each reason a code. ``yavs --explain E411
      - The process
      - How to make it join
    * - E4101
-     - Uses a construct yavs does not implement yet (the message names it), such as a ``while`` loop
+     - Uses a construct yavs does not implement yet (the message names it), such as a ``while`` loop; with
+       ``--cycle-exact-meta`` also a comparison with a metavalue literal
      - Limitation. Write it another way.
    * - E4110
      - Has a wait other than a first ``wait until <edge>;``
@@ -850,6 +854,7 @@ See also
 --------
 
 * :doc:`two-state`: the values the region computes with.
+* :doc:`start-values`: ``--init-unset`` and ``--init-x``, for checking a design's reset.
 * :doc:`running-faster`: the other ways to a faster run, and ``--no-asserts``.
 * :doc:`cli-reference`: the cycle flags.
 * :doc:`vunit-yavs`: the ``yavs.cycle`` sim option.

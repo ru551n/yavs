@@ -25,6 +25,7 @@ mod summary;
 mod value;
 mod walk;
 mod whole;
+mod xsites;
 
 #[cfg(test)]
 mod tests;
@@ -162,6 +163,11 @@ pub struct ElabConfig {
     /// ([`GenericReads::walk`]); `true` leaves the value passes out (cycle mode has its analysis
     /// from its cache, so nothing reads their values).
     pub values: Option<ValuesHook>,
+    /// `--init-unset`: the start value of the `std_ulogic` elements of signals without an
+    /// initial value (`'U'` when `None`).
+    pub init_unset: Option<yavs_logic::start::Fill>,
+    /// `--init-x`: find the metavalue literals it gives a value (`Elaborated::x_sites`).
+    pub init_x: bool,
 }
 
 /// See [`ElabConfig::values`].
@@ -200,6 +206,8 @@ impl Default for ElabConfig {
             packs: true,
             keep_values: false,
             values: None,
+            init_unset: None,
+            init_x: false,
         }
     }
 }
@@ -602,6 +610,14 @@ pub struct Elaborated {
     pub(crate) elab_pkgs: Vec<(yavs_sem::UnitId, usize)>,
     /// The package initialisation reports elaboration printed (`Session::init_printed`).
     pub(crate) elab_printed: usize,
+    /// The signal elements `--init-unset` gave a start value.
+    pub unset_elems: u64,
+    /// The signal leaves whose start value `--init-unset=random` drew: what reads start values
+    /// to compile (cycle mode) treats them as unknown, so another seed needs no other code (A68).
+    pub drawn: std::collections::BTreeSet<LeafId>,
+    /// Under `--init-x`: the metavalue literals it gives a value (`xsites`), which the lowering
+    /// and cycle mode take from `yavs_logic::start::x`.
+    pub x_sites: std::collections::HashSet<yavs_sem::ExprId>,
     /// The package state those calls left, for the simulation to start from (#383).
     pub(crate) start: Option<pkgcall::Start>,
 }

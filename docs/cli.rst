@@ -66,6 +66,8 @@ Control a run
   changed most often, with ``--activity=FILE`` also as JSON. ``--profile`` measures time instead.
 * A testbench that may depend on process order: ``--shuffle`` runs the processes in a random order and prints the
   seed, so the run can be repeated with ``--shuffle=SEED``.
+* A design that may depend on the start value of a register without reset, or on what a "don't care" literal
+  becomes: ``--init-unset`` and ``--init-x`` (:doc:`start-values`).
 
 ``--assert-summary`` and ``--activity`` need 0.12.0 or later.
 

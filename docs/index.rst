@@ -81,6 +81,7 @@ the :doc:`release_notes`.
    :hidden:
 
    cli
+   start-values
    generics
    lint
    waveforms

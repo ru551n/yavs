@@ -13,6 +13,7 @@ serde_json = "1"
 yavs-cache = { path = "../yavs-cache" }
 yavs-cov = { path = "../yavs-cov" }
 yavs-diag.workspace = true
+yavs-logic.workspace = true
 yavs-cycle = { path = "../yavs-cycle" }
 yavs-dap = { path = "../yavs-dap" }
 yavs-elab = { path = "../yavs-elab" }

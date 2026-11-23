@@ -857,6 +857,19 @@ pub(crate) struct Body {
     /// The process variables among those (first word, elements): the second image of
     /// `--cycle-exact-meta` starts them at 1 (`rt::Rail`).
     pub useed: Vec<(u32, u32)>,
+    /// The `std_ulogic` leaves of clocked variables without an initial value (first word,
+    /// elements, the salt of the variable): `--init-unset` sets them at initialisation
+    /// (`rt::RegionProc::unset`).
+    #[serde(default)]
+    pub unset: Vec<(u32, u32, u64)>,
+    /// The names of those variables, for `--cycle-report`.
+    #[serde(default)]
+    pub unset_names: Vec<String>,
+    /// Slots that hold the bits of a metavalue literal under `--init-x=random` (first word,
+    /// elements, the literal's salt), filled when the run starts: the seed is a run-time input
+    /// only, so a run with another seed reuses the code and the cache (A68).
+    #[serde(default)]
+    pub rands: Vec<(u32, u32, u64)>,
     /// Under `--cycle-exact-meta`: a comparison or conversion of logic values the code cannot
     /// give the normal mode's result on a metavalue (`Lx::differs`): the second image may take
     /// another branch, so its registers keep the region's values where only it changed them
@@ -1198,9 +1211,36 @@ const NOTE_RESET: &str =
 /// kernel (A19): the testbench's checks of the values of every delta stay exact.
 const NOTE_COMB: &str = "an assert or report that runs outside a clock edge";
 
+/// `Part::lit` of an aggregate that holds a metavalue literal and other values: its codes are
+/// not kept, so a matching comparison with it (and any under `--cycle-exact-meta`) stays out.
+const LIT_MIXED: u32 = u32::MAX;
+
 /// Why a comparison or arithmetic with a literal holding a metavalue keeps its process out.
 const META_CMP: &str = "a comparison with a metavalue literal (`'U'`, `'X'`, `'-'`, ...), which two-state \
                         values never equal";
+
+/// The salt of the bits a metavalue literal of a two-state region takes at `span` (A57).
+fn lit_salt(db: &Db, span: yavs_diag::Span) -> u64 {
+    let (file, line, col) = db.sources.get(span.file).site(span.start);
+    yavs_logic::start::lit_salt(file, line, col)
+}
+
+/// The bits of a literal value: those known when compiling, and the elements (a mask) that take
+/// the `--init-x=random` bits of a salt when the run starts (`Body::rands`).
+type Bits = (Box<[u64]>, Option<(u64, Box<[u64]>)>);
+
+/// `n` elements of fill `f` for the literal of `salt`: constant bits, or all from the run's seed.
+fn fill_bits(f: yavs_logic::start::Fill, salt: u64, n: u32) -> Bits {
+    let mut all = vec![0u64; words(n) as usize];
+    set_bits(&mut all, 0, n);
+    match f {
+        yavs_logic::start::Fill::Zero => (vec![0u64; all.len()].into(), None),
+        yavs_logic::start::Fill::One => (all.into(), None),
+        yavs_logic::start::Fill::Random(_) => {
+            (vec![0u64; all.len()].into(), Some((salt, all.into())))
+        }
+    }
+}
 
 /// Most elements of a logic value: 2**26 (a megaword), so element offsets stay far inside `u32`
 /// (a run-time index scales them by an element's width in `i64`). A memory that large is not
@@ -1248,12 +1288,18 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         metas: 0,
         uninit: 0,
         useed: Vec::new(),
+        unset: Vec::new(),
+        unset_names: Vec::new(),
+        x: None,
         sure: HashSet::new(),
         unsure: None,
         checks: Vec::new(),
         at: db.stmts[p.stmt].span,
         unrolled: 0,
         lits: Vec::new(),
+        lit_vals: Vec::new(),
+        rands: Vec::new(),
+        lit_at: None,
         lit_cmp: BTreeSet::new(),
         bounds: false,
         sigs: Vec::new(),
@@ -1368,6 +1414,10 @@ struct Lx<'a> {
     metas: u32,
     uninit: u64,
     useed: Vec<(u32, u32)>,
+    unset: Vec<(u32, u32, u64)>,
+    unset_names: Vec<String>,
+    /// While an `--init-x` literal is lowered: the option and the literal's salt.
+    x: Option<(yavs_logic::start::Fill, u64)>,
     /// Under `--cycle-exact-meta`: booleans computed from the region's values on every image
     /// (`Lx::other`), for `Body::keep`.
     sure: HashSet<Ref>,
@@ -1380,6 +1430,12 @@ struct Lx<'a> {
     unrolled: u32,
     /// The codes of the literals with a metavalue (`Part::lit`).
     lits: Vec<Vec<u8>>,
+    /// The bits each of `lits` holds (a metavalue's as a two-state region reads it), and the place
+    /// of the expression lowered last (`lit_salt`).
+    lit_vals: Vec<Bits>,
+    lit_at: Option<yavs_diag::Span>,
+    /// The slots of `random` literal bits (`Body::rands`).
+    rands: Vec<(u32, u32, u64)>,
     /// The literals of `lits` a comparison took.
     lit_cmp: BTreeSet<u32>,
     /// The calls folded from `Elaborated::region_calls` that reported (`Body::reports`).
@@ -1456,6 +1512,9 @@ impl Lx<'_> {
             meta_out: self.metas - self.lit_cmp.len() as u32,
             uninit: self.uninit,
             useed: self.useed,
+            unset: self.unset,
+            unset_names: self.unset_names,
+            rands: self.rands,
             keep,
             checks: self.checks,
         }
@@ -1533,6 +1592,8 @@ impl Lx<'_> {
         // A combinational variable is assigned before any read: its start value is never seen.
         self.uninit = 0;
         self.useed.clear();
+        self.unset.clear();
+        self.unset_names.clear();
         self.init_ops.clear();
         Ok(self.body(Kind::Comb, None, None))
     }
@@ -1693,6 +1754,25 @@ impl Lx<'_> {
             }
         }
         r
+    }
+
+    /// `bits` (of `n` elements) into `dst`: the constant bits, then the run's random ones from a
+    /// slot of their own that no operation writes.
+    fn lit_value(&mut self, dst: Ref, n: u32, bits: &Bits) {
+        self.ops.push(Op::Lit {
+            dst,
+            val: bits.0.clone(),
+        });
+        if let Some((salt, mask)) = &bits.1 {
+            let w = self.locs;
+            let src = self.loc(words(n));
+            self.rands.push((w, n, *salt));
+            self.ops.push(Op::Blend {
+                dst,
+                src,
+                mask: mask.clone(),
+            });
+        }
     }
 
     fn loc(&mut self, words: u32) -> Ref {
@@ -2161,7 +2241,10 @@ impl Lx<'_> {
                     if codes.len() != p.len as usize {
                         return Err("a `case` choice of another length than the selector".into());
                     }
-                    self.match_codes(*p, &codes, matching)?
+                    // A metavalue of the choice takes the bits a literal there would.
+                    let salt = lit_salt(self.db, self.db.exprs[*x].span);
+                    let bits = fill_bits(crate::region::meta_fill(), salt, codes.len() as u32);
+                    self.match_codes(*p, &codes, matching, &bits)?
                 }
                 _ => {
                     return Err("a `case` choice of this kind".into());
@@ -2188,23 +2271,38 @@ impl Lx<'_> {
     /// `p` against the `std_ulogic` codes of a literal (from the left): `'-'` matches anything
     /// in a matching comparison; any other metavalue keeps the process out (a two-state value
     /// is never one, while the normal mode can hold it).
-    fn match_codes(&mut self, p: Part, codes: &[u8], matching: bool) -> R<Ref> {
+    fn match_codes(&mut self, p: Part, codes: &[u8], matching: bool, bits: &Bits) -> R<Ref> {
         let n = codes.len();
         let mut val = vec![0u64; words(n as u32) as usize];
         let mut care = vec![0u64; val.len()];
+        let mut rnd = vec![0u64; val.len()];
+        let two = self.meta_joins();
+        let is = |m: &[u64], el: usize| (m[el / 64] >> (el % 64)) & 1;
         for (k, &c) in codes.iter().enumerate() {
             let el = n - 1 - k;
             let (bit, keep) = match c {
                 2 | 6 => (0, true),
                 3 | 7 => (1, true),
                 8 if matching => (0, false),
+                // A two-state region compares with the literal's bits (A57), the run's random
+                // ones from their slot.
+                0 | 1 | 5 | 8 if two => {
+                    if bits.1.as_ref().is_some_and(|(_, m)| is(m, el) == 1) {
+                        rnd[el / 64] |= 1 << (el % 64);
+                    }
+                    (is(&bits.0, el), true)
+                }
                 _ => return Err(META_CMP.into()),
             };
             val[el / 64] |= bit << (el % 64);
             care[el / 64] |= u64::from(keep) << (el % 64);
         }
+        let expect: Bits = (
+            val.into(),
+            (rnd.iter().any(|&w| w != 0)).then(|| (bits.1.as_ref().map_or(0, |b| b.0), rnd.into())),
+        );
         let a = self.whole(p);
-        let mut all = vec![0u64; val.len()];
+        let mut all = vec![0u64; care.len()];
         set_bits(&mut all, 0, n as u32);
         let a = if care != all {
             let m = self.tmp(n as u32);
@@ -2225,10 +2323,7 @@ impl Lx<'_> {
             a
         };
         let l = self.tmp(n as u32);
-        self.ops.push(Op::Lit {
-            dst: l.r,
-            val: val.into(),
-        });
+        self.lit_value(l.r, n as u32, &expect);
         let t = self.tmp(1);
         self.ops.push(Op::VecEq {
             dst: t.r,
@@ -3671,6 +3766,9 @@ impl Lx<'_> {
                     .tree(shape, d, &mut |_| Ref::Loc(u32::MAX))
                     .map_err(|w| format!("{w} (variable `{}`)", decl.name))?;
                 let v = self.place_vars(v, o.default.is_some());
+                if o.default.is_none() {
+                    self.unset_leaves(&v, shape, d)?;
+                }
                 self.vars.insert(d, v.clone());
                 // The initial value, once at initialisation (a combinational process assigns
                 // before it reads, so it never sees it): evaluated where the run starts, so the
@@ -3781,6 +3879,63 @@ impl Lx<'_> {
         self.known = known;
         self.init_ops.extend(made?);
         Ok(v)
+    }
+
+    /// Whether a metavalue literal of this body takes the bits of `--init-x` instead of keeping
+    /// the process out (A57): in a two-state region, below the top-level unit. A process of the
+    /// top-level unit keeps the rule before A57, so a testbench's `assert q /= 'X'` checks as in
+    /// the normal mode.
+    fn meta_joins(&self) -> bool {
+        crate::region::two_state() && !self.top
+    }
+
+    /// `--init-unset`: the `std_ulogic` leaves of variable `d` (of elaborated shape `shape`, placed
+    /// in `v` in the order of its leaves) for `Body::unset`, with the normal mode's salt; a variable
+    /// whose leaves do not match its shape keeps its process out.
+    fn unset_leaves(&mut self, v: &Val, shape: &Shape, d: DeclId) -> R<()> {
+        fn parts<'a>(v: &'a Val, out: &mut Vec<Option<&'a Part>>) {
+            match v {
+                Val::Part(p) => out.push(Some(p)),
+                Val::Int(_) => out.push(None),
+                Val::Rec(fs) => fs.iter().for_each(|f| parts(f, out)),
+                Val::Null(_) => out.push(None),
+            }
+        }
+        let db = self.db;
+        let mut ps = Vec::new();
+        parts(v, &mut ps);
+        let leaves = shape.leaves();
+        if ps.len() != leaves.len() && yavs_logic::start::unset().is_none() {
+            return Ok(());
+        }
+        if ps.len() != leaves.len() {
+            return Err(format!(
+                "a start value of `--init-unset`: the leaves of the variable `{}` are not one per \
+                 field",
+                db.decls[d].name
+            ));
+        }
+        let decl = &db.decls[d];
+        let salt = yavs_logic::start::inst_salt(
+            {
+                let (file, line, col) = db.sources.get(decl.span.file).site(decl.span.start);
+                yavs_logic::start::var_salt(file, &decl.name.to_string(), line, col)
+            },
+            &self.e.proc_label(self.p),
+        );
+        for (p, (_, leaf, _)) in ps.into_iter().zip(&leaves) {
+            if let (Some(p), Shape::Scalar { ty, .. }) = (p, leaf)
+                && p.int.is_none()
+                && db.is_std_ulogic(*ty)
+                && let Ref::Loc(w) = p.r
+            {
+                self.unset.push((w, p.full, salt));
+            }
+        }
+        if self.unset.last().is_some_and(|u| u.2 == salt) {
+            self.unset_names.push(decl.name.to_string());
+        }
+        Ok(())
     }
 
     /// Give a variable's leaves their slots: a logic leaf starts at 0 (its `'U'`, counted, unless
@@ -4602,7 +4757,34 @@ impl Lx<'_> {
 
     /// Expression `x`; `hint`: the place it is assigned to, whose shape an aggregate takes.
     fn expr_h(&mut self, x: ExprId, hint: Option<&Val>) -> R<Val> {
+        // An `--init-x` literal: its metavalues get the option's bits, as `yavs.init.x` gives them.
+        if self.x.is_none() && yavs_logic::start::x().is_some() && self.e.x_sites.contains(&x) {
+            let db = self.db;
+            let span = db.exprs[x].span;
+            let salt = lit_salt(db, span);
+            let f = crate::region::meta_fill();
+            self.x = Some((f, salt));
+            let r = self.expr_in(x, hint);
+            self.x = None;
+            // Every element of an aggregate site is a metavalue: a bit of its own each, also where
+            // the lowering fills the vector with one element's value.
+            return match r? {
+                Val::Part(p) if p.int.is_none() && p.len > 1 => {
+                    let mut t = self.tmp(p.len);
+                    let bits = fill_bits(f, salt, p.len);
+                    self.lit_value(t.r, p.len, &bits);
+                    t.dims = p.dims;
+                    Ok(Val::Part(t))
+                }
+                v => Ok(v),
+            };
+        }
+        self.expr_in(x, hint)
+    }
+
+    fn expr_in(&mut self, x: ExprId, hint: Option<&Val>) -> R<Val> {
         let db = self.db;
+        self.lit_at = Some(db.exprs[x].span);
         let ex = &db.exprs[x];
         if let Some(h) = hint
             && all_null(h)
@@ -5095,13 +5277,56 @@ impl Lx<'_> {
             && ew == 1
             && at.len() == count
         {
-            let a = self.whole(*v);
-            self.ops.push(Op::Splat {
-                dst: t.r,
-                a,
-                len: n,
-            });
+            let lit = v.lit.filter(|&k| k != LIT_MIXED);
+            // `(others => 'X')` under `--init-x=random`: a bit of its own each element (A62),
+            // the salt of the aggregate.
+            let rand = match (lit, self.meta_joins(), crate::region::meta_fill()) {
+                (Some(_), true, f @ yavs_logic::start::Fill::Random(_)) => {
+                    let bits = fill_bits(f, lit_salt(db, db.exprs[x].span), n);
+                    self.lit_value(t.r, n, &bits);
+                    Some(bits)
+                }
+                _ => None,
+            };
+            if rand.is_none() {
+                let a = self.whole(*v);
+                self.ops.push(Op::Splat {
+                    dst: t.r,
+                    a,
+                    len: n,
+                });
+            }
+            // `(others => '-')`: the literal's codes and bits, every element.
+            if let Some(k) = lit {
+                let (c, b) = (&self.lits[k as usize], &self.lit_vals[k as usize]);
+                let (c, one, own) = (c[0], b.0[0] & 1, b.1.as_ref().map(|r| r.0));
+                self.lits.push(vec![c; count]);
+                let bits = match (rand, own) {
+                    (Some(r), _) => r,
+                    // A one-element literal of its own random bit (`--init-x`): that bit.
+                    (None, Some(salt)) => fill_bits(yavs_logic::start::Fill::Random(0), salt, n),
+                    (None, None) => fill_bits(
+                        if one == 1 {
+                            yavs_logic::start::Fill::One
+                        } else {
+                            yavs_logic::start::Fill::Zero
+                        },
+                        0,
+                        n,
+                    ),
+                };
+                self.lit_vals.push(bits);
+                t.lit = Some(self.lits.len() as u32 - 1);
+            }
             return Ok(Val::Part(t));
+        }
+        if put
+            .iter()
+            .map(|p| &p.1)
+            .chain(pieces.iter().map(|p| &p.1))
+            .any(|v| v.lit.is_some())
+        {
+            t.lit = Some(LIT_MIXED);
         }
         self.ops.push(Op::Lit {
             dst: t.r,
@@ -5401,32 +5626,52 @@ impl Lx<'_> {
             return Ok(Val::Null(dims));
         }
         let mut val = vec![0u64; words(n) as usize];
+        let mut rnd = vec![0u64; val.len()];
         let mut meta = false;
+        // A two-state region gives a metavalue the bits of `--init-x` (A57), 0 without it.
+        let (two, fill) = (self.meta_joins(), crate::region::meta_fill());
+        let mut salt = self.lit_at.map_or(0, |at| lit_salt(self.db, at));
         for (p, &code) in codes.iter().enumerate() {
-            let bit = match code {
-                2 | 6 => 0,
-                3 | 7 => 1,
-                4 => return Err("a `'Z'` literal: two-state values have no high impedance".into()),
-                _ => {
-                    meta = true;
-                    0
-                }
-            };
             // Row-major element `p` from the left is element `n - 1 - p`.
             let el = n as usize - 1 - p;
-            val[el / 64] |= bit << (el % 64);
+            let f = match (code, self.x) {
+                (2 | 6, _) => yavs_logic::start::Fill::Zero,
+                (3 | 7, _) => yavs_logic::start::Fill::One,
+                (4, _) => {
+                    return Err("a `'Z'` literal: two-state values have no high impedance".into());
+                }
+                (0 | 1 | 5 | 8, Some((f, s))) => {
+                    salt = s;
+                    f
+                }
+                _ => {
+                    meta = true;
+                    if two {
+                        fill
+                    } else {
+                        yavs_logic::start::Fill::Zero
+                    }
+                }
+            };
+            match f {
+                yavs_logic::start::Fill::Zero => {}
+                yavs_logic::start::Fill::One => val[el / 64] |= 1 << (el % 64),
+                yavs_logic::start::Fill::Random(_) => rnd[el / 64] |= 1 << (el % 64),
+            }
         }
         if meta {
             self.metas += 1;
         }
         let mut t = self.tmp(n);
-        self.ops.push(Op::Lit {
-            dst: t.r,
-            val: val.into(),
-        });
+        let bits: Bits = (
+            val.into(),
+            (rnd.iter().any(|&w| w != 0)).then(|| (salt, rnd.into())),
+        );
+        self.lit_value(t.r, n, &bits);
         t.dims = dims;
         if meta {
             self.lits.push(codes);
+            self.lit_vals.push(bits);
             t.lit = Some(self.lits.len() as u32 - 1);
         }
         Ok(Val::Part(t))
@@ -5523,7 +5768,9 @@ impl Lx<'_> {
         };
         let (a, b) = (self.arg(a)?, self.arg(b)?);
         for v in [&a, &b] {
-            if let Val::Part(Part { lit: Some(_), .. }) = v {
+            if let Val::Part(Part { lit: Some(_), .. }) = v
+                && !self.meta_joins()
+            {
                 return Err(META_CMP.into());
             }
         }
@@ -6198,8 +6445,8 @@ impl Lx<'_> {
                             });
                             let (a, b) = (self.part(a)?, self.part(b)?);
                             let n = a.len.max(b.len);
-                            if a.len.min(b.len) != 1 || n < 1 || a.lit.is_some() || b.lit.is_some()
-                            {
+                            let lit = a.lit.is_some() || b.lit.is_some();
+                            if a.len.min(b.len) != 1 || n < 1 || (lit && !self.meta_joins()) {
                                 return not_yet();
                             }
                             let (a, b) = (self.ext(a, n, false), self.ext(b, n, false));
@@ -6302,7 +6549,7 @@ impl Lx<'_> {
                         let (a, b, m) = if form == Form::Vv {
                             let (a, b) = two(self)?;
                             let (a, b) = (self.part(a)?, self.part(b)?);
-                            if a.lit.is_some() || b.lit.is_some() {
+                            if (a.lit.is_some() || b.lit.is_some()) && !self.meta_joins() {
                                 return Err(META_CMP.into());
                             }
                             let m = a.len + b.len;
@@ -6805,20 +7052,28 @@ impl Lx<'_> {
             // Arrays of different lengths are never equal (LRM 9.2.3).
             return Ok(Val::Part(self.bool_lit(ne)));
         }
-        if let Some(k) = b.lit.or(a.lit) {
-            // The literal's own codes decide (`'-'` as a mask when matching).
-            let v = if b.lit.is_some() { a } else { b };
-            self.lit_cmp.insert(k);
-            let codes = self.lits[k as usize].clone();
-            let ov = if nine && !ne { self.other(&v) } else { None };
-            let r = self.match_codes(ov.unwrap_or(v), &codes, matching)?;
-            if ov.is_some() {
-                self.sure.insert(r);
+        match b.lit.or(a.lit) {
+            // An aggregate of a metavalue literal and other values: its codes are not kept.
+            Some(LIT_MIXED) if matching || !self.meta_joins() => {
+                return Err(META_CMP.into());
             }
-            if !ne {
-                return Ok(Val::Part(part_of(r, 1)));
+            Some(LIT_MIXED) | None => {}
+            Some(k) => {
+                // The literal's own codes decide (`'-'` as a mask when matching).
+                let v = if b.lit.is_some() { a } else { b };
+                self.lit_cmp.insert(k);
+                let codes = self.lits[k as usize].clone();
+                let ov = if nine && !ne { self.other(&v) } else { None };
+                let bits = self.lit_vals[k as usize].clone();
+                let r = self.match_codes(ov.unwrap_or(v), &codes, matching, &bits)?;
+                if ov.is_some() {
+                    self.sure.insert(r);
+                }
+                if !ne {
+                    return Ok(Val::Part(part_of(r, 1)));
+                }
+                return self.not(Val::Part(part_of(r, 1)));
             }
-            return self.not(Val::Part(part_of(r, 1)));
         }
         // Under `--cycle-exact-meta` every image compares the region's values: a choice on a
         // start value is the region's on the second image too (`Lx::other`).
@@ -7018,7 +7273,9 @@ impl Lx<'_> {
         };
         let (a, b) = (self.arg(a)?, self.arg(b)?);
         for v in [&a, &b] {
-            if let Val::Part(Part { lit: Some(_), .. }) = v {
+            if let Val::Part(Part { lit: Some(_), .. }) = v
+                && !self.meta_joins()
+            {
                 return Err(META_CMP.into());
             }
         }
@@ -7111,7 +7368,9 @@ impl Lx<'_> {
         };
         let (a, b) = (self.arg(a)?, self.arg(b)?);
         let vec = if form == Form::Vi { &a } else { &b };
-        if let Val::Part(Part { lit: Some(_), .. }) = vec {
+        if let Val::Part(Part { lit: Some(_), .. }) = vec
+            && !self.meta_joins()
+        {
             return Err(META_CMP.into());
         }
         let (v, i, swap) = match form {

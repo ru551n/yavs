@@ -18038,3 +18038,60 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
   worlds of each binary: median 175.96 G base, 177.48 G new, both bimodal (a mode of thousands of hand-overs to the
   tier's loop, 181 to 186 G, in 3 of 16 base runs and 7 of 16 new ones; the low mode 172 to 174 base, 171.5 to 172.6
   new); a rank test shows no shift (z = -0.08).
+
+## Start values: `--init-unset` and `--init-x` (yavs-logic `start.rs`, yavs-elab, yavs-lower, yavs-interp, yavs-cycle; user decisions A52, A53, 2026-11-21)
+
+- **Decision.** `--init-unset=0|1|random[:SEED]` gives the `std_ulogic` elements that start at `'U'` because no
+  initial value is given a value: signals and ports (elaboration, `walk.rs` `unset_starts`, through
+  `ElabConfig::init_unset`), variables of processes (the natives `yavs.init.unset` and `yavs.init.unset_code`, emitted
+  only under `LowerOptions::init_unset`) and the clocked variables of cycle mode (`Body::unset`, set at the region's
+  initialisation). `--init-x` gives the metavalue literals of `yavs-elab` `xsites.rs` a value (`yavs.init.x`,
+  `yavs.init.x_code`; cycle mode's `Lx::logic_lit`). Supersedes A17 ("no start-value option") and the zero-only D3.
+- **One value function.** A bit is `Fill::bit(salt, element)`, element 0 the rightmost: a pure function of the seed,
+  the object (a signal's lowercase instance path and leaf, a variable's file, name and place, a literal's file and
+  place) and the element. No stream of random numbers, so the order of evaluation, the tier, `--threads` and cycle
+  mode do not change a bit. The cycle region reads signals from the kernel at initialisation, so it holds what the
+  event kernel holds.
+- **The seed is in no cache key.** The IR stage key holds whether each option is on (the lowering emits the natives
+  only then); the natives read the value at run time. Cycle mode's analysis key holds the kind of `--init-unset`
+  and the whole `--init-x` (its literals are compiled into region code), so a `random` `--init-x` without a seed
+  misses that cache in every run.
+- **Scope (as the normal mode applies them; a two-state region goes further, next bullets).** Signals, ports and process variables; not subprogram locals (elaboration-time calls, library code),
+  shared and protected variables or allocated objects; integers and enumerations keep `'left`, and an element whose
+  subtype starts elsewhere keeps it. `--init-x`: `'U'`, `'X'`, `'W'` as the value of an assignment, `'-'` only in a
+  default branch, alone, qualified or as the one `others` choice of an aggregate, in processes and concurrent
+  assignments below the top-level unit; a statement holding one runs as lowered code, never as a kernel copy, gate,
+  mux or program. Comparisons, calls (a `std_match` mask), strings, initial values, subprograms and the top-level unit
+  are untouched, so the checks of a testbench keep their literals.
+- **`random` without a seed** draws one from the time and the process id and prints it, so a failure can be
+  repeated with `random:SEED`.
+- **Metavalue literals of a two-state region (user decisions A57, A58, 2026-11-21).** In a two-state region (today
+  every cycle run but `--cycle-exact-meta`, `region::two_state`; step 4 ties it to `--two-state`) a metavalue
+  literal in an assignment, a comparison, a `case` choice or a `numeric_std` operator no longer keeps its process
+  out: it takes the bits of `--init-x`, `0` without it (A58: as the default contract read it before), counted per
+  process in the region report. Only below the top-level unit (`Lx::meta_joins`): a process of the top-level unit
+  that compares with one stays in the event kernel as before, since a testbench checker such as `assert q /= 'X'`
+  would otherwise fail on every 0 the region gives it (found by the gate review, `tests/cycle/topmeta.vhd`). `'-'` in a matching comparison still matches anything; `'Z'` still keeps the
+  process out. Supersedes the stay-out rule of A9 and the A30 strict loss.
+- **A `'-'` aggregate of a generic length** (`std_match(d, (d'range => '-'))`) keeps its codes when the region
+  spreads one element over the vector (`Op::Splat`); an aggregate of a metavalue literal and other values is marked
+  (`LIT_MIXED`), and a matching comparison with it keeps its process out. Before, both were compared with `0`, a
+  wrong result of cycle mode (found 2026-11-21).
+- **Confirmed by the user (A62, 2026-11-22).** (1) In a two-state region a metavalue literal below the top-level
+  unit takes the `--init-x` value everywhere, compares, `case` choices and asserts included: `x = 'X'` is true where
+  `x` is 0, `assert x /= 'X'` of the design fails there. (2) The processes of the top-level unit keep their
+  metavalue compares. (3) `random` without a seed is time-based and printed (its cache miss in cycle mode is gone,
+  A68 below). (4) A variable's bits come from its declaration and the instance
+  path of its process (`start::inst_salt`), a literal's from its place only. (5) A `'-'` assigned in a default
+  branch is replaced like `'U'`, `'X'` and `'W'`.
+- **Seeds are run-time inputs, fully deterministic (user, A68, 2026-11-23).** (1) The seed of `random` never enters
+  compiled code or a cache key; only the kind (`0`, `1`, `random`) does. Cycle mode puts the bits of a random literal
+  in image slots no operation writes (`Body::rands`), filled when the run starts (`rt::fill`), and its analysis
+  treats a start value drawn by `--init-unset=random` as unknown (`Elaborated::drawn`, `region::start_char`), so
+  runs that differ in the seed share the code and every cache. (2) One seed gives the same values in every mode,
+  tier, thread count, process order and cache state, and on every system: the bits come only from the seed and a
+  stable place: a signal's path and element, a variable's name and source site with its process's path, a
+  literal's source site. A source site is the file name without its directory, the line and the byte column
+  (`SourceFile::site`): checkout location, path separators and line ends change nothing. One salt per literal for
+  both modes (`start::lit_salt`). Owner, same day: a literal's bits stay per source site (one for every instance);
+  subprogram, protected, shared and allocated variables stay outside `--init-unset`.

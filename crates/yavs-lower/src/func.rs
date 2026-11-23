@@ -324,6 +324,9 @@ pub(crate) struct Fx<'a, 'b> {
     /// protected types, LCS-2016-014); off while `prot_new` lays out a state whose
     /// variables get theirs later, in declaration order.
     pub prot_defaults: bool,
+    /// `--init-unset` while a process variable without an initial value is laid out: the salt
+    /// of its bits (`yavs_logic::start::var_salt`).
+    pub unset: Option<u64>,
     /// The `GUARD` signal of the enclosing guarded block (guarded assignments).
     pub guard: Option<DeclId>,
     /// Copy-out after the call being lowered: (frame slot of the temporary, the actual's
@@ -398,6 +401,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             known: rustc_hash::FxHashMap::default(),
             prot_self: None,
             prot_defaults: true,
+            unset: None,
             guard: None,
             writeback: Vec::new(),
             writeback_parts: Vec::new(),
@@ -1109,6 +1113,23 @@ impl<'a, 'b> Fx<'a, 'b> {
     pub fn var_init(&mut self, d: DeclId, shape: VarShape, slot: Reg, shared: bool) -> R<()> {
         let db = self.db;
         let decl = &db.decls[d];
+        let unset = (self.cx.opts.init_unset
+            && !shared
+            && db.scopes[decl.scope].kind == yavs_sem::scope::ScopeKind::Process
+            && matches!(&decl.kind, DeclKind::Object(o) if o.default.is_none()))
+        .then(|| {
+            let (file, line, col) = db.sources.get(decl.span.file).site(decl.span.start);
+            yavs_logic::start::var_salt(file, &decl.name.to_string(), line, col)
+        });
+        let saved = std::mem::replace(&mut self.unset, unset);
+        let r = self.var_init_in(d, shape, slot, shared);
+        self.unset = saved;
+        r
+    }
+
+    fn var_init_in(&mut self, d: DeclId, shape: VarShape, slot: Reg, shared: bool) -> R<()> {
+        let db = self.db;
+        let decl = &db.decls[d];
         let DeclKind::Object(o) = &decl.kind else {
             return Err(self.cx.ice(decl.span, "not an object"));
         };
@@ -1188,6 +1209,9 @@ impl<'a, 'b> Fx<'a, 'b> {
                     what,
                 });
                 self.store(slot, p, Width::B8);
+                if init.is_none() {
+                    self.unset_planes(tid, p, count, decl.span)?;
+                }
                 if dope != dslot {
                     let n = self.int(i64::from(dope_bytes));
                     self.emit(Inst::Copy {
@@ -1224,7 +1248,10 @@ impl<'a, 'b> Fx<'a, 'b> {
                         )?;
                         v
                     }
-                    None => self.scalar_left(o.subtype, decl.span)?,
+                    None => {
+                        let v = self.scalar_left(o.subtype, decl.span)?;
+                        self.unset_code(o.subtype, v, decl.span)?
+                    }
                 };
                 self.store(slot, v, w);
                 Ok(())

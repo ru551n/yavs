@@ -11,7 +11,7 @@ member, or no output at all) and when a world is missing (the command that makes
 are made by tools/realbench/run.py --prepare. Stdlib only. See README.md.
 
 `--contract exact` (the default) runs cycle mode under the exact rules (`--cycle` alone,
-YAVS_CYCLE_EXACT_CLOCKS=1), which `GATE` holds. `--contract two-state` runs `--cycle --two-state`: the member
+YAVS_CYCLE_EXACT_CLOCKS=1), which `GATE` holds. `--contract two-state` runs `--cycle --two-state` against a normal `--two-state` run: the member
 count is shown, not checked, and a line of a file that differs only where the normal mode has a
 metavalue and cycle mode a digit (`cyclegate.meta_pair`) is `CONTRACT`; every other difference fails.
 """
@@ -80,7 +80,7 @@ def selftest(d):
     print("selftest ok")
 
 
-EXTRA = ["--cycle"]  # the cycle flags; `--contract two-state` adds "--two-state"
+EXTRA = ["--cycle"]  # the cycle flags; `--contract two-state` adds "--two-state" (to the normal run too)
 CRASH = re.compile(r"E9999|this is a bug in yavs|panicked")
 
 
@@ -88,7 +88,8 @@ def one_mode(Y, t, world, d, cycle, tier, timeout, stop):
     """Run one mode in a copy of the world; (exit status, members, reports, {name: text file}, last lines of stderr)."""
     shutil.copytree(world, d, symlinks=True)
     start = time.time()
-    script = R.yavs_script(Y, t, d, tier, stop=stop, extra=EXTRA if cycle else [])
+    # The two-state contract's reference is the normal mode with `--two-state` (as cyclegate's).
+    script = R.yavs_script(Y, t, d, tier, stop=stop, extra=EXTRA if cycle else [x for x in EXTRA if x != "--cycle"])
     with open(d.parent / f"{d.name}.out", "w") as fo, open(d.parent / f"{d.name}.err", "w") as fe:
         rc = subprocess.run(["timeout", str(timeout), "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=8G",
                              "bash", "-c", script], stdout=fo, stderr=fe).returncode

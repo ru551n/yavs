@@ -22,8 +22,8 @@ cycle-based processes are taken out, or the normal run ended on a failure of suc
 (the normal run does not finish or fails to start). Each test shows how many processes joined the region.
 
 `--contract exact` (the default) runs cycle mode under the exact rules, as cyclegate.py does
-(`--cycle` alone, YAVS_CYCLE_EXACT_CLOCKS=1). `--contract two-state` runs `--cycle --two-state` and a report
-under the exact rules too: a difference where the two regions differ is bucket `contract` (listed, not
+(`--cycle` alone, YAVS_CYCLE_EXACT_CLOCKS=1). `--contract two-state` runs `--cycle --two-state` against a normal
+`--two-state` run, and a report under the exact rules too: a difference where the two regions differ is bucket `contract` (listed, not
 failing), a crash or an internal error always fails; a failed check (E3009) is compared by its code and
 source place only (no values in its message).
 """
@@ -334,7 +334,7 @@ def one_run(e, mode, base, a, stats=True, perf=None):
 
     exact = a.contract == "exact"
     flag = {"normal": [], "cycle": ["--cycle"], "report": ["--cycle-report"]}[mode]
-    flag += [G.TWO] if not exact and mode != "normal" else []
+    flag += [] if exact else [G.TWO]  # the two-state contract's reference: the normal mode with --two-state
     argv = [a.bin, "run", *flag, *[fix(x) for x in e["argv"][2:]]]
     env = {**os.environ, **{k: fix(v) for k, v in e.get("env", {}).items()}, **dict(x.split("=", 1) for x in a.env),
            "YAVS_STD_CACHE": str(a.std)}

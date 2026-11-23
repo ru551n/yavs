@@ -738,7 +738,7 @@ fn a_drawn_clock_start_keeps_the_cached_analysis_right() {
     }
     assert_eq!(
         by.keys().cloned().collect::<Vec<_>>(),
-        ["W=1 n=3", "W=1 n=4"],
+        ["W=1 n=3 m=3", "W=1 n=4 m=3"],
         "both starts among the seeds"
     );
     let seeds: Vec<(String, u32)> = by.into_iter().collect();
@@ -756,4 +756,35 @@ fn a_drawn_clock_start_keeps_the_cached_analysis_right() {
             );
         }
     }
+}
+
+/// A metavalue aggregate inside an expression of a two-state region takes a bit of its own per
+/// element under `--init-x=random`, not one bit spread over the vector; `1` gives `not d`.
+#[test]
+fn a_random_aggregate_in_an_expression_gives_each_element_a_bit() {
+    let dir = tempdir("splatxor");
+    analyze(&dir, "splatxor.vhd");
+    let mut first: Option<Vec<String>> = None;
+    for t in tiers() {
+        let mut f = vec!["--no-cache", "--cycle", "--init-x=random:7"];
+        f.extend(&t);
+        let (lines, code, err) = run(&dir, &f, "splatxor");
+        assert_eq!((code, lines.len()), (0, 5), "{f:?}: {err}");
+        match &first {
+            None => first = Some(lines),
+            Some(l) => assert_eq!(&lines, l, "{f:?} differs"),
+        }
+    }
+    let lines = first.unwrap();
+    let q = of(&lines, 128).split("q=").nth(1).unwrap().to_string();
+    assert!(
+        q.chars().any(|c| c != '0') && q.chars().any(|c| c != 'F'),
+        "{q}"
+    );
+    let (ones, _, err) = run(&dir, &["--no-cache", "--cycle", "--init-x=1"], "splatxor");
+    assert_eq!(
+        of(&ones, 128),
+        format!("W=128 q={}", "F".repeat(32)),
+        "{err}"
+    );
 }

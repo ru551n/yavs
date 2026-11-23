@@ -244,6 +244,19 @@ A test runner that has run the tests already needs no second run to record them:
 exits at `run` still leaves each test's response file. The files are copied before each run; files written
 outside the output directory, or relative to the working directory, are not isolated or compared.
 
+## Seed gate
+
+`seedgate.py` checks that `--init-unset=random:SEED` and `--init-x=random:SEED` give the same values wherever one
+seed runs (user decision A68): the designs of the cycle gate, each in every tier, at one and four threads and with
+`--shuffle`, normal and `--cycle`; within each mode every run must give the first one's canonical output. The warm
+cycle run follows a run with another seed in the same library: it must store no other analysis (the seed is in no
+cache key) and give the cold output. Normal against cycle mode is left to the cycle gate and to
+`crates/yavs/tests/init_start.rs`, since metavalues differ there by contract.
+
+```sh
+YAVS_BIN=<yavs built with --features clift> python3 -I tools/difftest/seedgate.py --seed 11 --jobs 2
+```
+
 ## Cycle mode fuzzer
 
 `cyclefuzz.py` generates random synchronous designs in the subset of cycle mode, each with a testbench

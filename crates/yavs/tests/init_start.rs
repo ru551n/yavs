@@ -40,11 +40,12 @@ fn analyze(dir: &Path, name: &str) {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }
 
-/// The tiers of this build, with one thread and with four.
+/// The tiers of this build, with one thread, with four and with the processes shuffled.
 fn tiers() -> Vec<Vec<&'static str>> {
     let mut t = vec![
         vec!["--tier=interp"],
         vec!["--tier=interp", "--threads", "4"],
+        vec!["--tier=interp", "--shuffle=3"],
     ];
     if cfg!(feature = "clift") {
         t.push(vec!["--tier=auto"]);

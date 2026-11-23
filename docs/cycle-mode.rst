@@ -402,10 +402,10 @@ processes (:ref:`cycle-selection`) are never an error. The errors are shown in :
 Metavalues: ``--cycle-exact-meta``
 ----------------------------------
 
-What a plain ``--cycle`` run does with metavalues, and why it is an interim, is on :doc:`two-state`. The aim is that
-``--cycle`` computes with the normal mode's nine values and differs from it only in the scheduling. Until a region with
-those values exists, ``--cycle-exact-meta`` is the way to keep some of them, with the limits below, and it is
-replaced when that region lands.
+Today a plain ``--cycle`` run is two-state: the region computes with ``0`` and ``1`` (:doc:`two-state`). The aim is
+that ``--cycle`` computes with the normal mode's nine values and differs from it only in the scheduling; that region
+is a later step and is not in this version. Until it exists, ``--cycle-exact-meta`` is the way to keep some
+metavalues, with the limits below, and it is replaced when that region lands.
 
 Use it when the testbench checks for ``'X'``, ``'U'`` or ``'Z'`` from the design, or checks reset state, and to see the
 values of a failed check (:ref:`cycle-checks`). It goes with ``--cycle``, ``--cycle-strict`` or ``--cycle-report``;

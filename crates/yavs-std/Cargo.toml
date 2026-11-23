@@ -7,7 +7,7 @@ publish.workspace = true
 description = "Native semantics of std.standard, std.textio and std.env value conversion for yavs"
 
 [dependencies]
-jiff = "0.2.38"
+jiff = "1.0.1"
 
 [dev-dependencies]
 proptest = "1"

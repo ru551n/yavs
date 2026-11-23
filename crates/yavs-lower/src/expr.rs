@@ -2916,8 +2916,13 @@ impl<'a> Fx<'a, '_> {
                 })
             }
             RangeC::Explicit { left, dir, right } => {
-                let left = self.scalar_expr(*left)?;
-                let right = self.scalar_expr(*right)?;
+                // `--two-state`: a bound is no value of the design (`X01` is `'X'` to `'1'`).
+                let two = std::mem::replace(&mut self.two, false);
+                let bounds = self
+                    .scalar_expr(*left)
+                    .and_then(|l| Ok((l, self.scalar_expr(*right)?)));
+                self.two = two;
+                let (left, right) = bounds?;
                 Ok(Rng {
                     left,
                     right,

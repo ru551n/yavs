@@ -219,3 +219,27 @@ fn a_z_driven_onto_a_resolved_signal_stays_z() {
         assert_eq!(got, want(f[0] == "--two-state"), "{f:?}: {out}");
     }
 }
+
+/// The bounds of a subtype or range below the top keep their metavalues under `--two-state`
+/// (`X01` is `'X'` to `'1'`): with `--init-x=1` a variable of `X01` assigned `'0'` used to fail
+/// its range check, and a loop over `X01` ran once.
+#[test]
+fn two_state_keeps_the_bounds_of_subtypes() {
+    let dir = tempdir("twostate-range");
+    analyze(&dir, "twostate_range.vhd");
+    for t in tiers() {
+        for x in ["--init-x=0", "--init-x=1", "--init-x=random:7"] {
+            let mut args = vec!["run", "--work=work:lib", "--no-cache", "--two-state", x];
+            args.extend(t.iter().copied());
+            args.push("twostate_range");
+            let o = yavs(&dir, &args);
+            let out = String::from_utf8_lossy(&o.stdout);
+            assert!(
+                o.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&o.stderr)
+            );
+            assert!(out.contains("range n=3 q='1'"), "{args:?}: {out}");
+        }
+    }
+}

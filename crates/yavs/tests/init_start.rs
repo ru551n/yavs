@@ -769,7 +769,7 @@ fn a_random_aggregate_in_an_expression_gives_each_element_a_bit() {
     analyze(&dir, "splatxor.vhd");
     let mut first: Option<Vec<String>> = None;
     for t in tiers() {
-        let mut f = vec!["--no-cache", "--cycle", "--init-x=random:7"];
+        let mut f = vec!["--no-cache", "--cycle", "--two-state", "--init-x=random:7"];
         f.extend(&t);
         let (lines, code, err) = run(&dir, &f, "splatxor");
         assert_eq!((code, lines.len()), (0, 5), "{f:?}: {err}");
@@ -784,7 +784,11 @@ fn a_random_aggregate_in_an_expression_gives_each_element_a_bit() {
         q.chars().any(|c| c != '0') && q.chars().any(|c| c != 'F'),
         "{q}"
     );
-    let (ones, _, err) = run(&dir, &["--no-cache", "--cycle", "--init-x=1"], "splatxor");
+    let (ones, _, err) = run(
+        &dir,
+        &["--no-cache", "--cycle", "--two-state", "--init-x=1"],
+        "splatxor",
+    );
     assert_eq!(
         of(&ones, 128),
         format!("W=128 q={}", "F".repeat(32)),

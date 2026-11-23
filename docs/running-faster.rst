@@ -186,14 +186,16 @@ leaves the testbench in the normal simulation (:doc:`cycle-mode`).
 Two-state values
 ----------------
 
-A plain ``--cycle`` run computes the region on ``0`` and ``1`` only, which is part of what makes it fast
-(:doc:`two-state`).
+Two-state values are not a speed option of their own. For speed use ``--cycle`` (:doc:`cycle-mode`); a plain ``--cycle``
+run computes the region on ``0`` and ``1`` only, which is part of what makes it fast. :doc:`two-state` is for
+understanding what that changes in a result: where a metavalue (``'U'``, ``'X'`` or ``'Z'``) read as ``0`` or ``1``
+explains a difference from the normal mode.
 
 * **What it trades.** The metavalues: a register without a reset, an unconnected input or an ``'X'`` from the design
   cannot show in the region, and the testbench reads ``0`` or ``1`` where the normal mode gives ``'U'``, ``'X'`` or
-  ``'Z'``. ``--cycle-exact-meta`` buys part of it back at a cost in speed.
-* **When to try it.** When a test passes with ``--cycle`` and does not depend on a metavalue. A test that checks reset
-  state or an ``'X'`` from the design belongs in the normal mode.
+  ``'Z'``.
+* **When to read it.** When a test passes or fails differently with ``--cycle`` than in the normal mode. A test that
+  checks reset state or an ``'X'`` from the design belongs in the normal mode.
 
 Finding where the time goes
 ---------------------------
@@ -210,6 +212,6 @@ See also
 
 * :doc:`threads`: more threads, and when they help.
 * :doc:`cycle-mode`: the opt-in mode for synchronous RTL.
-* :doc:`two-state`: the values of a cycle mode run.
+* :doc:`two-state`: what the values of a cycle mode run change in a result.
 * :doc:`on-disk`: where the cache lives.
 * :doc:`performance`: how yavs compares with other simulators.

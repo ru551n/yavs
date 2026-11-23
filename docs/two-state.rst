@@ -88,4 +88,3 @@ See also
 --------
 
 * :doc:`cycle-mode`: the scheduling, what joins, the report and the cache.
-* :doc:`running-faster`: the speed options, with what each trades for speed.

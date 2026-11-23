@@ -45,7 +45,9 @@ entity twostate_dut is
     flags : out std_logic_vector(7 downto 0);
     rout : out rec;
     cnt : out std_logic_vector(3 downto 0);
-    more : out std_logic_vector(3 downto 0)
+    more : out std_logic_vector(3 downto 0);
+    cs : out std_logic_vector(2 downto 0);
+    zz : out std_logic
   );
 end entity;
 
@@ -54,6 +56,13 @@ architecture rtl of twostate_dut is
 begin
   nq <= not d;
   z <= u;
+  -- A 'Z' literal keeps a process out of cycle mode's region: a process of its own.
+  process (clk)
+  begin
+    if rising_edge(clk) then
+      zz <= 'Z';
+    end if;
+  end process;
   process (clk)
     variable n : unsigned(3 downto 0);
     variable g : std_logic_vector(W - 1 downto 0);
@@ -80,11 +89,24 @@ begin
         flags(5) <= '0';
       end if;
       flags(6) <= a;
-      flags(7) <= 'Z';
+      flags(7) <= 'W';
       -- A generic mask keeps its '-'; chains of operators read their operands mapped.
       more(0) <= '1' when std_match(d(0 downto 0), MASK) else '0';
       more(1) <= a xor d(0) xor rin.a;
       more(3 downto 2) <= a & rin.a;
+      -- Case choices with metavalues take --init-x too (A62); case? keeps its '-'.
+      case a is
+        when 'X' => cs(0) <= '1';
+        when others => cs(0) <= '0';
+      end case;
+      case rin.v(1 downto 0) is
+        when "0X" => cs(1) <= '1';
+        when others => cs(1) <= '0';
+      end case;
+      case? rin.v is
+        when "1-0-" => cs(2) <= '1';
+        when others => cs(2) <= '0';
+      end case?;
     end if;
   end process;
 end architecture;
@@ -108,6 +130,8 @@ begin
     signal flags : std_logic_vector(7 downto 0);
     signal rout : rec;
     signal cnt, more : std_logic_vector(3 downto 0);
+    signal cs : std_logic_vector(2 downto 0);
+    signal zz : std_logic;
   begin
     -- 'H' at the top and bit 0 '1', the rest metavalues.
     process
@@ -121,7 +145,7 @@ begin
     end process;
     u : entity work.twostate_dut
       generic map (W => WS(i))
-      port map (clk, d, a, rin, q, nq, z, lit, flags, rout, cnt, more);
+      port map (clk, d, a, rin, q, nq, z, lit, flags, rout, cnt, more, cs, zz);
     process
     begin
       wait for 1 ns;
@@ -130,7 +154,7 @@ begin
       report "W=" & integer'image(WS(i)) & " q=" & to_hstring(q) & " nq=" & to_hstring(nq)
         & " z=" & to_hstring(z) & " lit=" & to_hstring(lit) & " flags=" & to_string(flags)
         & " rout=" & to_string(rout.a) & to_string(rout.v) & " cnt=" & to_string(cnt)
-        & " more=" & to_string(more)
+        & " more=" & to_string(more) & " cs=" & to_string(cs) & " zz=" & to_string(zz)
         & " d=" & to_string(d(0));
       wait;
     end process;

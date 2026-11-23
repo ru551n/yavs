@@ -286,25 +286,21 @@ impl<'a> Fx<'a, '_> {
                 "std_match" | "?=" | "?/="
             )
         {
-            // The operands, and the elements of an aggregate or qualified operand
-            // (`(d'range => '-')`).
-            let mut todo: Vec<ExprId> = args
-                .iter()
-                .filter_map(|a| match a.actual {
-                    Actual::Expr(x) => Some(x),
-                    _ => None,
-                })
-                .collect();
-            while let Some(x) = todo.pop() {
-                self.two_dash.insert(x);
-                match &self.db.exprs[x].kind {
-                    ExprKind::Aggregate { assocs, .. } => {
-                        todo.extend(assocs.iter().map(|a| a.value))
-                    }
-                    ExprKind::Qualified { operand, .. } => todo.push(*operand),
-                    _ => {}
+            for a in args.iter() {
+                if let Actual::Expr(x) = a.actual {
+                    self.two_keep_dash(x);
                 }
             }
+        }
+        // `(others => 'X')` of a length known at run time: its elements draw bits of their own.
+        if self.two
+            && let ExprKind::Aggregate { assocs, .. } = &self.db.exprs[id].kind
+            && let [a] = &assocs[..]
+            && matches!(&a.choices[..], [Choice::Others])
+            && !a.slice_piece
+            && self.db.exprs[a.value].value.is_some()
+        {
+            self.two_splat.insert(a.value);
         }
         let spine = self.chain_ahead(id)?;
         let mut v = self.expr_value(id)?;
@@ -387,7 +383,12 @@ impl<'a> Fx<'a, '_> {
             ExprKind::Const(c) => Some(&db.consts[*c]),
             _ => None,
         });
+        if self.two_splat.contains(&id) {
+            return Ok(v);
+        }
         let dash = self.two_dash.contains(&id);
+        let splat = matches!(&e.kind, ExprKind::Aggregate { assocs, .. }
+            if matches!(&assocs[..], [a] if self.two_splat.contains(&a.value)));
         let from_outside = match &e.kind {
             _ if folded.is_some() => false,
             ExprKind::Obj(_)
@@ -403,7 +404,7 @@ impl<'a> Fx<'a, '_> {
         }
         // A literal, or a value read from outside for a matching comparison (a generic mask):
         // `yavs.two.lit` keeps its `'-'` (mode bit 0), a read maps metavalues to `0` (bit 1).
-        if folded.is_some() || (from_outside && dash) {
+        if folded.is_some() || splat || (from_outside && dash) {
             let salt = yavs_logic::start::salt(&[
                 b"lit",
                 db.sources.get(span.file).path.as_bytes(),
@@ -468,6 +469,20 @@ impl<'a> Fx<'a, '_> {
             }
             (V::A(..), None) => return Err(self.cx.ice(span, "a two-state array without a type")),
         })
+    }
+
+    /// `--two-state`: `x` is an operand of a matching comparison: its `'-'`, and those of the
+    /// elements of an aggregate or qualified operand (`(d'range => '-')`), keep their meaning.
+    pub(crate) fn two_keep_dash(&mut self, x: ExprId) {
+        let mut todo = vec![x];
+        while let Some(x) = todo.pop() {
+            self.two_dash.insert(x);
+            match &self.db.exprs[x].kind {
+                ExprKind::Aggregate { assocs, .. } => todo.extend(assocs.iter().map(|a| a.value)),
+                ExprKind::Qualified { operand, .. } => todo.push(*operand),
+                _ => {}
+            }
+        }
     }
 
     /// `--two-state`: the `std_ulogic` code `code` as `LOp::To01` maps an element.

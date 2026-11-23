@@ -458,6 +458,9 @@ pub(crate) struct Cx {
     /// `two_state` and not a package's), which their callers need not map.
     #[serde(skip)]
     pub two_subs: std::collections::HashSet<DeclId>,
+    /// `--two-state`: the two-state copies of packages' subprograms that two-state code calls.
+    #[serde(skip)]
+    pub two_funcs: HashMap<DeclId, FuncId>,
     /// `--init-x`: the literals it gives a value (`yavs_elab`'s `x_sites`), set for a design.
     #[serde(skip)]
     pub x_sites: std::collections::HashSet<ExprId>,
@@ -906,6 +909,7 @@ impl<'a> Lowerer<'a> {
                 drop_asserts: false,
                 two_state: false,
                 two_subs: Default::default(),
+                two_funcs: HashMap::default(),
                 x_sites: Default::default(),
                 tys: HashMap::default(),
                 natives: HashMap::default(),

@@ -95,13 +95,15 @@ fn hexv(w: u32, hi: u8, mid: u8, lo: u8) -> String {
 
 /// The note of width `w` under `--two-state` with `--init-x` bits `x` (`b'0'` or `b'1'`).
 fn want(w: u32, x: u8) -> String {
-    let flags = if x == b'0' { "00110100" } else { "10100100" };
+    let flags = if x == b'0' { "00110100" } else { "10100111" };
+    let cs = if x == b'0' { "111" } else { "100" };
     format!(
-        "W={w} q={} nq={} z={} lit={} flags={flags} rout=01100 cnt=0001 more=0011 d={}",
+        "W={w} q={} nq={} z={} lit={} flags={flags} rout=01100 cnt=0001 more=0011 cs={cs} zz={} d={}",
         hexv(w, b'1', b'0', b'1'),
         hexv(w, b'0', b'1', b'0'),
         hexv(w, b'0', b'0', b'0'),
         hexv(w, x, x, x),
+        x as char,
         if w == 1 { "H" } else { "1" },
     )
 }
@@ -128,7 +130,35 @@ fn two_state_maps_what_the_design_below_the_top_reads() {
                 f.extend(&t);
                 let (lines, err) = notes(&dir, &f, "twostate");
                 assert_eq!(lines, want, "{f:?}: {err}");
+                // The design's clocked process and its concurrent statements join the region.
+                if mode == "--cycle" {
+                    assert!(err.contains("cycle mode: 15 of 30 processes"), "{err}");
+                }
             }
         }
     }
+}
+
+/// A random `--init-x`: the bits come from the seed at run time, the same in every tier and in
+/// cycle mode; another seed gives other bits.
+#[test]
+#[ignore = "until step 1's A68 literal identity lands: both modes then draw from one site salt"]
+fn a_random_init_x_gives_the_same_bits_in_both_modes() {
+    let dir = tempdir("twostate-random");
+    analyze(&dir, "twostate.vhd");
+    let mut first: Option<Vec<String>> = None;
+    for t in tiers() {
+        for mode in [None, Some("--cycle")] {
+            let mut f = vec!["--two-state", "--init-x=random:7"];
+            f.extend(mode);
+            f.extend(&t);
+            let (lines, err) = notes(&dir, &f, "twostate");
+            match &first {
+                None => first = Some(lines),
+                Some(l) => assert_eq!(&lines, l, "{f:?}: {err}"),
+            }
+        }
+    }
+    let (other, _) = notes(&dir, &["--two-state", "--init-x=random:8"], "twostate");
+    assert_ne!(Some(other), first);
 }

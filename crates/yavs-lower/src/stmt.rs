@@ -2815,6 +2815,11 @@ impl Fx<'_, '_> {
         let Waveform::Elements(elems) = w else {
             return Ok(()); // `unaffected`
         };
+        if self.two && db.is_resolved(db.exprs[target.expr].subtype) {
+            for v in elems.iter().filter_map(|e| e.value) {
+                self.two_keep_z(v);
+            }
+        }
         if let ExprKind::Aggregate { .. } = &db.exprs[target.expr].kind {
             return self.drive_aggregate(target, delay, elems, span);
         }

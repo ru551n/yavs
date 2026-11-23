@@ -1300,6 +1300,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         lit_vals: Vec::new(),
         rands: Vec::new(),
         lit_at: None,
+        lit_zero: false,
         lit_cmp: BTreeSet::new(),
         bounds: false,
         sigs: Vec::new(),
@@ -1436,6 +1437,8 @@ struct Lx<'a> {
     lit_at: Option<yavs_diag::Span>,
     /// The slots of `random` literal bits (`Body::rands`).
     rands: Vec<(u32, u32, u64)>,
+    /// The literal being lowered is the value of a package's call elaboration made (`lit_fill`).
+    lit_zero: bool,
     /// The literals of `lits` a comparison took.
     lit_cmp: BTreeSet<u32>,
     /// The calls folded from `Elaborated::region_calls` that reported (`Body::reports`).
@@ -2243,7 +2246,7 @@ impl Lx<'_> {
                     }
                     // A metavalue of the choice takes the bits a literal there would.
                     let salt = lit_salt(self.db, self.db.exprs[*x].span);
-                    let bits = fill_bits(crate::region::meta_fill(), salt, codes.len() as u32);
+                    let bits = fill_bits(self.lit_fill(), salt, codes.len() as u32);
                     self.match_codes(*p, &codes, matching, &bits)?
                 }
                 _ => {
@@ -3889,6 +3892,23 @@ impl Lx<'_> {
         crate::region::two_state() && !self.top
     }
 
+    /// The bits of a metavalue literal here: `--init-x`'s, but `0` inside an inlined subprogram
+    /// of a package, or in the value of a call of one elaboration made, whose body the normal
+    /// mode runs four-state and maps its results (A71).
+    fn lit_fill(&self) -> yavs_logic::start::Fill {
+        let db = self.db;
+        if self.lit_zero
+            || self
+                .frames
+                .iter()
+                .any(|f| in_package(db, db.decls[f.callee].scope))
+        {
+            yavs_logic::start::Fill::Zero
+        } else {
+            crate::region::meta_fill()
+        }
+    }
+
     /// `--init-unset`: the `std_ulogic` leaves of variable `d` (of elaborated shape `shape`, placed
     /// in `v` in the order of its leaves) for `Body::unset`, with the normal mode's salt; a variable
     /// whose leaves do not match its shape keeps its process out.
@@ -4793,7 +4813,13 @@ impl Lx<'_> {
             return Ok(self.fresh_like(h));
         }
         if let Some(c) = self.fold(x) {
-            return self.literal(db.base(ex.subtype), &c);
+            let pkg = ex.value.is_none()
+                && matches!(&ex.kind, ExprKind::Call { callee, .. }
+                    if in_package(db, db.decls[*callee].scope));
+            let was = std::mem::replace(&mut self.lit_zero, pkg);
+            let v = self.literal(db.base(ex.subtype), &c);
+            self.lit_zero = was;
+            return v;
         }
         match &ex.kind {
             ExprKind::Obj(_)
@@ -5629,7 +5655,7 @@ impl Lx<'_> {
         let mut rnd = vec![0u64; val.len()];
         let mut meta = false;
         // A two-state region gives a metavalue the bits of `--init-x` (A57), 0 without it.
-        let (two, fill) = (self.meta_joins(), crate::region::meta_fill());
+        let (two, fill) = (self.meta_joins(), self.lit_fill());
         let mut salt = self.lit_at.map_or(0, |at| lit_salt(self.db, at));
         for (p, &code) in codes.iter().enumerate() {
             // Row-major element `p` from the left is element `n - 1 - p`.
@@ -8733,4 +8759,21 @@ fn trial_value(key: u64, t: u64) -> i64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     ((z ^ (z >> 31)) % 4096) as i64 + 1
+}
+
+/// Whether scope `s` is in a package or package body.
+fn in_package(db: &Db, mut s: yavs_sem::ScopeId) -> bool {
+    loop {
+        let sc = &db.scopes[s];
+        if matches!(
+            sc.kind,
+            yavs_sem::scope::ScopeKind::Package | yavs_sem::scope::ScopeKind::PackageBody
+        ) {
+            return true;
+        }
+        match sc.parent {
+            Some(p) => s = p,
+            None => return false,
+        }
+    }
 }

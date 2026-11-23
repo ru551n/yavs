@@ -113,14 +113,7 @@ pub(crate) fn func_of(
     d: DeclId,
     span: Span,
 ) -> R<FuncId> {
-    // `--two-state`: a package's subprogram called by two-state code gets a two-state copy of its
-    // own (its literals take `--init-x` as the region's do), apart from the one the rest calls.
-    let variant = cx.two_state && in_package(db, db.decls[d].scope);
-    if let Some(&f) = if variant {
-        cx.two_funcs.get(&d)
-    } else {
-        cx.funcs.get(&d)
-    } {
+    if let Some(&f) = cx.funcs.get(&d) {
         return Ok(f);
     }
     let decl = &db.decls[d];
@@ -134,13 +127,10 @@ pub(crate) fn func_of(
     let kind = crate::func_kind(db, d);
     let f = pb.declare(&decl.name.to_string(), kind, parent.map(|p| p.0));
     let depth = parent.map_or(0, |p| p.1 + 1);
-    if variant {
-        cx.two_funcs.insert(d, f);
-    } else {
-        cx.funcs.insert(d, f);
-        if cx.two_state {
-            cx.two_subs.insert(d);
-        }
+    cx.funcs.insert(d, f);
+    // `--two-state` (A71): a package's subprograms stay four-state, their callers map the results.
+    if cx.two_state && !in_package(db, decl.scope) {
+        cx.two_subs.insert(d);
     }
     cx.queue.push((d, depth, false));
     Ok(f)
@@ -367,6 +357,8 @@ pub(crate) struct Fx<'a, 'b> {
     /// `--two-state`: the literals of `(others => meta)` aggregates the region spreads: left as
     /// written, the aggregate's value is mapped element by element (`Fx::two_value`).
     pub two_splat: std::collections::HashSet<ExprId>,
+    /// `--two-state`: values driven onto a resolved signal, whose `'Z'` literals stay `'Z'` (A71).
+    pub two_zkeep: std::collections::HashSet<ExprId>,
     /// The `GUARD` signal of the enclosing guarded block (guarded assignments).
     pub guard: Option<DeclId>,
     /// Copy-out after the call being lowered: (frame slot of the temporary, the actual's
@@ -447,6 +439,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             unset_zero: false,
             two_dash: Default::default(),
             two_splat: Default::default(),
+            two_zkeep: Default::default(),
             guard: None,
             writeback: Vec::new(),
             writeback_parts: Vec::new(),
@@ -1534,13 +1527,8 @@ fn subprogram_body(
     let Body::Hir { scope, stmts } = &sp.body else {
         return Err(cx.ice(decl.span, "subprogram without a body"));
     };
-    // A plain body queued while `--two-state` lowers an architecture is a package's two-state
-    // copy (`func_of`), drained before the architecture ends.
-    let variant = !checked && cx.two_state && in_package(db, decl.scope);
     let funcs = if checked {
         &cx.checked_funcs
-    } else if variant {
-        &cx.two_funcs
     } else {
         &cx.funcs
     };
@@ -1563,7 +1551,7 @@ fn subprogram_body(
     let mut fx = Fx::new(db, cx, pb.define(f), depth, kind, decl.name.to_string());
     // Two-state as `func_of` declared it (a package's subprograms are four-state: the top-level
     // unit calls them too).
-    fx.two = variant || fx.cx.two_subs.contains(&d);
+    fx.two = fx.cx.two_subs.contains(&d);
     if let Some((d, b)) = drivers {
         fx.drivers = d;
         fx.driver_base = b;

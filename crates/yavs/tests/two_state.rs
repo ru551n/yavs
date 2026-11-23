@@ -95,7 +95,7 @@ fn hexv(w: u32, hi: u8, mid: u8, lo: u8) -> String {
 
 /// The note of width `w` under `--two-state` with `--init-x` bits `x` (`b'0'` or `b'1'`).
 fn want(w: u32, x: u8) -> String {
-    let flags = if x == b'0' { "00110100" } else { "10100111" };
+    let flags = if x == b'0' { "00110100" } else { "10100100" };
     let cs = if x == b'0' { "111" } else { "100" };
     format!(
         "W={w} q={} nq={} z={} lit={} flags={flags} rout=01100 cnt=0001 more=0011 cs={cs} zz={} d={}",
@@ -103,7 +103,7 @@ fn want(w: u32, x: u8) -> String {
         hexv(w, b'0', b'1', b'0'),
         hexv(w, b'0', b'0', b'0'),
         hexv(w, x, x, x),
-        x as char,
+        'Z',
         if w == 1 { "H" } else { "1" },
     )
 }
@@ -161,4 +161,47 @@ fn a_random_init_x_gives_the_same_bits_in_both_modes() {
     }
     let (other, _) = notes(&dir, &["--two-state", "--init-x=random:8"], "twostate");
     assert_ne!(Some(other), first);
+}
+
+/// A71: a `'Z'` driven onto a resolved signal below the top stays `'Z'`: an event net whose
+/// idle value a package drives from components below the top (it used to hang), and a tri-state
+/// bus two components drive in turn (it used to read `0`s and conflicts). The same output
+/// without the option, on every tier and under `--cycle --two-state`.
+#[test]
+fn a_z_driven_onto_a_resolved_signal_stays_z() {
+    let dir = tempdir("twostate-bus");
+    analyze(&dir, "twostate_bus.vhd");
+    let want = [
+        "events=6 ev=ZZ",
+        "turn=0 bus=ZZZZZZZZ",
+        "turn=1 bus=10100101",
+        "turn=2 bus=00111100",
+    ];
+    let mut runs = vec![vec!["--tier=interp"]];
+    for t in tiers() {
+        for mode in [None, Some("--cycle")] {
+            let mut f = vec!["--two-state"];
+            f.extend(mode);
+            f.extend(t.iter().copied());
+            runs.push(f);
+        }
+    }
+    for f in runs {
+        let mut args = vec!["run", "--work=work:lib", "--no-cache", "--stop-time=1us"];
+        args.extend(&f);
+        args.push("twostate_bus");
+        let o = yavs(&dir, &args);
+        let out = String::from_utf8_lossy(&o.stdout);
+        assert!(
+            o.status.success(),
+            "{f:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        let got: Vec<&str> = out
+            .lines()
+            .filter_map(|l| l.rsplit_once(": ").map(|x| x.1))
+            .filter(|l| l.starts_with("events=") || l.starts_with("turn="))
+            .collect();
+        assert_eq!(got, want, "{f:?}: {out}");
+    }
 }

@@ -387,6 +387,7 @@ impl<'a> Fx<'a, '_> {
             return Ok(v);
         }
         let dash = self.two_dash.contains(&id);
+        let zkeep = self.two_zkeep.contains(&id);
         let splat = matches!(&e.kind, ExprKind::Aggregate { assocs, .. }
             if matches!(&assocs[..], [a] if self.two_splat.contains(&a.value)));
         let from_outside = match &e.kind {
@@ -411,7 +412,9 @@ impl<'a> Fx<'a, '_> {
                 &span.start.to_le_bytes(),
             ]);
             let salt = self.int(salt as i64);
-            let mode = self.int(i64::from(dash) | if from_outside { 2 } else { 0 });
+            let mode = self.int(
+                i64::from(dash) | if from_outside { 2 } else { 0 } | if zkeep { 4 } else { 0 },
+            );
             return match (v, tid) {
                 (V::S(code), _) => match self.native(
                     "yavs.two.lit_code",
@@ -480,6 +483,21 @@ impl<'a> Fx<'a, '_> {
             match &self.db.exprs[x].kind {
                 ExprKind::Aggregate { assocs, .. } => todo.extend(assocs.iter().map(|a| a.value)),
                 ExprKind::Qualified { operand, .. } => todo.push(*operand),
+                _ => {}
+            }
+        }
+    }
+
+    /// `--two-state`: `x` is driven onto a resolved signal: its `'Z'` literals, and those of the
+    /// elements of an aggregate, qualified or conditional value, stay `'Z'` (A71).
+    pub(crate) fn two_keep_z(&mut self, x: ExprId) {
+        let mut todo = vec![x];
+        while let Some(x) = todo.pop() {
+            self.two_zkeep.insert(x);
+            match &self.db.exprs[x].kind {
+                ExprKind::Aggregate { assocs, .. } => todo.extend(assocs.iter().map(|a| a.value)),
+                ExprKind::Qualified { operand, .. } => todo.push(*operand),
+                ExprKind::Conditional { alts } => todo.extend(alts.iter().map(|a| a.0)),
                 _ => {}
             }
         }
@@ -7584,7 +7602,6 @@ fn elab_known(db: &Db, known: &mut HashMap<ExprId, bool>, mut e: ExprId) -> bool
     r
 }
 
-/// Whether composite constant `v` has a null array as an element or field.
 /// A constant whose `std_ulogic` elements are all `0` or `1` (positions 2 and 3).
 fn clean01(c: &ConstValue) -> bool {
     match c {
@@ -7598,6 +7615,7 @@ fn clean01(c: &ConstValue) -> bool {
     }
 }
 
+/// Whether composite constant `v` has a null array as an element or field.
 fn holds_null_array(v: &ConstValue) -> bool {
     fn null(v: &ConstValue) -> bool {
         match v {

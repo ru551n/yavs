@@ -1116,12 +1116,14 @@ fn init_x_code(
 
 /// `--two-state`: a literal's code as two-state code reads it: `L` is `0`, `H` is `1`, `U X Z W`
 /// (and `-` unless `mode` bit 0 keeps it, a matching comparison) take `--init-x`, 0 without it;
-/// with `mode` bit 1 (a value read from outside for a matching comparison) they are `0`.
+/// with `mode` bit 1 (a value read from outside for a matching comparison) they are `0`; with
+/// bit 2 (a value driven onto a resolved signal, A71) `Z` stays `Z`.
 fn two_code(code: u64, salt: u64, i: u64, mode: u64) -> u64 {
     match code {
         6 => 2,
         7 => 3,
         8 if mode & 1 != 0 => 8,
+        4 if mode & 4 != 0 => 4,
         0 | 1 | 4 | 5 | 8 if mode & 2 != 0 => 2,
         0 | 1 | 4 | 5 | 8 => {
             let f = yavs_logic::start::x().unwrap_or(yavs_logic::start::Fill::Zero);

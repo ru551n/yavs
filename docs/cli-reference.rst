@@ -527,7 +527,7 @@ Arguments:
 
 .. option:: --two-state
 
-   Two-state values (experimental), with ``--cycle``, ``--cycle-strict`` or ``--cycle-report`` (without them not implemented yet, E0199): cycle-based processes hold only ``0`` and ``1``. A metavalue (``'U'``, ``'X'``, ``'Z'``, ...) they read from outside counts as ``0`` (``'H'`` as ``1``), one below the top-level unit written as a literal takes the ``--init-x`` value (``0`` without it), and no process stays out for a metavalue. Processes in the event kernel, the top-level unit's among them, keep the nine values. Without this option cycle mode keeps the metavalues: a process that would hide one from the testbench stays in the event kernel, a register or variable without a start value shows ``'U'`` while its value depends on it (for up to 1024 clock edges), and a failed check's message gives its values.
+   Two-state values (experimental): the design below the top-level unit holds only ``0`` and ``1``. A metavalue it reads from the testbench or a resolved signal counts as ``0`` (``'H'`` as ``1``), its literals ``'U'``, ``'X'``, ``'Z'``, ``'W'`` and ``'-'`` take the ``--init-x`` value (``0`` without it; ``'L'`` is ``0``, ``'H'`` is ``1``), and what it declares without an initial value starts at ``--init-unset`` (``0`` without it). The top-level unit keeps the nine values. With a cycle option the cycle-based processes are two-state too; without this option cycle mode keeps the metavalues (for now a register without a start value shows ``'U'`` for up to 1024 clock edges).
 
 .. option:: --tier=interp|auto|clift|clift-auto
 
@@ -597,7 +597,7 @@ Arguments:
 
    May be repeated.
 
-Diagnostics named above: ``E0105``, ``E0106``, ``E0107``, ``E0120``, ``E0136``, ``E0199``, ``E0701``, ``E0801``, ``E0901``, ``E0902``, ``E3002``, ``E4101``, ``E4102``, ``E4103``, ``E4110``, ``E4139``; ``yavs --explain CODE`` explains each.
+Diagnostics named above: ``E0105``, ``E0106``, ``E0107``, ``E0120``, ``E0136``, ``E0701``, ``E0801``, ``E0901``, ``E0902``, ``E3002``, ``E4101``, ``E4102``, ``E4103``, ``E4110``, ``E4139``; ``yavs --explain CODE`` explains each.
 
 ``yavs cov merge``
 ------------------

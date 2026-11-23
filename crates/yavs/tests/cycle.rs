@@ -683,18 +683,10 @@ fn cycle_mode_allows_the_options_that_do_not_see_inside_the_region() {
     }
 }
 
-/// `--two-state` without a cycle mode is not implemented yet (E0199), a misspelling names it, and
-/// the removed `--cycle-exact-meta` is an unknown option.
+/// A misspelt `--two-state` names it, and the removed `--cycle-exact-meta` is an unknown option.
 #[test]
-fn two_state_needs_a_cycle_mode_for_now() {
+fn two_state_spelling_and_removed_exact_meta() {
     let dir = tempdir("cycle-twostate-flag");
-    let o = yavs(&dir, &["run", "--work=work:lib", "--two-state", "top"]);
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert_eq!(o.status.code(), Some(2), "{err}");
-    assert!(
-        err.contains("error[E0199]: `--two-state` without `--cycle` is not implemented yet"),
-        "{err}"
-    );
     let o = yavs(
         &dir,
         &["run", "--work=work:lib", "--cycle", "--two-stat", "top"],

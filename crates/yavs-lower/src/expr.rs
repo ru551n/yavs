@@ -274,10 +274,31 @@ impl<'a> Fx<'a, '_> {
         if let Some(v) = self.ahead.remove(&id) {
             return Ok(v);
         }
+        if self.two
+            && let ExprKind::Call { callee, args, .. } = &self.db.exprs[id].kind
+            && matches!(
+                self.db.decls[*callee]
+                    .name
+                    .to_string()
+                    .trim_matches('"')
+                    .to_ascii_lowercase()
+                    .as_str(),
+                "std_match" | "?=" | "?/="
+            )
+        {
+            for a in args.iter() {
+                if let Actual::Expr(x) = a.actual {
+                    self.two_dash.insert(x);
+                }
+            }
+        }
         let spine = self.chain_ahead(id)?;
         let mut v = self.expr_value(id)?;
         if self.cx.opts.init_x && self.cx.x_sites.contains(&id) {
             v = self.x_value(id, v)?;
+        }
+        if self.two {
+            v = self.two_value(id, v)?;
         }
         if spine.iter().any(|x| self.ahead.remove(x).is_some()) {
             return Err(self
@@ -321,6 +342,239 @@ impl<'a> Fx<'a, '_> {
                 self.native("yavs.init.x", None, &[copy, count, salt], None, e.span)?;
                 Ok(V::A(copy, desc))
             }
+        }
+    }
+
+    /// `--two-state`: the value `v` of `id` with every logic element `0` or `1` (`Fx::two`): a
+    /// literal holding another value maps through `yavs.two.lit`, a value read from a signal, a
+    /// constant outside the frame, an attribute or a four-state subprogram through
+    /// `LOp::To01`. Values two-state code computed itself are left as they are.
+    fn two_value(&mut self, id: ExprId, v: V) -> R<V> {
+        let db = self.db;
+        let e = &db.exprs[id];
+        let span = e.span;
+        let base = db.base(e.subtype);
+        let scalar = db.is_std_ulogic(base);
+        let tid = match v {
+            V::A(..) => {
+                let tid = self.ty(base, span)?;
+                if !Ty::has_std_ulogic(self.fb.program().types(), tid) {
+                    return Ok(v);
+                }
+                Some(tid)
+            }
+            V::S(_) if scalar => None,
+            V::S(_) => return Ok(v),
+        };
+        let flat = tid.is_some_and(|t| {
+            Ty::logic_leaf(self.fb.program().types(), t) == Some(yavs_ir::LogicKind::StdULogic)
+        });
+        let folded = e.value.map(|c| &db.consts[c]).or(match &e.kind {
+            ExprKind::Const(c) => Some(&db.consts[*c]),
+            _ => None,
+        });
+        if let Some(c) = folded {
+            if clean01(c) {
+                return Ok(v);
+            }
+            let salt = yavs_logic::start::salt(&[
+                b"lit",
+                db.sources.get(span.file).path.as_bytes(),
+                &span.start.to_le_bytes(),
+            ]);
+            let salt = self.int(salt as i64);
+            let dash = self.int(i64::from(self.two_dash.contains(&id)));
+            return match (v, tid) {
+                (V::S(code), _) => match self.native(
+                    "yavs.two.lit_code",
+                    None,
+                    &[code, salt, dash],
+                    Some(e.subtype),
+                    span,
+                )? {
+                    Some(v @ V::S(_)) => Ok(v),
+                    _ => Err(self.cx.ice(span, "a two-state literal that is no scalar")),
+                },
+                // ponytail: a composite literal of records keeps its metavalues.
+                (V::A(..), _) if !flat => Ok(v),
+                (V::A(data, desc), Some(tid)) => {
+                    let (size, count) = self.layout(tid, desc);
+                    let copy = self.alloc_val(size, tid, Some(desc));
+                    self.emit(Inst::Copy {
+                        dst: copy,
+                        src: data,
+                        bytes: size,
+                    });
+                    self.native("yavs.two.lit", None, &[copy, count, salt, dash], None, span)?;
+                    Ok(V::A(copy, desc))
+                }
+                (V::A(..), None) => Err(self.cx.ice(span, "a two-state array without a type")),
+            };
+        }
+        let from_outside = match &e.kind {
+            ExprKind::Obj(_)
+            | ExprKind::Index { .. }
+            | ExprKind::Slice { .. }
+            | ExprKind::Field { .. } => self.root_obj(id).is_none_or(|d| self.two_source(d)),
+            ExprKind::Attr { .. } | ExprKind::Deref { .. } | ExprKind::PrivateVar { .. } => true,
+            ExprKind::Call { callee, .. } => !self.two_callee(*callee),
+            _ => false,
+        };
+        if !from_outside {
+            return Ok(v);
+        }
+        Ok(match (v, tid) {
+            (V::S(code), _) => V::S(self.two_code(code)),
+            (V::A(data, desc), Some(tid)) if !flat => {
+                let (size, _) = self.layout(tid, desc);
+                let dst = self.alloc_val(size, tid, Some(desc));
+                self.emit(Inst::Copy {
+                    dst,
+                    src: data,
+                    bytes: size,
+                });
+                self.native("yavs.two.map", Some(tid), &[dst, desc], None, span)?;
+                V::A(dst, desc)
+            }
+            (V::A(data, desc), Some(tid)) => {
+                let (size, count) = self.layout(tid, desc);
+                let dst = self.alloc_val(size, tid, Some(desc));
+                self.emit(Inst::LogicOp {
+                    op: LOp::To01,
+                    dst,
+                    a: data,
+                    b: data,
+                    n: count,
+                });
+                V::A(dst, desc)
+            }
+            (V::A(..), None) => return Err(self.cx.ice(span, "a two-state array without a type")),
+        })
+    }
+
+    /// `--two-state`: the `std_ulogic` code `code` as `LOp::To01` maps an element.
+    fn two_code(&mut self, code: Reg) -> Reg {
+        // `1` (3) and `H` (7) are the codes with both low bits set.
+        let four = self.int(4);
+        let m = self.bin(IntOp::Mod, code, four);
+        let three = self.int(3);
+        let one = self.cmp(CmpOp::Eq, m, three);
+        let zero = self.int(2);
+        self.select(one, three, zero, RegTy::I64)
+    }
+
+    /// `--two-state`: after a call of procedure `callee` that is not two-state code (a package's,
+    /// a native such as `textio.read`), its `out` and `inout` variable actuals of `std_ulogic`
+    /// mapped as a read from outside is.
+    pub(crate) fn two_outs(&mut self, callee: DeclId, args: &[Arg]) -> R<()> {
+        let db = self.db;
+        let Some(sp) = db.decls[callee].kind.subprogram() else {
+            return Ok(());
+        };
+        if matches!(sp.body, Body::Hir { .. })
+            && !crate::func::in_package(db, db.decls[callee].scope)
+        {
+            return Ok(());
+        }
+        for a in args {
+            let (Actual::Expr(e), Some(p)) = (&a.actual, sp.params.get(a.formal as usize)) else {
+                continue;
+            };
+            if p.class != ObjClass::Variable || p.mode == yavs_sem::hir::Mode::In {
+                continue;
+            }
+            match self.place(*e)? {
+                Place::Scalar { addr, w, st } if db.is_std_ulogic(db.base(st)) => {
+                    let v = self.load(addr, w, RegTy::I64);
+                    let m = self.two_code(v);
+                    self.store(addr, m, w);
+                }
+                Place::Logic { data, idx, st } if db.is_std_ulogic(db.base(st)) => {
+                    let v = self.reg(RegTy::I64);
+                    self.emit(Inst::LGet {
+                        dst: v,
+                        base: data,
+                        idx,
+                    });
+                    let m = self.two_code(v);
+                    self.emit(Inst::LSet {
+                        base: data,
+                        idx,
+                        v: m,
+                    });
+                }
+                Place::Array {
+                    data,
+                    dope,
+                    off: None,
+                    tid,
+                    ..
+                } if Ty::logic_leaf(self.fb.program().types(), tid)
+                    == Some(yavs_ir::LogicKind::StdULogic) =>
+                {
+                    let (_, count) = self.layout(tid, dope);
+                    self.emit(Inst::LogicOp {
+                        op: LOp::To01,
+                        dst: data,
+                        a: data,
+                        b: data,
+                        n: count,
+                    });
+                }
+                // ponytail: a slice actual or a record keeps what the procedure wrote.
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// The object a name `id` (an object, or an index, slice or field of one) reads.
+    fn root_obj(&self, mut id: ExprId) -> Option<DeclId> {
+        loop {
+            match &self.db.exprs[id].kind {
+                ExprKind::Obj(d) => return Some(*d),
+                ExprKind::Index { prefix, .. }
+                | ExprKind::Slice { prefix, .. }
+                | ExprKind::Field { prefix, .. } => id = *prefix,
+                _ => return None,
+            }
+        }
+    }
+
+    /// `--two-state`: reading object `d` can give values two-state code has not made: a signal,
+    /// a generic, a constant outside processes and subprograms. Variables are left alone (an
+    /// `inout` actual is passed by reference).
+    fn two_source(&self, d: DeclId) -> bool {
+        let db = self.db;
+        let decl = &db.decls[d];
+        match &decl.kind {
+            DeclKind::Object(o) => match o.class {
+                ObjClass::Signal => true,
+                ObjClass::Constant => {
+                    o.role == ObjRole::Generic
+                        || !matches!(
+                            db.scopes[decl.scope].kind,
+                            ScopeKind::Process | ScopeKind::Subprogram | ScopeKind::SeqBlock
+                        )
+                }
+                _ => false,
+            },
+            DeclKind::Alias(_) => true,
+            _ => false,
+        }
+    }
+
+    /// `--two-state`: a call of `callee` gives two-state values: a subprogram declared outside
+    /// packages (lowered two-state with this design unit), or an implicit operation.
+    fn two_callee(&self, callee: DeclId) -> bool {
+        let db = self.db;
+        match db.decls[callee].kind.subprogram() {
+            Some(sp) if matches!(sp.body, Body::Hir { .. }) => {
+                !crate::func::in_package(db, db.decls[callee].scope)
+            }
+            // ponytail: implicit and native operations keep 0/1 on 0/1 operands; numeric_std
+            // division by zero (an error already) gives `X`s, map it if that matters.
+            _ => true,
         }
     }
 
@@ -7293,6 +7547,19 @@ fn elab_known(db: &Db, known: &mut HashMap<ExprId, bool>, mut e: ExprId) -> bool
 }
 
 /// Whether composite constant `v` has a null array as an element or field.
+/// A constant whose `std_ulogic` elements are all `0` or `1` (positions 2 and 3).
+fn clean01(c: &ConstValue) -> bool {
+    match c {
+        ConstValue::Enum(p) => matches!(p, 2 | 3),
+        ConstValue::Array(a) => match &a.elems {
+            Elems::Bytes(b) => b.iter().all(|&x| matches!(x, 2 | 3)),
+            Elems::Runs(r) => r.iter().all(|(_, v)| clean01(v)),
+        },
+        ConstValue::Record(f) => f.iter().all(clean01),
+        _ => true,
+    }
+}
+
 fn holds_null_array(v: &ConstValue) -> bool {
     fn null(v: &ConstValue) -> bool {
         match v {

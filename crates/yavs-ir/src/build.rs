@@ -220,6 +220,13 @@ impl ProgramBuilder {
             .collect()
     }
 
+    /// `--two-state`: mark `f` as lowered two-state (`Func::two_state`).
+    pub fn mark_two_state(&mut self, f: FuncId) {
+        if let Some(x) = self.prog.funcs.get_mut(f) {
+            x.two_state = true;
+        }
+    }
+
     /// The number of functions declared so far.
     pub fn func_count(&self) -> usize {
         self.prog.funcs.len()
@@ -271,6 +278,7 @@ impl ProgramBuilder {
             moved: Vec::new(),
             ret_ty: None,
             ret_flat: false,
+            two_state: false,
             opt: Default::default(),
             armed: Default::default(),
             memo: Default::default(),

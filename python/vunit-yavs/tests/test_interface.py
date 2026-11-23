@@ -857,14 +857,10 @@ class TestYavsInterface(unittest.TestCase):
             _, cmd, _ = self._simulate(make_config(sim_options=options))
             self.assertNotIn("--two-state", cmd)
 
-    def test_two_state_needs_cycle_mode(self):
-        with mock.patch("vunit_yavs.Process", autospec=True) as process, mock.patch("sys.stdout", new=io.StringIO()) as out:
-            self.simif.setup_library_mapping(self._project("2008"))
-            config = make_config(sim_options={"yavs.two_state": True})
-            self.assertFalse(self.simif.simulate(self.output_path, "lib.tb", config, False))
-        process.assert_not_called()
-        for text in ("yavs.two_state=True", "yavs.cycle", "E0199"):
-            self.assertIn(text, out.getvalue())
+    def test_two_state_without_cycle_mode(self):
+        _, cmd, _ = self._simulate(make_config(sim_options={"yavs.two_state": True}))
+        self.assertEqual(cmd.count("--two-state"), 1)
+        self.assertNotIn("--cycle", cmd)
 
     def test_init_flags(self):
         config = make_config(

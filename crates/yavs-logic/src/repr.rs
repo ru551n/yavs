@@ -19,6 +19,8 @@ pub enum UnOp {
     ToX01,
     ToX01Z,
     ToUx01,
+    /// `--two-state`: `1 H` to `1`, anything else to `0`.
+    To01,
 }
 
 #[allow(clippy::len_without_is_empty)]

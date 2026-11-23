@@ -348,7 +348,10 @@ class YavsInterface(SimulatorInterface):
             "yavs.no_asserts",
             "yavs run --no-asserts: the asserts and reports below the top-level unit are not evaluated",
         ),
-        FlagOption("yavs.two_state", "yavs run --two-state: two-state values in cycle mode"),
+        FlagOption(
+            "yavs.two_state",
+            "yavs run --two-state: the design below the top-level unit holds only 0 and 1",
+        ),
         InitOption("yavs.init_unset"),
         InitOption("yavs.init_x"),
         ListOfStringOption("yavs.cov_kind"),
@@ -880,14 +883,6 @@ class YavsInterface(SimulatorInterface):
                 )
                 return False
         two_state = config.sim_options.get("yavs.two_state", False) and not elaborate_only
-        if two_state and cycle == "off":
-            # yavs gives E0199 for --two-state without cycle mode; saying so here names the option
-            print(
-                "error: the sim option yavs.two_state=True needs yavs.cycle \"on\" or \"strict\": two-state "
-                "values without cycle mode are not implemented yet (yavs error E0199). "
-                "Fix: set yavs.cycle for this test, or drop yavs.two_state."
-            )
-            return False
         if debug or surfer:
             if not self._take_debug_session(test_suite_name):
                 return False

@@ -739,8 +739,7 @@ fn live_out(prog: &Program, f: &crate::Func, tracked: &[Reg]) -> Option<Vec<Vec<
 
 /// A `LogicOp` that reads `a` only (`b` names any register).
 fn unary_lop(op: crate::LOp) -> bool {
-    use crate::LOp::*;
-    matches!(op, Not | ToX01 | ToX01Z | ToUx01)
+    op.unary()
 }
 
 fn local_bit(local: &[usize], g: usize) -> usize {

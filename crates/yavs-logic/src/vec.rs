@@ -96,6 +96,9 @@ impl<R: Repr> Logic<R> {
     pub fn to_ux01(&self) -> Self {
         self.unop(UnOp::ToUx01)
     }
+    pub fn to_01(&self) -> Self {
+        self.unop(UnOp::To01)
+    }
     /// Resolve N >= 1 drivers of equal length (one driver is passed through unchanged).
     pub fn resolve(drivers: &[&Self]) -> Self {
         let first = drivers.first().expect("at least one driver");

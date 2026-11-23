@@ -278,15 +278,14 @@ pub struct RunArgs {
     #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true,
           conflicts_with_all = ["cycle", "cycle_strict"])]
     cycle_report: Option<Option<String>>,
-    /// Two-state values (experimental), with `--cycle`, `--cycle-strict` or `--cycle-report` (without
-    /// them not implemented yet, E0199): cycle-based processes hold only `0` and `1`. A metavalue
-    /// (`'U'`, `'X'`, `'Z'`, ...) they read from outside counts as `0` (`'H'` as `1`), one below the
-    /// top-level unit written as a literal takes the `--init-x` value (`0` without it), and no
-    /// process stays out for a metavalue. Processes in the event kernel, the top-level unit's
-    /// among them, keep the nine values. Without this option cycle mode keeps
-    /// the metavalues: a process that would hide one from the testbench stays in the event kernel,
-    /// a register or variable without a start value shows `'U'` while its value depends on it (for
-    /// up to 1024 clock edges), and a failed check's message gives its values.
+    /// Two-state values (experimental): the design below the top-level unit holds only `0` and
+    /// `1`. A metavalue it reads from the testbench or a resolved signal counts as `0` (`'H'` as
+    /// `1`), its literals `'U'`, `'X'`, `'Z'`, `'W'` and `'-'` take the `--init-x` value (`0`
+    /// without it; `'L'` is `0`, `'H'` is `1`), and what it declares without an initial value
+    /// starts at `--init-unset` (`0` without it). The top-level unit keeps the nine values. With
+    /// a cycle option the cycle-based processes are two-state too; without this option cycle mode
+    /// keeps the metavalues (for now a register without a start value shows `'U'` for up to 1024
+    /// clock edges).
     #[arg(long)]
     two_state: bool,
     // The text names the tiers this build has, so it is built by `tier_help`.
@@ -914,6 +913,7 @@ fn elaborate(
             values,
             init_unset: yavs_logic::start::unset(),
             init_x: yavs_logic::start::x().is_some(),
+            two_state: lowering.two_state,
             ..yavs_elab::ElabConfig::default()
         };
         yavs_elab::elaborate(&mut db, t, &c.generics, &cfg)
@@ -1624,6 +1624,7 @@ fn prepare(
         no_asserts: a.no_asserts,
         init_unset: a.init_unset.is_some(),
         init_x: a.init_x.is_some(),
+        two_state: a.two_state,
         ..yavs_elab::LowerOptions::default()
     };
     // Read by elaboration, the lowering's natives and cycle mode.
@@ -1974,20 +1975,6 @@ fn run_design(
     if let Some(d) = removed_tier(&a) {
         let mut out = Out::new(format, color);
         out.emit(&SourceMap::default(), &d);
-        return out.finish(2);
-    }
-    // Two-state values in the event kernel are not implemented yet: only with cycle mode.
-    if a.two_state && !a.cycle_on() {
-        let mut out = Out::new(format, color);
-        out.emit(
-            &SourceMap::default(),
-            &Diagnostic::error(
-                "E0199",
-                "`--two-state` without `--cycle` is not implemented yet in yavs",
-            )
-            .with_note("this is a limitation of yavs, not an error in the design")
-            .with_help("add `--cycle` (or `--cycle-strict`), or run without `--two-state`"),
-        );
         return out.finish(2);
     }
     // A report file that cannot be written fails before any work.

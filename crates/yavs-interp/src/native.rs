@@ -124,6 +124,9 @@ fn implemented(symbol: &str, family: Option<&str>, attr: Option<&str>) -> Option
         ("yavs.init.unset_code", _, _) => init_unset_code,
         ("yavs.init.x", _, _) => init_x,
         ("yavs.init.x_code", _, _) => init_x_code,
+        ("yavs.two.lit", _, _) => two_lit,
+        ("yavs.two.lit_code", _, _) => two_lit_code,
+        ("yavs.two.map", _, _) => two_map,
         ("yavs.prot.name_get", _, _) => prot_name_get,
         ("yavs.env.getenv.string.r_string", _, _) => getenv_string,
         ("yavs.env.getenv.string.r_line", _, _) => getenv_line,
@@ -1013,12 +1016,12 @@ fn resolution_limit(
 
 /// The value of `--init-unset` or `--init-x`; a call without one is a bug of the lowering.
 fn start_fill(x: bool) -> R<yavs_logic::start::Fill> {
-    let f = if x {
-        yavs_logic::start::x()
+    if x {
+        yavs_logic::start::x().ok_or_else(|| ice("a start value native called without its option"))
     } else {
-        yavs_logic::start::unset()
-    };
-    f.ok_or_else(|| ice("a start value native called without its option"))
+        // `--two-state` starts the variables of two-state code at 0 without `--init-unset`.
+        Ok(yavs_logic::start::unset().unwrap_or(yavs_logic::start::Fill::Zero))
+    }
 }
 
 /// The codes a fill replaces: `'U'` for `--init-unset`; `'U'`, `'X'`, `'W'`, `'-'` for `--init-x`.
@@ -1038,7 +1041,8 @@ fn run_salt(ctx: &Option<&mut Ctx<'_>>, salt: u64, x: bool) -> R<u64> {
     }
     match ctx {
         Some(c) => Ok(yavs_logic::start::inst_salt(salt, c.process_name())),
-        None => Err(ice("a process variable's start value outside a process")),
+        // A subprogram of two-state code run at elaboration.
+        None => Ok(salt),
     }
 }
 
@@ -1108,6 +1112,131 @@ fn init_x_code(
     a: &[u64],
 ) -> R<Option<u64>> {
     start_code(ctx, a, true)
+}
+
+/// `--two-state`: a literal's code as two-state code reads it: `L` is `0`, `H` is `1`, `U X Z W`
+/// (and `-` unless `dash` keeps it, a matching comparison) take `--init-x`, 0 without it.
+fn two_code(code: u64, salt: u64, i: u64, dash: bool) -> u64 {
+    match code {
+        6 => 2,
+        7 => 3,
+        8 if dash => 8,
+        0 | 1 | 4 | 5 | 8 => {
+            let f = yavs_logic::start::x().unwrap_or(yavs_logic::start::Fill::Zero);
+            u64::from(f.code(salt, i))
+        }
+        c => c,
+    }
+}
+
+/// `yavs.two.lit (data, n, salt, dash)`: [`two_code`] on the planes of a literal's value.
+fn two_lit(
+    m: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    let (data, n, salt, dash) = (targ(a, 0)?, targ(a, 1)?, targ(a, 2)?, targ(a, 3)? != 0);
+    if n == 0 {
+        return Ok(None);
+    }
+    let v = m.wr(data, n.div_ceil(64) * 32)?;
+    for i in 0..n {
+        let c = plane_get(v, i);
+        let t = two_code(c, salt, i, dash);
+        if t != c {
+            plane_set(v, i, t);
+        }
+    }
+    Ok(None)
+}
+
+/// `yavs.two.lit_code (code, salt, dash)`: [`two_code`] on a scalar literal.
+fn two_lit_code(
+    _: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    Ok(Some(two_code(
+        targ(a, 0)?,
+        targ(a, 1)?,
+        0,
+        targ(a, 2)? != 0,
+    )))
+}
+
+/// `yavs.two.map (data, desc)` of type `ty`: every `std_ulogic` element of the composite at
+/// `data` (a record, an array of records) as `LOp::To01` maps it, in place.
+fn two_map(
+    m: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    ty: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    let ty = ty.ok_or_else(|| ice("yavs.two.map without a type"))?;
+    let (data, dp) = (targ(a, 0)?, targ(a, 1)?);
+    let rt = m.rt.clone();
+    let n = Ty::desc_size(&rt.prog.types, ty).ok_or_else(|| ice("descriptor size"))?;
+    let desc = if n == 0 {
+        Vec::new()
+    } else {
+        m.rd(dp, n)?.to_vec()
+    };
+    two_walk(m, &rt.prog, ty, &desc, data)?;
+    Ok(None)
+}
+
+fn two_walk(m: &mut Machine, prog: &yavs_ir::Program, ty: TyId, desc: &[u8], at: u64) -> R<()> {
+    let (types, consts) = (&prog.types, &prog.consts);
+    if !Ty::has_std_ulogic(types, ty) {
+        return Ok(());
+    }
+    let (lay, _) = Ty::layout(types, consts, ty, desc).map_err(layout_err)?;
+    match types.get(ty) {
+        Some(Ty::Enum { .. }) => {
+            let v = m.wr(at, lay.size)?;
+            v[0] = if v[0] & 3 == 3 { 3 } else { 2 };
+        }
+        Some(_) if Ty::logic_leaf(types, ty).is_some() => {
+            let v = m.wr(at, lay.count.div_ceil(64) * 32)?;
+            for i in 0..lay.count {
+                let c = plane_get(v, i);
+                plane_set(v, i, if c & 3 == 3 { 3 } else { 2 });
+            }
+        }
+        Some(Ty::Record { fields }) => {
+            let mut used = 0;
+            for (f, &off) in fields.iter().zip(&lay.offsets) {
+                let fdesc = match f.desc {
+                    Some(c) => const_bytes(prog, c)?,
+                    None => {
+                        let n = Ty::desc_size(types, f.ty)
+                            .ok_or_else(|| ice("record field type"))?
+                            as usize;
+                        used += n;
+                        desc.get(used - n..used).unwrap_or(&[]).to_vec()
+                    }
+                };
+                two_walk(m, prog, f.ty, &fdesc, at + off)?;
+            }
+        }
+        Some(Ty::Array {
+            elem,
+            elem_desc,
+            dims,
+        }) => {
+            let edesc = match elem_desc {
+                Some(c) => const_bytes(prog, *c)?,
+                None => desc.get(usize::from(*dims) * 24..).unwrap_or(&[]).to_vec(),
+            };
+            for k in 0..lay.count {
+                two_walk(m, prog, *elem, &edesc, at + k * lay.stride)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// `yavs.prot.name_set (object, path, instance)`: the names of a protected object (#916).

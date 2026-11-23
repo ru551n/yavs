@@ -983,12 +983,7 @@ fn renumber(prog: &Program, f: &mut crate::Func) {
                 b,
                 ..
             } => *b = *a,
-            Inst::LogicOp {
-                op: LOp::Not | LOp::ToX01 | LOp::ToX01Z | LOp::ToUx01,
-                a,
-                b,
-                ..
-            } => *b = *a,
+            Inst::LogicOp { op, a, b, .. } if op.unary() => *b = *a,
             Inst::Check {
                 kind, v, lo, hi, ..
             } => {
@@ -2270,7 +2265,7 @@ impl<'a> Opt<'a> {
                     }
                     _ => None,
                 };
-                let unary = matches!(op, LOp::Not | LOp::ToX01 | LOp::ToX01Z | LOp::ToUx01);
+                let unary = op.unary();
                 let want = if unary { 4 } else { 8 };
                 if rs.len() != want {
                     continue;

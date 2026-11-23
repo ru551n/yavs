@@ -9,7 +9,7 @@ use yavs_sem::decl::{Alias, Body, DeclKind, ObjClass, ObjRole, Param, Subprogram
 use yavs_sem::hir::{self, Mode as HMode, Sensitivity, StmtKind as HStmt, UnitHir};
 use yavs_sem::scope::ScopeKind;
 use yavs_sem::types::RangeC;
-use yavs_sem::{Db, DeclId, ScopeId, StmtId, SubtypeId, UnitId};
+use yavs_sem::{Db, DeclId, ExprId, ScopeId, StmtId, SubtypeId, UnitId};
 
 use crate::expr::Place;
 use crate::{
@@ -130,6 +130,20 @@ pub(crate) fn func_of(
     cx.funcs.insert(d, f);
     cx.queue.push((d, depth, false));
     Ok(f)
+}
+
+/// Scope `s` is in a package or package body.
+pub(crate) fn in_package(db: &Db, mut s: ScopeId) -> bool {
+    loop {
+        let sc = &db.scopes[s];
+        if matches!(sc.kind, ScopeKind::Package | ScopeKind::PackageBody) {
+            return true;
+        }
+        match sc.parent {
+            Some(p) => s = p,
+            None => return false,
+        }
+    }
 }
 
 /// The function and depth of the subprogram or process enclosing subprogram `d`, for the
@@ -327,6 +341,15 @@ pub(crate) struct Fx<'a, 'b> {
     /// `--init-unset` while a process variable without an initial value is laid out: the salt
     /// of its bits (`yavs_logic::start::var_salt`).
     pub unset: Option<u64>,
+    /// `--two-state`: this function is two-state (`Func::two_state`): `Cx::two_state` for a
+    /// process and a subprogram declared outside packages.
+    pub two: bool,
+    /// `--two-state`: a variable of a subprogram of two-state code is being laid out: its `'U'`
+    /// elements start at `'0'`.
+    pub unset_zero: bool,
+    /// `--two-state`: the operands of matching comparisons (`std_match`, `?=`, `?/=`), whose
+    /// `'-'` literals keep their meaning.
+    pub two_dash: std::collections::HashSet<ExprId>,
     /// The `GUARD` signal of the enclosing guarded block (guarded assignments).
     pub guard: Option<DeclId>,
     /// Copy-out after the call being lowered: (frame slot of the temporary, the actual's
@@ -377,6 +400,7 @@ impl<'a, 'b> Fx<'a, 'b> {
         kind: FuncKind,
         name: String,
     ) -> Self {
+        let two = cx.two_state;
         Fx {
             db,
             cx,
@@ -402,6 +426,9 @@ impl<'a, 'b> Fx<'a, 'b> {
             prot_self: None,
             prot_defaults: true,
             unset: None,
+            two,
+            unset_zero: false,
+            two_dash: Default::default(),
             guard: None,
             writeback: Vec::new(),
             writeback_parts: Vec::new(),
@@ -1113,17 +1140,23 @@ impl<'a, 'b> Fx<'a, 'b> {
     pub fn var_init(&mut self, d: DeclId, shape: VarShape, slot: Reg, shared: bool) -> R<()> {
         let db = self.db;
         let decl = &db.decls[d];
-        let unset = (self.cx.opts.init_unset
-            && !shared
-            && db.scopes[decl.scope].kind == yavs_sem::scope::ScopeKind::Process
-            && matches!(&decl.kind, DeclKind::Object(o) if o.default.is_none()))
-        .then(|| {
-            let (file, line, col) = db.sources.get(decl.span.file).site(decl.span.start);
-            yavs_logic::start::var_salt(file, &decl.name.to_string(), line, col)
-        });
+        let scope = db.scopes[decl.scope].kind;
+        let no_init = !shared && matches!(&decl.kind, DeclKind::Object(o) if o.default.is_none());
+        // `--two-state`: a process variable of two-state code starts at `--init-unset`, 0
+        // without it; one of a subprogram at 0.
+        let unset = ((self.cx.opts.init_unset || self.two)
+            && no_init
+            && scope == yavs_sem::scope::ScopeKind::Process)
+            .then(|| {
+                let (file, line, col) = db.sources.get(decl.span.file).site(decl.span.start);
+                yavs_logic::start::var_salt(file, &decl.name.to_string(), line, col)
+            });
+        let zero = self.two && no_init && scope != yavs_sem::scope::ScopeKind::Process;
         let saved = std::mem::replace(&mut self.unset, unset);
+        let saved_zero = std::mem::replace(&mut self.unset_zero, zero);
         let r = self.var_init_in(d, shape, slot, shared);
         self.unset = saved;
+        self.unset_zero = saved_zero;
         r
     }
 
@@ -1416,6 +1449,10 @@ impl<'a, 'b> Fx<'a, 'b> {
                 self.ret_term(None);
             }
         }
+        if self.two {
+            let id = self.fb.id();
+            self.fb.program().mark_two_state(id);
+        }
         self.fb.finish();
     }
 }
@@ -1498,6 +1535,8 @@ fn subprogram_body(
         s = db.scopes[sc].parent;
     }
     let mut fx = Fx::new(db, cx, pb.define(f), depth, kind, decl.name.to_string());
+    // A package's subprograms are four-state: the top-level unit calls them too.
+    fx.two &= !in_package(db, decl.scope);
     if let Some((d, b)) = drivers {
         fx.drivers = d;
         fx.driver_base = b;

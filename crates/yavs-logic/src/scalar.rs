@@ -124,6 +124,8 @@ pub const NOT: [u8; 16] = tab1(b"UX10XX10X");
 pub const TO_X01: [u8; 16] = tab1(b"XX01XX01X");
 pub const TO_X01Z: [u8; 16] = tab1(b"XX01ZX01X");
 pub const TO_UX01: [u8; 16] = tab1(b"UX01XX01X");
+/// `--two-state`: `1 H` read as `1`, every other value as `0`.
+pub const TO_01: [u8; 16] = tab1(b"000000011");
 
 impl StdULogic {
     #[inline]

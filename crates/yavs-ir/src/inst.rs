@@ -172,7 +172,17 @@ pub enum LOp {
     ToX01,
     ToX01Z,
     ToUx01,
+    /// `--two-state` (unary): `1 H` to `1`, every other value to `0`, as the cycle boundary maps.
+    To01,
     Resolve,
+}
+
+impl LOp {
+    /// Reads operand `a` only (`b` names any register).
+    pub fn unary(self) -> bool {
+        use LOp::*;
+        matches!(self, Not | ToX01 | ToX01Z | ToUx01 | To01)
+    }
 }
 
 /// Numeric operations on logic arrays (numeric_std style, equal lengths).
@@ -1147,7 +1157,7 @@ impl Inst {
             Inst::LogicOp { op, dst, a, b, n } => {
                 f(dst, Use, p);
                 f(a, Use, p);
-                if !matches!(op, LOp::Not | LOp::ToX01 | LOp::ToX01Z | LOp::ToUx01) {
+                if !op.unary() {
                     f(b, Use, p);
                 }
                 f(n, Use, i);

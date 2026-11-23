@@ -178,6 +178,9 @@ impl Fx<'_, '_> {
                     return Err(Failed);
                 }
                 self.call(c.callee, &c.args, c.method_of, None, c.span)?;
+                if self.two && c.method_of.is_none() {
+                    self.two_outs(c.callee, &c.args)?;
+                }
                 Ok(())
             }
             H::If { branches, else_ } => {

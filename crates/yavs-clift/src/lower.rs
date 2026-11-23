@@ -10572,7 +10572,7 @@ fn logic_inline(op: yavs_ir::LOp) -> bool {
     use yavs_ir::LOp::*;
     matches!(
         op,
-        And | Or | Nand | Nor | Xor | Xnor | Not | ToX01 | ToUx01
+        And | Or | Nand | Nor | Xor | Xnor | Not | ToX01 | ToUx01 | To01
     )
 }
 
@@ -10677,6 +10677,7 @@ impl Gen<'_> {
                 let a = self.b.ins().bor(z, u);
                 [self.b.ins().bnot(a), self.b.ins().bor(z, o)]
             }
+            To01 => [self.is1(x), self.c64(-1)],
             _ => unreachable!("not lowered inline"),
         }
     }
@@ -10696,10 +10697,7 @@ impl Gen<'_> {
         n: Reg,
     ) {
         let (slow, join) = self.slow_path_x(pc, inst, f);
-        let unary = matches!(
-            op,
-            yavs_ir::LOp::Not | yavs_ir::LOp::ToX01 | yavs_ir::LOp::ToUx01
-        );
+        let unary = op.unary();
         // One block of a known count: straight code, the mask a constant.
         if let Some(k) = self.kint(n).filter(|k| (1..=64).contains(k)) {
             let av = self.ld(a);

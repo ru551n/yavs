@@ -1053,12 +1053,16 @@ impl Fx<'_, '_> {
     /// The code `v` of a scalar of subtype `st` for a variable `Fx::unset` lays out: a `'U'` of
     /// `std_ulogic` replaced by `yavs.init.unset_code`.
     pub(crate) fn unset_code(&mut self, st: SubtypeId, v: Reg, span: Span) -> R<Reg> {
-        let Some(salt) = self.unset else {
-            return Ok(v);
-        };
         if !self.db.is_std_ulogic(self.db.base(st)) {
             return Ok(v);
         }
+        if self.unset_zero {
+            // `'U'`, the leftmost value, becomes `'0'`.
+            return Ok(self.int(2));
+        }
+        let Some(salt) = self.unset else {
+            return Ok(v);
+        };
         let salt = self.int(salt as i64);
         match self.native("yavs.init.unset_code", None, &[v, salt], Some(st), span)? {
             Some(V::S(r)) => Ok(r),
@@ -1070,12 +1074,22 @@ impl Fx<'_, '_> {
     /// `Fx::unset` lays out: its `'U'` elements replaced by `yavs.init.unset`, when they are
     /// `std_ulogic`.
     pub(crate) fn unset_planes(&mut self, tid: TyId, data: Reg, count: Reg, span: Span) -> R<()> {
-        let Some(salt) = self.unset else {
-            return Ok(());
-        };
         if Ty::logic_leaf(self.fb.program().types(), tid) != Some(LogicKind::StdULogic) {
             return Ok(());
         }
+        if self.unset_zero {
+            self.emit(Inst::LogicOp {
+                op: yavs_ir::LOp::To01,
+                dst: data,
+                a: data,
+                b: data,
+                n: count,
+            });
+            return Ok(());
+        }
+        let Some(salt) = self.unset else {
+            return Ok(());
+        };
         let salt = self.int(salt as i64);
         self.native("yavs.init.unset", None, &[data, count, salt], None, span)?;
         Ok(())
@@ -1257,7 +1271,10 @@ impl Fx<'_, '_> {
                 };
                 Some((d, n, 0))
             }
-            None if self.unset.is_none() && self.zero_default(st, tid, span)? => {
+            None if self.unset.is_none()
+                && !self.unset_zero
+                && self.zero_default(st, tid, span)? =>
+            {
                 Some((self.bytes_addr(vec![0]), size, 1))
             }
             _ => None,

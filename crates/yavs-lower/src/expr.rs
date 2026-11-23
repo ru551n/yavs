@@ -274,21 +274,19 @@ impl<'a> Fx<'a, '_> {
         if let Some(v) = self.ahead.remove(&id) {
             return Ok(v);
         }
+        // `--two-state`: the literal operands of a comparison keep their meaning (A74), a `'-'` of
+        // a matching one too.
         if self.two
             && let ExprKind::Call { callee, args, .. } = &self.db.exprs[id].kind
-            && matches!(
-                self.db.decls[*callee]
-                    .name
-                    .to_string()
-                    .trim_matches('"')
-                    .to_ascii_lowercase()
-                    .as_str(),
-                "std_match" | "?=" | "?/="
-            )
         {
-            for a in args.iter() {
-                if let Actual::Expr(x) = a.actual {
-                    self.two_keep_dash(x);
+            let name = self.db.decls[*callee].name.to_string();
+            let name = name.trim_matches('"').to_ascii_lowercase();
+            let matching = matches!(name.as_str(), "std_match" | "?=" | "?/=");
+            if matching || matches!(name.as_str(), "=" | "/=") {
+                for a in args.iter() {
+                    if let Actual::Expr(x) = a.actual {
+                        self.two_keep_cmp(x, matching);
+                    }
                 }
             }
         }
@@ -388,6 +386,10 @@ impl<'a> Fx<'a, '_> {
         }
         let dash = self.two_dash.contains(&id);
         let zkeep = self.two_zkeep.contains(&id);
+        // A metavalue literal compared with a two-state value is never equal to it (A74).
+        if folded.is_some() && self.two_cmp.contains(&id) {
+            return Ok(v);
+        }
         let splat = matches!(&e.kind, ExprKind::Aggregate { assocs, .. }
             if matches!(&assocs[..], [a] if self.two_splat.contains(&a.value)));
         let from_outside = match &e.kind {
@@ -402,6 +404,24 @@ impl<'a> Fx<'a, '_> {
         };
         if folded.is_some_and(clean01) {
             return Ok(v);
+        }
+        // `?=` with a metavalue operand gives `'0'`, `?/=` gives `'1'`: never equal (A74).
+        if let (ExprKind::Call { callee, .. }, V::S(code)) = (&e.kind, v)
+            && folded.is_none()
+        {
+            match db.decls[*callee].name.to_string().trim_matches('"') {
+                "?=" => return Ok(V::S(self.two_code(code))),
+                "?/=" => {
+                    // `0` (2) and `L` (6) are `0`, anything else `1`.
+                    let four = self.int(4);
+                    let m = self.bin(IntOp::Mod, code, four);
+                    let two = self.int(2);
+                    let zero = self.cmp(CmpOp::Eq, m, two);
+                    let three = self.int(3);
+                    return Ok(V::S(self.select(zero, two, three, RegTy::I64)));
+                }
+                _ => {}
+            }
         }
         // A literal, or a value read from outside for a matching comparison (a generic mask):
         // `yavs.two.lit` keeps its `'-'` (mode bit 0), a read maps metavalues to `0` (bit 1).
@@ -471,12 +491,17 @@ impl<'a> Fx<'a, '_> {
         })
     }
 
-    /// `--two-state`: `x` is an operand of a matching comparison: its `'-'`, and those of the
-    /// elements of an aggregate or qualified operand (`(d'range => '-')`), keep their meaning.
-    pub(crate) fn two_keep_dash(&mut self, x: ExprId) {
+    /// `--two-state`: `x` is an operand of a comparison (`matching`: `std_match`, `?=`, `?/=`):
+    /// its literals, and those of the elements of an aggregate or qualified operand
+    /// (`(d'range => '-')`), keep their meaning (A74); a value read from outside for a matching
+    /// one keeps its `'-'`.
+    pub(crate) fn two_keep_cmp(&mut self, x: ExprId, matching: bool) {
         let mut todo = vec![x];
         while let Some(x) = todo.pop() {
-            self.two_dash.insert(x);
+            self.two_cmp.insert(x);
+            if matching {
+                self.two_dash.insert(x);
+            }
             match &self.db.exprs[x].kind {
                 ExprKind::Aggregate { assocs, .. } => todo.extend(assocs.iter().map(|a| a.value)),
                 ExprKind::Qualified { operand, .. } => todo.push(*operand),

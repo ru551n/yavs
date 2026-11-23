@@ -1,6 +1,6 @@
--- Asserts below the top that compare with metavalue literals (A57, A62): in a two-state region
--- the literal reads as the `--init-x` value, so `d /= (d'range => 'X')` fails where d is all 0
--- under `--init-x=0`; the normal mode and cycle mode without `--two-state` never fail. Widths 1 to 128.
+-- Asserts below the top that compare with metavalue literals (A74, amending A62): a two-state
+-- value never equals a metavalue, so `d /= (d'range => 'X')` holds with every `--init-x`, in
+-- every mode. Widths 1 to 128.
 library ieee;
 use ieee.std_logic_1164.all;
 

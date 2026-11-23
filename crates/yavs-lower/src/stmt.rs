@@ -292,11 +292,8 @@ impl Fx<'_, '_> {
     ) -> R<Vec<BlockId>> {
         let db = self.db;
         let array = ty::is_array(db, db.base(db.exprs[expr].subtype));
-        // `--two-state`: a `std_ulogic` selector compares with each choice, whose metavalue
-        // literal takes `--init-x` at run time (A62).
         if matching
             || array
-            || (self.two && db.is_std_ulogic(db.base(db.exprs[expr].subtype)))
             || sets.iter().any(|s| {
                 s.intervals.is_none() && !s.choices.iter().all(|c| matches!(c, Choice::Others))
             })
@@ -396,8 +393,9 @@ impl Fx<'_, '_> {
                         continue;
                     }
                     Choice::Expr(e) => {
-                        if matching && self.two {
-                            self.two_keep_dash(*e);
+                        // `--two-state`: a choice keeps its literal's meaning (A74).
+                        if self.two {
+                            self.two_keep_cmp(*e, matching);
                         }
                         let cv = self.expr(*e)?;
                         match (array, matching) {

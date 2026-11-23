@@ -95,8 +95,9 @@ fn hexv(w: u32, hi: u8, mid: u8, lo: u8) -> String {
 
 /// The note of width `w` under `--two-state` with `--init-x` bits `x` (`b'0'` or `b'1'`).
 fn want(w: u32, x: u8) -> String {
-    let flags = if x == b'0' { "00110100" } else { "10100100" };
-    let cs = if x == b'0' { "111" } else { "100" };
+    // `a = 'X'` and the case choices `'X'`, `"0X"` never match a two-state value (A74).
+    let flags = if x == b'0' { "00100100" } else { "10100100" };
+    let cs = "100";
     format!(
         "W={w} q={} nq={} z={} lit={} flags={flags} rout=01100 cnt=0001 more=0011 cs={cs} zz={} d={}",
         hexv(w, b'1', b'0', b'1'),
@@ -222,24 +223,27 @@ fn a_z_driven_onto_a_resolved_signal_stays_z() {
 
 /// The bounds of a subtype or range below the top keep their metavalues under `--two-state`
 /// (`X01` is `'X'` to `'1'`): with `--init-x=1` a variable of `X01` assigned `'0'` used to fail
-/// its range check, and a loop over `X01` ran once.
+/// its range check, and a loop over `X01` ran once. A two-state value never equals a metavalue
+/// (A74): the one-shot `assert clk /= 'U'` of a component below the top holds while the
+/// testbench's clock is still `'U'`, in both modes.
 #[test]
 fn two_state_keeps_the_bounds_of_subtypes() {
     let dir = tempdir("twostate-range");
     analyze(&dir, "twostate_range.vhd");
     for t in tiers() {
-        for x in ["--init-x=0", "--init-x=1", "--init-x=random:7"] {
-            let mut args = vec!["run", "--work=work:lib", "--no-cache", "--two-state", x];
-            args.extend(t.iter().copied());
-            args.push("twostate_range");
-            let o = yavs(&dir, &args);
-            let out = String::from_utf8_lossy(&o.stdout);
-            assert!(
-                o.status.success(),
-                "{args:?}: {}",
-                String::from_utf8_lossy(&o.stderr)
-            );
-            assert!(out.contains("range n=3 q='1'"), "{args:?}: {out}");
+        for mode in [None, Some("--cycle")] {
+            for x in ["--init-x=0", "--init-x=1", "--init-x=random:7"] {
+                let mut args = vec!["run", "--work=work:lib", "--no-cache", "--two-state", x];
+                args.extend(mode);
+                args.extend(t.iter().copied());
+                args.push("twostate_range");
+                let o = yavs(&dir, &args);
+                let out = String::from_utf8_lossy(&o.stdout);
+                let err = String::from_utf8_lossy(&o.stderr);
+                assert!(o.status.success(), "{args:?}: {out}{err}");
+                assert!(out.contains("range n=3 q='1' u='0'"), "{args:?}: {out}");
+                assert!(!out.contains("clock is U"), "{args:?}: {out}");
+            }
         }
     }
 }

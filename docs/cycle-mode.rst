@@ -488,23 +488,12 @@ would hide one stay out (below), and the start values are followed on a second s
   ``'X'`` while the second set of values runs). With ``--two-state`` a testbench never sees ``'X'`` or ``'Z'``
   from a cycle-based process: a process that assigns a metavalue literal (``(others => 'X')`` on invalid data, say)
   gives ``'0'`` there, and so does one that copies a tri-state line some process outside sets to ``'Z'``. A metavalue
-  literal (``'U'``, ``'X'``, ``'W'``, ``'-'``) of a cycle-based process, assigned or compared, reads as the value of
+  literal (``'U'``, ``'X'``, ``'W'``, ``'-'``) that a cycle-based process assigns reads as the value of
   ``--init-x`` (:ref:`start-values`), ``0`` without it, as do values computed from it; the region report counts these
-  literals per process. This holds for compares, ``case`` choices and asserts too, so with ``--init-x=0`` (or
-  without the option) ``x = 'X'`` is true where ``x`` is ``0``: ``if d = "1X"`` tests ``d = "10"`` there, an
-  ``assert x /= 'X'`` of the design fails where ``x`` is ``0``, and in
-
-  .. code-block:: vhdl
-
-      case sel is
-        when "0X" => c <= '1';  -- taken where sel is "00" under --cycle --two-state
-        when others => c <= '0';
-      end case;
-
-  the choice ``"0X"`` is the choice ``"00"`` (the first alternative that matches is taken). A ``'-'`` in
-  ``std_match``, ``?=`` or a ``case?`` choice still matches anything. This holds below the top-level unit: a process of the top-level unit that compares with a
-  metavalue literal (a checker's ``assert q /= 'X'``) stays in the event kernel, where a two-state value never equals
-  the literal, so its checks give the normal mode's results.
+  literals per process. A metavalue literal it compares with keeps its meaning: a two-state value never equals
+  ``'U'``, ``'X'``, ``'Z'`` or ``'W'``, so ``x = 'X'`` is false, ``assert clk /= 'U'`` holds, and a ``case`` choice
+  ``"0X"`` is never taken. A ``'-'`` in ``std_match``, ``?=`` or a ``case?`` choice still matches anything. The
+  normal mode under ``--two-state`` does the same.
 * Without ``--two-state`` the testbench sees what the normal mode gives it in those two cases: a process that
   assigns a metavalue literal to a signal the testbench reads (a process of the top-level unit, or a behavioural
   one) stays out, and so does one that passes on to such a signal a signal a process outside sets to ``'Z'`` in its

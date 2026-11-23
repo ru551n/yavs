@@ -18131,6 +18131,14 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
   the metavalue literals of inlined package subprograms, and the values of package calls elaboration made, `0`
   (`Lx::lit_fill`), so both modes agree. Rationale: a package procedure of a verification library drove its idle
   `"ZZ"` as `"00"` and hung the test.
+- **A two-state value never equals a metavalue** (user decision A74, 2026-11-23, amends A62 (1)): under `--two-state` a
+  metavalue literal used as an operand of `=`, `/=`, a `case` choice, `?=`, `?/=` or `std_match` keeps its meaning:
+  `x = 'U'` is false, `x /= 'U'` true, `x ?= 'U'` is `'0'`, `x ?/= 'U'` is `'1'`, and `'-'` keeps its don't-care
+  meaning; only an assigned metavalue literal takes `--init-x`. Both modes: the normal mode keeps such literals as
+  written (`Fx::two_keep_cmp`) and maps the result of `?=` and `?/=`; the region's comparison with one is false
+  (`Lx::match_codes`), and an aggregate of a metavalue literal and other values in a comparison keeps its process
+  out. Rationale: the "is it connected" check `assert clk /= 'U'` of IP libraries fired at time 0 under
+  `--two-state`.
 - **Normal-mode `--two-state` is a diagnostic mode** (user decision A72, 2026-11-23): `--cycle` and `--two-state`
   stay orthogonal; without `--cycle` the option separates differences caused by values from those caused by
   scheduling, and its speed goal is parity with the default, not a gain. No one-plane code path in the tiers (an

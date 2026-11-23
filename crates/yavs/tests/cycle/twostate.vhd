@@ -94,7 +94,7 @@ begin
       more(0) <= '1' when std_match(d(0 downto 0), MASK) else '0';
       more(1) <= a xor d(0) xor rin.a;
       more(3 downto 2) <= a & rin.a;
-      -- Case choices with metavalues take --init-x too (A62); case? keeps its '-'.
+      -- A case choice with a metavalue never matches a two-state value (A74); case? keeps its '-'.
       case a is
         when 'X' => cs(0) <= '1';
         when others => cs(0) <= '0';

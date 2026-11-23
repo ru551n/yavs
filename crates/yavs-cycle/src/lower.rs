@@ -2244,10 +2244,7 @@ impl Lx<'_> {
                     if codes.len() != p.len as usize {
                         return Err("a `case` choice of another length than the selector".into());
                     }
-                    // A metavalue of the choice takes the bits a literal there would.
-                    let salt = lit_salt(self.db, self.db.exprs[*x].span);
-                    let bits = fill_bits(self.lit_fill(), salt, codes.len() as u32);
-                    self.match_codes(*p, &codes, matching, &bits)?
+                    self.match_codes(*p, &codes, matching)?
                 }
                 _ => {
                     return Err("a `case` choice of this kind".into());
@@ -2272,38 +2269,27 @@ impl Lx<'_> {
     }
 
     /// `p` against the `std_ulogic` codes of a literal (from the left): `'-'` matches anything
-    /// in a matching comparison; any other metavalue keeps the process out (a two-state value
-    /// is never one, while the normal mode can hold it).
-    fn match_codes(&mut self, p: Part, codes: &[u8], matching: bool, bits: &Bits) -> R<Ref> {
+    /// in a matching comparison; any other metavalue makes a two-state region's comparison false
+    /// (A74: a two-state value is never one) and keeps the process out otherwise.
+    fn match_codes(&mut self, p: Part, codes: &[u8], matching: bool) -> R<Ref> {
         let n = codes.len();
         let mut val = vec![0u64; words(n as u32) as usize];
         let mut care = vec![0u64; val.len()];
-        let mut rnd = vec![0u64; val.len()];
         let two = self.meta_joins();
-        let is = |m: &[u64], el: usize| (m[el / 64] >> (el % 64)) & 1;
         for (k, &c) in codes.iter().enumerate() {
             let el = n - 1 - k;
             let (bit, keep) = match c {
                 2 | 6 => (0, true),
                 3 | 7 => (1, true),
                 8 if matching => (0, false),
-                // A two-state region compares with the literal's bits (A57), the run's random
-                // ones from their slot.
-                0 | 1 | 5 | 8 if two => {
-                    if bits.1.as_ref().is_some_and(|(_, m)| is(m, el) == 1) {
-                        rnd[el / 64] |= 1 << (el % 64);
-                    }
-                    (is(&bits.0, el), true)
-                }
+                // A two-state value never equals a metavalue (A74): the comparison is false.
+                0 | 1 | 4 | 5 | 8 if two => return Ok(self.bool_lit(false).r),
                 _ => return Err(META_CMP.into()),
             };
             val[el / 64] |= bit << (el % 64);
             care[el / 64] |= u64::from(keep) << (el % 64);
         }
-        let expect: Bits = (
-            val.into(),
-            (rnd.iter().any(|&w| w != 0)).then(|| (bits.1.as_ref().map_or(0, |b| b.0), rnd.into())),
-        );
+        let expect: Bits = (val.into(), None);
         let a = self.whole(p);
         let mut all = vec![0u64; care.len()];
         set_bits(&mut all, 0, n as u32);
@@ -7080,18 +7066,15 @@ impl Lx<'_> {
         }
         match b.lit.or(a.lit) {
             // An aggregate of a metavalue literal and other values: its codes are not kept.
-            Some(LIT_MIXED) if matching || !self.meta_joins() => {
-                return Err(META_CMP.into());
-            }
-            Some(LIT_MIXED) | None => {}
+            Some(LIT_MIXED) => return Err(META_CMP.into()),
+            None => {}
             Some(k) => {
                 // The literal's own codes decide (`'-'` as a mask when matching).
                 let v = if b.lit.is_some() { a } else { b };
                 self.lit_cmp.insert(k);
                 let codes = self.lits[k as usize].clone();
                 let ov = if nine && !ne { self.other(&v) } else { None };
-                let bits = self.lit_vals[k as usize].clone();
-                let r = self.match_codes(ov.unwrap_or(v), &codes, matching, &bits)?;
+                let r = self.match_codes(ov.unwrap_or(v), &codes, matching)?;
                 if ov.is_some() {
                     self.sure.insert(r);
                 }

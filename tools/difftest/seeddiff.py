@@ -14,7 +14,7 @@ reads metavalues as 0 or 1, and logic that follows such a value may give another
 `early_rd_valid` is `'U'` at 0 fs in the normal mode, `'1'` in cycle mode). Any other difference is one, and the
 exit status is 1. Cycle mode runs under the exact rules (`--cycle-exact-meta`, YAVS_CYCLE_EXACT_CLOCKS=1)
 unless `--contract default` asks for plain `--cycle`, whose copied clocks and metavalues may give other values
-by design (docs/cycle-mode.rst "The contract in short"). Stdlib only.
+by design (docs/cycle-mode.rst "What you give up", docs/two-state.rst). Stdlib only.
 """
 import argparse, os, subprocess, sys, tempfile
 from pathlib import Path

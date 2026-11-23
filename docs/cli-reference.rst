@@ -509,11 +509,11 @@ Arguments:
 
 .. option:: --cycle-strict
 
-   Cycle mode in its strict form, experimental, instead of ``--cycle``: the same selection, but a process below the top-level design unit that is not behavioural and cannot run cycle-based is an error, and the run stops before simulation. Each error names the construct that is not supported, points at its statement, and says why and how to fix it, with the code of the reason (E4110 to E4139; E4101 for what yavs does not implement yet); one error per statement lists the processes it keeps out, sorted by file and line, at most 40.
+   Cycle mode in its strict form, experimental, instead of ``--cycle``: the same selection, but a process below the top-level design unit that is not behavioural and cannot run cycle-based is an error, and the run stops before simulation. Each error names the construct that is not supported, points at its statement, and says why and how to fix it, with the code of the reason (E4110 to E4140; E4101 for what yavs does not implement yet); one error per statement lists the processes it keeps out, sorted by file and line, at most 40.
 
 .. option:: --cycle-report, --cycle-report=FILE
 
-   Analyse the design for cycle mode (experimental) and print the region report to standard error, or with FILE write it there: the summary, the processes that stay in the event kernel grouped by reason (most common first), the asserts and reports cycle mode does not evaluate, the clocks, the loop groups, the boundary and the cycle-based processes. Nothing is compiled or simulated; the exit status is 0. Given instead of ``--cycle`` and ``--cycle-strict``. An unwritable FILE is E4103, before any work.
+   Analyse the design for cycle mode (experimental) and print the region report to standard error, or with FILE write it there: the summary, the processes that stay in the event kernel grouped by reason (most common first), the asserts and reports ``--no-asserts`` drops, the clocks, the loop groups, the boundary and the cycle-based processes. Nothing is compiled or simulated; the exit status is 0. Given instead of ``--cycle`` and ``--cycle-strict``. An unwritable FILE is E4103, before any work.
 
    Cannot be combined with ``--cycle``, ``--cycle-strict``.
 
@@ -589,7 +589,7 @@ Arguments:
 
    May be repeated.
 
-Diagnostics named above: ``E0105``, ``E0106``, ``E0107``, ``E0120``, ``E0136``, ``E0701``, ``E0801``, ``E0901``, ``E0902``, ``E3002``, ``E4101``, ``E4102``, ``E4103``, ``E4110``, ``E4139``; ``yavs --explain CODE`` explains each.
+Diagnostics named above: ``E0105``, ``E0106``, ``E0107``, ``E0120``, ``E0136``, ``E0701``, ``E0801``, ``E0901``, ``E0902``, ``E3002``, ``E4101``, ``E4102``, ``E4103``, ``E4110``, ``E4140``; ``yavs --explain CODE`` explains each.
 
 ``yavs cov merge``
 ------------------
@@ -927,4 +927,5 @@ See also
 * :doc:`vunit-yavs`: the options of the VUnit package.
 * :doc:`environment`: environment variables.
 * :doc:`error-codes`: every diagnostic code.
-* :doc:`cycle-mode`: what ``--cycle``, ``--cycle-strict`` and ``--cycle-report`` change.
+* :doc:`cycle-mode`: what ``--cycle``, ``--cycle-strict`` and ``--cycle-report`` change, and :doc:`two-state`: the values of a cycle mode run.
+* :doc:`running-faster`: ``--no-asserts`` and the other speed options.

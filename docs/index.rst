@@ -90,6 +90,7 @@ the :doc:`release_notes`.
    coverage
    running-faster
    cycle-mode
+   two-state
    threads
    troubleshooting
 

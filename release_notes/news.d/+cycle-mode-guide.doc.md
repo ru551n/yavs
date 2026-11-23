@@ -1,0 +1,1 @@
+The cycle mode guide is rewritten around what a user needs and split by topic: `cycle-mode` covers scheduling, what it gives up, the report, what stays out, CI and the cache; a new page covers the values the region computes with; `--no-asserts` is described with the other speed options in `running-faster`.

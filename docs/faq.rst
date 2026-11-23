@@ -36,6 +36,10 @@ Is it finished?
 How fast is it?
     :doc:`performance` has the measurements and how they were made. Time your own design as well.
 
+Can it run my RTL faster?
+    For long tests of synchronous RTL, try cycle mode (``yavs run --cycle``, experimental). It runs clocked and
+    combinational processes as compiled code and gives up some detail in return: :doc:`cycle-mode`.
+
 Why do reports show times in femtoseconds?
     The default resolution is 1 fs, and reports always use it. ``32000000fs+0`` is 32 ns in delta cycle 0.
 

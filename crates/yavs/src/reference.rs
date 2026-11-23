@@ -450,7 +450,8 @@ See also
 * :doc:`vunit-yavs`: the options of the VUnit package.
 * :doc:`environment`: environment variables.
 * :doc:`error-codes`: every diagnostic code.
-* :doc:`cycle-mode`: what ``--cycle``, ``--cycle-strict`` and ``--cycle-report`` change.
+* :doc:`cycle-mode`: what ``--cycle``, ``--cycle-strict`` and ``--cycle-report`` change, and :doc:`two-state`: the values of a cycle mode run.
+* :doc:`running-faster`: ``--no-asserts`` and the other speed options.
 ";
 
 /// The index of diagnostic codes, relative to the repository root.
@@ -548,7 +549,7 @@ See also
 
 * :doc:`troubleshooting`: how to read a diagnostic, and the common problems.
 * :doc:`cli-reference`: ``--message-format``, ``-Werror`` and exit statuses.
-* :doc:`cycle-mode`: the codes E4101 to E4139 and what to do about them.
+* :doc:`cycle-mode`: what to do about the codes E4101 to E4104 and E4110 to E4140.
 ";
 
 /// The command list of the user guide's interactive debugger page, included there.

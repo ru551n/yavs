@@ -478,7 +478,8 @@ fn time_and_exit_status() {
     assert!(!out.contains("more"), "{out}");
 }
 
-/// `docs/cycle-mode.rst`: its examples, normal mode and `--cycle`, print what the page shows.
+/// `docs/cycle-mode.rst`, `docs/two-state.rst` and the `--no-asserts` section of `docs/running-faster.rst`:
+/// their examples, normal mode and `--cycle`, print what the pages show.
 #[test]
 fn cycle_mode_page() {
     let e = Env::new("docs_cycle");
@@ -496,13 +497,12 @@ fn cycle_mode_page() {
     args.extend(files);
     e.ok(&args);
     let page = "cycle-mode.rst";
-    // (top, exit status of the normal mode, of --cycle)
-    for (top, normal, cycle) in [
-        ("tb_counter", 0, 0),
-        ("tb_left_out", 0, 0),
-        ("tb_rtl_failure", 1, 1),
-        ("tb_delta", 0, 0),
-        ("tb_metavalue", 0, 0),
+    // (top, page, exit status of the normal mode, of --cycle)
+    for (top, page, normal, cycle) in [
+        ("tb_counter", page, 0, 0),
+        ("tb_delta", page, 0, 0),
+        ("tb_left_out", "", 0, 0),
+        ("tb_metavalue", "two-state.rst", 0, 0),
     ] {
         for (flag, want) in [(None, normal), (Some("--cycle"), cycle)] {
             let mut args = vec!["run", WORK];
@@ -510,26 +510,60 @@ fn cycle_mode_page() {
             args.push(top);
             let (code, out, err) = e.yavs(&args);
             assert_eq!(code, want, "{top} {flag:?}\n{out}\n{err}");
-            if top != "tb_left_out" {
+            if !page.is_empty() {
                 on_page(page, &out);
                 on_page(page, &err);
             }
         }
     }
-    // `--no-asserts`, both modes: the design's failure is dropped.
+    // The exact metavalue rules, with the line that says how following the start values ended.
+    let (code, out, err) = e.yavs(&["run", "--cycle", "--cycle-exact-meta", WORK, "tb_metavalue"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert!(err.contains("still followed when the run ended"), "{err}");
+    on_page(page, &out);
+    on_page(page, &err);
+    // The design's own asserts: evaluated in both modes, dropped by `--no-asserts` in both.
+    let running = "running-faster.rst";
+    let (code, normal_out, err) = e.yavs(&["run", WORK, "tb_rtl_failure"]);
+    assert_eq!(code, 1, "{normal_out}\n{err}");
+    on_page(running, &normal_out);
+    let (code, out, err) = e.yavs(&["run", "--cycle", WORK, "tb_rtl_failure"]);
+    assert_eq!(code, 1, "{out}\n{err}");
+    assert_eq!(
+        out, normal_out,
+        "--cycle evaluates the design's asserts as the normal mode does"
+    );
     for flags in [&["--no-asserts"][..], &["--no-asserts", "--cycle"]] {
         let mut args = vec!["run", WORK];
         args.extend(flags);
         args.push("tb_rtl_failure");
         let (code, out, err) = e.yavs(&args);
         assert_eq!(code, 0, "{flags:?}\n{out}\n{err}");
-        on_page(page, &out);
-        on_page(page, &err);
+        on_page(running, &out);
+        assert!(
+            err.contains("`--no-asserts`: 2 assert and report statements in 1 process"),
+            "{err}"
+        );
     }
-    // The report and the strict errors.
+    let (_, _, err) = e.yavs(&["run", "--no-asserts", WORK, "tb_rtl_failure"]);
+    on_page(running, &err);
+    // The reports: the one with a block of dropped asserts, and the strict errors.
     let (code, _, err) = e.yavs(&["run", "--cycle-report", WORK, "tb_left_out"]);
     assert_eq!(code, 0, "{err}");
     on_page(page, &err);
+    let (code, _, err) = e.yavs(&[
+        "run",
+        "--cycle-report",
+        "--no-asserts",
+        WORK,
+        "tb_rtl_failure",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("each assert and report not evaluated, by severity"),
+        "{err}"
+    );
+    on_page(running, &err);
     let (code, _, err) = e.yavs(&["run", "--cycle-strict", WORK, "tb_left_out"]);
     assert_eq!(code, 2, "{err}");
     for code in ["E4127", "E4119", "E4111", "E4121"] {

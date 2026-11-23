@@ -34,6 +34,12 @@ Read by yavs
      - ``yavs/std`` in your cache directory
      - ``analyze``, ``elab``, ``run``, ``cache clean``
      - 0.9.0
+   * - ``YAVS_CYCLE_CACHE_MIB``
+     - The most the cycle part of a library's compilation cache (``yavs-cache/cycle``, ``--cycle``) keeps, in MiB. At the limit nothing new is stored, so the designs past it compile again on every run, without a message (:ref:`cycle-cache`). Not a whole number of at least 1 is error ``E4104``.
+     - a whole number of at least 1
+     - ``2048``
+     - ``run``
+     - 0.21.0
    * - ``YAVS_SURFER_WAIT``
      - How long, in milliseconds, a running Surfer may take to answer before ``--surfer`` says it does not answer. Any other value than a number above zero is error ``E0130``.
      - ``2000``
@@ -548,13 +554,12 @@ Each one turns a fast path off or changes its threshold, to compare a run with a
      - ``run``
    * - ``YAVS_TRACE``
      - Developers: a file to write, with ``YAVS_TRACE_SIGNALS``: at the end of each time step, every listed signal
-       whose value changed, as ``time name value`` (the normal mode and ``--cycle`` compared by
-       ``tools/difftest/seeddiff.py``).
+       whose value changed, as ``time name value``.
      - ``normal.trace``
      - unset
      - ``run``
    * - ``YAVS_TRACE_SIGNALS``
-     - Developers: the signals ``YAVS_TRACE`` writes, one name a line as ``YAVS_CYCLE_SEEDS`` writes them
+     - Developers: the signals ``YAVS_TRACE`` writes, one name a line
        (``top.u1.sig``, a record field ``top.r.f``).
      - ``seeds.txt``
      - unset
@@ -757,100 +762,111 @@ Compiled tiers: Cranelift
      - ``0``, ``1``
      - ``1`` in a debug build, else ``0``
      - ``run``
+
+Cycle mode
+~~~~~~~~~~
+
+For developers of cycle mode (:doc:`cycle-mode`); ``crates/yavs-cycle/AGENTS.md`` in the source tree says how they are
+used. A value a variable does not take is error ``E4104``. Users need only ``YAVS_CYCLE_CACHE_MIB``, above.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 38 16 10 14
+
+   * - Variable
+     - Purpose
+     - Values
+     - Default
+     - Read by
    * - ``YAVS_CYCLE_CACHE_CHECK``
-     - For testing only. ``1``: a run that finds the analysis of its cycle region (``--cycle``), the region as it was built or its machine code in the compilation cache makes them again and stops with an internal error when they differ from the cached ones (to test the cache).
+     - Tests: makes again what a cycle run found in the compilation cache and stops with an internal error where it differs.
      - ``1``
      - unset
      - ``run``
-   * - ``YAVS_CYCLE_CACHE_MIB``
-     - The most a library's store of cycle mode's analyses and machine code (``yavs-cache/cycle``, ``--cycle``) keeps, in MiB. A suite of large designs, each with many generics, can need more than the default; at the limit a run stores nothing new while the entries there are in use, so the designs past it analyse and compile again on every run. Not a whole number of at least 1 is error ``E4104``.
-     - a whole number of at least 1
-     - ``2048``
-     - ``run``
-   * - ``YAVS_CYCLE_REGS``
-     - Developers: the most words of a cycle region (``--cycle``) that its compiled code keeps in registers at once (default 256, 16 in a function of more than 500 operations); past that the changed ones go to memory. A small value sends almost every word through memory, to test the code that does it.
-     - a whole number of at least 1
-     - ``256``
-     - ``run``
    * - ``YAVS_CYCLE_CHECKS``
-     - Developers and tests. ``off``: the code of a cycle region (``--cycle``) leaves out its integer overflow and range checks and clamps an index chosen at run time into its array, to measure what the checks cost. Results are wrong where a check would have failed. ``all``: the checks, and after the processes of a loop group (processes reading through one another what they drive) one more run of each, which must change nothing; a change stops the run with an internal error (a debug build does this unless the value is ``on``). ``on``: the checks without that run, also in a debug build (for the tests).
+     - ``off`` leaves out the overflow, range and index checks of the region (results are wrong where a check would fail); ``all`` adds a pass that must change nothing; ``on`` the checks alone.
      - ``off``, ``on``, ``all``
      - checks on
      - ``run``
    * - ``YAVS_CYCLE_CHUNK``
-     - Developers: the operations of each compiled function of a cycle region (``--cycle``), about (default 4000); a member longer than that is cut into parts. A small value cuts every member, to test the cut.
+     - The operations per compiled function of the region; a longer process is cut into parts.
      - a whole number of at least 1
      - ``4000``
      - ``run``
-   * - ``YAVS_CYCLE_THREADS``
-     - Developers: the threads the functions of a cycle region (``--cycle``) are compiled on, in place of the count of ``--threads``; under a test runner's token server the threads past the first still run only on the tokens it lends. The machine code is the same whatever the number.
-     - a whole number of at least 1
-     - the count of ``--threads`` (1 unless given), at most the CPUs the run may use
-     - ``run``
    * - ``YAVS_CYCLE_DISASM``
-     - Developers: prints the machine code of the functions of a cycle region (``--cycle``) on standard error. They are compiled, not taken from the compilation cache.
+     - Prints the machine code of the region on standard error.
      - any value
      - unset
      - ``run``
+   * - ``YAVS_CYCLE_DOWNSTREAM``
+     - With ``--cycle-report``: a file to write with the processes outside the region that read what it drives.
+     - a file
+     - unset
+     - ``run``
    * - ``YAVS_CYCLE_EDGE_OUTPUTS``
-     - Developers: ``1``, an experiment: a cycle region (``--cycle``) settles and drives its outputs only at clock edges and at changes of asynchronous resets, so a process outside sees a change of an output that follows an input combinationally only after the next edge. Results can differ from the normal mode's; for developers measuring what that costs and gains.
+     - An experiment: the region drives its outputs only at clock edges and reset changes. Results can differ.
      - ``1``
      - unset
      - ``run``
    * - ``YAVS_CYCLE_EXACT_CLOCKS``
-     - For testing only: ``1`` keeps every clock copied by an assignment a clock of its own in a cycle region (``--cycle``), so its edges come a delta cycle after its source's as in the normal mode, and the logic between the two stays in the event simulation. The comparison gates and the fuzzer use it, with ``--cycle-exact-meta``, to compare cycle mode with the normal mode exactly. Another value is an error (E4104).
+     - Tests: keeps every copied clock a clock of its own, as in the normal mode.
+     - ``1``
+     - unset
+     - ``run``
+   * - ``YAVS_CYCLE_EXCLUDE``
+     - Processes whose names hold one of these texts stay in the event kernel (to find which one makes a run differ).
+     - texts, comma separated
+     - none
+     - ``run``
+   * - ``YAVS_CYCLE_FLAGS``
+     - More Cranelift settings for the region, as ``name=value`` pairs.
+     - ``name=value,...``
+     - unset
+     - ``run``
+   * - ``YAVS_CYCLE_GUARD``
+     - ``all`` lets the region skip every combinational step whose inputs did not change.
+     - ``all``
+     - large processes only
+     - ``run``
+   * - ``YAVS_CYCLE_IMPORT_CHECK``
+     - Tests: reads every input of the region again after each run and stops with an internal error if one differs.
      - ``1``
      - unset
      - ``run``
    * - ``YAVS_CYCLE_RAIL``
-     - For developers: how a cycle region under ``--cycle-exact-meta`` follows the ``'U'`` start values on its second image: ``off`` not at all, ``cap=N`` for at most N clock edges instead of 1024, ``no-reseed`` without setting the metavalues that reach an input after time 0. Another value is an error (E4104).
+     - How ``--cycle-exact-meta`` follows the start values: ``off``, ``cap=N`` clock edges, ``no-reseed``.
      - ``off``, ``cap=N``, ``no-reseed``
-     - unset (1024 edges)
+     - 1024 edges
      - ``run``
-   * - ``YAVS_CYCLE_FLAGS``
-     - Developers: more Cranelift settings for the code of a cycle region (``--cycle``), as ``name=value`` pairs separated by commas (for example ``opt_level=none``), to measure what they cost; a name or value Cranelift does not know is an internal error of the region.
-     - ``name=value,...``
-     - unset
-     - ``run``
-   * - ``YAVS_CYCLE_EXCLUDE``
-     - Developers: a comma-separated list of texts; a process whose name holds one of them stays in the event simulation under ``--cycle`` (to find which member makes a run differ).
-     - ``dcache_slow,icache``
-     - none
+   * - ``YAVS_CYCLE_REGS``
+     - The most words of the region its code keeps in registers at once.
+     - a whole number of at least 1
+     - ``256``
      - ``run``
    * - ``YAVS_CYCLE_RUNCOUNT``
-     - Developers: ``off`` lets the logic feeding a process outside the region whose result may depend on the delta cycles its inputs change in join the region anyway. It can give wrong results; it shows what that rule protects and what it costs.
+     - ``off`` drops one of the rules that keep a process out (E4129). It can give wrong results.
      - ``off``
      - unset
      - ``run``
    * - ``YAVS_CYCLE_SEEDS``
-     - Developers: a file to write, under ``--cycle`` or ``--cycle-report``, with the signals driven by the processes outside the region whose result may depend on the delta cycles its inputs change in, one a line, as ``YAVS_TRACE_SIGNALS`` reads them (``tools/difftest/seeddiff.py``).
-     - ``seeds.txt``
-     - unset
-     - ``run``
-   * - ``YAVS_CYCLE_DOWNSTREAM``
-     - Developers: a file to write, under ``--cycle-report``, with the processes outside the region that read a signal the region drives, directly or through other processes outside, one a line as the console names them; the comparison gates use it to tell a library warning such a process gives or loses because of a value cycle mode reads as ``0`` from one any other process gives (``tools/difftest/README.md``).
-     - ``down.txt``
-     - unset
-     - ``run``
-   * - ``YAVS_CYCLE_GUARD``
-     - Developers: ``all`` lets a cycle region (``--cycle``) skip every combinational step whose inputs did not change since its last run, also the small ones it would otherwise always run (for the tests).
-     - ``all``
-     - only processes large enough to repay the comparison
-     - ``run``
-   * - ``YAVS_CYCLE_IMPORT_CHECK``
-     - For testing only. ``1``: a cycle region (``--cycle``), which reads only the inputs that changed since its last wake, reads all of them again after each wake and stops with an internal error if one differs.
-     - ``1``
+     - A file to write with the signals of the processes outside the region that E4129 is about.
+     - a file
      - unset
      - ``run``
    * - ``YAVS_CYCLE_SKIP_CHECK``
-     - For testing only. ``1``: a cycle region (``--cycle``) runs every process it would skip because the values it reads did not change since its last run, and stops with an internal error if that run changes what the process drives. ``full``: also runs each of the region's runs a second time on a copy with no process skipped (at a clock edge every one, not only those the edge's clocks and the changed inputs reach), and stops with an internal error if a signal, a variable or an output differs. Another value is error E4104.
+     - Tests: runs every process the region would skip, and with ``full`` every run again on a copy; a difference is an internal error.
      - ``1``, ``full``
      - unset
      - ``run``
    * - ``YAVS_CYCLE_STATS``
-     - Developers: prints on standard error, for a cycle region (``--cycle``), each compiled function's operations, Cranelift instructions, machine code bytes, compile time and whether its machine code came from the compilation cache, the threads it compiled on, and how many of its processes would compile to the same code (shapes); after the run, the region's wakes, the edges of each clock, the work of the processes the runs at an edge and without one left out, the inputs read most often in wakes without a clock edge, what the exports compared and drove and the imports read, and how often each skippable process ran and was skipped.
+     - Prints the region's compiled functions, compile times and run counts on standard error.
      - any value
      - unset
+     - ``run``
+   * - ``YAVS_CYCLE_THREADS``
+     - The threads the region compiles on, instead of the count of ``--threads``.
+     - a whole number of at least 1
+     - the count of ``--threads``
      - ``run``
 
 Compiled tiers: when to compile

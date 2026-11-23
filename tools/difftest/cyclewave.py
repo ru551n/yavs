@@ -21,7 +21,7 @@ import cyclegate as G  # noqa: E402
 D = G.D
 # Reviewed differences under the exact contract: (test, contract) -> (signals, cause).
 CHOICE = ("a clocked member with a choice keeps a register where only the second image changed it "
-          "(docs/cycle-mode.rst \"Two-state values\"): `sums` shows 0 at the first edge where the normal mode has 'U'")
+          "(docs/two-state.rst \"--cycle-exact-meta\"): `sums` shows 0 at the first edge where the normal mode has 'U'")
 KNOWN = {
     ("bench/lfsr64.vhd", "exact"): ({"bench_lfsr64.sums"}, CHOICE),
     ("bench/lfsr64_xor.vhd", "exact"): ({"bench_lfsr64_xor.sums"}, CHOICE),

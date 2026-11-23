@@ -540,7 +540,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     // yavs-cycle: cycle mode (`yavs run --cycle`)
     (
         "E4101",
-        "Cycle mode can run this kind of logic, but yavs does not implement the construct the error names in cycle-based code yet: a limitation of yavs, not a problem in the design. `yavs run --cycle-strict` reports it for a process below the top-level design unit; the headline names the construct and the label points at the statement. Run with `--cycle` to leave the process in the event simulation, or write the construct another way (the label often says how). Every other reason a process stays out has a code of its own (E4110 to E4139). A behavioural process (one that waits for a time, waits forever, has several waits, calls a procedure that waits, or uses files or text input and output) and every process of the top-level design unit, the testbench, stay in the event kernel without an error. `--cycle-report` lists every process with its reason.",
+        "Cycle mode can run this kind of logic, but yavs does not implement the construct the error names in cycle-based code yet: a limitation of yavs, not a problem in the design. `yavs run --cycle-strict` reports it for a process below the top-level design unit; the headline names the construct and the label points at the statement. Run with `--cycle` to leave the process in the event simulation, or write the construct another way (the label often says how). Every other reason a process stays out has a code of its own (E4110 to E4140). A behavioural process (one that waits for a time, waits forever, has several waits, calls a procedure that waits, or uses files or text input and output) and every process of the top-level design unit, the testbench, stay in the event kernel without an error. `--cycle-report` lists every process with its reason.",
     ),
     (
         "E4102",
@@ -552,7 +552,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E4104",
-        "An environment variable of cycle mode has a value it does not take, such as `YAVS_CYCLE_SKIP_CHECK=yes` (it takes `1` or `full`). The message names the values it takes; unset the variable, or leave it empty, to turn the check off.",
+        "An environment variable of cycle mode has a value it does not take, such as `YAVS_CYCLE_CACHE_MIB=0` (it takes a whole number of MiB of at least 1). The message names the values it takes; unset the variable, or leave it empty, to turn the check off.",
     ),
     (
         "W4101",
@@ -632,7 +632,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E4128",
-        "A `force` or `release` the design can run (in a process, or in a subprogram a process calls) changes a signal this process drives, which cycle-based code would not see, so the process stays in the event kernel; members that only read the forced signal still join. A force whose target yavs cannot tell (a signal parameter) keeps every process out, and so does any force under `--cycle-exact-meta`, whose rules for `'Z'` do not follow forced values. Forces in units the design does not instantiate and in subprograms nothing calls do not count. Under `--cycle-strict` each such process below the top-level unit is an error that points at the force. A limitation of yavs: drive the signal from the testbench instead of forcing it, or run with `--cycle`.",
+        "A `force` or `release` the design can run (in a process, or in a subprogram a process calls) changes a signal this process drives, which cycle-based code would not see, so the process stays in the event kernel; processes that only read the forced signal still join. A force whose target yavs cannot tell (a signal parameter) keeps every process out, and so does any force under `--cycle-exact-meta`, whose rules for `'Z'` do not follow forced values. Forces in units the design does not instantiate and in subprograms nothing calls do not count. Under `--cycle-strict` each such process below the top-level unit is an error that points at the force. A limitation of yavs: drive the signal from the testbench instead of forcing it, or run with `--cycle`.",
     ),
     (
         "E4129",

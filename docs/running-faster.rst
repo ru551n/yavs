@@ -93,12 +93,107 @@ Threads
 (the default) unless you measured a gain, or use ``--threads=auto``, which uses more threads only while they make
 the run faster: :doc:`threads`.
 
+.. _no-asserts:
+
+Dropping the design's asserts
+-----------------------------
+
+``--no-asserts`` drops the ``assert`` and ``report`` statements of the processes below the top-level design unit, in the
+normal mode and in cycle mode alike. It is for a regression you already know the design passes: the design's own checks
+cost time in every run, as much as they are many and busy, which only a run of your design shows.
+
+* **What it trades.** The design's own checks stop running. A failure they would catch is not caught, and a design that
+  ends its own test from RTL code (a ``report ... severity failure``) runs on until ``--stop-time`` or until the
+  testbench ends the run.
+* **What it keeps.** The processes of the top-level unit, the testbench, keep their asserts and reports, and the statements
+  inside subprograms run wherever they are called from, so the check and logging calls of a verification component
+  still run. Below the top-level unit is everything the testbench entity instantiates: the design, and verification
+  components, bus models and checker entities.
+* **When to try it.** In a job that runs the whole suite for speed after a job without it has passed, or in cycle mode
+  for a process that stays in the event kernel only because of an assert it cannot evaluate (E4140,
+  :doc:`cycle-mode`): such a process joins the region when its asserts are dropped.
+
+The run starts with a note on standard error that counts the dropped statements. ``rtl_failure.vhd`` ends its test from
+RTL code:
+
+.. literalinclude:: examples/cycle/rtl_failure.vhd
+   :language: vhdl
+   :caption: rtl_failure.vhd
+
+Without the option, in the normal mode and with ``--cycle``, the run ends at 275 ns with exit status 1:
+
+.. code-block:: text
+
+    ** Warning: 225000000fs+0: acc reached 200
+        Process tb_rtl_failure.dut.process (rtl_failure.vhd:16)
+    ** Failure: 275000000fs+0: acc reached 250, the design ends the test
+        Process tb_rtl_failure.dut.process (rtl_failure.vhd:16)
+
+With ``--no-asserts``, both statements are dropped, the note says so, and the run reaches the testbench's own end at
+1022 ns with exit status 0:
+
+.. code-block:: text
+
+    note: `--no-asserts`: 2 assert and report statements in 1 process below the top-level unit are not evaluated
+
+    ** Note: 1022000000fs+0: testbench finished, q=E8
+        Process tb_rtl_failure.main
+    ** Note: 1022000000fs+0: FINISH called with status 0
+
+* ``--assert-summary`` and ``--exit-severity`` count only the messages that are produced.
+* ``--cycle-report`` lists the dropped statements: a count per process, then each statement once, by severity, failures
+  first. For ``rtl_failure.vhd`` (:ref:`cycle-report`):
+
+  .. code-block:: text
+
+      note: `--no-asserts`: 2 assert and report statements in 1 process below the top-level unit are not evaluated
+
+      cycle mode: 2 of 4 processes run cycle-based, on the rising edge of tb_rtl_failure.clk
+        2 processes stay in the event kernel:
+          E4111 a delay, `transport`, `reject` or a waveform (1 process):
+            tb_rtl_failure.clk <= ... (rtl_failure.vhd:44)    E4111 a delayed assignment (`after`) (rtl_failure.vhd:44)
+          behavioural, in the event kernel (1 process):
+            tb_rtl_failure.main (rtl_failure.vhd:48)          it waits for a time
+        2 asserts and reports not evaluated in cycle mode, held by 1 cycle-based process:
+             2  tb_rtl_failure.dut.process (rtl_failure.vhd:16)
+        each assert and report not evaluated, by severity (1 failure, 1 warning):
+          failure   rtl_failure.vhd:26  tb_rtl_failure.dut.process (rtl_failure.vhd:16)
+          warning   rtl_failure.vhd:24  tb_rtl_failure.dut.process (rtl_failure.vhd:16)
+        cycle-based processes give no warnings of the ieee libraries (numeric_std metavalue and compare warnings)
+        asserts and reports of processes of the top-level unit are evaluated: at the clock edge or after the settle in region code, else the process stays in the event kernel; those below it are dropped (--no-asserts)
+        subset: 2 of 4 processes fit, 0 loop groups among them
+        boundary: 1 signal leaves exported (1 nothing outside waits on), 2 inputs, 0 wake the region
+        cycle-based, 2 processes:
+          tb_rtl_failure.dut.process (rtl_failure.vhd:16)   clocked
+          tb_rtl_failure.dut.q <= ... (rtl_failure.vhd:30)  combinational
+
+* In VUnit the sim option is ``yavs.no_asserts`` (``True`` or ``False``, :doc:`vunit-yavs`). The option is in the
+  :doc:`cli-reference` as ``--no-asserts``.
+
 Cycle mode
 ----------
 
-``--cycle`` runs the synchronous RTL of a design as compiled code evaluated once per clock edge, and gives up some
-detail for it (two-state values, no reports from the design's own processes). It is opt-in and experimental
-(its options may change): :doc:`cycle-mode`.
+``--cycle`` runs the clocked and combinational RTL of a design as compiled code, evaluated once per clock edge, and
+leaves the testbench in the normal simulation (:doc:`cycle-mode`).
+
+* **What it trades.** The delta cycles inside a clock edge, ``--cov``, ``--vhpi``,
+  activity counts and the debugger, and some detail in the order and delta of the design's messages. What the region
+  computes with is on :doc:`two-state`.
+* **When to try it.** A long run of a synchronous design whose testbench mostly drives and samples ports. It does not
+  help when the testbench is most of the run, when the test is short, or when little of the design joins. It is
+  experimental, so compare its results with the normal mode first (:ref:`cycle-check`).
+
+Two-state values
+----------------
+
+A plain ``--cycle`` run computes the region on ``0`` and ``1`` only, which is part of what makes it fast
+(:doc:`two-state`).
+
+* **What it trades.** The metavalues: a register without a reset, an unconnected input or an ``'X'`` from the design
+  cannot show in the region, and the testbench reads ``0`` or ``1`` where the normal mode gives ``'U'``, ``'X'`` or
+  ``'Z'``. ``--cycle-exact-meta`` buys part of it back at a cost in speed.
+* **When to try it.** When a test passes with ``--cycle`` and does not depend on a metavalue. A test that checks reset
+  state or an ``'X'`` from the design belongs in the normal mode.
 
 Finding where the time goes
 ---------------------------
@@ -115,5 +210,6 @@ See also
 
 * :doc:`threads`: more threads, and when they help.
 * :doc:`cycle-mode`: the opt-in mode for synchronous RTL.
+* :doc:`two-state`: the values of a cycle mode run.
 * :doc:`on-disk`: where the cache lives.
 * :doc:`performance`: how yavs compares with other simulators.

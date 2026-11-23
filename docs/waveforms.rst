@@ -42,7 +42,7 @@ What the file shows
   other arrays are scopes with one entry per field or element.
 * FST has no delta cycles: several deltas at one time give one change with the final value.
 * Under ``--cycle`` the signals inside the cycle region are recorded from its own values at the end of each
-  time step, two-state by default; a memory of integers it writes at run-time indices is left out (W0802), and
+  time step, two-state by default (:doc:`two-state`); a memory of integers it writes at run-time indices is left out (W0802), and
   ``--wave-variables`` is refused. :ref:`cycle-waves` has the details.
 
 The file is finished at the end of the run, at ``--stop-time`` and on Ctrl-C. A run killed hard

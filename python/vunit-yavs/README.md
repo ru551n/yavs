@@ -81,15 +81,16 @@ vu.set_sim_option("yavs.cycle", "on")                                       # ev
 vu.library("lib").test_bench("tb_counter").set_sim_option("yavs.cycle", "strict")  # one testbench; also per test or configuration
 ```
 
-`"on"` runs the clocked and combinational processes that fit cycle mode on a static schedule and leaves the rest to the
+`"on"` runs the clocked and combinational processes that fit cycle mode as compiled code and leaves the rest to the
 event kernel; the test output shows `cycle mode: N of M processes run cycle-based` (VUnit prints a passing test's output with `-v`). `"strict"` makes a process below
-the top-level unit that does not fit an error. A wrong value is refused at setup, naming the three values.
+the top-level unit that does not fit an error. A wrong value is refused at setup, naming the three values. There is no
+command-line flag: set the option in the run script.
 
-- Cycle-based processes evaluate their `report` and `assert` statements (`yavs.no_asserts` drops those below the test bench entity, in both modes), but give no library warnings.
-- They are two-state: metavalues read as `'0'`. Outside processes keep full semantics.
+- Cycle-based processes evaluate their `report` and `assert` statements, but give no library warnings. `yavs.no_asserts` drops those below the test bench entity, in both modes: see [Running faster](https://yavs.readthedocs.io/en/latest/running-faster.html).
+- They compute with `0` and `1`: metavalues read as `0`. Outside processes keep full semantics ([values in cycle mode](https://yavs.readthedocs.io/en/latest/two-state.html)).
 - `--yavs-surfer` shows the waves, with the signals inside the region per time step; none of coverage, `--yavs-debug` or `--yavs-interactive` in the same test (the test fails before yavs starts, error E4102 of yavs).
 
-All the rules are in the `--cycle` entry of the yavs command line reference. To see what would join, set `yavs.sim_flags` to `["--cycle-report"]` for one test with `yavs.cycle` `"off"`: yavs prints the report and does not simulate, so that test fails. `yavs.sim_flags` `["--cycle-exact-meta"]` with `yavs.cycle` `"on"` or `"strict"` keeps the exact metavalue rules for a test, and the values in the message of a failed check.
+The scheduling, what joins and the report are on the [cycle mode page](https://yavs.readthedocs.io/en/latest/cycle-mode.html) of the yavs user guide. To see what would join, set `yavs.sim_flags` to `["--cycle-report"]` for one test with `yavs.cycle` `"off"`: yavs prints the report and does not simulate, so that test fails. `yavs.sim_flags` `["--cycle-exact-meta"]` with `yavs.cycle` `"on"` or `"strict"` keeps part of the metavalues for a test, and the values in the message of a failed check.
 
 ## Coverage
 

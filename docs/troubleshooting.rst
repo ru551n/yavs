@@ -49,7 +49,7 @@ Common problems
    * - What you see
      - What to do
    * - A test gives other results with ``--cycle`` than without
-     - The list of what cycle mode changes and the checklist: :doc:`cycle-mode`.
+     - The list of what cycle mode changes and the checklist: :doc:`cycle-mode`; the values: :doc:`two-state`.
    * - ``yavs: command not found``
      - Put the directory of the archive on ``PATH`` (:ref:`installation`).
    * - Alpine: ``yavs: not found`` although the file exists

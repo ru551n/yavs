@@ -173,6 +173,14 @@ fn init_unset_gives_registers_without_reset_their_start_value() {
                 assert_eq!(of(&lines, 128), w);
             }
             _ => {
+                // The bits of seed 5, the same on every system and checkout (A68): a change here
+                // changes what a user's printed seed repeats.
+                assert_eq!(
+                    of(&lines, 65),
+                    "W=65 q=0F916298850FB9293 r=16814943BD4318F75 v=17F804028886F113A \
+                     t=0434E280CFB894D910FE43A2608BD7169C86DC4C746396F80AFE32D99F916DDC9F n=5 \
+                     s='1' w='1'"
+                );
                 // A bit of its own per register, instance and element.
                 let field =
                     |w: u32, k: usize| of(&lines, w).split(' ').nth(k).unwrap()[2..].to_string();
@@ -392,6 +400,11 @@ fn init_x_gives_metavalue_literals_a_value() {
                 );
             }
             _ => {
+                // The bits of seed 9 on every system and checkout (A68).
+                assert_eq!(
+                    at(&lines, 65, "10"),
+                    "W=65 sel=10 y=14537CE6211D03CFF q=0C2083BC9D4EC5121 b='0' u='1' tb='X'"
+                );
                 // Per bit: the 128-element 'X' and 'W' literals are neither all 0 nor all 1, and differ.
                 let l = at(&lines, 128, "10");
                 let y = &l.split(' ').nth(2).unwrap()[2..];
@@ -634,6 +647,8 @@ fn a_second_seed_reuses_the_compiled_code() {
             f.push(format!("--init-unset=random:{s}"));
             f
         };
+        // Twice: the cache stores an entry the second time it is asked for.
+        run_env(&dir, &[], &strs(&seed(1)), "initx");
         let (first, _) = run_env(&dir, &[], &strs(&seed(1)), "initx");
         let before = files(&dir.join("lib"));
         let stats = [("YAVS_CYCLE_STATS", "1")];

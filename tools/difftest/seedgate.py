@@ -5,7 +5,9 @@ and four threads, with `--shuffle`, from a cold and a warm cache, normal and `--
 each mode's runs. The warm cycle run comes after a run with another seed in the same library: it must take the
 analysis from the cache (no other analysis stored) and give the cold run's output. Stdlib only.
 
-  seedgate.py [--seed N] [--only all|corpus|cycle|bench] [--filter RE] [--jobs N] [--tiers interp,auto,clift]
+  seedgate.py [--seed N] [--two-state] [--only all|corpus|cycle|bench] [--filter RE] [--jobs N] [--tiers ...]
+
+`--two-state` adds the option to every run, normal and cycle mode alike.
 
 Normal mode against cycle mode is not compared here: their values differ by contract where a design reads a
 metavalue (docs/cycle-mode.rst); the tests in crates/yavs/tests/init_start.rs compare them on designs where both
@@ -20,8 +22,11 @@ import difftest as D  # noqa: E402
 import cyclegate as G  # noqa: E402
 
 
+TWO = False  # --two-state: every run two-state
+
+
 def flags(seed):
-    return f"--init-unset=random:{seed} --init-x=random:{seed}"
+    return f"--init-unset=random:{seed} --init-x=random:{seed}" + (" --two-state" if TWO else "")
 
 
 def one(item, a):
@@ -76,7 +81,10 @@ def main():
     ap.add_argument("--tiers", default="auto,clift", help="tiers besides interp (a build without clift: none)")
     ap.add_argument("--no-sandbox", action="store_true")
     ap.add_argument("--keep", action="store_true", help="keep the run directories")
+    ap.add_argument("--two-state", action="store_true", help="add --two-state to every run")
     a = ap.parse_args()
+    global TWO
+    TWO = a.two_state
     a.tiers = [t for t in a.tiers.split(",") if t]
     items = [i for i in G.items(a.only) if re.search(a.filter, i[0])]
     counts = {}

@@ -251,10 +251,12 @@ seed runs (user decision A68): the designs of the cycle gate, each in every tier
 `--shuffle`, normal and `--cycle`; within each mode every run must give the first one's canonical output. The warm
 cycle run follows a run with another seed in the same library: it must store no other analysis (the seed is in no
 cache key) and give the cold output. Normal against cycle mode is left to the cycle gate and to
-`crates/yavs/tests/init_start.rs`, since metavalues differ there by contract.
+`crates/yavs/tests/init_start.rs`, since metavalues differ there by contract. `--two-state` adds the option to every
+run (both modes); run the gate with and without it.
 
 ```sh
 YAVS_BIN=<yavs built with --features clift> python3 -I tools/difftest/seedgate.py --seed 11 --jobs 2
+YAVS_BIN=<yavs built with --features clift> python3 -I tools/difftest/seedgate.py --seed 11 --jobs 2 --two-state
 ```
 
 ## Cycle mode fuzzer

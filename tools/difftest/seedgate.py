@@ -46,8 +46,12 @@ def one(item, a):
     runs["normal --shuffle"] = go(tn, "n", shuffle="1")[0]
     cyc = {"cycle": go(tc, "c")[0], "cycle 4 threads": go(tc, "c", threads=4)[0],
            "cycle --shuffle": go(tc, "c", shuffle="1")[0]}
-    # Another seed fills the cache, then this one runs warm on it.
-    go(tc, "w", seed_flags=flags(a.seed + 1))
+    # Another seed fills the cache, then this one runs warm on its library, in a fresh directory (files
+    # the test writes start afresh).
+    go(tc, "w0", seed_flags=flags(a.seed + 1))
+    shutil.rmtree(base / "w", ignore_errors=True)
+    if (base / "w0" / "lib").is_dir():
+        shutil.copytree(base / "w0" / "lib", base / "w" / "lib")
     store = base / "w" / "lib" / "yavs-cache" / "cycle"
     before = sorted(p.name for p in store.glob("cyc3-*.img"))
     cyc["cycle warm after another seed"] = go(tc, "w", fresh=False)[0]

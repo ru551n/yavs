@@ -262,6 +262,7 @@ const PASS: &[&str] = &[
     "generics/package_generic_map",
     "generics/formal_range_once",
     "generics/generic_nested_proc",
+    "generics/generic_delay",
     "generics/config_generic_types",
     "generics/case_generate_array",
     "generics/attr_image_value",

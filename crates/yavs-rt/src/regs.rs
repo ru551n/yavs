@@ -43,8 +43,15 @@ impl Live {
     /// Backward liveness over the instructions of `f`; `None` for a function too big for it.
     ///
     /// Solved per basic block (a few hundred times fewer sets than instructions), the rows of
-    /// the instructions then come from one backward sweep of each block (#710).
-    pub fn new(prog: &Program, f: &Func, sc: Option<&Scalars>) -> Option<Live> {
+    /// the instructions then come from one backward sweep of each block (#710). `reads`: registers
+    /// compiled code reads at a pc besides the instruction's own operands (the delay and the value
+    /// of a fused scalar drive at its `Drive`, #1198).
+    pub fn new(
+        prog: &Program,
+        f: &Func,
+        sc: Option<&Scalars>,
+        reads: &[(u32, Reg)],
+    ) -> Option<Live> {
         let n = f.code.len();
         let nv = sc.map_or(0, |s| s.slots.len());
         // One bit past the slot variables is the frame base (`Gen`), never live.
@@ -84,6 +91,9 @@ impl Live {
                 for &r in f.regs(l)? {
                     mark(&mut uses, r);
                 }
+            }
+            for &(_, r) in reads.iter().filter(|(p, _)| *p as usize == pc) {
+                mark(&mut uses, r);
             }
             if let Some(sc) = sc {
                 let bit = |k: usize| (f.reg_ty.len() + k) as u32;
@@ -1073,7 +1083,7 @@ mod tests {
     fn the_core_is_what_the_first_block_defines_once_and_keeps_alive() {
         let (prog, id) = big(20);
         let f = prog.funcs.get(id).unwrap();
-        let live = Live::new(&prog, f, None).unwrap();
+        let live = Live::new(&prog, f, None, &[]).unwrap();
         let (core, from) = entry_core(&prog, f, &live, &preloaded(f));
         // The load of the parameter is read to the end of the loop; the chain's temporaries die
         // at once, the accumulator and the counter are defined again in the loop, and the
@@ -1127,7 +1137,7 @@ mod tests {
         fb.finish();
         let prog = pb.finish().unwrap();
         let f = prog.funcs.get(f).unwrap();
-        let live = Live::new(&prog, f, None).unwrap();
+        let live = Live::new(&prog, f, None, &[]).unwrap();
         let (core, _) = entry_core(&prog, f, &live, &preloaded(f));
         assert!(core.is_empty(), "the first block runs again: {core:?}");
     }
@@ -1138,7 +1148,8 @@ mod tests {
         let (prog, id) = big(12_000);
         // (The function as built: `Program::func` hands out the optimised one, which folds this.)
         let f = prog.funcs.get(id).unwrap();
-        let live = Live::new(&prog, f, None).expect("a function this size gets a liveness matrix");
+        let live =
+            Live::new(&prog, f, None, &[]).expect("a function this size gets a liveness matrix");
         assert!(
             f.code.len() * live.words > 1 << 20,
             "under the old cap: {} instructions of {} words",

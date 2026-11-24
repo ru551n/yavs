@@ -2981,8 +2981,21 @@ fn gen_func(
     // The registers a `Const` defines once are preloaded, so they hold the value everywhere
     // (lengths and counts that `cat_block` and others need to know).
     let fixed = fixed_consts(f);
+    // The scalar logic assignments the interpreter runs as one op (their waveform is not made here
+    // either) and those without a delay kept for one host call (`Batch`). Their `Drive` reads the
+    // delay and the value from registers the skipped head and `LSet` used (#1198).
+    let (scalar_drives, batched, copies) = if !native && f.kind == FuncKind::Process {
+        batched_drives(prog, f, &fixed)
+    } else {
+        Default::default()
+    };
+    let reads: Vec<(u32, Reg)> = scalar_drives
+        .iter()
+        .flat_map(|d| [(d.drive, d.time), (d.drive, d.value)])
+        .chain(copies.iter().map(|c| (c.drive, c.time)))
+        .collect();
     let mut early_live = (native || f.kind == FuncKind::Process)
-        .then(|| Live::new(prog, f, None))
+        .then(|| Live::new(prog, f, None, &reads))
         .flatten();
     let results = early_live.as_ref().map_or_else(HashMap::new, |l| {
         let live = |r: Reg, pc: usize| {
@@ -3110,13 +3123,6 @@ fn gen_func(
             .collect()
     } else {
         HashSet::new()
-    };
-    // The scalar logic assignments the interpreter runs as one op (their waveform is not made here
-    // either) and those without a delay kept for one host call (`Batch`).
-    let (scalar_drives, batched, copies) = if !native && f.kind == FuncKind::Process {
-        batched_drives(prog, f, &fixed_consts(f))
-    } else {
-        Default::default()
     };
     let batch = (!batched.is_empty()).then(|| {
         let entries = b.create_sized_stack_slot(StackSlotData::new(

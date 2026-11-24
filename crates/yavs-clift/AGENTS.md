@@ -107,6 +107,10 @@ tier of the release archives (user, 2026-10-28: one archive per platform); tunin
   stores it or takes it as a parameter); a definition of the instruction being generated
   (`fresh`) must reach a join as a parameter (`join_with`): a `clear` with one pending is a bug
   (`broken`, a debug assertion).
+- A register compiled code reads where the IR does not (the delay and value of a fused scalar drive,
+  read at its `Drive` after the skipped head and `LSet`) must be a use in `regs::Live` (`reads`),
+  or a `clear` between its definition and that read drops it unstored: a delay loaded from a generic
+  was driven as 0 (#1198).
 - Compiled code never reports an error itself: an inline instruction that fails returns its own
   pc and the interpreter re-executes it (rule 5).
 - A pre-key hit skips `lower`: a new input of the lowering (an environment variable, a process-wide

@@ -655,7 +655,7 @@ Cycle mode (E4 and W4)
    * - _`E4127`
      - A process outside the cycle region reads the history of a signal this process drives: ``'active``, ``'last_active``, ``'last_event``, ``'last_value``, ``'transaction``, ``'stable``, ``'quiet`` or ``'delayed``, directly or in a subprogram it calls (an edge test such as ``rising_edge`` is not history here).
    * - _`E4128`
-     - A ``force`` or ``release`` the design can run (in a process, or in a subprogram a process calls) changes a signal this process drives, which cycle-based code would not see, so the process stays in the event kernel; processes that only read the forced signal still join.
+     - A ``force`` or ``release`` the design can run (in a process, or in a subprogram a process calls) changes a signal this process drives, which cycle-based code would not see, so the process stays in the event kernel; members that only read the forced signal still join.
    * - _`E4129`
      - Combinational logic (or a register with an asynchronous reset) feeds a process outside the region whose result depends on the delta cycles its inputs change in: one that keeps a value from its previous run (a latch, a variable read before it is assigned, a combinational loop), has an incomplete sensitivity list, or stays out for another reason.
    * - _`E4130`
@@ -673,7 +673,7 @@ Cycle mode (E4 and W4)
    * - _`E4136`
      - An assert or report of the top-level unit reads a signal the region does not drive alone.
    * - _`E4137`
-     - Under ``--cycle-exact-meta``, a process assigns a metavalue literal (``'U'``, ``'X'``, ...) to a signal the testbench reads, or passes on a ``'Z'`` from a process outside to such a signal.
+     - Without ``--two-state``, a process assigns a metavalue literal (``'U'``, ``'X'``, ...) to a signal the testbench reads, or passes on a ``'Z'`` from a process outside to such a signal.
    * - _`E4138`
      - An external name (``<<signal .tb.dut.x : std_logic>>``) in the process.
    * - _`E4139`

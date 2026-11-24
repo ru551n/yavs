@@ -1,4 +1,4 @@
--- Combinational choices on a 'U' under --cycle-exact-meta never show a 'U' the normal mode does
+-- Combinational choices on a 'U' without --two-state never show a 'U' the normal mode does
 -- not have. `s` and `ad` are 'U' (never driven), `uu` too: the normal mode takes the else branch
 -- of `s = '0'`, `s = '1'`, `s /= '1'` and `unsigned(ad) < 2` and gives "0..0", while the region's
 -- image reads 'U' as 0 and takes the `uu` branch of the first and the last. `yd` takes `uu`

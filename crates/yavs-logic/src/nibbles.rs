@@ -68,6 +68,7 @@ impl Repr for Nibbles {
             UnOp::ToX01 => &scalar::TO_X01,
             UnOp::ToX01Z => &scalar::TO_X01Z,
             UnOp::ToUx01 => &scalar::TO_UX01,
+            UnOp::To01 => &scalar::TO_01,
         };
         for x in &mut self.b {
             *x = t[(*x & 15) as usize] | t[(*x >> 4) as usize] << 4;

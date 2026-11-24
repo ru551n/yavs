@@ -632,7 +632,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E4128",
-        "A `force` or `release` the design can run (in a process, or in a subprogram a process calls) changes a signal this process drives, which cycle-based code would not see, so the process stays in the event kernel; processes that only read the forced signal still join. A force whose target yavs cannot tell (a signal parameter) keeps every process out, and so does any force under `--cycle-exact-meta`, whose rules for `'Z'` do not follow forced values. Forces in units the design does not instantiate and in subprograms nothing calls do not count. Under `--cycle-strict` each such process below the top-level unit is an error that points at the force. A limitation of yavs: drive the signal from the testbench instead of forcing it, or run with `--cycle`.",
+        "A `force` or `release` the design can run (in a process, or in a subprogram a process calls) changes a signal this process drives, which cycle-based code would not see, so the process stays in the event kernel; members that only read the forced signal still join. A force whose target yavs cannot tell (a signal parameter) keeps every process out, and so does any force without `--two-state`, whose rules for `'Z'` do not follow forced values. Forces in units the design does not instantiate and in subprograms nothing calls do not count. Under `--cycle-strict` each such process below the top-level unit is an error that points at the force. A limitation of yavs: drive the signal from the testbench instead of forcing it, or run with `--cycle`.",
     ),
     (
         "E4129",
@@ -668,7 +668,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E4137",
-        "Under `--cycle-exact-meta`, a process assigns a metavalue literal (`'U'`, `'X'`, ...) to a signal the testbench reads, or passes on a `'Z'` from a process outside to such a signal. The testbench must then see the metavalue the event simulation gives it, and cycle-based code gives only '0' and '1'. Run without `--cycle-exact-meta` (two-state values at the boundary, the default), or assign '0' or '1' instead.",
+        "Without `--two-state`, a process assigns a metavalue literal (`'U'`, `'X'`, ...) to a signal the testbench reads, or passes on a `'Z'` from a process outside to such a signal. The testbench must then see the metavalue the event simulation gives it, and cycle-based code gives only '0' and '1'. Run with `--two-state` (two-state values at the boundary), or assign '0' or '1' instead.",
     ),
     (
         "E4138",

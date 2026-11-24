@@ -10,8 +10,8 @@ test's `expect` lines, so two equally short runs cannot pass. Fails when the run
 member, or no output at all) and when a world is missing (the command that makes it is printed). Worlds
 are made by tools/realbench/run.py --prepare. Stdlib only. See README.md.
 
-`--contract exact` (the default) runs cycle mode under the exact rules (`--cycle-exact-meta`,
-YAVS_CYCLE_EXACT_CLOCKS=1), which `GATE` holds. `--contract default` runs plain `--cycle`: the member
+`--contract exact` (the default) runs cycle mode under the exact rules (`--cycle` alone,
+YAVS_CYCLE_EXACT_CLOCKS=1), which `GATE` holds. `--contract two-state` runs `--cycle --two-state` against a normal `--two-state` run: the member
 count is shown, not checked, and a line of a file that differs only where the normal mode has a
 metavalue and cycle mode a digit (`cyclegate.meta_pair`) is `CONTRACT`; every other difference fails.
 """
@@ -37,7 +37,7 @@ MEMBERS = re.compile(r"(\d+) of (\d+) processes")
 # the logic from registers of the DTM's `jtag_clk` to registers of `clk` stays out (DTM, debug master,
 # arbiter, the inputs of the block RAM and of the caches). 258 -> 233 (exact contract, A52): a member with
 # an assert or report that reads a signal the region does not drive alone stays out under
-# `--cycle-exact-meta` (E4140): `wb_x_state` reads `soc_reset`, and 26 core processes with asserts
+# no `--two-state` (E4140): `wb_x_state` reads `soc_reset`, and 26 core processes with asserts
 # (caches, TLBs, register file, execute, FPU, MMU, log buffer) then read what processes outside drive.
 GATE = {
     "neorv32_dual_full": dict(stop=None, normal=None, cycle=None, members="3801 of 3910"),
@@ -47,7 +47,7 @@ GATE = {
 
 def same_lines(a, b, meta=None):
     """None when the text files a (normal) and b (cycle) are equal, a `?` of a matching anything; else where.
-    With a list `meta` (the default contract) a line the metavalue class explains (`cyclegate.meta_pair`)
+    With a list `meta` (the two-state contract) a line the metavalue class explains (`cyclegate.meta_pair`)
     matches too, and is counted in it."""
     with open(a, errors="replace") as fa, open(b, errors="replace") as fb:
         for i, (x, y) in enumerate(itertools.zip_longest(fa, fb), 1):
@@ -80,7 +80,7 @@ def selftest(d):
     print("selftest ok")
 
 
-EXTRA = ["--cycle", "--cycle-exact-meta"]  # the cycle flags; `--contract default`: "--cycle" alone
+EXTRA = ["--cycle"]  # the cycle flags; `--contract two-state` adds "--two-state" (to the normal run too)
 CRASH = re.compile(r"E9999|this is a bug in yavs|panicked")
 
 
@@ -88,7 +88,8 @@ def one_mode(Y, t, world, d, cycle, tier, timeout, stop):
     """Run one mode in a copy of the world; (exit status, members, reports, {name: text file}, last lines of stderr)."""
     shutil.copytree(world, d, symlinks=True)
     start = time.time()
-    script = R.yavs_script(Y, t, d, tier, stop=stop, extra=EXTRA if cycle else [])
+    # The two-state contract's reference is the normal mode with `--two-state` (as cyclegate's).
+    script = R.yavs_script(Y, t, d, tier, stop=stop, extra=EXTRA if cycle else [x for x in EXTRA if x != "--cycle"])
     with open(d.parent / f"{d.name}.out", "w") as fo, open(d.parent / f"{d.name}.err", "w") as fe:
         rc = subprocess.run(["timeout", str(timeout), "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=8G",
                              "bash", "-c", script], stdout=fo, stderr=fe).returncode
@@ -115,15 +116,15 @@ def main():
     ap.add_argument("--tier", default="auto")
     ap.add_argument("--timeout", type=int, default=900, help="seconds per run")
     ap.add_argument("--keep", action="store_true", help="keep the scratch directory")
-    ap.add_argument("--contract", choices=("exact", "default"), default="exact",
-                    help="exact (default): --cycle-exact-meta and YAVS_CYCLE_EXACT_CLOCKS=1, members checked against GATE; "
-                         "default: plain --cycle, lines that differ only by metavalues read two-state are CONTRACT, any other difference fails")
+    ap.add_argument("--contract", choices=("exact", "two-state"), default="exact",
+                    help="exact (default): --cycle alone and YAVS_CYCLE_EXACT_CLOCKS=1, members checked against GATE; "
+                         "two-state: --cycle --two-state, lines that differ only by metavalues read two-state are CONTRACT, any other difference fails")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.contract == "exact":
         os.environ["YAVS_CYCLE_EXACT_CLOCKS"] = "1"
     else:
-        EXTRA[1:] = []
+        EXTRA.append("--two-state")
         os.environ.pop("YAVS_CYCLE_EXACT_CLOCKS", None)
     scratch = Path(os.environ.get("CYCLEBIG_CACHE", "~/.cache/yavs-cyclebig")).expanduser() / f"run-{os.getpid()}"
     if a.selftest:
@@ -158,7 +159,7 @@ def main():
         why += [f"the normal console lacks /{e}/" for e in t.get("expect", []) if not re.search(e, con, re.M)]
         if set(nf) != set(cf):
             why.append(f"files written: {sorted(nf)} normal, {sorted(cf)} cycle")
-        meta = [] if a.contract == "default" else None
+        meta = [] if a.contract == "two-state" else None
         why += [f"{k}: {d}" for k in sorted(set(nf) & set(cf)) if (d := same_lines(nf[k], cf[k], meta))]
         crashed = any(l.startswith("crashed: ") for l in ctail)
         if crashed:

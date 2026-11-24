@@ -178,6 +178,9 @@ impl Fx<'_, '_> {
                     return Err(Failed);
                 }
                 self.call(c.callee, &c.args, c.method_of, None, c.span)?;
+                if self.two && c.method_of.is_none() {
+                    self.two_outs(c.callee, &c.args)?;
+                }
                 Ok(())
             }
             H::If { branches, else_ } => {
@@ -390,6 +393,10 @@ impl Fx<'_, '_> {
                         continue;
                     }
                     Choice::Expr(e) => {
+                        // `--two-state`: a choice keeps its literal's meaning (A74).
+                        if self.two {
+                            self.two_keep_cmp(*e, matching);
+                        }
                         let cv = self.expr(*e)?;
                         match (array, matching) {
                             (true, false) => self.array_cmp(CmpOp::Eq, v, cv, t, span)?,
@@ -2806,6 +2813,11 @@ impl Fx<'_, '_> {
         let Waveform::Elements(elems) = w else {
             return Ok(()); // `unaffected`
         };
+        if self.two && db.is_resolved(db.exprs[target.expr].subtype) {
+            for v in elems.iter().filter_map(|e| e.value) {
+                self.two_keep_z(v);
+            }
+        }
         if let ExprKind::Aggregate { .. } = &db.exprs[target.expr].kind {
             return self.drive_aggregate(target, delay, elems, span);
         }

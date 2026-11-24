@@ -748,6 +748,9 @@ pub struct Func {
     /// A function that returns an array as its data address, the bounds through `RetBounds`
     /// (the caller's next instruction is `TakeBounds`), not as a fat pair.
     pub ret_flat: bool,
+    /// `--two-state`: lowered so that every logic value it computes is `0` or `1` (a process
+    /// below the top-level unit and the subprograms lowered with it).
+    pub two_state: bool,
     /// The optimised copy, made when [`Program::func`] first asks (`None`: the code is as
     /// lowered).
     #[serde(skip)]
@@ -1085,6 +1088,7 @@ impl Func {
             moved: self.moved.clone(),
             ret_ty: self.ret_ty,
             ret_flat: self.ret_flat,
+            two_state: self.two_state,
             opt: Default::default(),
             armed: Default::default(),
             memo: Default::default(),
@@ -1132,6 +1136,7 @@ impl Func {
             moved: Vec::new(),
             ret_ty: None,
             ret_flat: false,
+            two_state: false,
             opt: Default::default(),
             armed: Default::default(),
             memo: Default::default(),

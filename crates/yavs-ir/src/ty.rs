@@ -353,6 +353,20 @@ impl Ty {
         go(types, ty, 0)
     }
 
+    /// Whether values of `ty` hold `std_ulogic` elements (`--two-state` maps them).
+    pub fn has_std_ulogic(types: &Types, ty: TyId) -> bool {
+        fn go(types: &Types, ty: TyId, depth: u32) -> bool {
+            match types.get(ty) {
+                _ if depth > 64 => false,
+                Some(Ty::Enum { logic, .. }) => *logic == Some(LogicKind::StdULogic),
+                Some(Ty::Array { elem, .. }) => go(types, *elem, depth + 1),
+                Some(Ty::Record { fields }) => fields.iter().any(|f| go(types, f.ty, depth + 1)),
+                _ => false,
+            }
+        }
+        go(types, ty, 0)
+    }
+
     /// Whether values of `ty` need a runtime descriptor (arrays, records with such fields).
     pub fn needs_desc(types: &Types, ty: TyId) -> bool {
         match types.get(ty) {

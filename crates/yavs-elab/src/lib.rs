@@ -166,6 +166,9 @@ pub struct ElabConfig {
     /// `--init-unset`: the start value of the `std_ulogic` elements of signals without an
     /// initial value (`'U'` when `None`).
     pub init_unset: Option<yavs_logic::start::Fill>,
+    /// `--two-state`: the design below the top-level unit is two-state (its start values,
+    /// lowering, no kernel-native statements).
+    pub two_state: bool,
     /// `--init-x`: find the metavalue literals it gives a value (`Elaborated::x_sites`).
     pub init_x: bool,
 }
@@ -207,6 +210,7 @@ impl Default for ElabConfig {
             keep_values: false,
             values: None,
             init_unset: None,
+            two_state: false,
             init_x: false,
         }
     }

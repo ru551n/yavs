@@ -101,13 +101,13 @@ type Subset = (
 /// Clock elements that are copies of another: (leaf, element) to its source.
 type Copies = BTreeMap<(LeafId, u32), (LeafId, u32)>;
 
-/// `--cycle-exact-meta` (A31): the metavalue rules keep processes out. Off: two-state values at
-/// the boundary too, nothing kept out for a metavalue.
-static EXACT_META: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The metavalue contract, every run without `--two-state` (A53, A57): the metavalue rules keep
+/// processes out. Off: two-state values at the boundary too, nothing kept out for a metavalue.
+static EXACT_META: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
-/// Keep the metavalue rules of `--cycle-exact-meta` (true) or drop them (the default).
-pub fn set_exact_meta(on: bool) {
-    EXACT_META.store(on, std::sync::atomic::Ordering::Relaxed);
+/// `--two-state` (true) drops the metavalue rules; without it they hold (the default).
+pub fn set_two_state(on: bool) {
+    EXACT_META.store(!on, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// `--wave` (A52): the kernel signals the wave records, sorted; `None` without a wave.
@@ -145,7 +145,8 @@ pub(crate) fn wave_held(e: &Elaborated, members: &[usize], outputs: &BTreeSet<Le
         .collect()
 }
 
-/// Whether `--cycle-exact-meta` is on: also, failed checks keep their operands for the message.
+/// Whether the metavalue contract holds (no `--two-state`): also, failed checks keep their
+/// operands for the message.
 pub(crate) fn exact_meta() -> bool {
     EXACT_META.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -241,8 +242,8 @@ pub(crate) fn asserts_kept(e: &Elaborated, scope: yavs_elab::ScopeId) -> bool {
     !NO_ASSERTS.load(std::sync::atomic::Ordering::Relaxed) || in_top_scope(e, scope)
 }
 
-/// Whether the region is two-state (A57): today the default contract, every run but
-/// `--cycle-exact-meta`. A metavalue literal of region code then takes [`meta_fill`]'s bits.
+/// Whether the region is two-state (A57): `--two-state`. A metavalue literal of region code then
+/// takes [`meta_fill`]'s bits.
 pub(crate) fn two_state() -> bool {
     !exact_meta()
 }
@@ -622,7 +623,7 @@ fn copy_rule(
         .map(|(&pi, _)| pi)
         .collect();
     // A member on a later copy of a moved member's source that reads what the moved member
-    // drives (found by the fuzzer under the default contract, `clkcopy.vhd` `smp`).
+    // drives (found by the fuzzer under the two-state contract, `clkcopy.vhd` `smp`).
     let made: BTreeSet<LeafId> = (taken.keys())
         .flat_map(|&pi| e.procs[pi].drivers.iter().map(|&d| e.nets.drivers[d].leaf))
         .collect();
@@ -1297,7 +1298,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             // drive only: it sees the values the normal mode's checker would see of them (the
             // region exports two-state values), never a metavalue of the kernel read as 0.
             // What the checker counts too: the lowering reads nothing of a value it folds
-            // (`is_x` is false on two-state values). Under `--cycle-exact-meta` the same for every
+            // (`is_x` is false on two-state values). Without `--two-state` the same for every
             // member with notes, which must see the kernel's metavalues (E4140 below the top).
             let fit_reads = f.reads.iter().map(|(k, _, _)| LeafId(k as u32));
             let top = in_top_unit(e, pi);
@@ -1317,7 +1318,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
                 } else {
                     (
                         crate::codes::ASSERT,
-                        "an assert or report under `--cycle-exact-meta` reading a signal the region does not drive alone",
+                        "an assert or report without `--two-state` reading a signal the region does not drive alone",
                     )
                 };
                 gone.push((
@@ -3818,7 +3819,7 @@ impl Forced {
     fn reason(&self, db: &Db, e: &Elaborated, pi: usize, span: yavs_diag::Span) -> Option<Reason> {
         let (text, s) = match self {
             Forced::All(s) if exact_meta() => (
-                "`force` or `release` in the design: under `--cycle-exact-meta` no process joins \
+                "`force` or `release` in the design: without `--two-state` no process joins \
                  a design that forces a signal"
                     .to_string(),
                 *s,
@@ -3874,7 +3875,7 @@ fn forced(db: &Db, e: &Elaborated) -> Forced {
         else {
             return Forced::All(s);
         };
-        // ponytail: the 'Z' rules of `--cycle-exact-meta` (`z_leaves`, `pass_on_z`) do not follow
+        // ponytail: the 'Z' rules of the metavalue contract (`z_leaves`, `pass_on_z`) do not follow
         // forced values, so there a force keeps every process out; follow them if it matters.
         if target.lsps.is_empty() || exact_meta() {
             return Forced::All(s);

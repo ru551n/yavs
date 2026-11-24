@@ -134,6 +134,14 @@ pub(crate) fn rt_err<T>(m: impl Into<String>) -> R<T> {
     Err(Fault::Runtime(m.into()))
 }
 
+/// `--two-state` invariant check (debug builds, or `YAVS_TWO_CHECK=1`): every logic operand of
+/// two-state code is `0` or `1` (in a function that inlined nothing: four-state code inlined into
+/// it keeps its own values).
+fn two_check() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| cfg!(debug_assertions) || std::env::var_os("YAVS_TWO_CHECK").is_some())
+}
+
 pub(crate) fn ice(m: impl Into<String>) -> Fault {
     Fault::Internal(m.into())
 }
@@ -9468,6 +9476,15 @@ impl Machine {
         })
     }
 
+    /// [`two_check`]: the `n` elements at `a` are `0` or `1`, else an internal error.
+    fn two_clean(&mut self, a: u64, n: u64) -> R<()> {
+        let x = self.planes(a, n)?;
+        if x.to_01() != x {
+            return Err(ice_f!("two-state code reads a metavalue: {x}"));
+        }
+        Ok(())
+    }
+
     /// `Inst::LogicOp` of a gate or `not` of `n` elements, block by block in place with no
     /// vectors built; `false` for the other operations, which take the vector path.
     #[inline(never)]
@@ -11604,11 +11621,17 @@ impl Machine {
             }
             Inst::LogicOp { op, dst, a, b, n } => {
                 let n = self.r(n);
+                if f.two_state && f.via.is_empty() && two_check() && op != LOp::To01 {
+                    self.two_clean(self.r(a), n)?;
+                    if !op.unary() {
+                        self.two_clean(self.r(b), n)?;
+                    }
+                }
                 if self.logic_blocks(op, dst, a, b, n)? {
                     return Ok(Flow::Next);
                 }
                 let x = self.planes(self.r(a), n)?;
-                let unary = matches!(op, LOp::Not | LOp::ToX01 | LOp::ToX01Z | LOp::ToUx01);
+                let unary = op.unary();
                 let y = if unary {
                     x.clone()
                 } else {
@@ -11625,6 +11648,7 @@ impl Machine {
                     LOp::ToX01 => x.to_x01(),
                     LOp::ToX01Z => x.to_x01z(),
                     LOp::ToUx01 => x.to_ux01(),
+                    LOp::To01 => x.to_01(),
                     LOp::Resolve => LogicVec::resolve(&[&x, &y]),
                 };
                 self.put_planes(self.r(dst), &v)?;
@@ -11638,6 +11662,10 @@ impl Machine {
                 signed,
             } => {
                 let n = self.r(n);
+                if f.two_state && f.via.is_empty() && two_check() {
+                    self.two_clean(self.r(a), n)?;
+                    self.two_clean(self.r(b), n)?;
+                }
                 let x = self.planes(self.r(a), n)?;
                 let y = self.planes(self.r(b), n)?;
                 match op {

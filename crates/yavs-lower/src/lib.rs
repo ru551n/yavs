@@ -73,6 +73,8 @@ pub struct LowerOptions {
     pub init_unset: bool,
     /// `--init-x`: the metavalue literals of `yavs_sem::Db::x_sites` come from `yavs.init.x`.
     pub init_x: bool,
+    /// `--two-state`: the architectures [`Lowerer::two_state`] names are lowered two-state.
+    pub two_state: bool,
 }
 
 impl LowerOptions {
@@ -101,6 +103,7 @@ impl Default for LowerOptions {
             no_asserts: false,
             init_unset: false,
             init_x: false,
+            two_state: false,
         }
     }
 }
@@ -448,6 +451,13 @@ pub(crate) struct Cx {
     /// (`--no-asserts`, [`Lowerer::drop_asserts`]).
     #[serde(skip)]
     pub drop_asserts: bool,
+    /// `--two-state` for what is lowered from here on ([`Lowerer::two_state`]).
+    #[serde(skip)]
+    pub two_state: bool,
+    /// `--two-state`: the subprograms declared two-state (`func_of` decides when it declares one:
+    /// `two_state` and not a package's), which their callers need not map.
+    #[serde(skip)]
+    pub two_subs: std::collections::HashSet<DeclId>,
     /// `--init-x`: the literals it gives a value (`yavs_elab`'s `x_sites`), set for a design.
     #[serde(skip)]
     pub x_sites: std::collections::HashSet<ExprId>,
@@ -894,6 +904,8 @@ impl<'a> Lowerer<'a> {
                 named_entities: None,
                 diags: Vec::new(),
                 drop_asserts: false,
+                two_state: false,
+                two_subs: Default::default(),
                 x_sites: Default::default(),
                 tys: HashMap::default(),
                 natives: HashMap::default(),
@@ -1021,6 +1033,13 @@ impl<'a> Lowerer<'a> {
     /// statements of their processes (those below the top-level unit).
     pub fn drop_asserts(&mut self, on: bool) {
         self.cx.drop_asserts = on;
+    }
+
+    /// `--two-state`: the architectures lowered from here on (and the subprograms lowered with
+    /// them) are two-state: logic values read from outside are mapped to `0`/`1`
+    /// (`LOp::To01`), metavalue literals take `--init-x`, variables start at `--init-unset`.
+    pub fn two_state(&mut self, on: bool) {
+        self.cx.two_state = on;
     }
 
     /// Lower an architecture: its signals, instance constants and processes.

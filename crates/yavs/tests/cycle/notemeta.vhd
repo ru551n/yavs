@@ -1,4 +1,4 @@
--- Asserts and reports under `--cycle-exact-meta` read the second image: registers with a 'U' or
+-- Asserts and reports without `--two-state` read the second image: registers with a 'U' or
 -- 'X' start (whole, in a record field, in a part of a vector; widths 1/63/64/65/128) print as in
 -- the normal mode at the first edge, from a clocked checker of the top-level unit and from a
 -- combinational process below it. A BIT copy of a 'U' stays 0. `zero` fires on the region's

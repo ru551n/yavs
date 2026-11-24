@@ -160,6 +160,8 @@ Internal, called by lowering only (#916): `yavs.prot.name_set` gives a protected
 
 Internal, called by lowering only: `yavs.init.unset` and `yavs.init.unset_code` give the `'U'` elements of a process variable without an initial value the value of `--init-unset`; `yavs.init.x` and `yavs.init.x_code` give the metavalue elements of a literal the value of `--init-x`.
 
+Internal, called by lowering only: `yavs.two.lit` and `yavs.two.lit_code` give a literal of two-state code its two-state value under `--two-state`: `'L'` is `'0'`, `'H'` is `'1'`, and `'U'`, `'X'`, `'Z'`, `'W'` and `'-'` (but in a matching comparison) take `--init-x`, `'0'` without it (an argument `mode`: bit 0 keeps `'-'`, bit 1 gives the metavalues `'0'`, for a value read from outside into a matching comparison). `yavs.two.map` maps every `std_ulogic` element of a record or an array of composites to `'0'` or `'1'` (`'1'` and `'H'` to `'1'`), as a read of two-state code from outside does.
+
 ### std.reflection (123)
 
 | Native symbol | Signature | Revision |

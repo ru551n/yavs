@@ -268,12 +268,20 @@ identical to a run without it, at any `--threads`.
   16384 objects and 256 MiB, apart from the 4 GiB of entries, under the same rule at the limit. (The removed
   LLVM tier kept its modules there as `obj-<key>.img`.) `route-<key>.img`, one per design, holds how each compiled function
   first called the others, so that an unchanged design makes the same bodies in every run (#1035).
-- `--cycle-exact-meta` (with `--cycle`, `--cycle-strict` or `--cycle-report`, else a usage error, exit 2) keeps the
-  metavalue rules that hold processes out of the cycle region so the testbench sees the normal mode's metavalues;
-  without it metavalues read as `0` at the region's boundary (user, 2026-11-17). It is part of the key
-  of the cached analysis. With it the region also follows the `'U'` start values on a second image for up to
-  1024 clock edges and drives `'U'` where the output depends on them (owner decision A38, 2026-11-17); its end is
-  a line of the summary on standard error starting `cycle mode: 'U' start values`.
+- `--two-state` (user, 2026-11-21 and 2026-11-23, A53, A57, A64, A65; replaces 0.21's `--cycle-exact-meta`, removed,
+  an unknown option now): the design below the top-level unit is two-state, in the event kernel and in cycle mode
+  alike. Its processes and the subprograms declared with them hold only `0` and `1`: a value they read from a signal,
+  a generic, a constant outside their frame, an attribute or a package's subprogram maps `'1'` and `'H'` to `1` and
+  anything else to `0`; a metavalue literal (`'U'`, `'X'`, `'Z'`, `'W'`, `'-'` but in `std_match`, `?=`, `?/=`)
+  takes `--init-x` (`0` without it), `'L'` is `0` and `'H'` is `1`; signals and process variables without an
+  initial value start at `--init-unset` (`0` without it), subprogram variables at `0`. The top-level unit keeps the
+  nine values. Not covered yet: `case` choices with metavalues keep them (they match no two-state value). In cycle
+  mode the region is two-state and no process stays out for a metavalue. Without it (the default of `--cycle`, `--cycle-strict` and `--cycle-report` alike) cycle mode keeps the
+  metavalue rules that hold processes out of the cycle region so the testbench sees the normal mode's metavalues,
+  follows the `'U'` start values on a second image for up to 1024 clock edges and drives `'U'` where the output
+  depends on them (owner decision A38, 2026-11-17); its end is a line of the summary on standard error starting
+  `cycle mode: 'U' start values` (an interim: cycle mode is to keep the normal mode's nine values, A66). It is part
+  of the key of the lowering and of the cached analysis of cycle mode.
 - `yavs run --no-asserts` (owner decision A54, 2026-11-21) drops the `assert` and `report` statements of the
   processes below the top-level design unit (whose instance's architecture is not the top's), in the normal mode
   and in cycle mode; the statements inside subprograms and those of the top-level unit's processes run. The run
@@ -759,8 +767,8 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   `yavs.tier_compile` (before `yavs.sim_flags`, which win).
 - Cycle mode: the sim option `yavs.cycle` (`off`, `on`, `strict`) becomes `--cycle` or `--cycle-strict` on `yavs run`
   (never `elab`), before `yavs.sim_flags`. With a debug session or coverage the runner fails the test before
-  starting yavs, naming both (yavs itself answers E4102). `--cycle-exact-meta` has no sim option of its own:
-  `yavs.sim_flags` passes it after the cycle flag.
+  starting yavs, naming both (yavs itself answers E4102). The sim option `yavs.two_state` (`True` or `False`,
+  checked when set) adds `--two-state` after the cycle flag, with or without cycle mode.
 - Threads: yavs defaults to `--threads=1`. The sim
   option `yavs.max_threads` (or the runner argument `--yavs-max-threads N` for every test; both
   take a number or `auto`) becomes `--threads=N` before the raw flags, so `--threads` in

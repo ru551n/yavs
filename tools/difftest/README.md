@@ -127,20 +127,20 @@ run stops when it differs:
 run normal and `--cycle` (`--contract`) with `--wave`, and the comparer `crates/yavs-wave/examples/waveq.rs`
 (`cargo build --release -p yavs-wave --example waveq`, `--comparer`) compares the two files per signal at the end
 of each time step. A value that differs or a name recorded on one side only fails, except a memory W0802 names
-and the reviewed differences in `KNOWN` (by test, contract and signal). Under `--contract default` a value
+and the reviewed differences in `KNOWN` (by test, contract and signal). Under `--contract two-state` a value
 difference is bucket `contract` (two-state values by design): that run checks names and crashes only.
 
     YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclewave.py --comparer target/release/examples/waveq
 
 Every comparing tool here (`cyclegate.py`, `cyclereplay.py`, `cyclebig.py`, `cyclefuzz.py`, `seeddiff.py`) compares
-exactly by default, `--contract exact`: its cycle runs take `--cycle-exact-meta` and `YAVS_CYCLE_EXACT_CLOCKS=1`,
+exactly by default, `--contract exact`: its cycle runs take `--cycle` without `--two-state`, and `YAVS_CYCLE_EXACT_CLOCKS=1`,
 which keep the normal mode's metavalue rules, a copied clock a clock of its own and the values in a failed check's
-message, so a difference is a bug. The default contract of `--cycle` gives up those (`docs/cycle-mode.rst`, "What
-you give up", and `docs/two-state.rst`): `--contract default` runs plain `--cycle`, and a difference is bucket (fuzzer verdict)
+message, so a difference is a bug. The two-state contract of `--cycle --two-state` gives up those (`docs/cycle-mode.rst`, "What
+you give up", and `docs/two-state.rst`): `--contract two-state` runs `--cycle --two-state`, and a difference is bucket (fuzzer verdict)
 `contract` only when the contract classes below explain all of it; whatever is left fails, as under the exact
 contract. Run the gates in both contracts before a push:
 
-    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclegate.py --contract default -v
+    YAVS_BIN=target/release/yavs python3 -I tools/difftest/cyclegate.py --contract two-state -v
 
 ### Contract classes
 
@@ -153,7 +153,7 @@ replay (console and written files), the fuzzer (`explained`) and `cyclebig.py` (
 |---|---|---|---|
 | metavalue read as 0 or 1 | a cycle line equals the normal line but where the normal line holds `U`, `X`, `Z`, `W` or `-` and the cycle line a digit (`0`-`9`, `A`-`F`: a bit, or a hex digit of a value computed from it), or `H` against `1`, `L` against `0`, or `-` against `0` in a run of `0`, `1` and `-` with a `-` after its first place; lines of one length, paired in order by their text with digits and metavalues masked; never a metavalue on the cycle side | the cycle run's `metavalue elements read as 0` line, a member's metavalue literal or an input nothing drives in the region report (`meta_evidence`); `cyclebig.py` has no report and applies it to files only | default |
 | metavalues per process and time step | when the lines differ otherwise: each process's last reports of each time step (unlabelled processes by their place) equal or `meta_pair`ed, in any order between processes; a time where only the normal run reports is explained only when that report is, letter by letter, the two-state twin of the process's last cycle report (`'H'` of `1`, `'U'`, `'X'`, `'Z'`, `'W'`, `'L'`, `'-'` of `0`: the region saw no change) (`settled_meta`) | as the metavalue class | default |
-| library metavalue warnings of processes outside | a `NUMERIC_STD...: metavalue detected` note or warning record (`** ...` and its `Process NAME` line) of a process in the region's downstream set is taken out of both runs; the class is used when the two runs' records differ. The downstream set (`YAVS_CYCLE_DOWNSTREAM=FILE` on the report run, `region::downstream`) is every process outside that reads a leaf the region exports, directly or through other processes outside, port edges (both ways) and implicit signals: only those can see a value the region gave two-state (the default contract, A31) or a `'U'` start it gave as 0 (A21, A23c; also under the exact contract). A warning of any other process outside must be the same in both runs | the downstream set | default: `contract`; exact: `documented` |
+| library metavalue warnings of processes outside | a `NUMERIC_STD...: metavalue detected` note or warning record (`** ...` and its `Process NAME` line) of a process in the region's downstream set is taken out of both runs; the class is used when the two runs' records differ. The downstream set (`YAVS_CYCLE_DOWNSTREAM=FILE` on the report run, `region::downstream`) is every process outside that reads a leaf the region exports, directly or through other processes outside, port edges (both ways) and implicit signals: only those can see a value the region gave two-state (the two-state contract, A31) or a `'U'` start it gave as 0 (A21, A23c; also under the exact contract). A warning of any other process outside must be the same in both runs | the downstream set | default: `contract`; exact: `documented` |
 | library warnings of members | as A33: the region gives none; taken out of both runs (`drop_ieee`) | the region report's members | both (documented) |
 | a copied clock is its source (fuzzer) | the design with every clock the generator copies (`dk <= clk0;`, or the clock a generic chooses when every instance gives it one value) replaced by its source in every use but its assignment, ports and the testbench's writes (`copy_variant`) runs in the normal mode, and the cycle run equals that run, the metavalue class applied to it under its own evidence: exactly the A32 semantics, a register of the source read directly on a copy gives its value before the edge | a copy in the design (`copy_reference` runs only then) | default |
 | message of a failed check | `E3009` compared by its code and source place (`difftest.code_loc`) | none needed: the code and place stay | default |
@@ -250,11 +250,15 @@ outside the output directory, or relative to the working directory, are not isol
 seed runs (user decision A68): the designs of the cycle gate, each in every tier, at one and four threads and with
 `--shuffle`, normal and `--cycle`; within each mode every run must give the first one's canonical output. The warm
 cycle run follows a run with another seed in the same library: it must store no other analysis (the seed is in no
-cache key) and give the cold output. Normal against cycle mode is left to the cycle gate and to
-`crates/yavs/tests/init_start.rs`, since metavalues differ there by contract.
+cache key) and give the cold output. Across modes (normal, `--cycle`, `--cycle-strict`, `--two-state` and
+`--cycle --two-state`) the same seed must give the same output wherever two modes give the same output with
+`--init-unset=0 --init-x=0` and with `=1`; pairs that differ at a fixed value already differ by contract and are
+counted, not compared (the summary line gives both numbers). `--two-state` adds the option to every run (both
+modes) and leaves out the cross-mode runs; run the gate with and without it.
 
 ```sh
 YAVS_BIN=<yavs built with --features clift> python3 -I tools/difftest/seedgate.py --seed 11 --jobs 2
+YAVS_BIN=<yavs built with --features clift> python3 -I tools/difftest/seedgate.py --seed 11 --jobs 2 --two-state
 ```
 
 ## Cycle mode fuzzer

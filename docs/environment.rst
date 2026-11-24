@@ -834,7 +834,7 @@ used. A value a variable does not take is error ``E4104``. Users need only ``YAV
      - unset
      - ``run``
    * - ``YAVS_CYCLE_RAIL``
-     - How ``--cycle-exact-meta`` follows the start values: ``off``, ``cap=N`` clock edges, ``no-reseed``.
+     - How a cycle region without ``--two-state`` follows the start values: ``off``, ``cap=N`` clock edges, ``no-reseed``.
      - ``off``, ``cap=N``, ``no-reseed``
      - 1024 edges
      - ``run``
@@ -867,6 +867,11 @@ used. A value a variable does not take is error ``E4104``. Users need only ``YAV
      - The threads the region compiles on, instead of the count of ``--threads``.
      - a whole number of at least 1
      - the count of ``--threads``
+     - ``run``
+   * - ``YAVS_TWO_CHECK``
+     - Tests: under ``--two-state`` the interpreter checks that every operand of a logic operation of two-state code is ``0`` or ``1`` and stops with an internal error if not (debug builds always check).
+     - ``1``
+     - unset
      - ``run``
 
 Compiled tiers: when to compile

@@ -555,6 +555,7 @@ pub(crate) fn elaborate(
         db,
         m: Model {
             init_unset: cfg.init_unset,
+            two_state: cfg.two_state,
             ..Model::default()
         },
         procs: Vec::new(),
@@ -3200,7 +3201,9 @@ impl Elab<'_> {
             None => self.idle_comb_reads(s, st),
         };
         // A statement with an `--init-x` literal runs its lowered code, which gives it its value.
-        let native = !self.x_stmts.contains(&st);
+        // `--two-state`: below the top-level unit, the lowered code maps what it reads.
+        let native =
+            !self.x_stmts.contains(&st) && !(self.cfg.two_state && self.m.hier.below_top(s));
         let copy = self.copy_source(s, st).filter(|_| native);
         let toggle = self.toggle_source(s, st).filter(|_| native);
         let gate = self.gate_source(s, st).filter(|_| native);
@@ -5653,8 +5656,10 @@ impl Model {
         })?;
         let mut vals = vals;
         let mut drawn = Vec::new();
+        let two =
+            (self.two_state && self.hier.below_top(s)).then_some(yavs_logic::start::Fill::Zero);
         if init.is_none()
-            && let Some(f) = self.init_unset
+            && let Some(f) = self.init_unset.or(two)
         {
             drawn = self.unset_starts(db, s, decl, &shape, &mut vals, f);
             if !matches!(f, yavs_logic::start::Fill::Random(_)) {

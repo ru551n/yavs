@@ -454,7 +454,7 @@ Arguments:
 
 .. option:: --init-x=0|1|random[:SEED]
 
-   The value of the metavalue literals the design assigns (``'U'``, ``'X'``, ``'W'`` anywhere, ``'-'`` in a default branch, alone or as ``(others => ...)``), in the processes below the top-level unit: ``0``, ``1``, or ``random[:SEED]`` as for ``--init-unset``. Literals in conditions, comparisons, calls, subprograms and the top-level unit stay as written; in cycle mode every metavalue literal of a cycle-based process below the top-level unit, compared ones too, takes this value (``0`` without the option).
+   The value of the metavalue literals the design assigns (``'U'``, ``'X'``, ``'W'`` anywhere, ``'-'`` in a default branch, alone or as ``(others => ...)``), in the processes below the top-level unit: ``0``, ``1``, or ``random[:SEED]`` as for ``--init-unset``. Literals in conditions, comparisons, calls, subprograms and the top-level unit stay as written; with ``--two-state`` every metavalue literal of a cycle-based process below the top-level unit, compared ones too, takes this value (``0`` without the option).
 
 .. option:: --cov, --cov=LETTERS
 
@@ -511,7 +511,7 @@ Arguments:
 
 .. option:: --cycle
 
-   Cycle mode, experimental (its options and results may change in a later release): the processes that can run cycle-based (clocked and combinational ones in what it supports) run as one region on a static schedule with compiled code; the rest stays in the event kernel. One line on standard error says how many processes joined; ``--cycle-report`` lists them all, with reasons. Cycle-based processes evaluate their asserts and reports, a clocked one at its clock edge, a combinational one once its inputs are settled, with the normal mode's text, severity, time and process; one cycle mode cannot evaluate keeps its process in the event kernel (``--no-asserts`` drops those below the top-level unit). ``--wave`` (and ``--surfer``) records the signals inside the region per time step, without delta cycles. Not with a debug session, ``--wave-variables``, ``--cov``, ``--vhpi`` or ``--activity`` (E4102). The strict form is ``--cycle-strict``, given instead of this option.
+   Cycle mode, experimental (its options and results may change in a later release): the processes that can run cycle-based (clocked and combinational ones in what it supports) run as one region on a static schedule with compiled code; the rest stays in the event kernel. One line on standard error says how many processes joined; ``--cycle-report`` lists them all, with reasons. Cycle-based processes evaluate their asserts and reports, a clocked one at its clock edge, a combinational one once its inputs are settled, with the normal mode's text, severity, time and process; one cycle mode cannot evaluate keeps its process in the event kernel (``--no-asserts`` drops those below the top-level unit). ``--wave`` (and ``--surfer``) records the signals inside the region per time step, without delta cycles. Values keep the metavalues unless ``--two-state`` is given. Not with a debug session, ``--wave-variables``, ``--cov``, ``--vhpi`` or ``--activity`` (E4102). The strict form is ``--cycle-strict``, given instead of this option.
 
    Cannot be combined with ``--cycle-strict``.
 
@@ -525,9 +525,9 @@ Arguments:
 
    Cannot be combined with ``--cycle``, ``--cycle-strict``.
 
-.. option:: --cycle-exact-meta
+.. option:: --two-state
 
-   With ``--cycle``, ``--cycle-strict`` or ``--cycle-report`` (experimental): keep the exact metavalue rules. By default a metavalue (``'U'``, ``'X'``, ``'Z'``, ...) reaching the region is read as ``0`` and no process stays out for one; with this option a process that would hide a metavalue from the testbench (it assigns a metavalue literal to a signal the testbench reads, or passes on a ``'Z'`` from outside) stays in the event kernel, so the testbench sees what the normal mode gives it. A register or variable without a start value shows the testbench ``'U'`` while its value depends on it, for up to 1024 clock edges. A failed check's message then also gives its values, as in the normal mode.
+   Two-state values (experimental): the design below the top-level unit holds only ``0`` and ``1``. A metavalue it reads from the testbench or a resolved signal counts as ``0`` (``'H'`` as ``1``), its literals ``'U'``, ``'X'``, ``'Z'``, ``'W'`` and ``'-'`` take the ``--init-x`` value (``0`` without it; ``'L'`` is ``0``, ``'H'`` is ``1``), and what it declares without an initial value starts at ``--init-unset`` (``0`` without it). The top-level unit keeps the nine values. With a cycle option the cycle-based processes are two-state too; without this option cycle mode keeps the metavalues (for now a register without a start value shows ``'U'`` for up to 1024 clock edges).
 
 .. option:: --tier=interp|auto|clift|clift-auto
 

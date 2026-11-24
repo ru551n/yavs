@@ -196,6 +196,9 @@ pub struct Model {
     pub(crate) unset_elems: u64,
     /// The signal leaves whose start value a `random` seed drew, in order.
     pub(crate) drawn: Vec<crate::LeafId>,
+    /// `--two-state` (`ElabConfig::two_state`): signals below the top-level unit without an
+    /// initial value start at `--init-unset`, 0 without it.
+    pub(crate) two_state: bool,
     /// The ranges of types and subtypes with a bound that is not globally static
     /// (`Db::dynamic_range`), evaluated once at their declaration in an elaborated scope, by
     /// left bound (#612); those of packages by left bound, read from the package data.

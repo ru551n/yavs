@@ -1,4 +1,4 @@
--- A guarded combinational member under --cycle-exact-meta whose choice reads the region's image
+-- A guarded combinational member without --two-state whose choice reads the region's image
 -- (`s = '1'`): `s` goes from 'U' to '1', which the second image already read as 1, so only the
 -- region's image changed. The second image must run the member again, not skip it on its own
 -- unchanged inputs (the test runs with YAVS_CYCLE_GUARD=all).

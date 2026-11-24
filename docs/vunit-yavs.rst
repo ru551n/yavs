@@ -49,13 +49,15 @@ as ``--name=value``.
        cycle-based``, shown with ``-v`` for a passing test) or ``"strict"`` (the same, but a clocked or combinational process below the top-level unit that does
        not fit is an error that lists them all). Set it per library, testbench, test or configuration. The scheduling,
        what it changes and how to read the report are in :doc:`cycle-mode`; the values the cycle-based processes
-       compute with (``0`` and ``1``, metavalues read as ``0``) are in :doc:`two-state`; the flags are in the
+       compute with are chosen by ``yavs.two_state`` (below, :doc:`two-state`); the flags are in the
        :doc:`cli-reference` (``--cycle``). Their signals are recorded per time step (``--yavs-surfer`` shows them). A
        test that also has coverage, ``--yavs-debug`` or ``--yavs-interactive`` fails before yavs starts, naming both.
        Not passed to ``elab``. To see what would join, set ``yavs.sim_flags`` to ``["--cycle-report"]`` for one test
        with ``yavs.cycle`` ``"off"``: yavs prints the report and does not simulate, so that test fails.
-       ``yavs.sim_flags`` ``["--cycle-exact-meta"]`` with ``yavs.cycle`` ``"on"`` or ``"strict"`` keeps part of the
-       metavalues for a test, and the values in the message of a failed check (:ref:`cycle-exact-meta`).
+   * - ``yavs.two_state``
+     - Experimental. ``yavs run --two-state`` for ``True``: the design below the testbench holds only ``0`` and
+       ``1`` (metavalues it reads count as ``'0'``), with or without ``yavs.cycle``; in cycle mode no process is kept
+       out for a metavalue. Default ``False``; a value other than ``True`` or ``False`` is refused when it is set. Not passed to ``elab`` (:doc:`two-state`, :doc:`cli-reference`, ``--two-state``).
    * - ``yavs.no_asserts``
      - ``yavs run --no-asserts`` for ``True``: the ``assert`` and ``report`` statements of the processes below the test
        bench entity are not evaluated, in the normal mode and in cycle mode alike. Below the test bench entity is
@@ -72,7 +74,7 @@ as ``--name=value``.
        names the closest one. Not passed to ``elab``. A ``--init-unset`` in ``yavs.sim_flags`` wins.
    * - ``yavs.init_x``
      - ``yavs run --init-x=VALUE``: the value of the metavalue literals the design assigns (:ref:`start-values`), the
-       same values as ``yavs.init_unset``; with ``yavs.cycle`` every metavalue literal of a cycle-based process below
+       same values as ``yavs.init_unset``; with ``yavs.cycle`` and ``yavs.two_state`` every metavalue literal of a cycle-based process below
        the top-level unit takes it. Not passed to ``elab``. A ``--init-x`` in ``yavs.sim_flags`` wins.
    * - ``yavs.cov_embed_sources``
      - ``yavs run --cov-embed-sources``: store the source text in the database, so the HTML report needs no

@@ -18065,8 +18065,8 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
   are untouched, so the checks of a testbench keep their literals.
 - **`random` without a seed** draws one from the time and the process id and prints it, so a failure can be
   repeated with `random:SEED`.
-- **Metavalue literals of a two-state region (user decisions A57, A58, 2026-11-21).** In a two-state region (today
-  every cycle run but `--cycle-exact-meta`, `region::two_state`; step 4 ties it to `--two-state`) a metavalue
+- **Metavalue literals of a two-state region (user decisions A57, A58, 2026-11-21).** In a two-state region
+  (`region::two_state`: `--two-state`, decoupled from `--cycle` on 2026-11-23, below) a metavalue
   literal in an assignment, a comparison, a `case` choice or a `numeric_std` operator no longer keeps its process
   out: it takes the bits of `--init-x`, `0` without it (A58: as the default contract read it before), counted per
   process in the region report. Only below the top-level unit (`Lx::meta_joins`): a process of the top-level unit
@@ -18095,3 +18095,54 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
   (`SourceFile::site`): checkout location, path separators and line ends change nothing. One salt per literal for
   both modes (`start::lit_salt`). Owner, same day: a literal's bits stay per source site (one for every instance);
   subprogram, protected, shared and allocated variables stay outside `--init-unset`.
+
+## `--two-state` decoupled from `--cycle` (yavs, yavs-cycle, vunit-yavs; user decisions A53 (2), A57, 2026-11-21)
+
+- **`--two-state` is a flag of its own.** Value semantics come from it alone, the same for `--cycle`,
+  `--cycle-strict` and `--cycle-report`; `--cycle-strict` only changes selection (A57 (1)). Without it cycle mode
+  keeps the metavalues with the mechanism 0.21 had under `--cycle-exact-meta` (the stay-out rules, the second image
+  of the `'U'` start values for up to 1024 clock edges, the values in a failed check's message): the A57 addendum,
+  until a metavalue-exact region of its own exists. `--cycle-exact-meta` is removed, so bare `--cycle` is no longer
+  two-state: a breaking change against 0.21, with a release note and a note in the cycle mode guide.
+- **The region's "two-state" predicate** (`region::two_state`, A57 (2)) and with it the `--init-x` value of every
+  metavalue literal below the top-level unit are tied to `--two-state`; `--init-x` not given reads as 0 there (A58);
+  the top-level unit keeps its literals (A62). Without `--two-state`, `--init-x` changes the assigned literals only,
+  as in the normal mode.
+- **`--two-state` in the event kernel** (user decisions A53 (2), A64, A65, 2026-11-23): every process below the
+  top-level unit, and every subprogram an architecture below it declares, is two-state (`Func::two_state`, lowered
+  with `Lowerer::two_state`, decided per subprogram when `func_of` declares it, `Cx::two_subs`; a package's
+  subprograms stay four-state, the top-level unit calls them too). The values come into two-state code mapped as the
+  cycle boundary maps them (`'1'`, `'H'` to `1`, anything else to `0`, `LOp::To01`): reads of signals, generics,
+  constants outside the frame, attributes, results of four-state subprograms, `out` actuals of four-state procedures
+  (records through `yavs.two.map`); metavalue literals take `--init-x` (0 without it), `'L'` and `'H'` their strong
+  values, `'-'` kept in `std_match`, `?=`, `?/=` (`yavs.two.lit`); signals and process variables without an initial
+  value start at `--init-unset` (0 without it), subprogram and shared variables at `'0'`. A literal's bits come from
+  its source site (`start::lit_salt`, A68), as the region's do. The bounds of a subtype or range are lowered as
+  written (`X01` stays `'X'` to `'1'`). `case` choices with metavalues take the `--init-x` bits at run time. The
+  top-level unit keeps nine values. Rationale: one rule for both modes, so a normal `--two-state` run is the
+  reference of the region's two-state contract (`cyclegate.py --contract two-state` compares with it). The
+  kernel-native statements (copies, gates) below the top run as lowered code under the option. The test runner
+  passes `yavs.two_state` with or without `yavs.cycle`.
+- **Driven `'Z'` and package bodies** (user decision A71, 2026-11-23, amends A65 for a driven `'Z'`): a `'Z'`
+  literal or folded constant driven onto a resolved signal stays `'Z'` (`Fx::two_keep_z`, `yavs.two.lit` mode bit
+  2), so tri-state buses and the event signals of verification components below the top work; reads still map to
+  `0`/`1`. `'H'` and `'L'` stay strong `1` and `0` when driven (A65), so pull-ups and open-drain lines below the top
+  break. Package subprograms stay four-state and their callers map what they give back; cycle mode's region gives
+  the metavalue literals of inlined package subprograms, and the values of package calls elaboration made, `0`
+  (`Lx::lit_fill`), so both modes agree. Rationale: a package procedure of a verification library drove its idle
+  `"ZZ"` as `"00"` and hung the test.
+- **A two-state value never equals a metavalue** (user decision A74, 2026-11-23, amends A62 (1)): under `--two-state` a
+  metavalue literal used as an operand of `=`, `/=`, a `case` choice, `?=`, `?/=` or `std_match` keeps its meaning:
+  `x = 'U'` is false, `x /= 'U'` true, `x ?= 'U'` is `'0'`, `x ?/= 'U'` is `'1'`, and `'-'` keeps its don't-care
+  meaning; only an assigned metavalue literal takes `--init-x`. Both modes: the normal mode keeps such literals as
+  written (`Fx::two_keep_cmp`) and maps the result of `?=` and `?/=`; the region's comparison with one is false
+  (`Lx::match_codes`), and an aggregate of a metavalue literal and other values in a comparison keeps its process
+  out. Rationale: the "is it connected" check `assert clk /= 'U'` of IP libraries fired at time 0 under
+  `--two-state`.
+- **Normal-mode `--two-state` is a diagnostic mode** (user decision A72, 2026-11-23): `--cycle` and `--two-state`
+  stay orthogonal; without `--cycle` the option separates differences caused by values from those caused by
+  scheduling, and its speed goal is parity with the default, not a gain. No one-plane code path in the tiers (an
+  earlier start gave 0 to 3 percent and was removed for simplicity); `--cycle --two-state` is the fast combination.
+- **The comparison tools** (`tools/difftest` cycle tools) call their contracts `exact` (plain `--cycle`) and
+  `two-state` (`--cycle --two-state`); the reviewed entries of the second start with `two-state contract:`.
+

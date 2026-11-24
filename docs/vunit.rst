@@ -188,7 +188,7 @@ it on in the run script with the sim option ``yavs.cycle``, for the whole run or
 
     vu.set_sim_option("yavs.cycle", "on")
 
-It gives up some detail, such as the delta cycles inside a clock edge and the metavalues of the region
+It gives up some detail, such as the delta cycles inside a clock edge, and with ``yavs.two_state`` the metavalues
 (:doc:`two-state`), and it cannot be combined with coverage or debugging. Read :doc:`cycle-mode` before you rely
 on it.
 

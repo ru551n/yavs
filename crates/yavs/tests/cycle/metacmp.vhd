@@ -1,5 +1,6 @@
--- A57: in a two-state region a metavalue literal that is compared joins and takes the bits of
--- `--init-x` (0 without it): `d = (others => 'X')`, a `case` choice "0X", `std_match` with '-'.
+-- A74: under `--two-state` a metavalue literal that is compared keeps its meaning (a two-state
+-- value never equals it) and its process joins the region: `d = (others => 'X')`, a `case` choice
+-- "0X", `std_match` with '-'.
 -- Widths 1, 63, 64, 65 and 128.
 library ieee;
 use ieee.std_logic_1164.all;

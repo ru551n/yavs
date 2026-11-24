@@ -1,4 +1,4 @@
--- 'U' at start under --cycle-exact-meta (owner decision A38): registers without a start value
+-- 'U' at start without --two-state (owner decision A38): registers without a start value
 -- (a pipeline of three, `hi` whose high word stays 'U', `held` that keeps 'U' past the rail's
 -- cap), a clocked variable without one, and an input that becomes 'U' after time 0, read by a
 -- testbench that waits on `s3` and reads the rest without waiting on them. Without KEEP `held`

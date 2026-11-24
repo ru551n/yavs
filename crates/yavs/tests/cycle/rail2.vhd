@@ -1,4 +1,4 @@
--- The second image of --cycle-exact-meta (A38, A43) beside the normal mode: a memory of words
+-- The second image of the metavalue contract (no --two-state) (A38, A43) beside the normal mode: a memory of words
 -- without start values (one never written, one written from an input that becomes 'U'), a call
 -- whose local starts 'U', combinational choices on a register still 'U' (`when ... else`, also
 -- on `??`, and `to_integer` as an index, which the normal mode reads as 0), clocked choices on

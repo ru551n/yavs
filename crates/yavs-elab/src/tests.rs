@@ -34,6 +34,7 @@ const UNCOLLAPSED: ElabConfig = ElabConfig {
     keep_values: false,
     values: None,
     init_unset: None,
+    two_state: false,
     init_x: false,
 };
 

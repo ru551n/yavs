@@ -8,7 +8,7 @@ recorded on one side only, except a memory cycle mode cannot export (W0802 names
   python3 -I tools/difftest/cyclewave.py --comparer PATH [--contract exact|default] [--only cycle|bench]
   (the yavs binary: $YAVS_BIN; the comparer: cargo build --release -p yavs-wave --example waveq)
 
-Under `--contract default` a difference is listed but fails only for a crash or a name recorded on one
+Under `--contract two-state` a difference is listed but fails only for a crash or a name recorded on one
 side: two-state values give other values by design (docs/cycle-mode.rst "Waveforms").
 """
 import argparse, json, re, shutil, subprocess, sys, concurrent.futures as cf
@@ -21,7 +21,7 @@ import cyclegate as G  # noqa: E402
 D = G.D
 # Reviewed differences under the exact contract: (test, contract) -> (signals, cause).
 CHOICE = ("a clocked member with a choice keeps a register where only the second image changed it "
-          "(docs/two-state.rst \"--cycle-exact-meta\"): `sums` shows 0 at the first edge where the normal mode has 'U'")
+          "(docs/cycle-mode.rst \"Metavalues without --two-state\"): `sums` shows 0 at the first edge where the normal mode has 'U'")
 KNOWN = {
     ("bench/lfsr64.vhd", "exact"): ({"bench_lfsr64.sums"}, CHOICE),
     ("bench/lfsr64_xor.vhd", "exact"): ({"bench_lfsr64_xor.sums"}, CHOICE),
@@ -77,7 +77,7 @@ def main():
     ap.add_argument("--comparer", required=True, help="the built waveq example")
     ap.add_argument("--only", choices=("all", "cycle", "bench"), default="all")
     ap.add_argument("--filter", default="", help="regex on the test name")
-    ap.add_argument("--contract", choices=("exact", "default"), default="exact")
+    ap.add_argument("--contract", choices=("exact", "two-state"), default="exact")
     ap.add_argument("--jobs", type=int, default=2)
     ap.add_argument("--no-sandbox", action="store_true")
     ap.add_argument("-v", "--verbose", action="store_true")

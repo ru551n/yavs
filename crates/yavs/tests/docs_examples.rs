@@ -497,43 +497,39 @@ fn cycle_mode_page() {
     args.extend(files);
     e.ok(&args);
     let page = "cycle-mode.rst";
-    // (top, page, exit status of the normal mode, of --cycle)
-    for (top, page, normal, cycle) in [
-        ("tb_counter", page, 0, 0),
-        ("tb_delta", page, 0, 0),
-        ("tb_left_out", "", 0, 0),
-        ("tb_metavalue", "two-state.rst", 0, 0),
+    // (top, exit status of the normal mode and of every cycle run, page of the normal-mode output, page
+    // of plain `--cycle`, page of `--cycle --two-state`; "" when a page does not show it)
+    let two = "two-state.rst";
+    for (top, want, normal, plain, fast) in [
+        ("tb_counter", 0, page, page, ""),
+        ("tb_left_out", 0, "", "", ""),
+        ("tb_rtl_failure", 1, "running-faster.rst", "", ""),
+        ("tb_delta", 0, page, "", page),
+        ("tb_metavalue", 0, two, page, two),
     ] {
-        for (flag, want) in [(None, normal), (Some("--cycle"), cycle)] {
+        let modes: [(&[&str], &str); 3] = [
+            (&[], normal),
+            (&["--cycle"], plain),
+            (&["--cycle", "--two-state"], fast),
+        ];
+        for (flag, shown) in modes {
             let mut args = vec!["run", WORK];
             args.extend(flag);
             args.push(top);
             let (code, out, err) = e.yavs(&args);
             assert_eq!(code, want, "{top} {flag:?}\n{out}\n{err}");
-            if !page.is_empty() {
-                on_page(page, &out);
-                on_page(page, &err);
+            if !shown.is_empty() {
+                on_page(shown, &out);
+                on_page(shown, &err);
             }
         }
     }
-    // The exact metavalue rules, with the line that says how following the start values ended.
-    let (code, out, err) = e.yavs(&["run", "--cycle", "--cycle-exact-meta", WORK, "tb_metavalue"]);
-    assert_eq!(code, 0, "{out}\n{err}");
-    assert!(err.contains("still followed when the run ended"), "{err}");
-    on_page(page, &out);
-    on_page(page, &err);
     // The design's own asserts: evaluated in both modes, dropped by `--no-asserts` in both.
     let running = "running-faster.rst";
-    let (code, normal_out, err) = e.yavs(&["run", WORK, "tb_rtl_failure"]);
-    assert_eq!(code, 1, "{normal_out}\n{err}");
-    on_page(running, &normal_out);
-    let (code, out, err) = e.yavs(&["run", "--cycle", WORK, "tb_rtl_failure"]);
-    assert_eq!(code, 1, "{out}\n{err}");
-    assert_eq!(
-        out, normal_out,
-        "--cycle evaluates the design's asserts as the normal mode does"
-    );
-    for flags in [&["--no-asserts"][..], &["--no-asserts", "--cycle"]] {
+    for flags in [
+        &["--no-asserts"][..],
+        &["--no-asserts", "--cycle", "--two-state"],
+    ] {
         let mut args = vec!["run", WORK];
         args.extend(flags);
         args.push("tb_rtl_failure");
@@ -575,7 +571,7 @@ fn cycle_mode_page() {
     assert_eq!(code, 2);
     assert!(err.contains("error[E4102]"), "{err}");
     on_page(page, &err);
-    let (code, _, err) = e.yavs(&["run", "--cycle", WORK, "tb_overflow"]);
+    let (code, _, err) = e.yavs(&["run", "--cycle", "--two-state", WORK, "tb_overflow"]);
     assert_eq!(code, 1, "{err}");
     // The page shows the path relative to where the files are.
     on_page(page, &relative(&err, &e.0));

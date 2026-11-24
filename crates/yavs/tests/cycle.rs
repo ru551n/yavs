@@ -40,7 +40,7 @@ fn yavs_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
 }
 
 /// `err` with each failed check's message as plain `--cycle` gives it (A34): without the
-/// operands' values, which only `--cycle-exact-meta` keeps.
+/// operands' values, which only runs without `--two-state` keep.
 fn bare(err: &str) -> String {
     const HINT: &str = " (run without --cycle to see the values)";
     let one = |l: &str| -> String {
@@ -100,9 +100,7 @@ fn with_report_env(
         .any(|f| matches!(*f, "--cycle" | "--cycle-strict"))
     {
         let mut args = vec!["run", "--work=work:lib", "--no-cache"];
-        args.extend(
-            (flags.iter()).filter(|f| !f.starts_with("--cycle") || **f == "--cycle-exact-meta"),
-        );
+        args.extend((flags.iter()).filter(|f| !f.starts_with("--cycle")));
         args.extend(["--cycle-report", top]);
         let o = yavs_env(dir, &args, env);
         let report = String::from_utf8_lossy(&o.stderr);
@@ -168,7 +166,7 @@ fn rec_pair_gives_the_same_state_in_cycle_mode() {
         for mode in ["--cycle", "--cycle-strict"] {
             let (cycle, err) = run(
                 &dir,
-                &[&t[..], &["-gCYCLES=2000", mode]].concat(),
+                &[&t[..], &["-gCYCLES=2000", mode, "--two-state"]].concat(),
                 "bench_rec_pair",
             );
             assert_eq!(cycle, normal, "{t:?} {mode}");
@@ -188,7 +186,11 @@ fn a_region_with_processes_left_out_gives_the_same_result() {
     analyze(&dir, "partial.vhd", include_str!("cycle/partial.vhd"));
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_partial");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_partial");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_partial",
+        );
         assert!(
             normal.len() == 1 && normal[0].ends_with("acc=907104 q=AC"),
             "{t:?} {normal:?}"
@@ -217,7 +219,11 @@ fn region_outputs_read_late_waited_on_or_read_by_an_idle_skipped_process() {
     analyze(&dir, "quiet.vhd", include_str!("cycle/quiet.vhd"));
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_quiet");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_quiet");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_quiet",
+        );
         // Hand-checked: `nxt` changes at time 0 and at each of the 20 edges, `events` starts at 0
         // and counts one more for the initial run of `watch`.
         assert!(
@@ -243,7 +249,11 @@ fn region_outputs_seen_every_clock_on_events_and_through_local_subprograms() {
     analyze(&dir, "export.vhd", include_str!("cycle/export.vhd"));
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_export");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_export");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_export",
+        );
         // Hand-checked: 40 edges, `v` is `cnt` xor `cnt` rotated by one, `w` a Johnson counter
         // (40 ones), `pulse` has no event after the initial run of `on_pulse`; `hw` changes in
         // its high word only (an event at time 0 and at every edge), the driver of `mid(79 downto
@@ -328,12 +338,12 @@ fn external_names_export_only_what_they_name() {
     ];
     for (d, top, sum, members, exported) in cases {
         for t in tiers() {
-            let (normal, _) = run(d, &t, top);
+            let (normal, _) = run(d, &[&t[..], &["--two-state"]].concat(), top);
             assert!(
                 normal.last().is_some_and(|l| l.ends_with(sum)),
                 "{t:?} {normal:?}"
             );
-            let (cycle, err) = run(d, &[&t[..], &["--cycle"]].concat(), top);
+            let (cycle, err) = run(d, &[&t[..], &["--cycle", "--two-state"]].concat(), top);
             assert_eq!(cycle, normal, "{t:?}\n{err}");
             assert!(
                 err.contains(&format!("cycle mode: {members} processes run cycle-based")),
@@ -357,7 +367,11 @@ fn a_package_declared_in_an_architecture_reads_its_signals() {
             normal.len() == 1 && normal[0].ends_with("sum=1050"),
             "{t:?} {normal:?}"
         );
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_localpkg");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_localpkg",
+        );
         assert_eq!(cycle, normal, "{t:?}\n{err}");
         assert!(
             err.contains("cycle mode: 2 of 3 processes run cycle-based")
@@ -375,7 +389,11 @@ fn an_x_from_outside_copied_by_a_member_reads_as_0() {
     analyze(&dir, "xcopy.vhd", include_str!("cycle/xcopy.vhd"));
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_xcopy");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_xcopy");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_xcopy",
+        );
         let ends = |v: &[String]| {
             v.iter()
                 .map(|l| l.rsplit(' ').next().unwrap_or("").to_string())
@@ -401,7 +419,11 @@ fn inputs_settled_at_the_next_edge_give_the_same_result() {
     analyze(&dir, "lazy.vhd", include_str!("cycle/lazy.vhd"));
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_lazy");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_lazy");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_lazy",
+        );
         // Hand-checked: 24 edges; the bus model sees `ready` in 6 of its 10 handshakes (`busy`
         // is `cnt(1)` of the edge before); the monitor's `q` follows `a xor ae xor b` an edge
         // late (1 at 11 ns: `b` was 0, `a` toggled after the first edge and back twice by 3 ns);
@@ -449,6 +471,7 @@ fn inputs_settled_at_the_next_edge_give_the_same_result() {
             "--work=work:lib",
             "--no-cache",
             "--cycle",
+            "--two-state",
         ])
         .arg("cycle_lazy")
         .output()
@@ -468,7 +491,11 @@ fn a_reset_pulse_between_edges_through_combinational_code_resets_the_register() 
         let (normal, _) = run(&dir, &t, "cycle_lazyrst");
         assert_eq!(normal.len(), 6, "{normal:?}");
         assert!(normal[2].ends_with("21000000fs+0: s=0"), "{normal:?}");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_lazyrst");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_lazyrst",
+        );
         assert_eq!(cycle, normal, "{t:?}\n{err}");
         assert!(
             err.contains("cycle mode: 3 of 5 processes run cycle-based")
@@ -523,7 +550,11 @@ fn an_integer_and_index_heavy_process_gives_the_same_result() {
             "{t:?} {normal:?}"
         );
         for mode in ["--cycle", "--cycle-strict"] {
-            let (cycle, err) = run(&dir, &[&t[..], &[mode]].concat(), "cycle_ints");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &[mode, "--two-state"]].concat(),
+                "cycle_ints",
+            );
             assert_eq!(cycle, normal, "{t:?} {mode}\n{err}");
             assert!(
                 err.contains("cycle mode: 1 of 2 processes run cycle-based"),
@@ -538,7 +569,11 @@ fn a_sensitivity_list_naming_a_part_keeps_the_process_out() {
     let dir = tempdir("cycle-part-list");
     analyze(&dir, "part_list.vhd", PART_LIST);
     let (normal, _) = run(&dir, &["--tier=interp"], "cycle_part_list");
-    let (cycle, err) = run(&dir, &["--tier=interp", "--cycle"], "cycle_part_list");
+    let (cycle, err) = run(
+        &dir,
+        &["--tier=interp", "--cycle", "--two-state"],
+        "cycle_part_list",
+    );
     assert!(
         normal.len() == 1 && normal[0].ends_with("w=01"),
         "{normal:?}"
@@ -565,6 +600,7 @@ fn cycle_strict_refuses_rtl_that_cannot_join() {
             "--work=work:lib",
             "--no-cache",
             "--cycle-strict",
+            "--two-state",
             "cycle_partial",
         ],
     );
@@ -599,7 +635,7 @@ fn cycle_mode_refuses_the_options_that_see_inside_the_region() {
         ("--activity=x.json", "--activity"),
     ] {
         for mode in ["--cycle", "--cycle-strict"] {
-            let mut args = vec!["run", "--work=work:lib", mode];
+            let mut args = vec!["run", "--work=work:lib", mode, "--two-state"];
             args.extend(opt.split(' '));
             args.push("cycle_partial");
             let o = yavs(&dir, &args);
@@ -632,7 +668,14 @@ fn cycle_mode_allows_the_options_that_do_not_see_inside_the_region() {
     ] {
         let o = yavs(
             &dir,
-            &["run", "--work=work:lib", "--cycle", opt, "cycle_partial"],
+            &[
+                "run",
+                "--work=work:lib",
+                "--cycle",
+                "--two-state",
+                opt,
+                "cycle_partial",
+            ],
         );
         let err = String::from_utf8_lossy(&o.stderr);
         assert!(o.status.success(), "{opt}: {err}");
@@ -640,33 +683,30 @@ fn cycle_mode_allows_the_options_that_do_not_see_inside_the_region() {
     }
 }
 
-/// `--cycle-exact-meta` needs one of the three modes, and a misspelling names it.
+/// A misspelt `--two-state` names it, and the removed `--cycle-exact-meta` is an unknown option.
 #[test]
-fn cycle_exact_meta_needs_a_cycle_mode() {
-    let dir = tempdir("cycle-exactmeta");
+fn two_state_spelling_and_removed_exact_meta() {
+    let dir = tempdir("cycle-twostate-flag");
     let o = yavs(
         &dir,
-        &["run", "--work=work:lib", "--cycle-exact-meta", "top"],
+        &["run", "--work=work:lib", "--cycle", "--two-stat", "top"],
     );
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(2), "{err}");
-    assert!(
-        err.contains("<--cycle|--cycle-strict|--cycle-report"),
-        "{err}"
-    );
+    assert!(err.contains("`--two-state`"), "{err}");
     let o = yavs(
         &dir,
         &[
             "run",
             "--work=work:lib",
             "--cycle",
-            "--cycle-exact-mta",
+            "--cycle-exact-meta",
             "top",
         ],
     );
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(2), "{err}");
-    assert!(err.contains("`--cycle-exact-meta`"), "{err}");
+    assert!(err.contains("--cycle-exact-meta"), "{err}");
 }
 
 #[test]
@@ -712,7 +752,7 @@ fn cycle_report_prints_the_report_and_runs_nothing() {
         args.push("cycle_partial");
         yavs(&dir, &args)
     };
-    let o = report(&["--cycle-report"]);
+    let o = report(&["--cycle-report", "--two-state"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(o.status.success() && o.stdout.is_empty(), "{err}");
     assert!(
@@ -722,7 +762,7 @@ fn cycle_report_prints_the_report_and_runs_nothing() {
     );
     // With a file the report goes there.
     let file = dir.join("report.txt");
-    let o = report(&[&format!("--cycle-report={}", file.display())]);
+    let o = report(&[&format!("--cycle-report={}", file.display()), "--two-state"]);
     assert!(o.status.success() && o.stdout.is_empty() && o.stderr.is_empty());
     let text = std::fs::read_to_string(&file).expect("the report file");
     assert_eq!(text, err);
@@ -755,6 +795,7 @@ fn plain_cycle_prints_one_summary_line() {
             "--work=work:lib",
             "--no-cache",
             "--cycle",
+            "--two-state",
             "cycle_partial",
         ],
     );
@@ -800,13 +841,13 @@ fn an_assert_cycle_mode_cannot_evaluate_keeps_its_process_out_and_no_asserts_dro
         rc == Some(1) && normal.contains("the design ends its own test"),
         "{normal}"
     );
-    let (rc, err, out) = go(&["--cycle"]);
+    let (rc, err, out) = go(&["--cycle", "--two-state"]);
     assert_eq!((rc, &out), (Some(1), &normal), "{err}");
     assert!(
         err.starts_with("cycle mode: 2 of 4 processes run cycle-based"),
         "{err}"
     );
-    let (rc, err, _) = go(&["--cycle-strict"]);
+    let (rc, err, _) = go(&["--cycle-strict", "--two-state"]);
     assert_eq!(rc, Some(2), "{err}");
     assert!(
         err.contains(
@@ -827,8 +868,8 @@ fn an_assert_cycle_mode_cannot_evaluate_keeps_its_process_out_and_no_asserts_dro
     );
     assert!(err.starts_with(note), "{err}");
     for flags in [
-        &["--no-asserts", "--cycle"][..],
-        &["--no-asserts", "--cycle-strict"],
+        &["--no-asserts", "--cycle", "--two-state"][..],
+        &["--no-asserts", "--cycle-strict", "--two-state"],
     ] {
         let (rc, err, out) = go(flags);
         assert_eq!((rc, &out), (Some(0), &dropped), "{flags:?}: {err}");
@@ -838,7 +879,7 @@ fn an_assert_cycle_mode_cannot_evaluate_keeps_its_process_out_and_no_asserts_dro
             "{err}"
         );
     }
-    let (rc, report, _) = go(&["--no-asserts", "--cycle-report"]);
+    let (rc, report, _) = go(&["--no-asserts", "--cycle-report", "--two-state"]);
     assert_eq!(rc, Some(0), "{report}");
     assert!(
         report.contains(
@@ -861,7 +902,7 @@ fn an_assert_cycle_mode_cannot_evaluate_keeps_its_process_out_and_no_asserts_dro
         "{report}"
     );
     // W4101 is retired, and `-Werror=W4101` still accepted.
-    let (rc, err, out) = go(&["--cycle", "-Werror=W4101"]);
+    let (rc, err, out) = go(&["--cycle", "--two-state", "-Werror=W4101"]);
     assert_eq!((rc, &out), (Some(1), &normal), "{err}");
     assert!(!err.contains("W4101"), "{err}");
 }
@@ -925,25 +966,31 @@ fn asserts_below_the_top_are_evaluated_as_in_the_normal_mode() {
         let want = report_set(&normal);
         assert_eq!(want.len(), 29, "{w}: {want:#?}");
         for t in tiers() {
-            for mode in ["--cycle", "--cycle-exact-meta"] {
-                let flags = if mode == "--cycle" {
-                    vec![mode]
+            for exact in [false, true] {
+                let flags = if exact {
+                    vec!["--cycle"]
                 } else {
-                    vec!["--cycle", mode]
+                    vec!["--cycle", "--two-state"]
                 };
+                let mode = flags.join(" ");
                 let (rc, out, err) = asserts_run(&dir, &[&t[..], &flags].concat());
                 assert_eq!(rc, Some(1), "{w} {t:?} {mode}: {err}");
                 assert_eq!(report_set(&out), want, "{w} {t:?} {mode}\n{out}");
                 // Under the exact rules a member with notes reads only what members drive:
                 // `reg` reads the testbench's `a`, and its readers then read `n` from outside.
-                let n = if mode == "--cycle" { 11 } else { 3 };
+                let n = if exact { 3 } else { 11 };
                 assert!(
                     err.contains(&format!("cycle mode: {n} of 15 processes run cycle-based")),
                     "{err}"
                 );
             }
         }
-        let err = with_report(&dir, &["--cycle"], "cycle_asserts", String::new());
+        let err = with_report(
+            &dir,
+            &["--cycle", "--two-state"],
+            "cycle_asserts",
+            String::new(),
+        );
         for p in [
             "reg",
             "early",
@@ -960,19 +1007,14 @@ fn asserts_below_the_top_are_evaluated_as_in_the_normal_mode() {
                 "{p}: {err}"
             );
         }
-        let exact = with_report(
-            &dir,
-            &["--cycle", "--cycle-exact-meta"],
-            "cycle_asserts",
-            String::new(),
-        );
+        let exact = with_report(&dir, &["--cycle"], "cycle_asserts", String::new());
         for (p, l, what) in [
             ("sum", 79, "cycle_asserts.a"),
             ("early", 41, "cycle_asserts.dut.n"),
         ] {
             assert!(
                 exact.contains(&format!("    cycle_asserts.dut.{p} (asserts.vhd:{l})")) && exact.contains(&format!(
-                    "E4140 an assert or report under `--cycle-exact-meta` reading a signal the region does not drive alone: {what} (asserts.vhd:{l})"
+                    "E4140 an assert or report without `--two-state` reading a signal the region does not drive alone: {what} (asserts.vhd:{l})"
                 )),
                 "{p}: {exact}"
             );
@@ -984,7 +1026,8 @@ fn asserts_below_the_top_are_evaluated_as_in_the_normal_mode() {
         );
         // `--exit-severity=error`: the error at 90 ns ends both runs there.
         let (rc, normal, _) = asserts_run(&dir, &["--exit-severity=error"]);
-        let (rc2, cycle, err) = asserts_run(&dir, &["--exit-severity=error", "--cycle"]);
+        let (rc2, cycle, err) =
+            asserts_run(&dir, &["--exit-severity=error", "--cycle", "--two-state"]);
         assert_eq!((rc, rc2), (Some(1), Some(1)), "{err}");
         assert!(
             normal.ends_with("nine, an error\n    Process cycle_asserts.dut.reg\n"),
@@ -1026,9 +1069,18 @@ fn a_combinational_report_in_a_loop_group_reports_settled_values_only() {
     }
     assert_eq!(settled.len(), 4, "{settled:?}");
     for t in tiers() {
-        assert_eq!(go(&[&t[..], &["--cycle"]].concat()), settled, "{t:?}");
+        assert_eq!(
+            go(&[&t[..], &["--cycle", "--two-state"]].concat()),
+            settled,
+            "{t:?}"
+        );
     }
-    let err = with_report(&dir, &["--cycle"], "cycle_assertloop", String::new());
+    let err = with_report(
+        &dir,
+        &["--cycle", "--two-state"],
+        "cycle_assertloop",
+        String::new(),
+    );
     assert!(
         err.contains("in the region: a loop group of 2 processes, 3 process runs per settle")
             && err.contains("cycle mode: 2 of 3 processes run cycle-based"),
@@ -1062,12 +1114,17 @@ fn an_edge_tested_concurrent_assert_is_a_check_at_the_edge() {
         assert_eq!(want.len(), if w == 1 { 32 } else { 7 }, "{w}: {normal}");
         for t in tiers() {
             assert_eq!(
-                report_set(&go(&[&t[..], &["--cycle"]].concat())),
+                report_set(&go(&[&t[..], &["--cycle", "--two-state"]].concat())),
                 want,
                 "{w} {t:?}"
             );
         }
-        let err = with_report(&dir, &["--cycle"], "cycle_edgeassert", String::new());
+        let err = with_report(
+            &dir,
+            &["--cycle", "--two-state"],
+            "cycle_edgeassert",
+            String::new(),
+        );
         assert!(
             err.contains("cycle mode: 5 of 7 processes run cycle-based")
                 && [23, 26, 48].iter().all(|l| err.lines().any(|x| {
@@ -1079,11 +1136,11 @@ fn an_edge_tested_concurrent_assert_is_a_check_at_the_edge() {
     }
 }
 
-/// Under `--cycle-exact-meta` a member below the top-level unit whose report reads a signal the
+/// Without `--two-state` a member below the top-level unit whose report reads a signal the
 /// region does not drive alone stays out (E4140) and reports the 'U' start as the normal mode;
-/// under the default contract it joins and reports 0. The top-level checker that reads only a
-/// member's register joins and reports its 'U' start as 'U' under `--cycle-exact-meta` (the second
-/// image), as 0 under the default contract.
+/// under the two-state contract it joins and reports 0. The top-level checker that reads only a
+/// member's register joins and reports its 'U' start as 'U' without `--two-state` (the second
+/// image), as 0 under the two-state contract.
 #[test]
 fn exact_meta_keeps_out_a_report_reading_the_kernel() {
     let dir = tempdir("cycle-exactnote");
@@ -1110,37 +1167,37 @@ fn exact_meta_keeps_out_a_report_reading_the_kernel() {
         "{normal:#?}"
     );
     for t in tiers() {
-        let exact = go(&[&t[..], &["--cycle", "--cycle-exact-meta"]].concat());
+        let exact = go(&[&t[..], &["--cycle"]].concat());
         assert!(
             has(&exact, "q=U r=U") && has(&exact, "top q=U"),
             "{t:?} {exact:#?}"
         );
         assert_eq!(exact, normal, "{t:?}");
-        let plain = go(&[&t[..], &["--cycle"]].concat());
+        let plain = go(&[&t[..], &["--cycle", "--two-state"]].concat());
         assert!(
             has(&plain, "q=0 r=0") && has(&plain, "top q=0"),
             "{t:?} {plain:#?}"
         );
     }
+    let err = with_report(&dir, &["--cycle"], "cycle_exactnote", String::new());
+    assert!(
+        err.contains("cycle mode: 3 of 5 processes run cycle-based")
+            && err.contains("E4140 an assert or report without `--two-state` reading a signal the region does not drive alone: cycle_exactnote.d (exactnote.vhd:16)"),
+        "{err}"
+    );
     let err = with_report(
         &dir,
-        &["--cycle", "--cycle-exact-meta"],
+        &["--cycle", "--two-state"],
         "cycle_exactnote",
         String::new(),
     );
-    assert!(
-        err.contains("cycle mode: 3 of 5 processes run cycle-based")
-            && err.contains("E4140 an assert or report under `--cycle-exact-meta` reading a signal the region does not drive alone: cycle_exactnote.d (exactnote.vhd:16)"),
-        "{err}"
-    );
-    let err = with_report(&dir, &["--cycle"], "cycle_exactnote", String::new());
     assert!(
         err.contains("cycle mode: 4 of 5 processes run cycle-based"),
         "{err}"
     );
 }
 
-/// A59: under `--cycle-exact-meta` asserts and reports of members read the second image: a 'U' or
+/// A59: without `--two-state` asserts and reports of members read the second image: a 'U' or
 /// 'X' start (whole, in a field, in a part of a vector; widths 1/63/64/65/128; `to_hstring` digits
 /// `X`) prints as in the normal mode from a clocked checker and from a combinational process; a BIT
 /// copy of a 'U' prints 0. Differences: `zero` fires on the region's image only (two-state text, a
@@ -1181,20 +1238,20 @@ fn exact_meta_notes_show_the_second_images_metavalues() {
         "0".repeat(65)
     );
     for t in tiers() {
-        let exact = go(&[&t[..], &["--cycle", "--cycle-exact-meta"]].concat());
+        let exact = go(&[&t[..], &["--cycle"]].concat());
         let extra: Vec<&String> = exact.iter().filter(|l| !normal.contains(l)).collect();
         let lost: Vec<&String> = normal.iter().filter(|l| !exact.contains(l)).collect();
         assert!(
             extra == [zero] && lost == [&comb],
             "{t:?} {extra:#?} {lost:#?}"
         );
-        let plain = go(&[&t[..], &["--cycle"]].concat());
+        let plain = go(&[&t[..], &["--cycle", "--two-state"]].concat());
         assert!(
             at(&plain, "0", "q1=0 qx='0' q63=000") && at(&plain, "0", "comb s1=0 sx=0 s65=000"),
             "{t:?} {plain:#?}"
         );
     }
-    for flags in [&["--cycle", "--cycle-exact-meta"][..], &["--cycle"]] {
+    for flags in [&["--cycle"][..], &["--cycle", "--two-state"]] {
         let err = with_report(&dir, flags, "cycle_notemeta", String::new());
         assert!(
             err.contains("cycle mode: 11 of 12 processes run cycle-based"),
@@ -1221,9 +1278,18 @@ fn reports_of_two_edge_classes_come_in_elaboration_order() {
     let normal = go(&[]);
     assert_eq!(normal.matches("** Note").count(), 12, "{normal}");
     for t in tiers() {
-        assert_eq!(go(&[&t[..], &["--cycle"]].concat()), normal, "{t:?}");
+        assert_eq!(
+            go(&[&t[..], &["--cycle", "--two-state"]].concat()),
+            normal,
+            "{t:?}"
+        );
     }
-    let err = with_report(&dir, &["--cycle"], "cycle_noteorder", String::new());
+    let err = with_report(
+        &dir,
+        &["--cycle", "--two-state"],
+        "cycle_noteorder",
+        String::new(),
+    );
     assert!(
         err.contains("cycle mode: 4 of 5 processes run cycle-based"),
         "{err}"
@@ -1237,7 +1303,12 @@ fn reports_of_two_edge_classes_come_in_elaboration_order() {
 fn an_assert_that_holds_by_known_values_is_no_check() {
     let dir = tempdir("cycle-foldassert");
     analyze(&dir, "foldassert.vhd", include_str!("cycle/foldassert.vhd"));
-    let err = with_report(&dir, &["--cycle"], "cycle_foldassert", String::new());
+    let err = with_report(
+        &dir,
+        &["--cycle", "--two-state"],
+        "cycle_foldassert",
+        String::new(),
+    );
     assert!(
         err.contains("cycle mode: 2 of 3 processes run cycle-based")
             && err.contains("  wakes: 0 settled at once"),
@@ -1250,6 +1321,7 @@ fn an_assert_that_holds_by_known_values_is_no_check() {
             "--work=work:lib",
             "--no-cache",
             "--cycle",
+            "--two-state",
             "cycle_foldassert",
         ],
     );
@@ -1280,13 +1352,13 @@ fn a_port_actual_check_names_the_port_as_the_normal_mode() {
         normal.contains("for port N") && normal.contains(place),
         "{normal}"
     );
-    let exact = go(&["--cycle", "--cycle-exact-meta"]);
+    let exact = go(&["--cycle"]);
     assert!(
         exact.contains("value 4 outside of INTEGER range 0 to 3 for port N")
             && exact.contains(place),
         "{exact}"
     );
-    let plain = go(&["--cycle"]);
+    let plain = go(&["--cycle", "--two-state"]);
     assert!(
         plain.contains("for port N") && plain.contains(place),
         "{plain}"
@@ -1317,7 +1389,7 @@ fn an_edge_run_that_makes_a_note_is_never_idle() {
     let (normal, _) = go(&[]);
     assert_eq!(normal.matches("held is '1'").count(), 40, "{normal}");
     for t in tiers() {
-        let (cycle, err) = go(&[&t[..], &["--cycle"]].concat());
+        let (cycle, err) = go(&[&t[..], &["--cycle", "--two-state"]].concat());
         assert_eq!(cycle, normal, "{t:?}");
         assert!(
             err.contains("cycle stats: edge runs skipped as idle: 0"),
@@ -1350,7 +1422,11 @@ fn no_asserts_drops_them_below_the_top_in_both_modes_and_is_in_the_cache_keys() 
         )
     };
     for _ in 0..2 {
-        for mode in [&[][..], &["--cycle"], &["--cycle-strict"]] {
+        for mode in [
+            &[][..],
+            &["--cycle", "--two-state"],
+            &["--cycle-strict", "--two-state"],
+        ] {
             let (rc, out, err) = go(&[mode, &["--no-asserts"]].concat());
             assert_eq!(
                 (rc, out.as_str()),
@@ -1368,7 +1444,7 @@ fn no_asserts_drops_them_below_the_top_in_both_modes_and_is_in_the_cache_keys() 
                     "{err}"
                 );
             }
-            if mode != ["--cycle-strict"] {
+            if mode != ["--cycle-strict", "--two-state"] {
                 let (rc, out, err) = go(mode);
                 assert_eq!(rc, Some(1), "{mode:?}: {err}");
                 assert!(out.contains("the design ends the test"), "{out}");
@@ -1388,6 +1464,7 @@ fn a_skip_check_value_it_does_not_take_is_an_error() {
             "--work=work:lib",
             "--no-cache",
             "--cycle",
+            "--two-state",
             "cycle_partial",
         ];
         let o = yavs_env(&dir, &args, &[("YAVS_CYCLE_SKIP_CHECK", v)]);
@@ -1535,7 +1612,11 @@ fn two_state_operations_equal_the_normal_mode_at_widths_around_a_word() {
         analyze(&dir, &format!("ops{w}.vhd"), &ops_design(w));
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_ops");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_ops");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_ops",
+            );
             assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -1595,7 +1676,11 @@ fn boundary_values_and_metavalues_become_two_state_and_are_counted() {
     let (normal, _) = run(&dir, &["--tier=interp"], "cycle_codes");
     assert!(normal[0].ends_with("q=UX01ZWLH- lit=X1U0"), "{normal:?}");
     for t in tiers() {
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_codes");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_codes",
+        );
         // U X 0 1 Z W L H - in, 0 0 0 1 0 0 0 1 0 out: the change of two-state values on purpose.
         assert_eq!(cycle.len(), 2, "{cycle:?}");
         assert!(
@@ -1803,8 +1888,8 @@ end architecture;
 ";
 
 /// The normal mode, plain `--cycle` (no values in a failed check's message) and the exact
-/// contract (`--cycle-exact-meta`: the normal mode's message).
-const MODES: [&[&str]; 3] = [&[], &["--cycle"], &["--cycle", "--cycle-exact-meta"]];
+/// contract (no `--two-state`: the normal mode's message).
+const MODES: [&[&str]; 3] = [&[], &["--cycle", "--two-state"], &["--cycle"]];
 
 /// `top` fails with error `msg` and `note` in the normal mode and in cycle mode, with one of its
 /// two processes in the region: the same diagnostic, with the place of the statement and of the
@@ -1818,7 +1903,7 @@ fn same_failure(dir: &Path, top: &str, msg: &str, note: &str) {
         let o = yavs(dir, &args);
         let err = String::from_utf8_lossy(&o.stderr);
         assert_eq!(o.status.code(), Some(1), "{top} {mode:?}: {err}");
-        let want = if mode.len() == 1 {
+        let want = if mode.contains(&"--two-state") {
             bare(msg)
         } else {
             msg.into()
@@ -1884,11 +1969,11 @@ fn failed_checks_in_region_code_stop_the_run_as_in_the_normal_mode() {
         same_failure(&dir, top, msg, note);
     }
     // With the compilation cache: code compiled without the values is never reused under
-    // `--cycle-exact-meta`, nor the other way round.
+    // the metavalue contract, nor the other way round.
     let msg = "error[E3009]: result of 1162261467 * 3 cannot be represented as INTEGER";
     for exact in [false, true, false, true] {
         let mut args = vec!["run", "--work=work:lib", "--tier=interp", "--cycle"];
-        args.extend(exact.then_some("--cycle-exact-meta"));
+        args.extend((!exact).then_some("--two-state"));
         args.push("cycle_ovf");
         let o = yavs(&dir, &args);
         let err = String::from_utf8_lossy(&o.stderr);
@@ -2802,7 +2887,7 @@ fn range_and_index_messages_show_literals_as_in_the_normal_mode() {
     let msg = "error[E3009]: value WHITE outside of RGB range RED to BLUE for variable V";
     for exact in [false, true, false, true] {
         let mut args = vec!["run", "--work=work:lib", "--tier=interp", "--cycle"];
-        args.extend(exact.then_some("--cycle-exact-meta"));
+        args.extend((!exact).then_some("--two-state"));
         args.push("cycle_menum");
         let o = yavs(&dir, &args);
         let err = String::from_utf8_lossy(&o.stderr);
@@ -2818,7 +2903,7 @@ fn range_and_index_messages_show_literals_as_in_the_normal_mode() {
 fn a_constant_actual_outside_its_formal_keeps_the_call_out() {
     let dir = tempdir("cycle-call-const");
     analyze(&dir, "checks.vhd", CALL_CHECKS);
-    for mode in [None, Some("--cycle")] {
+    for mode in [&[][..], &["--cycle", "--two-state"]] {
         let mut args = vec!["run", "--work=work:lib", "--no-cache", "--tier=interp"];
         args.extend(mode);
         args.push("cycle_fparc");
@@ -2830,7 +2915,7 @@ fn a_constant_actual_outside_its_formal_keeps_the_call_out() {
                 && err.contains("at 0 fs, delta 1, in process cycle_fparc.reg"),
             "{mode:?}: {err}"
         );
-        if mode.is_some() {
+        if !mode.is_empty() {
             assert!(
                 err.contains("cycle mode: 0 of 2 processes run cycle-based"),
                 "{err}"
@@ -2845,7 +2930,11 @@ fn a_high_impedance_value_made_in_a_called_function_keeps_the_caller_out() {
     let dir = tempdir("cycle-call-z");
     analyze(&dir, "z.vhd", Z_CALL);
     let (normal, _) = run(&dir, &["--tier=interp"], "cycle_fz");
-    let (cycle, err) = run(&dir, &["--tier=interp", "--cycle"], "cycle_fz");
+    let (cycle, err) = run(
+        &dir,
+        &["--tier=interp", "--cycle", "--two-state"],
+        "cycle_fz",
+    );
     assert_eq!(normal, ["** Note: 5000000fs+0: o='Z'"], "{normal:?}");
     assert_eq!(cycle, normal);
     assert!(
@@ -2972,7 +3061,11 @@ fn numeric_operations_equal_the_normal_mode_at_widths_around_a_word() {
         };
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_ops2");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_ops2");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_ops2",
+            );
             assert_eq!(normal.len(), 16, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -2983,7 +3076,7 @@ fn numeric_operations_equal_the_normal_mode_at_widths_around_a_word() {
         // One word in registers at a time: every operation's words through memory, and the
         // temporaries no later operation reads dropped unstored (`YAVS_CYCLE_REGS`).
         let (normal, _) = run(&dir, &["--tier=interp"], "cycle_ops2");
-        let flags = ["--tier=interp", "--cycle"];
+        let flags = ["--tier=interp", "--cycle", "--two-state"];
         for cap in ["1", "2"] {
             let (cycle, err) = run_vars(&dir, &flags, "cycle_ops2", &[("YAVS_CYCLE_REGS", cap)]);
             assert_eq!(cycle, normal, "width {w}, {cap} words in registers\n{err}");
@@ -3002,7 +3095,11 @@ fn subprogram_calls_equal_the_normal_mode_at_widths_around_a_word() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_calls");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_calls");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_calls",
+            );
             assert_eq!(normal.len(), 16, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             // Every process but the testbench's `main`.
@@ -3025,7 +3122,11 @@ fn arrays_of_records_equal_the_normal_mode_at_widths_around_a_word() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_recarr");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_recarr");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_recarr",
+            );
             assert_eq!(normal.len(), 16, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             // Every process but the testbench's `main_p`.
@@ -3059,7 +3160,11 @@ fn a_z_passed_on_by_a_process_outside_keeps_its_reader_out() {
             };
             let (normal, _) = run(&dir, &t, "cycle_zpass");
             // The default reads every metavalue as 0 and keeps nothing out for one (A31).
-            let (two, terr) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_zpass");
+            let (two, terr) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_zpass",
+            );
             assert!(
                 terr.contains("cycle mode: 8 of 20 processes run cycle-based"),
                 "{w}: {terr}"
@@ -3068,11 +3173,7 @@ fn a_z_passed_on_by_a_process_outside_keeps_its_reader_out() {
                 .map(|l| l.replace(['Z', 'X'], "0"))
                 .collect();
             assert_eq!(k(two), zeros, "width {w} {t:?}\n{terr}");
-            let (cycle, err) = run(
-                &dir,
-                &[&t[..], &["--cycle", "--cycle-exact-meta"]].concat(),
-                "cycle_zpass",
-            );
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_zpass");
             let (normal, cycle) = (k(normal), k(cycle));
             assert_eq!(normal.len(), 8, "{w} {t:?} {normal:?}");
             assert!(normal.iter().any(|l| l.contains("q=Z")), "{normal:?}");
@@ -3124,6 +3225,7 @@ fn the_processes_downstream_of_the_region_are_listed() {
                 "--work=work:lib",
                 "--no-cache",
                 "--cycle-report",
+                "--two-state",
                 "cycle_down",
             ],
             &[("YAVS_CYCLE_DOWNSTREAM", &f)],
@@ -3164,7 +3266,11 @@ fn clocks_copied_by_assignment_are_their_source() {
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_clkcopy");
         assert_eq!(normal.len(), 13, "{normal:?}");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_clkcopy");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_clkcopy",
+        );
         assert!(
             err.contains("cycle mode: 21 of 36 processes run cycle-based"),
             "{err}"
@@ -3194,7 +3300,7 @@ fn clocks_copied_by_assignment_are_their_source() {
         let exact = [("YAVS_CYCLE_EXACT_CLOCKS", "1")];
         let (cycle, err) = run_vars(
             &dir,
-            &[&t[..], &["--cycle"]].concat(),
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
             "cycle_clkcopy",
             &exact,
         );
@@ -3213,7 +3319,13 @@ fn clocks_copied_by_assignment_are_their_source() {
     }
     let o = yavs_env(
         &dir,
-        &["run", "--work=work:lib", "--cycle", "cycle_clkcopy"],
+        &[
+            "run",
+            "--work=work:lib",
+            "--cycle",
+            "--two-state",
+            "cycle_clkcopy",
+        ],
         &[("YAVS_CYCLE_EXACT_CLOCKS", "yes")],
     );
     let err = String::from_utf8_lossy(&o.stderr);
@@ -3237,7 +3349,11 @@ fn records_holding_arrays_of_records_equal_the_normal_mode() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_recarrrec");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_recarrrec");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_recarrrec",
+            );
             assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             // `conv` and `other <= ...`; the testbench's `main` stays out.
@@ -3263,7 +3379,11 @@ fn logic_scalar_conversions_equal_the_normal_mode() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_logicconv");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_logicconv");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_logicconv",
+            );
             assert_eq!(normal.len(), 24, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -3292,7 +3412,11 @@ fn slices_with_bounds_from_variables_equal_the_normal_mode_at_widths_around_a_wo
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_slices");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_slices");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_slices",
+            );
             assert_eq!(normal.len(), 16, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             // Every process but the testbench's `main` and `apart`.
@@ -3352,7 +3476,11 @@ fn a_reader_one_delta_after_the_edge_sees_region_logic_settled() {
             .map(|k| k + 1)
     };
     let (normal, _) = run(&dir, &["--tier=interp"], "cycle_d14");
-    let (cycle, err) = run(&dir, &["--tier=interp", "--cycle"], "cycle_d14");
+    let (cycle, err) = run(
+        &dir,
+        &["--tier=interp", "--cycle", "--two-state"],
+        "cycle_d14",
+    );
     assert_eq!(at(&normal), Some(3), "{normal:?}");
     assert_eq!(at(&cycle), Some(2), "{cycle:?}\n{err}");
     assert!(
@@ -3374,7 +3502,11 @@ fn literals_of_arrays_of_records_equal_the_normal_mode_at_widths_around_a_word()
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_reclit");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_reclit");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_reclit",
+            );
             assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -3400,7 +3532,11 @@ fn signals_of_integer_arrays_equal_the_normal_mode() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_intsig");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_intsig");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_intsig",
+            );
             assert_eq!(normal.len(), 20, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             // Every process but the testbench's `main`.
@@ -3420,7 +3556,11 @@ fn constants_only_region_code_reads_have_their_values() {
     analyze(&dir, "consts.vhd", include_str!("cycle/consts.vhd"));
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_consts");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_consts");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_consts",
+        );
         assert_eq!(normal.len(), 4, "{t:?} {normal:?}");
         assert!(normal[0].ends_with("o=ED h=38"), "{normal:?}");
         assert_eq!(cycle, normal, "{t:?}\n{err}");
@@ -3464,7 +3604,11 @@ fn elements_of_constant_arrays_have_their_subtypes_ranges_at_widths_around_a_wor
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_constelem");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_constelem");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_constelem",
+            );
             assert_eq!(normal.len(), 7, "{w} {t:?} {normal:?}");
             assert!(normal[6].contains(" s8=9A01 "), "{normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
@@ -3489,7 +3633,11 @@ fn a_signal_assigned_itself_after_an_earlier_assignment_keeps_its_value() {
         for t in tiers() {
             let t = [&t[..], &[&g[..]]].concat();
             let (normal, _) = run(&dir, &t, "cycle_selfassign");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_selfassign");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_selfassign",
+            );
             assert_eq!(normal.len(), 40, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -3519,7 +3667,11 @@ fn procedure_calls_with_mode_views_read_and_drive_their_elements() {
         for t in tiers() {
             let t = [&t[..], &[&g[..]]].concat();
             let (normal, _) = run(&dir, &t, "cycle_views");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_views");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_views",
+            );
             assert_eq!(normal.len(), 24, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -3551,7 +3703,11 @@ fn a_reset_with_a_constant_in_an_and_folds() {
         for t in tiers() {
             let t = [&t[..], &[&g[..]]].concat();
             let (normal, _) = run(&dir, &t, "cycle_foldreset");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_foldreset");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_foldreset",
+            );
             assert_eq!(normal.len(), 16, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             // The reset pulse at 60 ns: G true resets, G false keeps the data (hand-checked).
@@ -3620,6 +3776,7 @@ fn a_recursion_to_the_inlining_cap_fits_an_8_mib_stack() {
             "--work=work:lib",
             "--no-cache",
             "--cycle-report",
+            "--two-state",
             "cycle_depth",
         ])
         .output()
@@ -3644,7 +3801,11 @@ fn a_right_shift_by_a_known_count_writes_every_word_of_its_target() {
         for t in tiers() {
             let t = [&t[..], &[&g[..]]].concat();
             let (normal, _) = run(&dir, &t, "cycle_shiftfill");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_shiftfill");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_shiftfill",
+            );
             assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -3667,7 +3828,11 @@ fn ifs_on_one_condition_join_and_look_alike_ones_do_not() {
         for t in tiers() {
             let t = [&t[..], &[&g[..]]].concat();
             let (normal, _) = run(&dir, &t, "cycle_joinif");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_joinif");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_joinif",
+            );
             assert_eq!(normal.len(), 24, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -3687,7 +3852,11 @@ fn calls_on_elements_of_constant_tables_fold_by_the_elements_ranges() {
     analyze(&dir, "constcall.vhd", include_str!("cycle/constcall.vhd"));
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_constcall");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_constcall");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_constcall",
+        );
         assert_eq!(normal.len(), 6, "{t:?} {normal:?}");
         assert!(
             normal[0].contains("q1='1' q2='1' q3=B q4=4 c1='1' c2='0' c3=9"),
@@ -3710,7 +3879,11 @@ fn a_variable_given_to_an_array_of_one_integer_keeps_its_value() {
     analyze(&dir, "intelem1.vhd", include_str!("cycle/intelem1.vhd"));
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_intelem1");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_intelem1");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_intelem1",
+        );
         assert_eq!(normal.len(), 6, "{t:?} {normal:?}");
         assert!(normal[0].contains("q=8 q2=5 q3=19 s=5"), "{normal:?}");
         assert_eq!(cycle, normal, "{t:?}\n{err}");
@@ -3731,7 +3904,11 @@ fn a_register_with_an_internal_reset_feeding_a_short_list_stays_out() {
     analyze(&dir, "runreset.vhd", include_str!("cycle/runreset.vhd"));
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_runreset");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_runreset");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_runreset",
+        );
         assert_eq!(normal.len(), 12, "{t:?} {normal:?}");
         assert_eq!(cycle, normal, "{t:?}\n{err}");
         assert!(
@@ -3754,7 +3931,11 @@ fn a_register_whose_pulse_resets_or_clocks_another_stays_out() {
     analyze(&dir, "pulse.vhd", include_str!("cycle/pulse.vhd"));
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_pulse");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_pulse");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_pulse",
+        );
         assert_eq!(normal.len(), 12, "{t:?} {normal:?}");
         assert!(normal[2].contains("t=00"), "{normal:?}");
         assert_eq!(cycle, normal, "{t:?}\n{err}");
@@ -3773,7 +3954,11 @@ fn arrays_of_integers_give_the_same_result() {
     analyze(&dir, "intarr.vhd", include_str!("cycle/intarr.vhd"));
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_intarr");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_intarr");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_intarr",
+        );
         assert_eq!(normal.len(), 16, "{t:?} {normal:?}");
         assert_eq!(cycle, normal, "{t:?}\n{err}");
         // Every process but the testbench's `main`.
@@ -3798,7 +3983,11 @@ fn memories_equal_the_normal_mode_at_widths_around_a_word() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_ram");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_ram");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_ram",
+            );
             assert_eq!(normal.len(), 20, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             // Every process but the clock and the testbench's `main`.
@@ -3818,7 +4007,11 @@ fn clocked_and_combinational_shapes_give_the_same_result() {
     analyze(&dir, "shapes.vhd", include_str!("cycle/shapes.vhd"));
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_shapes");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_shapes");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_shapes",
+        );
         // Hand-checked against the normal mode: the resets at cycles 3 and 17 clear `acc`.
         assert_eq!(normal.len(), 40, "{t:?} {normal:?}");
         assert!(normal[2].contains("acc=00 cnt=0"), "{normal:?}");
@@ -3930,7 +4123,11 @@ fn bench_rtl_designs_give_the_same_output_in_cycle_mode() {
         for t in tiers() {
             let flags = [&t[..], generics].concat();
             let (normal, _) = run_text(&dir, &flags, top);
-            let (cycle, err) = run_text(&dir, &[&flags[..], &["--cycle"]].concat(), top);
+            let (cycle, err) = run_text(
+                &dir,
+                &[&flags[..], &["--cycle", "--two-state"]].concat(),
+                top,
+            );
             assert!(normal.contains("Note"), "{name}: {normal}");
             assert_eq!(cycle, normal, "{name} {t:?}\n{err}");
             assert!(
@@ -3963,7 +4160,11 @@ fn bench_designs_cycle_mode_leaves_out_say_why() {
         analyze(&dir, &format!("{name}.vhd"), src);
         let flags = ["--tier=interp", "-gCYC=20"];
         let (normal, _) = run_text(&dir, &flags, top);
-        let (cycle, err) = run_text(&dir, &[&flags[..], &["--cycle"]].concat(), top);
+        let (cycle, err) = run_text(
+            &dir,
+            &[&flags[..], &["--cycle", "--two-state"]].concat(),
+            top,
+        );
         assert_eq!(cycle, normal, "{name}\n{err}");
         assert!(err.contains(" 0 of "), "{name}: {err}");
         assert!(err.contains(why), "{name}: {err}");
@@ -3987,11 +4188,17 @@ fn a_dont_care_aggregate_of_a_generic_length_matches_anything() {
         for exact in [false, true] {
             let mut f = t.clone();
             f.push("--cycle");
-            if exact {
-                f.push("--cycle-exact-meta");
+            if !exact {
+                f.push("--two-state");
             }
             let (cycle, err) = run(&dir, &f, "matchagg");
-            assert_eq!(cycle, normal, "{f:?}: {err}");
+            // The two-state contract against the normal mode's two-state run.
+            let want = if exact {
+                normal.clone()
+            } else {
+                run(&dir, &["--tier=interp", "--two-state"], "matchagg").0
+            };
+            assert_eq!(cycle, want, "{f:?}: {err}");
             // The first member of each instance joins, the one with the mixed aggregate stays out.
             assert!(err.contains("cycle mode: 5 of"), "{f:?}: {err}");
         }
@@ -4047,6 +4254,7 @@ fn verdicts(dir: &Path, top: &str) -> String {
             "--work=work:lib",
             "--no-cache",
             "--cycle-report",
+            "--two-state",
             top,
         ])
         .output()
@@ -4286,7 +4494,7 @@ fn force_is_outside_the_subset() {
 /// forced register out while members read the forced value (forced and released in the delta of
 /// an edge and between edges); a forced clock copy keeps its register on the copy, and a forced
 /// clock its own delta class; a force of a signal parameter, and any force under
-/// `--cycle-exact-meta`, keeps every process out, but one the design does not reach does not
+/// the metavalue contract (no `--two-state`), keeps every process out, but one the design does not reach does not
 /// stop ports from collapsing (`fsc_unreached_tb`). Against the
 /// normal mode at widths 1 to 128.
 #[test]
@@ -4313,22 +4521,27 @@ fn forces_keep_out_only_the_drivers_of_what_they_force() {
         ];
         for (d, top, flags, n, members) in cases {
             for t in tiers() {
-                let (normal, _) = run(d, &[&t[..], flags].concat(), top);
-                let (cycle, err) = run(d, &[&t[..], flags, &["--cycle"]].concat(), top);
+                let (normal, _) = run(d, &[&t[..], flags, &["--two-state"]].concat(), top);
+                let (cycle, err) = run(
+                    d,
+                    &[&t[..], flags, &["--cycle", "--two-state"]].concat(),
+                    top,
+                );
                 assert_eq!(normal.len(), n, "{w} {top} {t:?} {normal:?}");
                 assert_eq!(cycle, normal, "width {w} {top} {t:?}\n{err}");
                 assert!(
                     err.contains(&format!("cycle mode: {members} processes run cycle-based")),
                     "{w} {top}: {err}"
                 );
-                // `--cycle-exact-meta` does not follow forced values: every process stays out.
+                // The metavalue contract does not follow forced values: every process stays out.
                 if top == "fsc_ext_tb" {
-                    let ex = [&t[..], &["--cycle", "--cycle-exact-meta"]].concat();
+                    let ex = [&t[..], &["--cycle"]].concat();
                     let (exact, err) = run(d, &ex, top);
-                    assert_eq!(exact, normal, "width {w} {top} {t:?}\n{err}");
+                    let (four, _) = run(d, &[&t[..], flags].concat(), top);
+                    assert_eq!(exact, four, "width {w} {top} {t:?}\n{err}");
                     assert!(err.contains("cycle mode: 0 of 9 processes"), "{err}");
                     assert!(
-                        err.contains("under `--cycle-exact-meta` no process joins"),
+                        err.contains("without `--two-state` no process joins"),
                         "{err}"
                     );
                 }
@@ -4416,7 +4629,11 @@ fn a_member_driving_a_null_array_gives_the_same_result() {
     analyze(&dir, "null.vhd", NULL_PIPE);
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_null");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_null");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_null",
+        );
         assert!(
             normal.len() == 1 && normal[0].ends_with("q=0100"),
             "{normal:?}"
@@ -4440,7 +4657,11 @@ fn latches_state_and_incomplete_lists_stay_out_and_the_result_is_the_normal_one(
         "{normal:?}"
     );
     for t in tiers() {
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_wrong");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_wrong",
+        );
         assert_eq!(cycle, normal, "{t:?}");
         for (label, code) in [("list", "E4121"), ("latch", "E4119"), ("state", "E4120")] {
             let (_, r) = row(&err, &format!("cycle_wrong.{label}"));
@@ -4460,6 +4681,7 @@ fn cycle_strict_names_the_code_of_each_reason() {
             "--work=work:lib",
             "--no-cache",
             "--cycle-strict",
+            "--two-state",
             "sub_tb",
         ],
     );
@@ -4501,7 +4723,11 @@ fn ports_collapsed_into_parts_of_their_actuals_give_the_same_result() {
     analyze(&dir, "ports.vhd", include_str!("cycle/ports.vhd"));
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_ports");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_ports");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_ports",
+        );
         assert_eq!(normal.len(), 6, "{normal:?}");
         assert_eq!(cycle, normal, "{t:?}\n{err}");
         assert!(
@@ -4519,7 +4745,11 @@ fn asynchronous_resets_between_edges_give_the_same_result() {
         for t in tiers() {
             let flags = [&t[..], &[generic]].concat();
             let (normal, _) = run(&dir, &flags, "cycle_reset");
-            let (cycle, err) = run(&dir, &[&flags[..], &["--cycle"]].concat(), "cycle_reset");
+            let (cycle, err) = run(
+                &dir,
+                &[&flags[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_reset",
+            );
             // Hand-checked: the reset pulses before edges 5 and 13 and the level held at edge 9.
             assert_eq!(normal.len(), 20, "{normal:?}");
             assert!(normal[8].contains("n=09 m=40"), "{normal:?}");
@@ -4548,7 +4778,11 @@ fn several_clocks_and_crossings_give_the_same_result() {
     analyze(&dir, "clocks.vhd", include_str!("cycle/clocks.vhd"));
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_clocks");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_clocks");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_clocks",
+        );
         assert_eq!(normal.len(), 24, "{normal:?}");
         // Hand-checked at 11.2 and 21.2 ns: at the coincident edge at 5 ns c2's registers
         // sampled c1's before the edge (x2 = 0), at 10 ns after it (x2 = 3); x1 = 0, with c2's y0
@@ -4615,7 +4849,11 @@ fn asynchronous_resets_made_inside_the_region_give_the_same_result() {
     analyze(&dir, "inreset.vhd", include_str!("cycle/inreset.vhd"));
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_inreset");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_inreset");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_inreset",
+        );
         assert_eq!(normal.len(), 30, "{normal:?}");
         // Hand-checked: held from time 0, released, n3 following din during the late pulse.
         assert!(normal[2].contains("r2='1' n1=10 n2=20 n3=36"), "{normal:?}");
@@ -4661,7 +4899,11 @@ fn drivers_of_signals_whose_history_is_read_outside_stay_out() {
     analyze(&dir, "history.vhd", include_str!("cycle/history.vhd"));
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_history");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_history");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_history",
+        );
         assert_eq!(normal.len(), 72, "{normal:?}");
         // With the drivers in the region the redrives of `r` vanish (`'transaction`, `'active`).
         assert_eq!(cycle, normal, "{t:?}\n{err}");
@@ -4702,6 +4944,7 @@ fn drivers_of_signals_whose_history_is_read_outside_stay_out() {
             "--work=work:lib",
             "--no-cache",
             "--cycle-strict",
+            "--two-state",
             "cycle_history",
         ],
     );
@@ -4728,7 +4971,11 @@ fn inputs_read_only_when_they_changed_give_the_same_result() {
     analyze(&dir, "inputs.vhd", include_str!("cycle/inputs.vhd"));
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_inputs");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_inputs");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_inputs",
+        );
         assert_eq!(normal.len(), 8, "{normal:?}");
         // Hand-checked: edge i samples what iteration i - 1 set. At edge 3 `s` held a5 (changed
         // back only in odd iterations), at edge 4 00; `w(101 to 103)` set, `n` 21, `e` toggled in
@@ -4831,7 +5078,11 @@ fn an_element_chosen_at_run_time_depends_on_its_index() {
     }
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_tbl");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_tbl");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_tbl",
+        );
         // Hand-checked: din 03, k1 3, k2 4; rot(din) is "10000001" indexed 0 to 7, k4 4.
         assert!(normal[0].ends_with("fo=55 fb='0'"), "{normal:?}");
         assert_eq!(cycle, normal, "{t:?}\n{err}");
@@ -4844,7 +5095,11 @@ fn loop_groups_run_in_the_region_and_give_the_same_result() {
     analyze(&dir, "loops.vhd", include_str!("cycle/loops.vhd"));
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_loops");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_loops");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_loops",
+        );
         assert_eq!(normal.len(), 12, "{normal:?}");
         // Hand-checked at 5 ns (din 0D, din2 00, the reset held, the first edge one delta later):
         // every group settled, ob x3 from 1 ns before.
@@ -4894,7 +5149,7 @@ fn loop_groups_run_in_the_region_and_give_the_same_result() {
 fn a_check_failing_in_a_loop_group_stops_the_run_as_in_the_normal_mode() {
     let dir = tempdir("cycle-loops-fail");
     analyze(&dir, "loops.vhd", include_str!("cycle/loops.vhd"));
-    for mode in [None, Some("--cycle")] {
+    for mode in [&[][..], &["--cycle", "--two-state"]] {
         let mut args = vec![
             "run",
             "--work=work:lib",
@@ -4908,7 +5163,7 @@ fn a_check_failing_in_a_loop_group_stops_the_run_as_in_the_normal_mode() {
         let err = String::from_utf8_lossy(&o.stderr);
         assert_eq!(o.status.code(), Some(1), "{mode:?}: {err}");
         let msg = "error[E3009]: value 8 outside of INTEGER range 0 to 7 for signal K2";
-        let want = if mode.is_some() {
+        let want = if !mode.is_empty() {
             bare(msg)
         } else {
             msg.into()
@@ -4961,7 +5216,11 @@ fn a_check_on_values_not_settled_yet_does_not_stop_the_run() {
     analyze(&dir, "early.vhd", UNSETTLED_CHECK);
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_early");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_early");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_early",
+        );
         assert_eq!(normal.len(), 2, "{normal:?}");
         assert!(normal[1].ends_with("r1=15"), "{normal:?}");
         assert_eq!(cycle, normal, "{t:?}\n{err}");
@@ -5023,7 +5282,12 @@ fn members_cut_into_several_functions_give_the_same_result() {
         let mut env = vec![("YAVS_CYCLE_STATS", "1")];
         env.extend(chunk.map(|c| ("YAVS_CYCLE_CHUNK", c)));
         env.extend(cap.map(|c| ("YAVS_CYCLE_REGS", c)));
-        let (out, err, rc) = run_env(&dir, &env, &["--tier=interp", "--cycle"], "cycle_cut");
+        let (out, err, rc) = run_env(
+            &dir,
+            &env,
+            &["--tier=interp", "--cycle", "--two-state"],
+            "cycle_cut",
+        );
         assert_eq!(rc, 0, "{chunk:?}: {err}");
         assert_eq!(lines(&out), normal, "{chunk:?}");
         assert!(
@@ -5038,7 +5302,7 @@ fn members_cut_into_several_functions_give_the_same_result() {
         let (_, err, rc) = run_env(
             &dir,
             &env,
-            &["--tier=interp", "--cycle", "-gLIMIT=5000"],
+            &["--tier=interp", "--cycle", "--two-state", "-gLIMIT=5000"],
             "cycle_cut",
         );
         assert_eq!(rc, 1, "{chunk:?}: {err}");
@@ -5059,7 +5323,7 @@ fn members_cut_into_several_functions_give_the_same_result() {
                 "--work=work:lib",
                 "--tier=interp",
             ])
-            .args(["--cycle", "-gLIMIT=5000", "cycle_cut"])
+            .args(["--cycle", "--two-state", "-gLIMIT=5000", "cycle_cut"])
             .output()
             .expect("run yavs");
         let err = String::from_utf8_lossy(&o.stderr);
@@ -5106,7 +5370,12 @@ fn instances_of_one_shape_share_a_body_and_others_do_not() {
         let mut env = vec![("YAVS_CYCLE_STATS", "1")];
         env.extend(chunk.map(|c| ("YAVS_CYCLE_CHUNK", c)));
         env.extend(cap.map(|c| ("YAVS_CYCLE_REGS", c)));
-        let (out, err, rc) = run_env(&dir, &env, &["--tier=interp", "--cycle"], "cycle_share");
+        let (out, err, rc) = run_env(
+            &dir,
+            &env,
+            &["--tier=interp", "--cycle", "--two-state"],
+            "cycle_share",
+        );
         assert_eq!(rc, 0, "{chunk:?}: {err}");
         assert_eq!(lines(&out), normal, "{chunk:?}");
         assert!(
@@ -5120,7 +5389,7 @@ fn instances_of_one_shape_share_a_body_and_others_do_not() {
         let (_, err, rc) = run_env(
             &dir,
             &env,
-            &["--tier=interp", "--cycle", "-gFAIL=true"],
+            &["--tier=interp", "--cycle", "--two-state", "-gFAIL=true"],
             "cycle_share",
         );
         assert_eq!(rc, 1, "{chunk:?}: {err}");
@@ -5181,11 +5450,13 @@ fn asserts_and_reports_of_the_top_level_unit_are_evaluated() {
         }
         assert!(!normal.contains("never"), "{normal}");
         assert_eq!(code, Some(1), "{normal}");
+        // The two-state contract against the normal mode's two-state run.
+        let (code, normal, _) = go(&["--two-state"], "cycle_topcheck");
         let (stop_code, stop, _) = go(&[], "cycle_topstop");
         assert!(stop.contains("q reached 5"), "{stop}");
         for mode in ["--cycle", "--cycle-strict"] {
             for t in tiers() {
-                let flags = [&t[..], &[mode]].concat();
+                let flags = [&t[..], &[mode, "--two-state"]].concat();
                 let (c, out, err) = go(&flags, "cycle_topcheck");
                 assert_eq!((c, &out), (code, &normal), "{w} {flags:?}\n{err}");
                 // The design below the top and the clocked checkers.
@@ -5197,7 +5468,12 @@ fn asserts_and_reports_of_the_top_level_unit_are_evaluated() {
                 assert_eq!((c, &out), (stop_code, &stop), "{w} {flags:?}\n{err}");
             }
         }
-        let report = with_report(&dir, &["--cycle"], "cycle_topcheck", String::new());
+        let report = with_report(
+            &dir,
+            &["--cycle", "--two-state"],
+            "cycle_topcheck",
+            String::new(),
+        );
         assert_eq!(
             report
                 .matches("it holds an assert or report of the top-level unit that cycle mode evaluates only in the event kernel: an assert or report that runs outside a clock edge")
@@ -5275,17 +5551,17 @@ fn functions_compiled_on_several_threads_are_those_of_one() {
     let obj = dir.join("lib").join("yavs-cache");
     // Members cut into parts of a few operations: many functions.
     let one = [("YAVS_CYCLE_CHUNK", "5"), ("YAVS_CYCLE_THREADS", "1")];
-    let (want, n, _) = cached(&dir, &one, &["--cycle", "--no-cache"]);
+    let (want, n, _) = cached(&dir, &one, &["--cycle", "--two-state", "--no-cache"]);
     assert!(n >= 4, "{n} functions");
     let four = [("YAVS_CYCLE_CHUNK", "5"), ("YAVS_CYCLE_THREADS", "4")];
-    let (got, n4, hits) = cached(&dir, &four, &["--cycle"]);
+    let (got, n4, hits) = cached(&dir, &four, &["--cycle", "--two-state"]);
     assert_eq!((&got, n4, hits), (&want, n, 0), "four threads, cold");
     let check = [
         ("YAVS_CYCLE_CHUNK", "5"),
         ("YAVS_CYCLE_THREADS", "1"),
         ("YAVS_CYCLE_CACHE_CHECK", "1"),
     ];
-    let (got, _, hits) = cached(&dir, &check, &["--cycle"]);
+    let (got, _, hits) = cached(&dir, &check, &["--cycle", "--two-state"]);
     assert_eq!(
         (&got, hits),
         (&want, 0),
@@ -5293,9 +5569,9 @@ fn functions_compiled_on_several_threads_are_those_of_one() {
     );
     std::fs::remove_dir_all(&obj).expect("empty the cache");
     let chunk = [("YAVS_CYCLE_CHUNK", "5")];
-    let (got, _, hits) = cached(&dir, &chunk, &["--cycle", "--threads=4"]);
+    let (got, _, hits) = cached(&dir, &chunk, &["--cycle", "--two-state", "--threads=4"]);
     assert_eq!((&got, hits), (&want, 0), "--threads=4, cold");
-    let (got, _, hits) = cached(&dir, &chunk, &["--cycle", "--threads=4"]);
+    let (got, _, hits) = cached(&dir, &chunk, &["--cycle", "--two-state", "--threads=4"]);
     assert_eq!((&got, hits), (&want, n), "--threads=4, warm");
 }
 
@@ -5331,14 +5607,14 @@ fn region_code_from_the_cache_gives_the_same_result() {
             .collect()
     };
 
-    let no_cache = cached(&dir, &[], &["--cycle", "--no-cache"]);
+    let no_cache = cached(&dir, &[], &["--cycle", "--two-state", "--no-cache"]);
     assert_eq!((no_cache.0.as_str(), no_cache.2), (want.as_str(), 0));
     assert!(entries().is_empty(), "--no-cache wrote {:?}", entries());
 
-    let (cold, n, hits) = cached(&dir, &[], &["--cycle"]);
+    let (cold, n, hits) = cached(&dir, &[], &["--cycle", "--two-state"]);
     assert_eq!((cold.as_str(), hits), (want.as_str(), 0));
     assert!(n > 0 && !entries().is_empty());
-    let (warm, n2, hits) = cached(&dir, &[], &["--cycle"]);
+    let (warm, n2, hits) = cached(&dir, &[], &["--cycle", "--two-state"]);
     assert_eq!(
         (warm.as_str(), n2, hits),
         (want.as_str(), n, n),
@@ -5350,9 +5626,19 @@ fn region_code_from_the_cache_gives_the_same_result() {
     let checks = [("YAVS_CYCLE_CHECKS", "off")];
     let salt = [("YAVS_CACHE_SALT", "another build")];
     for (what, env, flags, want) in [
-        ("generic", &[][..], &["--cycle", "-gW=12"][..], &w12),
-        ("checks", &checks[..], &["--cycle"][..], &want),
-        ("build", &salt[..], &["--cycle"][..], &want),
+        (
+            "generic",
+            &[][..],
+            &["--cycle", "--two-state", "-gW=12"][..],
+            &w12,
+        ),
+        (
+            "checks",
+            &checks[..],
+            &["--cycle", "--two-state"][..],
+            &want,
+        ),
+        ("build", &salt[..], &["--cycle", "--two-state"][..], &want),
     ] {
         let (got, n, hits) = cached(&dir, env, flags);
         assert_eq!(&got, want, "{what}");
@@ -5366,7 +5652,7 @@ fn region_code_from_the_cache_gives_the_same_result() {
     // The register cap is in the key: the check compiles every function again and fails on
     // code made for another cap.
     let regs = [("YAVS_CYCLE_REGS", "2"), ("YAVS_CYCLE_CACHE_CHECK", "1")];
-    let (got, _, hits) = cached(&dir, &regs, &["--cycle"]);
+    let (got, _, hits) = cached(&dir, &regs, &["--cycle", "--two-state"]);
     assert_eq!((&got, hits), (&want, 0), "two words in registers");
     analyze(
         &dir,
@@ -5375,7 +5661,7 @@ fn region_code_from_the_cache_gives_the_same_result() {
     );
     let step5 = normal(&["--tier=interp"]);
     assert_ne!(step5, want);
-    let (got, n, hits) = cached(&dir, &[], &["--cycle"]);
+    let (got, n, hits) = cached(&dir, &[], &["--cycle", "--two-state"]);
     assert_eq!(got, step5, "an edited source line");
     assert!(
         hits < n,
@@ -5393,9 +5679,9 @@ fn region_code_from_the_cache_gives_the_same_result() {
             };
             std::fs::write(&p, bad).expect("damage");
         }
-        let (got, n, hits) = cached(&dir, &[], &["--cycle"]);
+        let (got, n, hits) = cached(&dir, &[], &["--cycle", "--two-state"]);
         assert_eq!((&got, hits), (&step5, 0), "damage {damage}");
-        let (got, n2, hits) = cached(&dir, &[], &["--cycle"]);
+        let (got, n2, hits) = cached(&dir, &[], &["--cycle", "--two-state"]);
         assert_eq!((&got, n2, hits), (&step5, n, n), "damage {damage}, warm");
     }
 
@@ -5406,14 +5692,14 @@ fn region_code_from_the_cache_gives_the_same_result() {
     let racers: Vec<_> = (0..2)
         .map(|_| {
             let d = dir.to_path_buf();
-            std::thread::spawn(move || cached(&d, &[], &["--cycle", "-gW=9"]))
+            std::thread::spawn(move || cached(&d, &[], &["--cycle", "--two-state", "-gW=9"]))
         })
         .collect();
     let w9 = normal(&["--tier=interp", "-gW=9"]);
     for r in racers {
         assert_eq!(r.join().expect("racer").0, w9);
     }
-    let (got, n, hits) = cached(&dir, &[], &["--cycle", "-gW=9"]);
+    let (got, n, hits) = cached(&dir, &[], &["--cycle", "--two-state", "-gW=9"]);
     assert_eq!((&got, hits), (&w9, n));
 }
 
@@ -5488,11 +5774,11 @@ fn the_analysis_from_the_cache_gives_the_same_result() {
     let want = normal(&["--tier=interp"]);
     assert!(want.ends_with("x cnt=60 a=60 b=80"), "{want}");
 
-    let (got, a, _) = acached(&dir, &[], &["--cycle", "--no-cache"]);
+    let (got, a, _) = acached(&dir, &[], &["--cycle", "--two-state", "--no-cache"]);
     assert_eq!((got.as_str(), a.as_str()), (want.as_str(), ""));
     assert!(entries().is_empty(), "--no-cache wrote {:?}", entries());
 
-    let (got, a, _) = acached(&dir, &[], &["--cycle"]);
+    let (got, a, _) = acached(&dir, &[], &["--cycle", "--two-state"]);
     assert_eq!(got, want);
     assert!(
         a.contains(stored)
@@ -5500,13 +5786,13 @@ fn the_analysis_from_the_cache_gives_the_same_result() {
         "{a}"
     );
     assert!(!a.contains("TAG"), "{a}");
-    let (got, a, f) = acached(&dir, &[], &["--cycle"]);
+    let (got, a, f) = acached(&dir, &[], &["--cycle", "--two-state"]);
     assert_eq!(got, want);
     assert!(a.contains(hit), "a warm run: {a}");
     assert!(a.contains("region from the cache"), "a warm run: {a}");
     assert!(f.contains("from the cache"), "{f}");
     let check = [("YAVS_CYCLE_CACHE_CHECK", "1")];
-    let (got, a, _) = acached(&dir, &check, &["--cycle"]);
+    let (got, a, _) = acached(&dir, &check, &["--cycle", "--two-state"]);
     assert_eq!(got, want);
     assert!(
         a.contains("analysis from the cache checked: the same"),
@@ -5514,7 +5800,7 @@ fn the_analysis_from_the_cache_gives_the_same_result() {
     );
     assert!(a.contains("region from the cache checked: the same"), "{a}");
     // `--cycle-strict` builds the region from the selection in the cache, with its code.
-    let (got, a, f) = acached(&dir, &[], &["--cycle-strict"]);
+    let (got, a, f) = acached(&dir, &[], &["--cycle-strict", "--two-state"]);
     assert_eq!(got, want);
     assert!(a.contains(hit) && !a.contains("region from"), "strict: {a}");
     assert!(f.contains("from the cache"), "strict: {f}");
@@ -5525,18 +5811,18 @@ fn the_analysis_from_the_cache_gives_the_same_result() {
     {
         std::fs::write(&p, b"damaged").expect("damage");
     }
-    let (got, a, _) = acached(&dir, &[], &["--cycle"]);
+    let (got, a, _) = acached(&dir, &[], &["--cycle", "--two-state"]);
     assert_eq!(got, want);
     assert!(
         a.contains(hit) && !a.contains("region from"),
         "damaged region: {a}"
     );
-    let (got, a, _) = acached(&dir, &[], &["--cycle"]);
+    let (got, a, _) = acached(&dir, &[], &["--cycle", "--two-state"]);
     assert_eq!(got, want);
     assert!(a.contains("region from the cache"), "rebuilt region: {a}");
 
     // Read by nothing before the run: the same analysis.
-    let (got, a, _) = acached(&dir, &[], &["--cycle", "-gTAG=y"]);
+    let (got, a, _) = acached(&dir, &[], &["--cycle", "--two-state", "-gTAG=y"]);
     assert_eq!(got, normal(&["--tier=interp", "-gTAG=y"]));
     assert!(a.contains(hit), "TAG: {a}");
 
@@ -5552,12 +5838,12 @@ fn the_analysis_from_the_cache_gives_the_same_result() {
     };
     let (n, all) = (payloads(), entries().len());
     let other = [("YAVS_CYCLE_EXCLUDE", "nor_has_this_one")];
-    let (got, a, _) = acached(&dir, &other, &["--cycle"]);
+    let (got, a, _) = acached(&dir, &other, &["--cycle", "--two-state"]);
     assert_eq!(got, want);
     assert!(a.contains(stored), "another environment: {a}");
     assert_eq!((n, payloads()), (2, 2), "the same payloads stored again");
     assert!(entries().len() > all, "no entries of the new key");
-    let (got, a, _) = acached(&dir, &other, &["--cycle"]);
+    let (got, a, _) = acached(&dir, &other, &["--cycle", "--two-state"]);
     assert_eq!(got, want);
     assert!(
         a.contains("region from the cache"),
@@ -5572,7 +5858,7 @@ fn the_analysis_from_the_cache_gives_the_same_result() {
         ("build", &salt[..], &[][..]),
     ] {
         let want = normal(&[&["--tier=interp"][..], flags].concat());
-        let flags = [&["--cycle"][..], flags].concat();
+        let flags = [&["--cycle", "--two-state"][..], flags].concat();
         let (got, a, _) = acached(&dir, env, &flags);
         assert_eq!(got, want, "{what}");
         assert!(a.contains(stored), "{what}: {a}");
@@ -5584,7 +5870,11 @@ fn the_analysis_from_the_cache_gives_the_same_result() {
     // At most 16 analyses per design: `K` read by the selection makes another one each time.
     let mut last = String::new();
     for k in 10..=30 {
-        let flags = ["--cycle".to_string(), format!("-gK={k}")];
+        let flags = [
+            "--cycle".to_string(),
+            "--two-state".into(),
+            format!("-gK={k}"),
+        ];
         let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
         last = acached(&dir, &[], &flags).1;
     }
@@ -5601,7 +5891,7 @@ fn the_analysis_from_the_cache_gives_the_same_result() {
     );
     let edited = normal(&["--tier=interp"]);
     assert_ne!(edited, want);
-    let (got, a, _) = acached(&dir, &[], &["--cycle"]);
+    let (got, a, _) = acached(&dir, &[], &["--cycle", "--two-state"]);
     assert_eq!(got, edited, "an edited dependency");
     assert!(a.contains(stored), "an edited dependency: {a}");
 
@@ -5616,7 +5906,7 @@ fn the_analysis_from_the_cache_gives_the_same_result() {
             };
             std::fs::write(&p, bad).expect("damage");
         }
-        let (got, a, _) = acached(&dir, &[], &["--cycle"]);
+        let (got, a, _) = acached(&dir, &[], &["--cycle", "--two-state"]);
         assert_eq!(got, edited, "damage {damage}");
         assert!(!a.contains(hit), "damage {damage}: {a}");
     }
@@ -5629,13 +5919,13 @@ fn the_analysis_from_the_cache_gives_the_same_result() {
     let racers: Vec<_> = (0..2)
         .map(|_| {
             let d = dir.to_path_buf();
-            std::thread::spawn(move || acached(&d, &[], &["--cycle", "-gW=9"]).0)
+            std::thread::spawn(move || acached(&d, &[], &["--cycle", "--two-state", "-gW=9"]).0)
         })
         .collect();
     for r in racers {
         assert_eq!(r.join().expect("racer"), w9);
     }
-    let (got, a, _) = acached(&dir, &[], &["--cycle", "-gW=9"]);
+    let (got, a, _) = acached(&dir, &[], &["--cycle", "--two-state", "-gW=9"]);
     assert_eq!(got, w9);
     assert!(a.contains(hit), "after the race: {a}");
 }
@@ -5661,7 +5951,7 @@ fn an_elaboration_that_reads_a_file_keys_its_bytes() {
                 "--work=work:lib",
                 "--tier=interp",
             ])
-            .args(["--cycle", "acfile"])
+            .args(["--cycle", "--two-state", "acfile"])
             .args(flags)
             .output()
             .expect("run yavs");
@@ -5711,7 +6001,7 @@ fn a_region_of_more_functions_than_the_cache_holds_is_not_cached() {
             "--work=work:lib",
             "--tier=interp",
         ])
-        .args(["--cycle", "cycle_many"])
+        .args(["--cycle", "--two-state", "cycle_many"])
         .output()
         .expect("run yavs");
     let (out, err) = (
@@ -5793,7 +6083,13 @@ fn explain_texts_of_the_subset_codes_match_what_the_checker_gives() {
     analyze(&dir, "codes.vhd", SUBSET_CODES);
     let o = yavs(
         &dir,
-        &["run", "--work=work:lib", "--cycle-report", "cycle_codes"],
+        &[
+            "run",
+            "--work=work:lib",
+            "--cycle-report",
+            "--two-state",
+            "cycle_codes",
+        ],
     );
     let report = String::from_utf8_lossy(&o.stderr);
     let line = |p: &str| {
@@ -5853,7 +6149,11 @@ fn ranges_elaboration_evaluated_per_instance_equal_the_normal_mode() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_subrange");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_subrange");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_subrange",
+            );
             assert_eq!(normal.len(), 24, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             // Every process but the testbench's `main`.
@@ -5887,7 +6187,12 @@ fn members_skipped_on_unchanged_inputs_give_the_same_result() {
         for env in envs {
             let mut env = env.to_vec();
             env.push(("YAVS_CYCLE_STATS", "1"));
-            let (cycle, err) = run_vars(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_skip", &env);
+            let (cycle, err) = run_vars(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_skip",
+                &env,
+            );
             assert_eq!(cycle, normal, "{t:?} {env:?}\n{err}");
             assert!(
                 err.contains("cycle mode: 14 of 18 processes run cycle-based"),
@@ -5925,7 +6230,7 @@ fn members_skipped_on_unchanged_inputs_give_the_same_result() {
         ][..],
         &[("YAVS_CYCLE_CHECKS", "on")],
     ] {
-        for mode in [None, Some("--cycle")] {
+        for mode in [&[][..], &["--cycle", "--two-state"]] {
             let mut args = vec![
                 "run",
                 "--work=work:lib",
@@ -5938,7 +6243,7 @@ fn members_skipped_on_unchanged_inputs_give_the_same_result() {
             let o = yavs_env(&dir, &args, env);
             let err = String::from_utf8_lossy(&o.stderr);
             assert_eq!(o.status.code(), Some(1), "{mode:?}: {err}");
-            let idx = if mode.is_some() {
+            let idx = if !mode.is_empty() {
                 "index outside of"
             } else {
                 "index 9 outside of"
@@ -5996,7 +6301,7 @@ fn an_edge_settles_only_what_the_classes_that_had_one_reach() {
                 env.push(("YAVS_CYCLE_STATS", "1"));
                 let (cycle, err) = run_vars(
                     &dir,
-                    &[&t[..], &["--cycle"]].concat(),
+                    &[&t[..], &["--cycle", "--two-state"]].concat(),
                     "cycle_edgecone",
                     &env,
                 );
@@ -6053,8 +6358,12 @@ fn an_edge_run_that_would_change_nothing_is_skipped() {
             for env in envs {
                 let mut env = env.to_vec();
                 env.push(("YAVS_CYCLE_STATS", "1"));
-                let (cycle, err) =
-                    run_vars(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_idle", &env);
+                let (cycle, err) = run_vars(
+                    &dir,
+                    &[&t[..], &["--cycle", "--two-state"]].concat(),
+                    "cycle_idle",
+                    &env,
+                );
                 assert_eq!(cycle, normal, "width {w} {t:?} {env:?}\n{err}");
                 let n = |what: &str| -> u64 {
                     (err.lines())
@@ -6095,7 +6404,7 @@ fn a_clock_event_without_its_edge_does_not_wake_the_region() {
             let env = [("YAVS_CYCLE_STATS", "1")];
             let (cycle, err) = run_vars(
                 &dir,
-                &[&t[..], &["--cycle"]].concat(),
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
                 "cycle_waitfilter",
                 &env,
             );
@@ -6135,7 +6444,11 @@ fn port_expression_actuals_and_aggregates_without_context_equal_the_normal_mode(
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_portact");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_portact");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_portact",
+            );
             assert_eq!(normal.len(), 30, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             // Every process but the testbench's `main`: the units, their eight actuals, the tracker.
@@ -6153,7 +6466,7 @@ fn a_memory_over_a_million_elements_equals_the_normal_mode() {
     let dir = tempdir("cycle-bigram");
     analyze(&dir, "bigram.vhd", include_str!("cycle/bigram.vhd"));
     let (normal, _) = run(&dir, &[], "cycle_bigram");
-    let (cycle, err) = run(&dir, &["--cycle"], "cycle_bigram");
+    let (cycle, err) = run(&dir, &["--cycle", "--two-state"], "cycle_bigram");
     assert_eq!(normal.len(), 40, "{normal:?}");
     assert_eq!(cycle, normal, "{err}");
     assert!(
@@ -6176,7 +6489,11 @@ fn cpu_idioms_equal_the_normal_mode() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_idioms");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_idioms");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_idioms",
+            );
             assert_eq!(normal.len(), 30, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -6201,7 +6518,11 @@ fn null_arrays_equal_the_normal_mode() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_nullvec");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_nullvec");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_nullvec",
+            );
             assert_eq!(normal.len(), 20, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -6231,7 +6552,11 @@ fn resolved_out_ports_on_unresolved_actuals_equal_the_normal_mode() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_portres");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_portres");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_portres",
+            );
             assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
             assert!(normal.iter().any(|l| l.contains('X')), "{normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
@@ -6260,7 +6585,11 @@ fn actuals_of_converted_in_ports_driven_by_members_equal_the_normal_mode() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_portin");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_portin");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_portin",
+            );
             assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -6285,7 +6614,11 @@ fn elements_of_elements_at_run_time_indices_equal_the_normal_mode() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_index2");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_index2");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_index2",
+            );
             assert_eq!(normal.len(), 16, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -6328,7 +6661,11 @@ fn a_constant_table_of_records_read_at_run_time_equals_the_normal_mode() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_romrec");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_romrec");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_romrec",
+            );
             assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -6352,7 +6689,11 @@ fn aggregates_with_slice_pieces_equal_the_normal_mode() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_slicepc");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_slicepc");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_slicepc",
+            );
             assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -6377,7 +6718,11 @@ fn a_generic_table_of_records_equals_the_normal_mode() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_regtab");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_regtab");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_regtab",
+            );
             assert_eq!(normal.len(), 10, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -6402,7 +6747,11 @@ fn math_real_sizes_of_constants_fold() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_mathreal");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_mathreal");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_mathreal",
+            );
             assert_eq!(normal.len(), 10, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -6426,7 +6775,11 @@ fn ranges_of_logical_operator_results_equal_the_normal_mode() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_oprange");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_oprange");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_oprange",
+            );
             assert_eq!(normal.len(), 10, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -6450,7 +6803,11 @@ fn attributes_of_elements_chosen_at_run_time_equal_the_normal_mode() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_elemattr");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_elemattr");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_elemattr",
+            );
             assert_eq!(normal.len(), 10, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -6474,7 +6831,7 @@ fn parts_of_elements_chosen_at_run_time_equal_the_normal_mode() {
             &with_width(include_str!("cycle/elempart.vhd"), w),
         );
         let (normal, _) = run(&dir, &["--tier=interp"], "cycle_elempart");
-        let flags = ["--tier=interp", "--cycle"];
+        let flags = ["--tier=interp", "--cycle", "--two-state"];
         let (cycle, err) = run(&dir, &flags, "cycle_elempart");
         assert_eq!(normal.len(), 12, "{w} {normal:?}");
         assert_eq!(cycle, normal, "width {w}\n{err}");
@@ -6500,7 +6857,11 @@ fn records_of_scalars_given_to_a_function_fold() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_recfmt");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_recfmt");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_recfmt",
+            );
             assert_eq!(normal.len(), 8, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -6526,7 +6887,7 @@ fn lanes_moved_word_by_word_equal_the_normal_mode() {
         );
         let (normal, _) = run(&dir, &["--tier=interp"], "cycle_lanes");
         assert_eq!(normal.len(), 16, "{w} {normal:?}");
-        let flags = ["--tier=interp", "--cycle"];
+        let flags = ["--tier=interp", "--cycle", "--two-state"];
         for env in [
             &[][..],
             &[("YAVS_CYCLE_REGS", "1")],
@@ -6557,7 +6918,7 @@ fn a_record_field_outside_its_subtype_fails_as_in_the_normal_mode() {
         analyze(&dir, &format!("recfmtr{w}.vhd"), &bad);
         for t in tiers() {
             let mut shown = Vec::new();
-            for mode in [None, Some("--cycle")] {
+            for mode in [&[][..], &["--cycle", "--two-state"]] {
                 let mut args = vec!["run", "--work=work:lib", "--no-cache"];
                 args.extend(&t);
                 args.extend(mode);
@@ -6569,7 +6930,7 @@ fn a_record_field_outside_its_subtype_fails_as_in_the_normal_mode() {
                     err.contains("error[E3009]: value 2 outside of INTEGER range 0 to 1"),
                     "{w} {t:?} {mode:?}: {err}"
                 );
-                if mode.is_some() {
+                if !mode.is_empty() {
                     assert!(
                         err.contains("cycle mode: 0 of 2 processes run cycle-based"),
                         "{w} {t:?}: {err}"
@@ -6602,7 +6963,11 @@ fn clocks_of_a_known_delta_share_their_logic() {
                 v.into_iter().filter(|l| l.contains("k=")).collect()
             };
             let (normal, _) = run(&dir, &t, "cycle_deltacls");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_deltacls");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_deltacls",
+            );
             let (normal, cycle) = (k(normal), k(cycle));
             assert_eq!(normal.len(), 24, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
@@ -6617,7 +6982,7 @@ fn clocks_of_a_known_delta_share_their_logic() {
         }
     }
     let (normal, _) = run(&dir, &[], "cycle_deltazero");
-    let (cycle, err) = run(&dir, &["--cycle"], "cycle_deltazero");
+    let (cycle, err) = run(&dir, &["--cycle", "--two-state"], "cycle_deltazero");
     assert_eq!(normal.len(), 1, "{normal:?}");
     assert_eq!(cycle, normal, "{err}");
     assert!(
@@ -6636,7 +7001,7 @@ fn clocks_of_a_known_delta_share_their_logic() {
 
 /// A register on a copy of a clock, sent back to the copy because a register outside waits on it,
 /// reads one on a sibling copy that moved onto the source (A32): the moved one goes back too, or
-/// the reader takes its new value a delta early (fuzzer, seed 327 of the default contract).
+/// the reader takes its new value a delta early (fuzzer, seed 327 of the two-state contract).
 /// Widths 1 to 128, against the normal mode, with the membership.
 #[test]
 fn a_register_on_a_copy_reading_a_moved_register_keeps_the_normal_value() {
@@ -6649,7 +7014,11 @@ fn a_register_on_a_copy_reading_a_moved_register_keeps_the_normal_value() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_copyback");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_copyback");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_copyback",
+            );
             assert_eq!(normal.len(), 6, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -6675,7 +7044,11 @@ fn the_most_negative_value_divided_by_minus_one_equals_the_normal_mode() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_divmin");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_divmin");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_divmin",
+            );
             assert_eq!(normal.len(), 8, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             let n = if w <= 64 { 1 } else { 0 };
@@ -6701,7 +7074,11 @@ fn shifts_by_a_count_chosen_at_run_time_equal_the_normal_mode() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_wideshift");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_wideshift");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_wideshift",
+            );
             assert_eq!(normal.len() as u32, 2 * w + 4, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -6731,8 +7108,12 @@ fn logic_feeding_a_process_that_counts_its_runs_stays_out() {
             &with_width(include_str!("cycle/runcount.vhd"), w),
         );
         for t in tiers() {
-            let (normal, _) = run(&dir, &t, "cycle_runcount");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_runcount");
+            let (normal, _) = run(&dir, &[&t[..], &["--two-state"]].concat(), "cycle_runcount");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_runcount",
+            );
             assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -6790,7 +7171,11 @@ fn logic_feeding_a_delayed_assignment_stays_out() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_inertial");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_inertial");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_inertial",
+            );
             assert_eq!(normal.len(), 22, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -6825,7 +7210,11 @@ fn slices_bounded_by_known_variables_join() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_knownvar");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_knownvar");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_knownvar",
+            );
             assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -6853,7 +7242,11 @@ fn concatenations_of_integer_elements_equal_the_normal_mode() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_intcat");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_intcat");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_intcat",
+            );
             assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -6892,7 +7285,11 @@ fn shared_variable_memories_equal_the_normal_mode() {
         for t in tiers() {
             let flags = [&t[..], &["--relaxed"]].concat();
             let (normal, _) = run(&dir, &flags, "cycle_shram");
-            let (cycle, err) = run(&dir, &[&flags[..], &["--cycle"]].concat(), "cycle_shram");
+            let (cycle, err) = run(
+                &dir,
+                &[&flags[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_shram",
+            );
             assert_eq!(normal.len(), 40, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             // The two single-process RAMs; not the two processes of `tp`, nor those of `hid`
@@ -6927,7 +7324,11 @@ fn calls_elaboration_evaluated_per_process_equal_the_normal_mode() {
     analyze(&dir, "strgen.vhd", include_str!("cycle/strgen.vhd"));
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_strgen");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_strgen");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_strgen",
+        );
         assert_eq!(normal.len(), 6, "{t:?} {normal:?}");
         assert_eq!(cycle, normal, "{t:?}\n{err}");
         assert!(
@@ -7001,7 +7402,7 @@ fn reports_of_calls_folded_with_constants_are_made() {
     };
     let report = |gens: &[&str]| {
         let mut f = gens.to_vec();
-        f.push("--cycle");
+        f.extend(["--cycle", "--two-state"]);
         with_report(&dir, &f, "cycle_foldrep", String::new())
     };
     let sorted = |v: &[(String, String)]| {
@@ -7020,7 +7421,7 @@ fn reports_of_calls_folded_with_constants_are_made() {
         let flags = |gens: &[&'static str], cycle: bool| {
             let mut f = [&t[..], gens].concat();
             if cycle {
-                f.push("--cycle");
+                f.extend(["--cycle", "--two-state"]);
             }
             f
         };
@@ -7135,7 +7536,7 @@ fn a_resolution_function_of_the_design_runs_on_out_ports() {
     for top in ["cycle_ownres_other", "cycle_ownres_named"] {
         for t in tiers() {
             let (normal, _) = run(&dir, &t, top);
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), top);
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle", "--two-state"]].concat(), top);
             let got: Vec<&str> = (normal.iter())
                 .map(|l| l.rsplit(": ").next().unwrap_or(""))
                 .collect();
@@ -7179,7 +7580,7 @@ fn reports_of_constants_are_made_once() {
             let f = [&t[..], cache].concat();
             let normal = go(&f);
             assert_eq!(normal.2.len(), 9, "{:?}", normal.2);
-            let cycle = go(&[&f[..], &["--cycle"]].concat());
+            let cycle = go(&[&f[..], &["--cycle", "--two-state"]].concat());
             let members = "cycle mode: 2 of 5 processes run cycle-based";
             assert!(cycle.3.contains(members), "{}", cycle.3);
             assert_eq!(
@@ -7190,7 +7591,7 @@ fn reports_of_constants_are_made_once() {
             );
             // The member-only instance's constant fails: the run stops in both modes.
             let normal = go(&[&f[..], &["-gbad=true"]].concat());
-            let cycle = go(&[&f[..], &["-gbad=true", "--cycle"]].concat());
+            let cycle = go(&[&f[..], &["-gbad=true", "--cycle", "--two-state"]].concat());
             assert!(normal.3.contains("leaf constant fails"), "{}", normal.3);
             assert_ne!(normal.0, Some(0), "{}", normal.3);
             assert_eq!((&cycle.0, &cycle.2), (&normal.0, &normal.2), "{}", cycle.3);
@@ -7221,7 +7622,7 @@ fn impure_calls_of_the_value_pass_are_undone() {
             let mut args = vec!["run", "--relaxed", "--work=work:lib", "--no-cache"];
             args.extend(&t);
             if cycle {
-                args.push("--cycle");
+                args.extend(["--cycle", "--two-state"]);
             }
             args.push("cycle_undo");
             let o = yavs(&dir, &args);
@@ -7258,10 +7659,17 @@ fn undriven_inputs_with_a_metavalue_are_named() {
             let mut args = vec!["run", "--work=work:lib", "--no-cache", &g];
             args.extend(&t);
             let normal = yavs(&dir, &[&args[..], &["cycle_undriven"]].concat());
-            let cycle = yavs(&dir, &[&args[..], &["--cycle", "cycle_undriven"]].concat());
+            let cycle = yavs(
+                &dir,
+                &[&args[..], &["--cycle", "--two-state", "cycle_undriven"]].concat(),
+            );
             let report = yavs(
                 &dir,
-                &[&args[..], &["--cycle-report", "cycle_undriven"]].concat(),
+                &[
+                    &args[..],
+                    &["--cycle-report", "--two-state", "cycle_undriven"],
+                ]
+                .concat(),
             );
             let (n, c) = (
                 String::from_utf8_lossy(&normal.stdout),
@@ -7297,14 +7705,21 @@ fn metavalues_the_testbench_reads_are_kept() {
             let mut args = vec!["run", "--work=work:lib", "--no-cache", &g];
             args.extend(&t);
             let normal = yavs(&dir, &[&args[..], &["cycle_metaout"]].concat());
-            let exact = ["--cycle-exact-meta", "cycle_metaout"];
+            let exact = ["cycle_metaout"];
             let cycle = yavs(&dir, &[&args[..], &["--cycle"], &exact].concat());
             let report = yavs(&dir, &[&args[..], &["--cycle-report"], &exact].concat());
             // The default: the members join and give '0' for the metavalues (A31).
-            let two = yavs(&dir, &[&args[..], &["--cycle", "cycle_metaout"]].concat());
+            let two = yavs(
+                &dir,
+                &[&args[..], &["--cycle", "--two-state", "cycle_metaout"]].concat(),
+            );
             let two_rep = yavs(
                 &dir,
-                &[&args[..], &["--cycle-report", "cycle_metaout"]].concat(),
+                &[
+                    &args[..],
+                    &["--cycle-report", "--two-state", "cycle_metaout"],
+                ]
+                .concat(),
             );
             let two_rep = String::from_utf8_lossy(&two_rep.stderr);
             assert!(
@@ -7372,7 +7787,11 @@ fn shift_operators_equal_the_normal_mode() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_shiftop");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_shiftop");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_shiftop",
+            );
             assert_eq!(normal.len() as u32, 2 * w + 4, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -7398,7 +7817,11 @@ fn qualified_record_aggregates_equal_the_normal_mode() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_qualrec");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_qualrec");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_qualrec",
+            );
             assert_eq!(normal.len(), 21, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -7407,7 +7830,7 @@ fn qualified_record_aggregates_equal_the_normal_mode() {
                 "{w}: {err}"
             );
             let mut shown = Vec::new();
-            for mode in [None, Some("--cycle")] {
+            for mode in [&[][..], &["--cycle", "--two-state"]] {
                 let mut args = vec!["run", "--work=work:lib", "--no-cache", "-gfail=true"];
                 args.extend(&t);
                 args.extend(mode);
@@ -7437,7 +7860,11 @@ fn conditions_elaboration_evaluated_prune_alike() {
         );
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_elabcall");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_elabcall");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_elabcall",
+            );
             assert_eq!(normal.len(), 10, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -7462,7 +7889,7 @@ fn a_negative_known_count_of_a_shift_function_fails_as_in_the_normal_mode() {
         );
         for t in tiers() {
             let mut shown = Vec::new();
-            for mode in [None, Some("--cycle")] {
+            for mode in [&[][..], &["--cycle", "--two-state"]] {
                 let mut args = vec!["run", "--work=work:lib", "--no-cache"];
                 args.extend(&t);
                 args.extend(mode);
@@ -7479,7 +7906,11 @@ fn a_negative_known_count_of_a_shift_function_fails_as_in_the_normal_mode() {
             assert_eq!(shown[0], shown[1], "{w} {t:?}");
             let one = [&t[..], &["-gk=1"]].concat();
             let (normal, _) = run(&dir, &one, "cycle_shiftneg");
-            let (cycle, err) = run(&dir, &[&one[..], &["--cycle"]].concat(), "cycle_shiftneg");
+            let (cycle, err) = run(
+                &dir,
+                &[&one[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_shiftneg",
+            );
             assert_eq!((normal.len(), &cycle), (1, &normal), "{w} {t:?}\n{err}");
             assert!(
                 err.contains("cycle mode: 1 of 3 processes run cycle-based"),
@@ -7502,7 +7933,11 @@ fn a_register_on_a_clock_the_region_makes_samples_its_logic_before_it_settles() 
         for t in tiers() {
             let t = [&t[..], &[&g[..]]].concat();
             let (normal, _) = run(&dir, &t, "cycle_dclkreg");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_dclkreg");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_dclkreg",
+            );
             assert_eq!(normal.len(), 40, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -7527,7 +7962,11 @@ fn a_register_left_out_late_still_keeps_the_logic_it_samples_out() {
         for t in tiers() {
             let t = [&t[..], &[&g[..]]].concat();
             let (normal, _) = run(&dir, &t, "cycle_latecone");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_latecone");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_latecone",
+            );
             assert_eq!(normal.len(), 40, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -7570,8 +8009,8 @@ fn paths_through_processes_outside_still_keep_cross_delta_logic_out() {
                 "{w} {t:?} {normal:?} {gated:?}"
             );
             for (flags, env) in [
-                (&["--cycle"][..], &[][..]),
-                (&["--cycle", "--cycle-exact-meta"][..], &exact[..]),
+                (&["--cycle", "--two-state"][..], &[][..]),
+                (&["--cycle"][..], &exact[..]),
             ] {
                 let f = [&t[..], flags].concat();
                 let (cycle, err) = run_vars(&dir, &f, "cycle_xout", env);
@@ -7631,7 +8070,11 @@ fn a_register_with_a_reset_on_a_late_clock_keeps_the_logic_it_samples_out() {
         for t in tiers() {
             let t = [&t[..], &[&g[..]]].concat();
             let (normal, _) = run(&dir, &t, "cycle_lateasync");
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_lateasync");
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_lateasync",
+            );
             assert_eq!(normal.len(), 40, "{w} {t:?} {normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
@@ -7689,34 +8132,34 @@ fn cycle_strict_gives_each_code_with_what_where_why_and_fix() {
     let dir = tempdir("cycle-strict-each");
     analyze(&dir, "strict.vhd", include_str!("cycle/strict.vhd"));
     let cases: &[(&str, &[&str])] = &[
-        ("E4101", &[]),
-        ("E4110", &[]),
-        ("E4111", &[]),
-        ("E4112", &[]),
-        ("E4113", &[]),
-        ("E4114", &[]),
-        ("E4115", &[]),
-        ("E4117", &[]),
-        ("E4118", &[]),
-        ("E4119", &[]),
-        ("E4120", &[]),
-        ("E4121", &[]),
-        ("E4122", &[]),
-        ("E4123", &[]),
-        ("E4124", &[]),
-        ("E4125", &[]),
-        ("E4126", &[]),
-        ("E4127", &[]),
-        ("E4129", &[]),
-        ("E4130", &[]),
-        ("E4131", &[]),
-        ("E4132", &[]),
-        ("E4133", &[]),
-        ("E4134", &[]),
-        ("E4135", &[]),
-        ("E4137", &["--cycle-exact-meta"]),
-        ("E4138", &[]),
-        ("E4139", &[]),
+        ("E4101", &["--two-state"]),
+        ("E4110", &["--two-state"]),
+        ("E4111", &["--two-state"]),
+        ("E4112", &["--two-state"]),
+        ("E4113", &["--two-state"]),
+        ("E4114", &["--two-state"]),
+        ("E4115", &["--two-state"]),
+        ("E4117", &["--two-state"]),
+        ("E4118", &["--two-state"]),
+        ("E4119", &["--two-state"]),
+        ("E4120", &["--two-state"]),
+        ("E4121", &["--two-state"]),
+        ("E4122", &["--two-state"]),
+        ("E4123", &["--two-state"]),
+        ("E4124", &["--two-state"]),
+        ("E4125", &["--two-state"]),
+        ("E4126", &["--two-state"]),
+        ("E4127", &["--two-state"]),
+        ("E4129", &["--two-state"]),
+        ("E4130", &["--two-state"]),
+        ("E4131", &["--two-state"]),
+        ("E4132", &["--two-state"]),
+        ("E4133", &["--two-state"]),
+        ("E4134", &["--two-state"]),
+        ("E4135", &["--two-state"]),
+        ("E4137", &[]),
+        ("E4138", &["--two-state"]),
+        ("E4139", &["--two-state"]),
     ];
     for &(code, extra) in cases {
         let err = strict_err(&dir, &format!("t_{}", code.to_lowercase()), extra);
@@ -7744,7 +8187,7 @@ fn cycle_strict_gives_each_code_with_what_where_why_and_fix() {
         "strictforce.vhd",
         include_str!("cycle/strictforce.vhd"),
     );
-    let err = strict_err(&dir, "t_e4116", &[]);
+    let err = strict_err(&dir, "t_e4116", &["--two-state"]);
     assert!(
         err.contains("error[E4116]: ") && err.contains("error[E4128]: "),
         "{err}"
@@ -7977,6 +8420,7 @@ fn rare_reasons_are_named_in_the_report_and_under_strict() {
                 "--work=work:lib",
                 "--no-cache",
                 "--cycle-report",
+                "--two-state",
                 top,
             ],
         );
@@ -7990,6 +8434,7 @@ fn rare_reasons_are_named_in_the_report_and_under_strict() {
                 "--work=work:lib",
                 "--no-cache",
                 "--cycle-strict",
+                "--two-state",
                 top,
             ],
         );
@@ -8028,7 +8473,7 @@ fn rare_reasons_are_named_in_the_report_and_under_strict() {
 fn cycle_strict_lists_every_reason_sorted_grouped_and_capped() {
     let dir = tempdir("cycle-strict-many");
     analyze(&dir, "subset.vhd", include_str!("cycle/subset.vhd"));
-    let err = strict_err(&dir, "sub_tb", &[]);
+    let err = strict_err(&dir, "sub_tb", &["--two-state"]);
     let lines: Vec<usize> = (err.lines())
         .filter_map(|l| l.trim_start().strip_prefix("--> $DIR/subset.vhd:"))
         .map(|l| {
@@ -8061,7 +8506,7 @@ fn cycle_strict_lists_every_reason_sorted_grouped_and_capped() {
         "strict.vhd",
         &(include_str!("cycle/strict.vhd").to_string() + GROUPED),
     );
-    let err = strict_err(&dir, "t_many", &[]);
+    let err = strict_err(&dir, "t_many", &["--two-state"]);
     assert_eq!(err.matches("error[E4111]").count(), 1, "{err}");
     // Also when the text names each instance's signal: the first one's.
     assert_eq!(err.matches("error[E4119]").count(), 1, "{err}");
@@ -8142,20 +8587,20 @@ fn cycle_strict_reason_variants_are_triggered() {
         let (_, r) = row(&report, &format!("t_more.dut.{label}"));
         assert!(r.ends_with(want), "{label}: {r}");
     }
-    let err = strict_err(&dir, "t_more", &[]);
+    let err = strict_err(&dir, "t_more", &["--two-state"]);
     assert!(
         err.contains("error[E4139]: a `next` of an outer loop is not supported in cycle mode"),
         "{err}"
     );
 }
 
-/// 'U' at start under `--cycle-exact-meta` (owner decision A38): the second image shows the
+/// 'U' at start without `--two-state` (owner decision A38): the second image shows the
 /// testbench 'U' where the normal mode has it, from registers and a clocked variable without a
 /// start value, a vector whose high word alone stays 'U', an input that becomes 'U' after time 0,
 /// outputs read with and without a wait on them, and `BIT` and `BOOLEAN` outputs (also fields
 /// of a record with a `std_ulogic` one), never 'U'; a register whose enable is 'U' keeps its
 /// value as in the normal mode, not 'U'; a register that keeps 'U' gives '0' from
-/// the cap of 1024 clock edges on. The default contract (`--cycle`) and `YAVS_CYCLE_RAIL=off`
+/// the cap of 1024 clock edges on. The two-state contract (`--cycle --two-state`) and `YAVS_CYCLE_RAIL=off`
 /// give '0' throughout, and an event at 0 fs from 'U' to '0' the normal mode does not have.
 /// Widths 1 to 128.
 #[test]
@@ -8169,7 +8614,7 @@ fn u_at_start_is_followed_on_a_second_image() {
             let t = [&t[..], &[&g[..]]].concat();
             let (normal, _) = run(&dir, &t, "cycle_rail");
             assert_eq!(normal.len(), 13, "{normal:?}");
-            let exact = [&t[..], &["--cycle", "--cycle-exact-meta"]].concat();
+            let exact = [&t[..], &["--cycle"]].concat();
             let (cycle, err) = run(&dir, &exact, "cycle_rail");
             // Up to the cap the normal mode's lines; `held` gives '0' after it.
             let k = normal.len() - 1;
@@ -8197,7 +8642,11 @@ fn u_at_start_is_followed_on_a_second_image() {
             let mut want = zero(&normal);
             want.insert(0, normal[0].clone());
             want[1] = want[1].replace("0fs+0", "0fs+1");
-            let (two, _) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_rail");
+            let (two, _) = run(
+                &dir,
+                &[&t[..], &["--cycle", "--two-state"]].concat(),
+                "cycle_rail",
+            );
             assert_eq!(two, want, "{w} {t:?}");
             let (off, err) = run_vars(&dir, &exact, "cycle_rail", &[("YAVS_CYCLE_RAIL", "off")]);
             assert_eq!(off, want, "{w} {t:?}");
@@ -8244,14 +8693,7 @@ fn u_at_start_is_followed_on_a_second_image() {
 fn u_at_start_from_the_caches_gives_the_same_result() {
     let dir = tempdir("cycle-rail-cache");
     analyze(&dir, "rail.vhd", include_str!("cycle/rail.vhd"));
-    let args = [
-        "run",
-        "--work=work:lib",
-        "-gW=65",
-        "--cycle",
-        "--cycle-exact-meta",
-        "cycle_rail",
-    ];
+    let args = ["run", "--work=work:lib", "-gW=65", "--cycle", "cycle_rail"];
     let cold = yavs(&dir, &args);
     let warm = yavs_env(&dir, &args, &[("YAVS_CYCLE_CACHE_CHECK", "1")]);
     let again = yavs_env(&dir, &args, &[("YAVS_CYCLE_STATS", "1")]);
@@ -8274,12 +8716,7 @@ fn a_check_failing_on_the_second_image_ends_it() {
     for w in [1, 63, 64, 65, 128] {
         for mid in [false, true] {
             let t = [format!("-gW={w}"), format!("-gMID={mid}")];
-            let t = [
-                t[0].as_str(),
-                t[1].as_str(),
-                "--cycle",
-                "--cycle-exact-meta",
-            ];
+            let t = [t[0].as_str(), t[1].as_str(), "--cycle"];
             let (normal, _) = run(&dir, &t[..2], "cycle_railchk");
             let (cycle, err) = run(&dir, &t, "cycle_railchk");
             let (off, _) = run_vars(&dir, &t, "cycle_railchk", &[("YAVS_CYCLE_RAIL", "off")]);
@@ -8313,7 +8750,13 @@ fn a_check_failing_on_the_second_image_ends_it() {
 fn the_cycle_store_size_takes_mib() {
     let dir = tempdir("cycle-storemib");
     analyze(&dir, "rail.vhd", include_str!("cycle/rail.vhd"));
-    let args = ["run", "--work=work:lib", "--cycle", "cycle_rail"];
+    let args = [
+        "run",
+        "--work=work:lib",
+        "--cycle",
+        "--two-state",
+        "cycle_rail",
+    ];
     for v in ["0", "2G", "-1", "99999999999999999"] {
         let o = yavs_env(&dir, &args, &[("YAVS_CYCLE_CACHE_MIB", v)]);
         let err = String::from_utf8_lossy(&o.stderr);
@@ -8363,7 +8806,7 @@ fn the_second_image_follows_memories_calls_and_choices() {
             let (normal, _) = run(&dir, &t, "cycle_rail2");
             let normal = notes(normal);
             assert_eq!(normal.len(), 3, "{normal:?}");
-            let exact = [&t[..], &["--cycle", "--cycle-exact-meta"]].concat();
+            let exact = [&t[..], &["--cycle"]].concat();
             let (cycle, err) = run(&dir, &exact, "cycle_rail2");
             let cycle = notes(cycle);
             assert_eq!(cycle.len(), 3, "{cycle:?}");
@@ -8432,7 +8875,7 @@ fn the_second_image_follows_memories_calls_and_choices() {
     }
 }
 
-/// Clocked members choose on each image's own values under `--cycle-exact-meta`: where the
+/// Clocked members choose on each image's own values without `--two-state`: where the
 /// region's image reads a 'U' as 0 and so takes a branch the normal mode does not (`s = '0'`,
 /// `unsigned(ad) < 2`, `when "00"`), the second image takes the normal mode's, and a register
 /// loaded from a 'U' there shows the normal mode's value, not 'U' (A43: following the region's
@@ -8456,7 +8899,7 @@ fn clocked_choices_on_a_u_take_each_images_own_branch() {
                 normal.len() == 1 && normal[0].ends_with(&want),
                 "{normal:?}"
             );
-            let exact = [&t[..], &["--cycle", "--cycle-exact-meta"]].concat();
+            let exact = [&t[..], &["--cycle"]].concat();
             let (cycle, err) = run(&dir, &exact, "cycle_railclk");
             let cycle = notes(cycle);
             assert!(
@@ -8499,7 +8942,7 @@ fn the_second_image_runs_a_member_that_reads_the_regions_image() {
                 normal[1].ends_with(&format!("y={one} q={one}")),
                 "{normal:?}"
             );
-            let exact = [&t[..], &["--cycle", "--cycle-exact-meta"]].concat();
+            let exact = [&t[..], &["--cycle"]].concat();
             let env = [("YAVS_CYCLE_GUARD", "all")];
             let (cycle, err) = run_vars(&dir, &exact, "cycle_railguard", &env);
             let cycle = notes(cycle);
@@ -8538,7 +8981,7 @@ fn the_second_image_keeps_every_word_of_a_wide_register() {
                 normal.len() == 1 && normal[0].ends_with(&want),
                 "{normal:?}"
             );
-            let exact = [&t[..], &["--cycle", "--cycle-exact-meta"]].concat();
+            let exact = [&t[..], &["--cycle"]].concat();
             let (cycle, err) = run(&dir, &exact, "cycle_railkeep");
             let cycle = notes(cycle);
             assert!(
@@ -8576,7 +9019,7 @@ fn combinational_choices_on_a_u_show_no_u_the_normal_mode_lacks() {
                 normal.len() == 1 && normal[0].ends_with(&want),
                 "{normal:?}"
             );
-            let exact = [&t[..], &["--cycle", "--cycle-exact-meta"]].concat();
+            let exact = [&t[..], &["--cycle"]].concat();
             let (cycle, err) = run(&dir, &exact, "cycle_railcomb");
             let cycle = notes(cycle);
             assert!(
@@ -8602,6 +9045,7 @@ fn the_rail_knob_names_its_values() {
         "--work=work:lib",
         "--no-cache",
         "--cycle",
+        "--two-state",
         "cycle_rail",
     ];
     let o = yavs_env(&dir, &args, &[("YAVS_CYCLE_RAIL", "of")]);
@@ -8670,7 +9114,11 @@ fn an_out_parameter_starts_at_its_default_in_cycle_mode() {
     );
     for t in tiers() {
         let (normal, _) = run(&dir, &t, "cycle_outdef");
-        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_outdef");
+        let (cycle, err) = run(
+            &dir,
+            &[&t[..], &["--cycle", "--two-state"]].concat(),
+            "cycle_outdef",
+        );
         assert_eq!(normal.len(), 2, "{t:?} {normal:?}");
         assert!(
             normal[1].ends_with("o1=0 o2=1 o3='1' o4=1 o5='1' o6=5 o7=5"),
@@ -8778,7 +9226,7 @@ fn parameter_ranges_are_checked_as_in_the_normal_mode() {
             let err = String::from_utf8_lossy(&o.stderr);
             assert_eq!(o.status.code(), Some(1), "{top} {mode:?}: {err}");
             // A region that is empty runs nothing cycle-based: the normal mode's message.
-            let want = if mode.len() == 1 && members != "0 of 2" {
+            let want = if mode.contains(&"--two-state") && members != "0 of 2" {
                 bare(&msg)
             } else {
                 msg.clone()
@@ -8798,9 +9246,19 @@ fn parameter_ranges_are_checked_as_in_the_normal_mode() {
         assert_eq!(shown[0], shown[2], "{top}");
     }
     // The reason of a range read where it was not declared.
-    let report = with_report(&dir, &["--cycle"], "sr_frange", String::new());
+    let report = with_report(
+        &dir,
+        &["--cycle", "--two-state"],
+        "sr_frange",
+        String::new(),
+    );
     assert!(report.contains("whose range reads a variable"), "{report}");
-    let report = with_report(&dir, &["--cycle"], "sr_subrange", String::new());
+    let report = with_report(
+        &dir,
+        &["--cycle", "--two-state"],
+        "sr_subrange",
+        String::new(),
+    );
     assert!(
         report.contains("the subtype `t`, whose range reads a variable"),
         "{report}"
@@ -8816,7 +9274,7 @@ fn parameter_ranges_are_checked_as_in_the_normal_mode() {
     ] {
         for t in tiers() {
             let (normal, _) = run(&dir, &t, top);
-            let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), top);
+            let (cycle, err) = run(&dir, &[&t[..], &["--cycle", "--two-state"]].concat(), top);
             assert!(
                 normal.len() == 2 && normal[1].ends_with(last),
                 "{top} {normal:?}"
@@ -8901,9 +9359,9 @@ fn waves_of_signals_inside_the_region_follow_the_normal_mode_per_time_step() {
         let (_, _) = wave(&["--wave-include=cycle_waves.dut.mix"], "nn.fst", &[]);
         for exact in [false, true] {
             let mode: &[&str] = if exact {
-                &["--cycle", "--cycle-exact-meta"]
-            } else {
                 &["--cycle"]
+            } else {
+                &["--cycle", "--two-state"]
             };
             let stats = [("YAVS_CYCLE_STATS", "1")];
             let (c_out, c_err) = wave(mode, "c.fst", &stats);
@@ -8991,7 +9449,7 @@ fn waves_under_cycle_do_not_take_a_region_cached_without_them() {
         &with_width(include_str!("cycle/waves.vhd"), 8),
     );
     let run = |wave: bool| {
-        let mut args = vec!["run", "--work=work:lib", "--cycle"];
+        let mut args = vec!["run", "--work=work:lib", "--cycle", "--two-state"];
         if wave {
             args.push("--wave=c.fst");
         }

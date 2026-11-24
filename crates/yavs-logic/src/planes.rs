@@ -67,6 +67,9 @@ fn to_x01z([a, b, c, d]: B) -> B {
 fn to_ux01(x: B) -> B {
     [!is0(x) & !is_u(x), is0(x) | is1(x), 0, 0]
 }
+fn to_01(x: B) -> B {
+    [is1(x), !0, 0, 0]
+}
 
 /// One block: elements `64i..64i+64`, planes 0 to 3 (code bits 0 to 3).
 pub type Block = [u64; 4];
@@ -180,6 +183,7 @@ impl Repr for Planes {
             UnOp::ToX01 => self.map(to_x01),
             UnOp::ToX01Z => self.map(to_x01z),
             UnOp::ToUx01 => self.map(to_ux01),
+            UnOp::To01 => self.map(to_01),
         }
     }
     fn slice(&self, lo: usize, n: usize) -> Self {

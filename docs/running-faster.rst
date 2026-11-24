@@ -176,9 +176,9 @@ Cycle mode
 ``--cycle`` runs the clocked and combinational RTL of a design as compiled code, evaluated once per clock edge, and
 leaves the testbench in the normal simulation (:doc:`cycle-mode`).
 
-* **What it trades.** The delta cycles inside a clock edge, ``--cov``, ``--vhpi``,
-  activity counts and the debugger, and some detail in the order and delta of the design's messages. What the region
-  computes with is on :doc:`two-state`.
+* **What it trades.** The delta cycles inside a clock edge, ``--cov``, ``--vhpi``, activity counts and the debugger,
+  and some detail in the order and delta of the design's messages. With ``--two-state`` also the metavalues
+  (below).
 * **When to try it.** A long run of a synchronous design whose testbench mostly drives and samples ports. It does not
   help when the testbench is most of the run, when the test is short, or when little of the design joins. It is
   experimental, so compare its results with the normal mode first (:ref:`cycle-check`).
@@ -186,16 +186,21 @@ leaves the testbench in the normal simulation (:doc:`cycle-mode`).
 Two-state values
 ----------------
 
-Two-state values are not a speed option of their own. For speed use ``--cycle`` (:doc:`cycle-mode`); a plain ``--cycle``
-run computes the region on ``0`` and ``1`` only, which is part of what makes it fast. :doc:`two-state` is for
-understanding what that changes in a result: where a metavalue (``'U'``, ``'X'`` or ``'Z'``) read as ``0`` or ``1``
-explains a difference from the normal mode.
+``--two-state`` makes the design below the testbench compute with ``0`` and ``1`` only (:doc:`two-state`).
+``--cycle --two-state`` is the fast combination: the region computes two-state code, more processes join, and it does
+not follow the ``'U'`` start values. ``--two-state`` alone, in the normal mode, is a diagnostic mode and not a speed
+option.
 
 * **What it trades.** The metavalues: a register without a reset, an unconnected input or an ``'X'`` from the design
-  cannot show in the region, and the testbench reads ``0`` or ``1`` where the normal mode gives ``'U'``, ``'X'`` or
-  ``'Z'``.
-* **When to read it.** When a test passes or fails differently with ``--cycle`` than in the normal mode. A test that
-  checks reset state or an ``'X'`` from the design belongs in the normal mode.
+  cannot show below the top-level unit, and the testbench reads ``0`` or ``1`` where the normal mode gives ``'U'`` or
+  ``'X'``. A ``'Z'`` read below the top-level unit is ``0``, so bus models there that rely on ``'Z'`` can
+  report false errors, and pull-ups and open-drain buses below the top-level unit break.
+* **What it costs.** In the normal mode it aims to run as fast as the default; today it is slower: most unit tests
+  run within a few percent of the default, some up to about half again as long, and large designs such as processor
+  cores take about one and a half to four times as long. Bringing it to parity is planned.
+* **When to try it.** With ``--cycle``, for speed (:ref:`cycle-check`). Alone, to check that a design does not depend on metavalues
+  (with ``--init-unset`` and ``--init-x`` set to ``0``, ``1`` and ``random``, :doc:`start-values`), or to split a
+  difference between cycle mode and the normal mode (:doc:`two-state`).
 
 Finding where the time goes
 ---------------------------

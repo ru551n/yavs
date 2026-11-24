@@ -34,8 +34,9 @@ or later (`pip install vunit-yavs` installs it, a pre-release) and yavs 0.21.2 o
 | `yavs.tier_compile` (`"wait"` or `"background"`) | `yavs run --tier-compile=MODE`: `wait` (yavs's default) makes a simulation wait while a function compiles, `background` compiles alongside it on a thread at the lowest system priority |
 | `yavs.cycle` (`"off"`, `"on"` or `"strict"`) | `yavs run --cycle` for `"on"`, `--cycle-strict` for `"strict"` (cycle mode, below); default `"off"`. Not passed to `elab` |
 | `yavs.no_asserts` (`True` or `False`) | `yavs run --no-asserts` for `True`: the `assert` and `report` statements of the processes below the test bench entity (the design, verification components, checkers it instantiates) are not evaluated, in the normal mode and in cycle mode; the test bench's own processes and every check or log call keep running. Default `False`; a value that is not a boolean is refused at setup. Not passed to `elab` |
+| `yavs.two_state` (`True` or `False`) | `yavs run --two-state` for `True`: the design below the testbench holds only `0` and `1` (metavalues it reads count as `0`), with or without `yavs.cycle`; in cycle mode no process is kept out for a metavalue. Default `False`; a value that is not a boolean is refused at setup. Not passed to `elab` |
 | `yavs.init_unset` (`"0"`, `"1"`, `"random"` or `"random:SEED"`) | `yavs run --init-unset=VALUE`: the start value of `std_ulogic` elements of signals and process variables without an initial value (default `'U'`); a wrong value fails when it is set, naming the closest one. Not passed to `elab` |
-| `yavs.init_x` (the same values) | `yavs run --init-x=VALUE`: the value of the metavalue literals the design assigns; with `yavs.cycle` every metavalue literal of a cycle-based process below the top-level unit takes it. Not passed to `elab` |
+| `yavs.init_x` (the same values) | `yavs run --init-x=VALUE`: the value of the metavalue literals the design assigns; with `yavs.cycle` and `yavs.two_state` every metavalue literal of a cycle-based process below the top-level unit takes it. Not passed to `elab` |
 | `enable_coverage` (VUnit's option) | `yavs run --cov-file=<test output>/yavs/coverage.ycov --cov-test=<test name>` with the kinds below (coverage, below) |
 | `yavs.cov_kind` (list of strings) | `yavs run --cov-kind=LIST`: `statement`, `branch`, `toggle`, `condition`, `assert`, `expression`, `combination`, `fsm`. No kind is on by default |
 | `yavs.init_files.after_load` | Console command files sourced after each `vunit_load` |
@@ -89,10 +90,10 @@ the top-level unit that does not fit an error. A wrong value is refused at setup
 command-line flag: set the option in the run script.
 
 - Cycle-based processes evaluate their `report` and `assert` statements, but give no library warnings. `yavs.no_asserts` drops those below the test bench entity, in both modes: see [Running faster](https://yavs.readthedocs.io/en/latest/running-faster.html).
-- They compute with `0` and `1`: metavalues read as `0`. Outside processes keep full semantics ([values in cycle mode](https://yavs.readthedocs.io/en/latest/two-state.html)).
+- With `yavs.two_state` they compute with `0` and `1` (metavalues read as `0`); without it cycle mode keeps the metavalues the testbench would see, with limits. Outside processes keep full semantics ([two-state values](https://yavs.readthedocs.io/en/latest/two-state.html)).
 - `--yavs-surfer` shows the waves, with the signals inside the region per time step; none of coverage, `--yavs-debug` or `--yavs-interactive` in the same test (the test fails before yavs starts, error E4102 of yavs).
 
-The scheduling, what joins and the report are on the [cycle mode page](https://yavs.readthedocs.io/en/latest/cycle-mode.html) of the yavs user guide. To see what would join, set `yavs.sim_flags` to `["--cycle-report"]` for one test with `yavs.cycle` `"off"`: yavs prints the report and does not simulate, so that test fails. `yavs.sim_flags` `["--cycle-exact-meta"]` with `yavs.cycle` `"on"` or `"strict"` keeps part of the metavalues for a test, and the values in the message of a failed check.
+The scheduling, what joins and the report are on the [cycle mode page](https://yavs.readthedocs.io/en/latest/cycle-mode.html) of the yavs user guide. To see what would join, set `yavs.sim_flags` to `["--cycle-report"]` for one test with `yavs.cycle` `"off"`: yavs prints the report and does not simulate, so that test fails. `yavs.two_state` `True` with `yavs.cycle` `"on"` or `"strict"` runs the region on two-state values (metavalues read as `0`, faster); without it cycle mode keeps the metavalues the testbench would see and the values in the message of a failed check.
 
 ## Coverage
 

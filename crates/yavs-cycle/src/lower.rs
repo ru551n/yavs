@@ -30,7 +30,7 @@ pub(crate) enum Ref {
     Sig(u32),
     Loc(u32),
     Edge,
-    /// Under `--cycle-exact-meta`: two words, how far the region's image lies from this one (0
+    /// Under exact-meta (without `--two-state`): two words, how far the region's image lies from this one (0
     /// on the region's own, see [`Op::Other`]) and the bits of a `'U'` start value ([`Op::Seed`]).
     Oth,
 }
@@ -156,7 +156,7 @@ pub(crate) enum Piece {
     /// the text of each.
     Enum(usize, Box<[Box<[u8]>]>),
     /// A `std_ulogic` value in arg `n` (0 or 1): the texts of `'0'`, `'1'`, `'U'` and `'X'`, the
-    /// last two for the second image of `--cycle-exact-meta` (`Note::text_meta`).
+    /// last two for the second image of exact-meta (without `--two-state`) (`Note::text_meta`).
     Logic(usize, Box<[Box<[u8]>]>),
     /// The `len` elements of arg `n`, leftmost first, `bits` per digit (1, 3 or 4); `logic`:
     /// `std_ulogic` elements, which may show `'U'` or `'X'` (`Note::text_meta`).
@@ -271,7 +271,7 @@ fn range(lo: impl std::fmt::Display, hi: impl std::fmt::Display, down: bool) -> 
 
 impl Check {
     /// The message for the operands the code stored (`a`, and `b` for arithmetic); `None`: the
-    /// code stored none (A34, without `--cycle-exact-meta`), the message says what failed.
+    /// code stored none (A34, without exact-meta (without `--two-state`)), the message says what failed.
     pub(crate) fn message(&self, vals: Option<(i64, i64)>) -> String {
         let Some((a, b)) = vals else {
             return self.bare();
@@ -593,7 +593,7 @@ pub(crate) enum Op {
         site: u32,
         args: Vec<(Ref, u32)>,
     },
-    /// Under `--cycle-exact-meta`: `src` (`len` elements) as the region's image holds it, read
+    /// Under exact-meta (without `--two-state`): `src` (`len` elements) as the region's image holds it, read
     /// from that image by the second one (`oth`, the [`Ref::Oth`] word: the distance to it in
     /// bytes, 0 on the region's own image, which reads its own `src`).
     Other {
@@ -602,7 +602,7 @@ pub(crate) enum Op {
         len: u32,
         oth: Ref,
     },
-    /// Under `--cycle-exact-meta`: a start value `'U'`: `len` ones on the images that set `'U'`
+    /// Under exact-meta (without `--two-state`): a start value `'U'`: `len` ones on the images that set `'U'`
     /// seeds to 1, zeros on the region's (the second word of `oth`).
     Seed {
         dst: Ref,
@@ -855,7 +855,7 @@ pub(crate) struct Body {
     /// Elements of logic variables without an initial value (`'U'`), which start at 0.
     pub uninit: u64,
     /// The process variables among those (first word, elements): the second image of
-    /// `--cycle-exact-meta` starts them at 1 (`rt::Rail`).
+    /// exact-meta (without `--two-state`) starts them at 1 (`rt::Rail`).
     pub useed: Vec<(u32, u32)>,
     /// The `std_ulogic` leaves of clocked variables without an initial value (first word,
     /// elements, the salt of the variable): `--init-unset` sets them at initialisation
@@ -870,7 +870,7 @@ pub(crate) struct Body {
     /// only, so a run with another seed reuses the code and the cache (A68).
     #[serde(default)]
     pub rands: Vec<(u32, u32, u64)>,
-    /// Under `--cycle-exact-meta`: a comparison or conversion of logic values the code cannot
+    /// Under exact-meta (without `--two-state`): a comparison or conversion of logic values the code cannot
     /// give the normal mode's result on a metavalue (`Lx::differs`): the second image may take
     /// another branch, so its registers keep the region's values where only it changed them
     /// (`rt::RegionProc::rail_keep`).
@@ -1212,7 +1212,7 @@ const NOTE_RESET: &str =
 const NOTE_COMB: &str = "an assert or report that runs outside a clock edge";
 
 /// `Part::lit` of an aggregate that holds a metavalue literal and other values: its codes are
-/// not kept, so a matching comparison with it (and any under `--cycle-exact-meta`) stays out.
+/// not kept, so a matching comparison with it (and any under exact-meta (without `--two-state`)) stays out.
 const LIT_MIXED: u32 = u32::MAX;
 
 /// Why a comparison or arithmetic with a literal holding a metavalue keeps its process out.
@@ -1300,6 +1300,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         lit_vals: Vec::new(),
         rands: Vec::new(),
         lit_at: None,
+        lit_zero: false,
         lit_cmp: BTreeSet::new(),
         bounds: false,
         sigs: Vec::new(),
@@ -1418,10 +1419,10 @@ struct Lx<'a> {
     unset_names: Vec<String>,
     /// While an `--init-x` literal is lowered: the option and the literal's salt.
     x: Option<(yavs_logic::start::Fill, u64)>,
-    /// Under `--cycle-exact-meta`: booleans computed from the region's values on every image
+    /// Under exact-meta (without `--two-state`): booleans computed from the region's values on every image
     /// (`Lx::other`), for `Body::keep`.
     sure: HashSet<Ref>,
-    /// Under `--cycle-exact-meta`: a word set on the second image when an operand `Lx::other`
+    /// Under exact-meta (without `--two-state`): a word set on the second image when an operand `Lx::other`
     /// reads there differs from the region's (a combinational member, `Lx::body`).
     unsure: Option<Ref>,
     checks: Vec<(Check, Vec<Span>)>,
@@ -1436,6 +1437,8 @@ struct Lx<'a> {
     lit_at: Option<yavs_diag::Span>,
     /// The slots of `random` literal bits (`Body::rands`).
     rands: Vec<(u32, u32, u64)>,
+    /// The literal being lowered is the value of a package's call elaboration made (`lit_fill`).
+    lit_zero: bool,
     /// The literals of `lits` a comparison took.
     lit_cmp: BTreeSet<u32>,
     /// The calls folded from `Elaborated::region_calls` that reported (`Body::reports`).
@@ -2179,7 +2182,7 @@ impl Lx<'_> {
     /// alternative, or `others`, needs no test (the choices cover every value).
     fn case(&mut self, sel: ExprId, matching: bool, alts: &[(&ChoiceSet, Br)]) -> R<()> {
         let v = self.expr(sel)?;
-        // Under `--cycle-exact-meta` a selector with a metavalue matches no choice of
+        // Under exact-meta (without `--two-state`) a selector with a metavalue matches no choice of
         // `std_ulogic` codes: the `others` branch, as in the normal mode.
         let nine = self.nine_valued(self.db.base(self.db.exprs[sel].subtype));
         let (v, follow) = match v {
@@ -2241,10 +2244,7 @@ impl Lx<'_> {
                     if codes.len() != p.len as usize {
                         return Err("a `case` choice of another length than the selector".into());
                     }
-                    // A metavalue of the choice takes the bits a literal there would.
-                    let salt = lit_salt(self.db, self.db.exprs[*x].span);
-                    let bits = fill_bits(crate::region::meta_fill(), salt, codes.len() as u32);
-                    self.match_codes(*p, &codes, matching, &bits)?
+                    self.match_codes(*p, &codes, matching)?
                 }
                 _ => {
                     return Err("a `case` choice of this kind".into());
@@ -2269,38 +2269,27 @@ impl Lx<'_> {
     }
 
     /// `p` against the `std_ulogic` codes of a literal (from the left): `'-'` matches anything
-    /// in a matching comparison; any other metavalue keeps the process out (a two-state value
-    /// is never one, while the normal mode can hold it).
-    fn match_codes(&mut self, p: Part, codes: &[u8], matching: bool, bits: &Bits) -> R<Ref> {
+    /// in a matching comparison; any other metavalue makes a two-state region's comparison false
+    /// (A74: a two-state value is never one) and keeps the process out otherwise.
+    fn match_codes(&mut self, p: Part, codes: &[u8], matching: bool) -> R<Ref> {
         let n = codes.len();
         let mut val = vec![0u64; words(n as u32) as usize];
         let mut care = vec![0u64; val.len()];
-        let mut rnd = vec![0u64; val.len()];
         let two = self.meta_joins();
-        let is = |m: &[u64], el: usize| (m[el / 64] >> (el % 64)) & 1;
         for (k, &c) in codes.iter().enumerate() {
             let el = n - 1 - k;
             let (bit, keep) = match c {
                 2 | 6 => (0, true),
                 3 | 7 => (1, true),
                 8 if matching => (0, false),
-                // A two-state region compares with the literal's bits (A57), the run's random
-                // ones from their slot.
-                0 | 1 | 5 | 8 if two => {
-                    if bits.1.as_ref().is_some_and(|(_, m)| is(m, el) == 1) {
-                        rnd[el / 64] |= 1 << (el % 64);
-                    }
-                    (is(&bits.0, el), true)
-                }
+                // A two-state value never equals a metavalue (A74): the comparison is false.
+                0 | 1 | 4 | 5 | 8 if two => return Ok(self.bool_lit(false).r),
                 _ => return Err(META_CMP.into()),
             };
             val[el / 64] |= bit << (el % 64);
             care[el / 64] |= u64::from(keep) << (el % 64);
         }
-        let expect: Bits = (
-            val.into(),
-            (rnd.iter().any(|&w| w != 0)).then(|| (bits.1.as_ref().map_or(0, |b| b.0), rnd.into())),
-        );
+        let expect: Bits = (val.into(), None);
         let a = self.whole(p);
         let mut all = vec![0u64; care.len()];
         set_bits(&mut all, 0, n as u32);
@@ -3889,6 +3878,23 @@ impl Lx<'_> {
         crate::region::two_state() && !self.top
     }
 
+    /// The bits of a metavalue literal here: `--init-x`'s, but `0` inside an inlined subprogram
+    /// of a package, or in the value of a call of one elaboration made, whose body the normal
+    /// mode runs four-state and maps its results (A71).
+    fn lit_fill(&self) -> yavs_logic::start::Fill {
+        let db = self.db;
+        if self.lit_zero
+            || self
+                .frames
+                .iter()
+                .any(|f| in_package(db, db.decls[f.callee].scope))
+        {
+            yavs_logic::start::Fill::Zero
+        } else {
+            crate::region::meta_fill()
+        }
+    }
+
     /// `--init-unset`: the `std_ulogic` leaves of variable `d` (of elaborated shape `shape`, placed
     /// in `v` in the order of its leaves) for `Body::unset`, with the normal mode's salt; a variable
     /// whose leaves do not match its shape keeps its process out.
@@ -4793,7 +4799,13 @@ impl Lx<'_> {
             return Ok(self.fresh_like(h));
         }
         if let Some(c) = self.fold(x) {
-            return self.literal(db.base(ex.subtype), &c);
+            let pkg = ex.value.is_none()
+                && matches!(&ex.kind, ExprKind::Call { callee, .. }
+                    if in_package(db, db.decls[*callee].scope));
+            let was = std::mem::replace(&mut self.lit_zero, pkg);
+            let v = self.literal(db.base(ex.subtype), &c);
+            self.lit_zero = was;
+            return v;
         }
         match &ex.kind {
             ExprKind::Obj(_)
@@ -5280,7 +5292,7 @@ impl Lx<'_> {
             let lit = v.lit.filter(|&k| k != LIT_MIXED);
             // `(others => 'X')` under `--init-x=random`: a bit of its own each element (A62),
             // the salt of the aggregate.
-            let rand = match (lit, self.meta_joins(), crate::region::meta_fill()) {
+            let rand = match (lit, self.meta_joins(), self.lit_fill()) {
                 (Some(_), true, f @ yavs_logic::start::Fill::Random(_)) => {
                     let bits = fill_bits(f, lit_salt(db, db.exprs[x].span), n);
                     self.lit_value(t.r, n, &bits);
@@ -5629,7 +5641,7 @@ impl Lx<'_> {
         let mut rnd = vec![0u64; val.len()];
         let mut meta = false;
         // A two-state region gives a metavalue the bits of `--init-x` (A57), 0 without it.
-        let (two, fill) = (self.meta_joins(), crate::region::meta_fill());
+        let (two, fill) = (self.meta_joins(), self.lit_fill());
         let mut salt = self.lit_at.map_or(0, |at| lit_salt(self.db, at));
         for (p, &code) in codes.iter().enumerate() {
             // Row-major element `p` from the left is element `n - 1 - p`.
@@ -6374,7 +6386,7 @@ impl Lx<'_> {
                             // A two-state value is never a metavalue.
                             "is_x" => return Ok(Val::Part(self.bool_lit(false))),
                             // A metavalue gives '0' (the default `xmap`): so on every image of
-                            // `--cycle-exact-meta`.
+                            // exact-meta (without `--two-state`).
                             "to_bit" | "to_bitvector" | "to_01" if args.len() == 1 => {
                                 let v = one(self)?;
                                 return self.meta_zero(v).map(no_dims);
@@ -6520,7 +6532,7 @@ impl Lx<'_> {
                         Ok(Val::Part(t))
                     }
                     // `??` of a metavalue is false, `to_01` and `to_bitvector` give '0' for one
-                    // (the default `xmap`): so on every image of `--cycle-exact-meta`.
+                    // (the default `xmap`): so on every image of exact-meta (without `--two-state`).
                     I::Truthy | I::To01 | I::ToBitVector if args.len() == 1 => {
                         let v = one(self)?;
                         self.meta_zero(v).map(no_dims)
@@ -7054,18 +7066,15 @@ impl Lx<'_> {
         }
         match b.lit.or(a.lit) {
             // An aggregate of a metavalue literal and other values: its codes are not kept.
-            Some(LIT_MIXED) if matching || !self.meta_joins() => {
-                return Err(META_CMP.into());
-            }
-            Some(LIT_MIXED) | None => {}
+            Some(LIT_MIXED) => return Err(META_CMP.into()),
+            None => {}
             Some(k) => {
                 // The literal's own codes decide (`'-'` as a mask when matching).
                 let v = if b.lit.is_some() { a } else { b };
                 self.lit_cmp.insert(k);
                 let codes = self.lits[k as usize].clone();
                 let ov = if nine && !ne { self.other(&v) } else { None };
-                let bits = self.lit_vals[k as usize].clone();
-                let r = self.match_codes(ov.unwrap_or(v), &codes, matching, &bits)?;
+                let r = self.match_codes(ov.unwrap_or(v), &codes, matching)?;
                 if ov.is_some() {
                     self.sure.insert(r);
                 }
@@ -7075,7 +7084,7 @@ impl Lx<'_> {
                 return self.not(Val::Part(part_of(r, 1)));
             }
         }
-        // Under `--cycle-exact-meta` every image compares the region's values: a choice on a
+        // Under exact-meta (without `--two-state`) every image compares the region's values: a choice on a
         // start value is the region's on the second image too (`Lx::other`).
         let o = if nine && !(matching && ne) {
             self.other(&a).zip(self.other(&b))
@@ -7098,7 +7107,7 @@ impl Lx<'_> {
         Ok(Val::Part(t))
     }
 
-    /// Under `--cycle-exact-meta`: `p` as the region's image holds it, read there by every
+    /// Under exact-meta (without `--two-state`): `p` as the region's image holds it, read there by every
     /// image ([`Op::Other`]; its own value on the region's image), so a comparison or conversion
     /// of it takes the region's choice on each, as without the second image, and never makes a
     /// `'U'` where the normal mode has a value. A literal is itself; `None` where that image's
@@ -7482,7 +7491,7 @@ fn own_sigs(ops: Vec<Op>, w: &HashSet<u32>) -> Vec<Op> {
 }
 
 /// Every condition of `ops` (an `If`'s, a boolean `Select`'s) follows the normal mode on every
-/// image of `--cycle-exact-meta`: computed only from `sure` ones (`Lx::other`), literals and
+/// image of exact-meta (without `--two-state`): computed only from `sure` ones (`Lx::other`), literals and
 /// the edge word, through gates and copies, at the place it is read; else the second image may
 /// take another branch on a start value (`Body::keep`).
 fn conds_sure(ops: &[Op], sure: &HashSet<Ref>) -> bool {
@@ -8332,7 +8341,7 @@ impl Lx<'_> {
                     }
                     None => {
                         self.uninit += u64::from(p.len);
-                        // `'U'`: ones on the second image of `--cycle-exact-meta`.
+                        // `'U'`: ones on the second image of exact-meta (without `--two-state`).
                         if crate::region::exact_meta() {
                             self.ops.push(Op::Seed {
                                 dst: p.r,
@@ -8733,4 +8742,21 @@ fn trial_value(key: u64, t: u64) -> i64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     ((z ^ (z >> 31)) % 4096) as i64 + 1
+}
+
+/// Whether scope `s` is in a package or package body.
+fn in_package(db: &Db, mut s: yavs_sem::ScopeId) -> bool {
+    loop {
+        let sc = &db.scopes[s];
+        if matches!(
+            sc.kind,
+            yavs_sem::scope::ScopeKind::Package | yavs_sem::scope::ScopeKind::PackageBody
+        ) {
+            return true;
+        }
+        match sc.parent {
+            Some(p) => s = p,
+            None => return false,
+        }
+    }
 }

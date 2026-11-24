@@ -115,6 +115,49 @@ class FlagOption(Option):
         )
 
 
+def scope_paths(value):
+    """
+    The paths of a scope option: a string or a list of strings, None for anything else
+    """
+    paths = [value] if isinstance(value, str) else value
+    if isinstance(paths, (list, tuple)) and paths and all(isinstance(p, str) and p.strip() for p in paths):
+        return list(paths)
+    return None
+
+
+class ScopeOption(Option):
+    """
+    Must be an instance path such as "tb.dut" or a list of them (yavs run --cycle=PATH)
+    """
+
+    def validate(self, value):
+        if scope_paths(value) is None:
+            raise ValueError(
+                f"Option {self.name!r} must be an instance path from the top-level unit, such as \"tb.dut\", "
+                f"or a list of them (yavs run --cycle=PATH, one per path). Got {value!r}."
+            )
+
+
+class TwoStateOption(Option):
+    """
+    Must be False (the default), True (yavs run --two-state, the design under test yavs finds), an instance
+    path or a list of them (yavs run --two-state=PATH)
+    """
+
+    def validate(self, value):
+        words = {"true": True, "on": True, "yes": True, "1": True, "false": False, "off": False, "no": False, "0": False}
+        guess = words.get(str(value).strip().lower())
+        # "on" and "off" are meant as a flag, not as a path
+        if isinstance(value, bool) or (scope_paths(value) is not None and guess is None):
+            return
+        hint = f" Did you mean {guess!r}?" if guess is not None else ""
+        raise ValueError(
+            f"Option {self.name!r} must be True (yavs run --two-state: the design under test yavs finds holds only "
+            f"0 and 1), an instance path such as \"tb.dut\" or a list of them (yavs run --two-state=PATH), or "
+            f"False (the default). Got {value!r}.{hint}"
+        )
+
+
 class InitOption(Option):
     """
     Must be "0", "1", "random" or "random:SEED" (yavs run --init-unset, --init-x); 0 and 1 may be integers
@@ -348,10 +391,8 @@ class YavsInterface(SimulatorInterface):
             "yavs.no_asserts",
             "yavs run --no-asserts: the asserts and reports below the top-level unit are not evaluated",
         ),
-        FlagOption(
-            "yavs.two_state",
-            "yavs run --two-state: the design below the top-level unit holds only 0 and 1",
-        ),
+        ScopeOption("yavs.cycle_scope"),
+        TwoStateOption("yavs.two_state"),
         InitOption("yavs.init_unset"),
         InitOption("yavs.init_x"),
         ListOfStringOption("yavs.cov_kind"),
@@ -882,7 +923,14 @@ class YavsInterface(SimulatorInterface):
                     'Fix: drop those, or set yavs.cycle to "off" for this test.'
                 )
                 return False
-        two_state = config.sim_options.get("yavs.two_state", False) and not elaborate_only
+        cycle_scope = config.sim_options.get("yavs.cycle_scope")
+        if cycle_scope is not None and cycle == "off" and not elaborate_only:
+            print(
+                f"error: the sim option yavs.cycle_scope={cycle_scope!r} needs yavs.cycle \"on\" or \"strict\": "
+                'it chooses the scope of cycle mode. Fix: set yavs.cycle, or drop yavs.cycle_scope.'
+            )
+            return False
+        two_state = config.sim_options.get("yavs.two_state", False) if not elaborate_only else False
         if debug or surfer:
             if not self._take_debug_session(test_suite_name):
                 return False
@@ -917,9 +965,14 @@ class YavsInterface(SimulatorInterface):
 
         # Cycle mode, before the raw flags too (a --cycle in yavs.sim_flags is the simulator's to judge)
         if cycle != "off" and not elaborate_only:
-            cmd += [CYCLE_FLAGS[cycle]]
-        if two_state:
+            if cycle_scope is None:
+                cmd += [CYCLE_FLAGS[cycle]]
+            else:
+                cmd += [f"{CYCLE_FLAGS[cycle]}={p}" for p in scope_paths(cycle_scope)]
+        if two_state is True:
             cmd += ["--two-state"]
+        elif two_state:
+            cmd += [f"--two-state={p}" for p in scope_paths(two_state)]
 
         if config.sim_options.get("yavs.no_asserts", False) and not elaborate_only:
             cmd += ["--no-asserts"]

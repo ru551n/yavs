@@ -149,6 +149,7 @@ With ``--no-asserts``, both statements are dropped, the note says so, and the ru
       note: `--no-asserts`: 2 assert and report statements in 1 process below the top-level unit are not evaluated
 
       cycle mode: 2 of 4 processes run cycle-based, on the rising edge of tb_rtl_failure.clk
+        cycle scope: the whole design (the top-level unit under its own rules)
         2 processes stay in the event kernel:
           E4111 a delay, `transport`, `reject` or a waveform (1 process):
             tb_rtl_failure.clk <= ... (rtl_failure.vhd:44)    E4111 a delayed assignment (`after`) (rtl_failure.vhd:44)
@@ -186,15 +187,16 @@ leaves the testbench in the normal simulation (:doc:`cycle-mode`).
 Two-state values
 ----------------
 
-``--two-state`` makes the design below the testbench compute with ``0`` and ``1`` only (:doc:`two-state`).
+``--two-state`` makes the design under test (or the scope ``--two-state=PATH`` names) compute with ``0`` and ``1``
+only (:doc:`two-state`).
 ``--cycle --two-state`` is the fast combination: the region computes two-state code, more processes join, and it does
 not follow the ``'U'`` start values. ``--two-state`` alone, in the normal mode, is a diagnostic mode and not a speed
 option.
 
 * **What it trades.** The metavalues: a register without a reset, an unconnected input or an ``'X'`` from the design
-  cannot show below the top-level unit, and the testbench reads ``0`` or ``1`` where the normal mode gives ``'U'`` or
-  ``'X'``. A ``'Z'`` read below the top-level unit is ``0``, so bus models there that rely on ``'Z'`` can
-  report false errors, and pull-ups and open-drain buses below the top-level unit break.
+  cannot show in the scope, and the testbench reads ``0`` or ``1`` where the normal mode gives ``'U'`` or ``'X'``. A
+  ``'Z'`` read in the scope is ``0``, so a bus model there that relies on ``'Z'`` can report false errors (the design
+  under test leaves out models that wait for time), and pull-ups and open-drain buses in the scope break.
 * **What it costs.** In the normal mode it aims to run as fast as the default; today it is slower: most unit tests
   run within a few percent of the default, some up to about half again as long, and large designs such as processor
   cores take about one and a half to four times as long. Bringing it to parity is planned.

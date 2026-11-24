@@ -333,7 +333,7 @@ def one_run(e, mode, base, a, stats=True, perf=None):
         return s
 
     exact = a.contract == "exact"
-    flag = {"normal": [], "cycle": ["--cycle"], "report": ["--cycle-report"]}[mode]
+    flag = {"normal": [], "cycle": ["--cycle"], "report": ["--cycle", "--cycle-report"]}[mode]
     flag += [] if exact else [G.TWO]  # the two-state contract's reference: the normal mode with --two-state
     argv = [a.bin, "run", *flag, *[fix(x) for x in e["argv"][2:]]]
     env = {**os.environ, **{k: fix(v) for k, v in e.get("env", {}).items()}, **dict(x.split("=", 1) for x in a.env),

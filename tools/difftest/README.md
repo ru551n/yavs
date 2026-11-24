@@ -244,6 +244,17 @@ A test runner that has run the tests already needs no second run to record them:
 exits at `run` still leaves each test's response file. The files are copied before each run; files written
 outside the output directory, or relative to the working directory, are not isolated or compared.
 
+## Scope check
+
+`scopecheck.py` measures the design under test that `--two-state` (and `--cycle` next to it) take as their scope
+without a PATH: per testbench of recorded command lines (the files of `cyclereplay.py`) one analysis-only run, its
+`design under test:` line compared with an oracle (instances of the top-level unit labelled `dut`/`uut` and the like,
+or whose entity is the testbench's name without `tb`), verdicts `match`, `dut+more` (extra RTL instances such as a
+memory model), `inside-dut`, `none`, `other`, and `no-oracle:*` where the oracle cannot judge. `--modes` checks that
+the scope is the same in every mode. It changes nothing in the recorded libraries (`--no-cache`).
+
+    python3 -I tools/difftest/scopecheck.py target/release/yavs cmds/*.jsonl --std ~/.cache/<dir>/std --out scope.jsonl --modes
+
 ## Seed gate
 
 `seedgate.py` checks that `--init-unset=random:SEED` and `--init-x=random:SEED` give the same values wherever one

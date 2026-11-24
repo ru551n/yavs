@@ -22,7 +22,7 @@ const INDEX: &str = "cyc3i";
 /// megabytes each, per test case, and push the code its test cases share out of the store.
 const PER_DESIGN: usize = 16;
 /// Of the payload's encoding: changed with any type of `Selection` or `Built`.
-const FORMAT: &str = "13";
+const FORMAT: &str = "14";
 /// The payloads of `cyc3` and `cyc3c` entries, by a hash of their bytes: an entry holds the hex
 /// of its payload's key, so test cases whose analyses come out the same keep it once.
 const PAYLOAD: &str = "cyc3p";
@@ -375,9 +375,11 @@ fn look(db: &Db, reads: &GenericReads) -> bool {
     if std::env::var_os("YAVS_CYCLE_SEEDS").is_some() {
         return false;
     }
-    let Some(b) = base(db, s, &files) else {
+    let Some(mut b) = base(db, s, &files) else {
         return false;
     };
+    // The scopes found or named (A64): what may join depends on them.
+    b.extend(&reads.scopes);
     let k1 = key(INDEX, &b, db, reads, &s.overrides, reads.walk);
     let hit = (s.store.get(INDEX, &k1))
         .and_then(|ix| Some(u64::from_le_bytes(ix.get(..8)?.try_into().ok()?)))

@@ -469,6 +469,14 @@ const EXPLAIN: &[(&str, &str)] = &[
         "An external name's subtype indication does not match the object it names: the type differs, or a constrained array dimension has another length (LRM 8.7).",
     ),
     (
+        "E2122",
+        "A path given to `--two-state=PATH`, `--cycle=PATH` or `--cycle-strict=PATH` names no instance, block, generate or labelled process of the elaborated design. A path starts at the top-level unit (`tb.dut`), names a generate's every iteration without an index (`tb.g`) and one with it (`tb.g(1)`), and is compared without case. The help names a similar path when there is one; `yavs elab --print-hierarchy TOP` lists them all.",
+    ),
+    (
+        "E2123",
+        "The cycle scope and the `--two-state` scope overlap in part: some processes of the cycle scope are in the two-state scope and some are not. The cycle region computes with one kind of values, two-state when its scope lies inside the `--two-state` scope and nine-valued when it lies outside it, so one of the two must hold. Give `--two-state` the cycle scope's paths (or more), or keep the scopes apart.",
+    ),
+    (
         "W2118",
         "A constant whose initial value calls an impure function cannot be evaluated during elaboration yet; it is evaluated when the simulation starts, so its calls run after the elaboration-time calls instead of in declaration order.",
     ),
@@ -553,6 +561,14 @@ const EXPLAIN: &[(&str, &str)] = &[
     (
         "E4104",
         "An environment variable of cycle mode has a value it does not take, such as `YAVS_CYCLE_CACHE_MIB=0` (it takes a whole number of MiB of at least 1). The message names the values it takes; unset the variable, or leave it empty, to turn the check off.",
+    ),
+    (
+        "E4106",
+        "`yavs run --cycle-strict --two-state` without a cycle PATH found no design under test: no instance of the design holds RTL (clocked or combinational processes), so a strict run would check nothing. Give the part of the design to check as a path, `--cycle-strict=tb.dut`; the note lists the instances of the top-level unit.",
+    ),
+    (
+        "E4105",
+        "`yavs run --cycle-report` is given without `--cycle` or `--cycle-strict`. The report describes a cycle region, and the cycle option says which scope it covers (`--cycle` alone: the whole design, with `--two-state` the design under test yavs finds; `--cycle=PATH`: that part of the design). Add the cycle option; the report still stops before anything is compiled or simulated.",
     ),
     (
         "W4101",
@@ -664,7 +680,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E4136",
-        "An assert or report of the top-level unit reads a signal the region does not drive alone. Its process stays in the event simulation so that the check sees the values it sees there. Processes of the top-level unit are never an error under `--cycle-strict`; the code appears in `--cycle-report`. Nothing to fix.",
+        "An assert or report of the top-level unit reads a signal the region does not drive alone. Its process stays in the event simulation so that the check sees the values it sees there. This rule holds when the cycle scope is the whole design (`--cycle` without PATH and without `--two-state`); in a scope a path or the design under test gives, processes follow one set of rules, E4140 among them. Processes of the top-level unit are never an error under `--cycle-strict`; the code appears in `--cycle-report`. Nothing to fix.",
     ),
     (
         "E4137",

@@ -65,6 +65,14 @@ pub mod watch {
         ON.store(true, Relaxed);
     }
 
+    /// `f` with the watch off, the reads so far kept: what it reads is not the design's.
+    pub(crate) fn hold<T>(f: impl FnOnce() -> T) -> T {
+        let on = ON.swap(false, Relaxed);
+        let r = f();
+        ON.store(on, Relaxed);
+        r
+    }
+
     /// The watched declarations read since `start` or `resume`, as bits of their order.
     pub fn reads() -> u64 {
         READ.load(Relaxed)
@@ -196,9 +204,10 @@ pub struct Model {
     pub(crate) unset_elems: u64,
     /// The signal leaves whose start value a `random` seed drew, in order.
     pub(crate) drawn: Vec<crate::LeafId>,
-    /// `--two-state` (`ElabConfig::two_state`): signals below the top-level unit without an
-    /// initial value start at `--init-unset`, 0 without it.
+    /// `--two-state` (`ElabConfig::two_state`): the signals without an initial value, which
+    /// start at 0 in its scope when `--init-unset` is not given (`walk::apply_scopes`).
     pub(crate) two_state: bool,
+    pub(crate) two_unset: Vec<crate::ObjId>,
     /// The ranges of types and subtypes with a bound that is not globally static
     /// (`Db::dynamic_range`), evaluated once at their declaration in an elaborated scope, by
     /// left bound (#612); those of packages by left bound, read from the package data.

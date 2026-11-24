@@ -509,25 +509,27 @@ Arguments:
 
    Drop the ``assert`` and ``report`` statements of the processes below the top-level design unit (the design, and the verification components and checkers the testbench instantiates), for speed, in the normal mode and in cycle mode alike. The processes of the top-level unit keep theirs, and the statements inside subprograms run wherever they are called from (the check and logging calls of a test library among them). The start of the run says how many statements are dropped.
 
-.. option:: --cycle
+.. option:: --cycle, --cycle=PATH
 
-   Cycle mode, experimental (its options and results may change in a later release): the processes that can run cycle-based (clocked and combinational ones in what it supports) run as one region on a static schedule with compiled code; the rest stays in the event kernel. One line on standard error says how many processes joined; ``--cycle-report`` lists them all, with reasons. Cycle-based processes evaluate their asserts and reports, a clocked one at its clock edge, a combinational one once its inputs are settled, with the normal mode's text, severity, time and process; one cycle mode cannot evaluate keeps its process in the event kernel (``--no-asserts`` drops those below the top-level unit). ``--wave`` (and ``--surfer``) records the signals inside the region per time step, without delta cycles. Values keep the metavalues unless ``--two-state`` is given. Not with a debug session, ``--wave-variables``, ``--cov``, ``--vhpi`` or ``--activity`` (E4102). The strict form is ``--cycle-strict``, given instead of this option.
+   Cycle mode, experimental (its options and results may change in a later release): the processes of the cycle scope that can run cycle-based (clocked and combinational ones in what it supports) run as one region on a static schedule with compiled code; the rest stays in the event kernel. The scope is PATH (an instance, block, generate or process path from the top-level unit, such as ``tb.dut``; ``tb.g`` is every iteration of generate ``g``; repeat the option for more). Without PATH it is the whole design, the processes of the top-level unit under their own rules, and with ``--two-state`` the design under test that yavs finds (one line on standard error names it). One line on standard error says how many processes joined; ``--cycle-report`` lists them all, with reasons. Cycle-based processes evaluate their asserts and reports, a clocked one at its clock edge, a combinational one once its inputs are settled, with the normal mode's text, severity, time and process; one cycle mode cannot evaluate keeps its process in the event kernel (``--no-asserts`` drops those below the top-level unit). ``--wave`` (and ``--surfer``) records the signals inside the region per time step, without delta cycles. Values keep the metavalues unless the cycle scope is inside the ``--two-state`` scope. Not with a debug session, ``--wave-variables``, ``--cov``, ``--vhpi`` or ``--activity`` (E4102). The strict form is ``--cycle-strict``, given instead of this option.
 
-   Cannot be combined with ``--cycle-strict``.
+   May be repeated. Cannot be combined with ``--cycle-strict``.
 
-.. option:: --cycle-strict
+.. option:: --cycle-strict, --cycle-strict=PATH
 
-   Cycle mode in its strict form, experimental, instead of ``--cycle``: the same selection, but a process below the top-level design unit that is not behavioural and cannot run cycle-based is an error, and the run stops before simulation. Each error names the construct that is not supported, points at its statement, and says why and how to fix it, with the code of the reason (E4110 to E4140; E4101 for what yavs does not implement yet); one error per statement lists the processes it keeps out, sorted by file and line, at most 40.
+   Cycle mode in its strict form, experimental, instead of ``--cycle`` (PATH as there): the same selection, but a process of the cycle scope that is not behavioural and cannot run cycle-based is an error, and the run stops before simulation. Each error names the construct that is not supported, points at its statement, and says why and how to fix it, with the code of the reason (E4110 to E4140; E4101 for what yavs does not implement yet); one error per statement lists the processes it keeps out, sorted by file and line, at most 40.
+
+   May be repeated.
 
 .. option:: --cycle-report, --cycle-report=FILE
 
-   Analyse the design for cycle mode (experimental) and print the region report to standard error, or with FILE write it there: the summary, the processes that stay in the event kernel grouped by reason (most common first), the asserts and reports ``--no-asserts`` drops, the clocks, the loop groups, the boundary and the cycle-based processes. Nothing is compiled or simulated; the exit status is 0. Given instead of ``--cycle`` and ``--cycle-strict``. An unwritable FILE is E4103, before any work.
+   With ``--cycle`` or ``--cycle-strict``: analyse the design for cycle mode and print the region report to standard error, or with FILE write it there: the scopes, the summary, the processes that stay in the event kernel grouped by reason (most common first), the asserts and reports ``--no-asserts`` drops, the clocks, the loop groups, the boundary and the cycle-based processes. Nothing is compiled or simulated; the exit status is 0 (with ``--cycle-strict``, its errors come first). Without a cycle option it is E4105. An unwritable FILE is E4103, before any work.
 
-   Cannot be combined with ``--cycle``, ``--cycle-strict``.
+.. option:: --two-state, --two-state=PATH
 
-.. option:: --two-state
+   Two-state values (experimental): the two-state scope holds only ``0`` and ``1``. The scope is PATH, as for ``--cycle`` (repeatable; the top-level unit's name puts the whole design in), or without PATH the design under test that yavs finds (with ``--cycle`` without PATH, its cycle scope too). A metavalue the scope reads from outside it or from a resolved signal counts as ``0`` (``'H'`` as ``1``), its literals ``'U'``, ``'X'``, ``'Z'``, ``'W'`` and ``'-'`` take the ``--init-x`` value (``0`` without it; ``'L'`` is ``0``, ``'H'`` is ``1``), and what it declares without an initial value starts at ``--init-unset`` (``0`` without it). The rest keeps the nine values. A cycle region inside the scope is two-state too; the cycle scope must lie inside this scope or outside it (E2123). Without this option cycle mode keeps the metavalues (for now a register without a start value shows ``'U'`` for up to 1024 clock edges).
 
-   Two-state values (experimental): the design below the top-level unit holds only ``0`` and ``1``. A metavalue it reads from the testbench or a resolved signal counts as ``0`` (``'H'`` as ``1``), its literals ``'U'``, ``'X'``, ``'Z'``, ``'W'`` and ``'-'`` take the ``--init-x`` value (``0`` without it; ``'L'`` is ``0``, ``'H'`` is ``1``), and what it declares without an initial value starts at ``--init-unset`` (``0`` without it). The top-level unit keeps the nine values. With a cycle option the cycle-based processes are two-state too; without this option cycle mode keeps the metavalues (for now a register without a start value shows ``'U'`` for up to 1024 clock edges).
+   May be repeated.
 
 .. option:: --tier=interp|auto|clift|clift-auto
 
@@ -597,7 +599,7 @@ Arguments:
 
    May be repeated.
 
-Diagnostics named above: ``E0105``, ``E0106``, ``E0107``, ``E0120``, ``E0136``, ``E0701``, ``E0801``, ``E0901``, ``E0902``, ``E3002``, ``E4101``, ``E4102``, ``E4103``, ``E4110``, ``E4140``; ``yavs --explain CODE`` explains each.
+Diagnostics named above: ``E0105``, ``E0106``, ``E0107``, ``E0120``, ``E0136``, ``E0701``, ``E0801``, ``E0901``, ``E0902``, ``E2123``, ``E3002``, ``E4101``, ``E4102``, ``E4103``, ``E4105``, ``E4110``, ``E4140``; ``yavs --explain CODE`` explains each.
 
 ``yavs cov merge``
 ------------------

@@ -173,7 +173,8 @@ def split_report(err):
     if (w := next((k for k, l in enumerate(plain) if l.startswith("warning[W4101]")), None)) is not None:
         end = next((k for k in range(w, len(lines)) if not plain[k].strip()), len(lines))
         lines = lines[:w] + lines[end + 1 :]
-    return "\n".join(l for l in lines if not l.startswith("cycle mode: ")), rep  # not the metavalue summary
+    # Not the metavalue summary, nor the scope found.
+    return "\n".join(l for l in lines if not l.startswith(("cycle mode: ", "design under test: "))), rep
 
 
 def held_asserts(rep):
@@ -458,7 +459,7 @@ def one(item, jobs_args):
     res = {"name": name, "bucket": "", "why": "", "members": 0, "procs": 0}
     try:
         outs = []
-        tr = tc.replace("--cycle ", "--cycle-report ", 1)  # the members: analysis only
+        tr = tc.replace("--cycle ", "--cycle --cycle-report ", 1)  # the members: analysis only
         runs = [("normal", tn), ("cycle", tc), ("report", "export YAVS_CYCLE_DOWNSTREAM=down.txt; " + tr)]
         for kind, t in runs:
             if kind == "cycle" and jobs_args.warm:

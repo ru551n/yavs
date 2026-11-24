@@ -5,6 +5,7 @@
 mod check;
 mod codegen;
 mod dep;
+mod dut;
 mod lower;
 mod region;
 mod rt;
@@ -21,6 +22,7 @@ use yavs_kernel::{EDGE_LEVEL, EdgeTrigger, Range, SimError};
 use yavs_sem::Db;
 
 pub use codegen::{set_cache, set_threads};
+pub use dut::detect;
 use lower::{Kind, Op, Ref};
 pub use region::{set_no_asserts, set_two_state, set_wave};
 pub use store::analysis_cache;
@@ -36,6 +38,10 @@ pub mod codes {
     pub const REPORT_FILE: &str = "E4103";
     /// An environment variable of cycle mode with a value it does not take.
     pub const ENV_VALUE: &str = "E4104";
+    /// `--cycle-report` without `--cycle` or `--cycle-strict` (A64: the report is a modifier).
+    pub const REPORT_ALONE: &str = "E4105";
+    /// `--cycle-strict` without PATH on a design without a design under test (A76).
+    pub const NO_DUT: &str = "E4106";
     /// Retired (A52): asserts and reports of severity error or failure that cycle-based processes
     /// dropped (A41). No longer given, since members evaluate theirs; `-Werror=W4101` is still
     /// accepted.
@@ -366,8 +372,10 @@ pub enum Mode {
     Run,
     /// `--cycle-strict`: what does not fit below the top-level unit is an error.
     Strict,
-    /// `--cycle-report`: the region report only; nothing is compiled or run.
+    /// `--cycle --cycle-report`: the region report only; nothing is compiled or run.
     Report,
+    /// `--cycle-strict --cycle-report`: the strict errors, else the region report.
+    StrictReport,
 }
 
 /// What cycle mode decided for a design: the region report and the region to build.
@@ -395,6 +403,30 @@ pub struct Plan {
 pub type ReportFn =
     dyn Fn(&yavs_kernel::Ctx<'_>, yavs_kernel::Severity, String) -> Option<String> + Send + Sync;
 pub type Reporter = Arc<std::sync::OnceLock<Arc<ReportFn>>>;
+
+/// The scope section of the region report (A64): what cycle mode and `--two-state` cover.
+fn scope_lines(e: &Elaborated) -> String {
+    let sc = &e.scopes;
+    let line = |what: &str, roots: &[yavs_elab::ScopeId], auto: bool| {
+        let found = if auto {
+            ", the design under test found"
+        } else {
+            ""
+        };
+        match roots {
+            [] => format!("  {what}: empty{found} (no instance holds RTL)\n"),
+            _ => format!("  {what}{found}: {}\n", e.scope_paths(roots).join(", ")),
+        }
+    };
+    let mut out = match sc.cycle_whole {
+        true => "  cycle scope: the whole design (the top-level unit under its own rules)\n".into(),
+        false => line("cycle scope", &sc.cycle_roots, sc.cycle_auto),
+    };
+    if !sc.two.is_empty() {
+        out += &line("two-state scope", &sc.two_roots, sc.two_auto);
+    }
+    out
+}
 
 /// A short name of what a code stands for, for the headings of the region report.
 fn title(code: &str) -> &'static str {
@@ -471,9 +503,9 @@ fn strict_errors(db: &Db, e: &Elaborated, out: &[(usize, region::Why)]) -> Vec<D
     for (pi, why) in out {
         let r = match why {
             region::Why::Subset(r) | region::Why::NotYet(r) => r,
-            region::Why::Behavioural(_) => continue,
+            region::Why::Behavioural(_) | region::Why::Outside => continue,
         };
-        if region::in_top_unit(e, *pi) {
+        if region::outside_scope(e, *pi) || region::in_top_unit(e, *pi) {
             continue;
         }
         let f = db.sources.get(r.span.file);
@@ -600,7 +632,7 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
             ]);
         }
     };
-    if mode == Mode::Strict {
+    if matches!(mode, Mode::Strict | Mode::StrictReport) {
         let errs = strict_errors(db, e, &sel.out);
         if !errs.is_empty() {
             return Err(errs);
@@ -633,12 +665,11 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
     };
     let metas = Arc::new(Metas::default());
     // The region report only for `--cycle-report`: its names and source lines cost a run.
-    if mode == Mode::Report || sel.members.is_empty() {
+    let reporting = matches!(mode, Mode::Report | Mode::StrictReport);
+    if reporting || sel.members.is_empty() {
         // Developers (`YAVS_CYCLE_DOWNSTREAM=FILE`): the processes outside that may see what the
         // region exports, one name a line as the console prints it (tools/difftest).
-        if mode == Mode::Report
-            && let Some(f) = std::env::var_os("YAVS_CYCLE_DOWNSTREAM")
-        {
+        if reporting && let Some(f) = std::env::var_os("YAVS_CYCLE_DOWNSTREAM") {
             let text: String = (region::downstream(db, e, &sel).into_iter())
                 .map(|pi| region::where_(db, e, pi) + "\n")
                 .collect();
@@ -647,9 +678,9 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
             }
         }
         return Ok(Plan {
-            report: match mode {
-                Mode::Report => report(db, e, &sel, &head, &undriven),
-                _ => String::new(),
+            report: match reporting {
+                true => report(db, e, &sel, &head, &undriven),
+                false => String::new(),
             },
             summary,
             region: None,
@@ -772,6 +803,7 @@ fn report(
         let _ = write!(report, ", on {}", edges.join(" and "));
     }
     report.push('\n');
+    report.push_str(&scope_lines(e));
     // The processes left out, grouped by reason (its code; behavioural processes and the ones
     // not implemented yet are one group each), the most common first. Rows: where, what.
     let mut left: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
@@ -784,6 +816,10 @@ fn report(
             region::Why::Behavioural(w) => {
                 ("behavioural, in the event kernel".to_string(), w.clone())
             }
+            region::Why::Outside => (
+                "outside the cycle scope".to_string(),
+                "it could run cycle-based, but is not in the cycle scope".to_string(),
+            ),
         };
         left.entry(head)
             .or_default()

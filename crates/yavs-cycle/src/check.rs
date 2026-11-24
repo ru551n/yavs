@@ -83,6 +83,9 @@ impl Reason {
     }
 }
 
+/// The reason of a one-shot process (`wait;`): a print or check at the start, not a model.
+pub(crate) const WAITS_FOREVER: &str = "it waits forever (`wait;`)";
+
 pub(crate) enum Verdict {
     Fit(Fit),
     /// A process of the testbench kind, which stays in the event kernel by nature.
@@ -356,6 +359,31 @@ pub(crate) fn check(db: &Db, e: &Elaborated, pi: usize, callees: &mut Callees) -
             db.stmts[p.stmt].span,
             "the loop budget ran out outside an enumerated loop".into(),
         )),
+    }
+}
+
+/// Whether the folded value `v` of expression `x`, of a logic type, holds `'Z'`.
+pub(crate) fn holds_z(db: &Db, x: ExprId, v: &ConstValue) -> bool {
+    let t = db.base(db.exprs[x].subtype);
+    let elem = match &db.types[t].kind {
+        TypeKind::Array { elem, .. } => db.base(*elem),
+        _ => t,
+    };
+    let wk = &db.well_known;
+    if Some(elem) == wk.bit
+        || Some(elem) == wk.boolean
+        || yavs_elab::elem_of(db, elem) != Elem::Logic
+        || !matches!(db.types[elem].kind, TypeKind::Enum { .. })
+    {
+        return false;
+    }
+    match v {
+        ConstValue::Enum(4) => true,
+        ConstValue::Array(a) => match &a.elems {
+            Elems::Bytes(b) => b.contains(&4),
+            Elems::Runs(r) => r.iter().any(|(_, v)| *v == ConstValue::Enum(4)),
+        },
+        _ => false,
     }
 }
 
@@ -941,7 +969,7 @@ impl Cx<'_> {
                         return Err(Stop::Behav("it waits for a time".into()));
                     }
                     if on.is_empty() && until.is_none() {
-                        return Err(Stop::Behav("it waits forever (`wait;`)".into()));
+                        return Err(Stop::Behav(WAITS_FOREVER.into()));
                     }
                 }
                 StmtKind::ProcCall(c) if self.callee(c.callee).waits => {
@@ -2156,30 +2184,8 @@ impl Cx<'_> {
 
     /// A folded value of a logic type holding `'Z'`.
     fn no_z(&self, x: ExprId, v: &ConstValue) -> R<()> {
-        let db = self.db;
-        let t = db.base(db.exprs[x].subtype);
-        let elem = match &db.types[t].kind {
-            TypeKind::Array { elem, .. } => db.base(*elem),
-            _ => t,
-        };
-        let wk = &db.well_known;
-        if Some(elem) == wk.bit
-            || Some(elem) == wk.boolean
-            || yavs_elab::elem_of(db, elem) != Elem::Logic
-            || !matches!(db.types[elem].kind, TypeKind::Enum { .. })
-        {
-            return Ok(());
-        }
-        let z = match v {
-            ConstValue::Enum(4) => true,
-            ConstValue::Array(a) => match &a.elems {
-                Elems::Bytes(b) => b.contains(&4),
-                Elems::Runs(r) => r.iter().any(|(_, v)| *v == ConstValue::Enum(4)),
-            },
-            _ => false,
-        };
-        if z {
-            return out(codes::HIGH_Z, db.exprs[x].span, "the value `'Z'`");
+        if holds_z(self.db, x, v) {
+            return out(codes::HIGH_Z, self.db.exprs[x].span, "the value `'Z'`");
         }
         Ok(())
     }

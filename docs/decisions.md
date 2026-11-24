@@ -18146,3 +18146,44 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
 - **The comparison tools** (`tools/difftest` cycle tools) call their contracts `exact` (plain `--cycle`) and
   `two-state` (`--cycle --two-state`); the reviewed entries of the second start with `two-state contract:`.
 
+
+## Scopes of `--cycle` and `--two-state`, the design under test by default (yavs-elab `scope.rs`, yavs-cycle `dut.rs`; user decisions A64 addenda 1 to 4, A75, 2026-11-23)
+
+- **By name** (A64 addendum 2, 3): `--cycle[=PATH]`, `--cycle-strict[=PATH]` and `--two-state[=PATH]` take instance,
+  block, generate or (agent's widening) labelled process paths from the top-level unit, compared without case, repeatable; a segment without an index names
+  every iteration of a generate (`tb.g`), one with it one (`tb.g(1)`); a component instance's root is its component
+  scope, so the component's ports are in. Everything at and below a path is in the scope. A path that names nothing is
+  E2122 with a similar path, or the path with the top-level unit's name in front when that exists.
+- **Cycle scope = membership**: a process outside the cycle scope never joins the region (a fitting one is listed as
+  `outside the cycle scope`, the others keep their reason, which the path rules of the region read). Inside a named
+  or detected scope, the top-level unit's processes follow the rules of every other process (strict errors, asserts,
+  literals). `--no-asserts` keeps its boundary at the elaborated top (A54).
+- **Defaults without PATH** (user, A76 Q1, 2026-11-24: "whatever is best performance"): plain `--cycle` (or
+  `--cycle-strict`) takes the whole design, with the top-level unit's own rules (A19: its combinational checkers stay
+  in the event kernel, E4136, and none of its processes is a strict error); with `--two-state` (any form) the cycle
+  scope is the design under test, so the region lies inside the two-state scope and the testbench's checkers keep the
+  nine values; `--cycle=PATH` always limits membership. Measured first with the design under test as the plain
+  default: plain `--cycle` cost 17 % more instructions on kv260_fan (31 of 53 members to 12), 3 % on an ac701 test,
+  5 % on a cnn_accel_top test, against main.
+- **The region's values**: the region is two-state when its scope lies inside the `--two-state` scope, nine-valued
+  (the interim exact-meta mechanism) when it lies outside it; scopes whose processes overlap in part are E2123 (a
+  region has one kind of values).
+- **The design under test** (A64 addenda 3, 4; agent's rule, measured on 252 testbenches): from cycle mode's checker,
+  never from names. A process is of the testbench when it is behavioural (not a one-shot `wait;`), uses protected
+  objects or access values (E4114), or delays (E4111) from nothing or from its own output without a clock (a clock or
+  reset maker); a delayed assignment of logic is RTL. Candidates per level from the top: instances with RTL and at most
+  one testbench process in twenty in their subtree; none at a level, look inside its instances with RTL; the union;
+  the top itself when none and it has RTL of its own, its testbench-kind processes left out of both scopes (user,
+  A76 Q-A); empty without RTL, which `--cycle-strict` without PATH refuses with E4106 (user, A76 Q-B). A process
+  that assigns a `'Z'` literal in its own statements (a pad's tri-state driver) is left out of a scope found, as the
+  testbench-kind processes are (user, A78, 2026-11-25: two-state, the element drives of the ac701 `qspi_io` model
+  drove `0` against the flash and changed 7 verdicts); a path keeps it in. Detected after the walk, before ports
+  collapse (collapsing moves start values), on the walked design (no value passes), so every mode finds the same
+  scope. One stderr line names it; the report starts with the scopes. Accuracy check: `tools/difftest/scopecheck.py`.
+- **Lowering**: an architecture with instances inside and outside the `--two-state` scope is lowered twice (`Ir::units`
+  keyed by architecture and variant): a process takes the variant of its own scope, instance data that of its
+  instance (one layout). The lowering key lists the two-state variants by position (`b'w'`).
+- **`--cycle-report` is a modifier** (A64 addendum 3): it needs `--cycle` or `--cycle-strict` (E4105 alone); with
+  `--cycle-strict` its errors come first.
+- Consequence (A75): verification components below the top (MDIO, I2C, QSPI flash models) wait for time, so the
+  design under test leaves them out and they keep the nine values under `--two-state`.

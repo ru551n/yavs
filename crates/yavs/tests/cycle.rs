@@ -33,10 +33,25 @@ fn yavs_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
             c.env(k, v);
         }
     }
-    c.args(["--color", "never"])
+    let mut o = c
+        .args(["--color", "never"])
         .args(args)
         .output()
-        .expect("run yavs")
+        .expect("run yavs");
+    // The scope lines (the design under test, the report's scopes) are `tests/scope.rs`'s.
+    o.stderr = unscoped(&String::from_utf8_lossy(&o.stderr)).into_bytes();
+    o
+}
+
+/// `text` without the lines of the scopes.
+fn unscoped(text: &str) -> String {
+    (text.split_inclusive('\n'))
+        .filter(|l| {
+            !l.starts_with("design under test: ")
+                && !l.starts_with("  cycle scope")
+                && !l.starts_with("  two-state scope")
+        })
+        .collect()
 }
 
 /// `err` with each failed check's message as plain `--cycle` gives it (A34): without the
@@ -95,12 +110,19 @@ fn with_report_env(
     mut err: String,
     env: &[(&str, &str)],
 ) -> String {
-    if flags
-        .iter()
-        .any(|f| matches!(*f, "--cycle" | "--cycle-strict"))
-    {
+    let flags = scoped(flags, top);
+    let cycle: Vec<String> = (flags.iter())
+        .filter(|f| f.starts_with("--cycle"))
+        .map(|c| c.replacen("--cycle-strict", "--cycle", 1))
+        .collect();
+    if !cycle.is_empty() {
         let mut args = vec!["run", "--work=work:lib", "--no-cache"];
-        args.extend((flags.iter()).filter(|f| !f.starts_with("--cycle")));
+        args.extend(
+            (flags.iter())
+                .filter(|f| !f.starts_with("--cycle"))
+                .map(String::as_str),
+        );
+        args.extend(cycle.iter().map(String::as_str));
         args.extend(["--cycle-report", top]);
         let o = yavs_env(dir, &args, env);
         let report = String::from_utf8_lossy(&o.stderr);
@@ -115,9 +137,25 @@ fn run(dir: &Path, flags: &[&str], top: &str) -> (Vec<String>, String) {
     run_vars(dir, flags, top, &[])
 }
 
+/// `flags` with the cycle and two-state scope the whole design (the tests here are of the
+/// region, written for a testbench whose own logic joins it too): a bare `--two-state` gets the
+/// top-level unit as its PATH, and so do `--cycle` and `--cycle-strict` next to it.
+fn scoped(flags: &[&str], top: &str) -> Vec<String> {
+    // Plain `--cycle` is the whole design already (A76); with `--two-state` both name the top.
+    let two = flags.contains(&"--two-state");
+    (flags.iter())
+        .map(|&f| match f {
+            "--cycle" | "--cycle-strict" if two => format!("{f}={top}"),
+            "--two-state" => format!("{f}={top}"),
+            _ => f.to_string(),
+        })
+        .collect()
+}
+
 fn run_vars(dir: &Path, flags: &[&str], top: &str, env: &[(&str, &str)]) -> (Vec<String>, String) {
+    let scoped = scoped(flags, top);
     let mut args = vec!["run", "--work=work:lib", "--no-cache"];
-    args.extend(flags);
+    args.extend(scoped.iter().map(String::as_str));
     args.push(top);
     let o = yavs_env(dir, &args, env);
     let (out, err) = (
@@ -269,6 +307,8 @@ fn region_outputs_seen_every_clock_on_events_and_through_local_subprograms() {
                     .ends_with("events v3=5 ra=32 w=41 pulse=1 p=3 f=2 cnt=2 hw=42 pk=3 mid=41"),
             "{t:?} {normal:?}"
         );
+        // The normal mode with the same two-state scope, the whole design here (A64).
+        let (normal, _) = run(&dir, &[&t[..], &["--two-state"]].concat(), "cycle_export");
         assert_eq!(cycle, normal, "{t:?}\n{err}");
         assert!(
             err.contains("cycle mode: 2 of 11 processes run cycle-based"),
@@ -719,26 +759,25 @@ fn cycle_and_cycle_strict_are_alternatives() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(2), "{err}");
     assert!(
-        err.contains("the argument '--cycle' cannot be used with '--cycle-strict'"),
+        err.contains(
+            "the argument '--cycle[=<PATH>]' cannot be used with '--cycle-strict[=<PATH>]'"
+        ),
         "{err}"
     );
 }
 
 #[test]
-fn cycle_report_is_a_third_mode_exclusive_with_the_other_two() {
+fn cycle_report_modifies_a_cycle_option() {
     let dir = tempdir("cycle-report-excl");
-    for other in ["--cycle", "--cycle-strict"] {
-        let o = yavs(
-            &dir,
-            &["run", "--work=work:lib", other, "--cycle-report", "top"],
-        );
-        let err = String::from_utf8_lossy(&o.stderr);
-        assert_eq!(o.status.code(), Some(2), "{other}: {err}");
-        assert!(
-            err.contains("cannot be used with") && err.contains("--cycle-report"),
-            "{other}: {err}"
-        );
-    }
+    let o = yavs(&dir, &["run", "--work=work:lib", "--cycle-report", "top"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(2), "{err}");
+    assert!(
+        err.contains(
+            "error[E4105]: `--cycle-report` is given without `--cycle` or `--cycle-strict`"
+        ),
+        "{err}"
+    );
 }
 
 #[test]
@@ -752,7 +791,7 @@ fn cycle_report_prints_the_report_and_runs_nothing() {
         args.push("cycle_partial");
         yavs(&dir, &args)
     };
-    let o = report(&["--cycle-report", "--two-state"]);
+    let o = report(&["--cycle", "--cycle-report", "--two-state"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(o.status.success() && o.stdout.is_empty(), "{err}");
     assert!(
@@ -762,16 +801,21 @@ fn cycle_report_prints_the_report_and_runs_nothing() {
     );
     // With a file the report goes there.
     let file = dir.join("report.txt");
-    let o = report(&[&format!("--cycle-report={}", file.display()), "--two-state"]);
+    let o = report(&[
+        "--cycle",
+        &format!("--cycle-report={}", file.display()),
+        "--two-state",
+    ]);
     assert!(o.status.success() && o.stdout.is_empty() && o.stderr.is_empty());
     let text = std::fs::read_to_string(&file).expect("the report file");
-    assert_eq!(text, err);
+    assert_eq!(unscoped(&text), err);
     // An unwritable file fails before any work: not even the top-level name is looked up.
     let o = yavs(
         &dir,
         &[
             "run",
             "--work=work:lib",
+            "--cycle",
             "--cycle-report=no/such/dir/r.txt",
             "nothing",
         ],
@@ -879,7 +923,7 @@ fn an_assert_cycle_mode_cannot_evaluate_keeps_its_process_out_and_no_asserts_dro
             "{err}"
         );
     }
-    let (rc, report, _) = go(&["--no-asserts", "--cycle-report", "--two-state"]);
+    let (rc, report, _) = go(&["--no-asserts", "--cycle", "--cycle-report", "--two-state"]);
     assert_eq!(rc, Some(0), "{report}");
     assert!(
         report.contains(
@@ -1723,11 +1767,12 @@ fn boundary_values_and_metavalues_become_two_state_and_are_counted() {
             err.contains("clocked, 1 literal with a metavalue read as 0"),
             "{err}"
         );
-        // At initialisation: 5 in `din`, 9 in `q`, 4 in `lit` and 4 in `lit_i` (no initial
-        // value); `din` never changes, so it is not read again.
+        // At initialisation: the 5 of the undriven `din`; `q`, `lit` and `lit_i`, signals of
+        // the two-state scope (the whole design here), start at 0 (A64). `din` never changes, so
+        // it is not read again.
         assert!(
             err.contains(
-                "cycle mode: 22 metavalue elements read as 0 (22 at initialisation, 0 at changes \
+                "cycle mode: 5 metavalue elements read as 0 (5 at initialisation, 0 at changes \
                  of the region's inputs)"
             ),
             "{err}"
@@ -2968,7 +3013,10 @@ fn a_high_impedance_value_made_in_a_called_function_keeps_the_caller_out() {
         "cycle_fz",
     );
     assert_eq!(normal, ["** Note: 5000000fs+0: o='Z'"], "{normal:?}");
-    assert_eq!(cycle, normal);
+    // The design is its own scope (no instance): the call's result is two-state (A64).
+    let (two, _) = run(&dir, &["--tier=interp", "--two-state"], "cycle_fz");
+    assert_eq!(two, ["** Note: 5000000fs+0: o='0'"], "{two:?}");
+    assert_eq!(cycle, two);
     assert!(
         err.contains("cycle mode: 0 of 2 processes run cycle-based"),
         "{err}"
@@ -3201,10 +3249,9 @@ fn a_z_passed_on_by_a_process_outside_keeps_its_reader_out() {
                 terr.contains("cycle mode: 8 of 20 processes run cycle-based"),
                 "{w}: {terr}"
             );
-            let zeros: Vec<String> = (k(normal.clone()).iter())
-                .map(|l| l.replace(['Z', 'X'], "0"))
-                .collect();
-            assert_eq!(k(two), zeros, "width {w} {t:?}\n{terr}");
+            // The normal mode with the same two-state scope, the whole design here (A64).
+            let (zeros, _) = run(&dir, &[&t[..], &["--two-state"]].concat(), "cycle_zpass");
+            assert_eq!(k(two), k(zeros), "width {w} {t:?}\n{terr}");
             let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_zpass");
             let (normal, cycle) = (k(normal), k(cycle));
             assert_eq!(normal.len(), 8, "{w} {t:?} {normal:?}");
@@ -3256,6 +3303,7 @@ fn the_processes_downstream_of_the_region_are_listed() {
                 "run",
                 "--work=work:lib",
                 "--no-cache",
+                "--cycle",
                 "--cycle-report",
                 "--two-state",
                 "cycle_down",
@@ -3807,6 +3855,7 @@ fn a_recursion_to_the_inlining_cap_fits_an_8_mib_stack() {
             "run",
             "--work=work:lib",
             "--no-cache",
+            "--cycle",
             "--cycle-report",
             "--two-state",
             "cycle_depth",
@@ -4058,8 +4107,9 @@ fn clocked_and_combinational_shapes_give_the_same_result() {
 /// Standard output of a successful run with the delta numbers of report stamps left out (a region
 /// output changes one delta after its trigger, D14).
 fn run_text(dir: &Path, flags: &[&str], top: &str) -> (String, String) {
+    let scoped = scoped(flags, top);
     let mut args = vec!["run", "--work=work:lib", "--no-cache"];
-    args.extend(flags);
+    args.extend(scoped.iter().map(String::as_str));
     args.push(top);
     let o = yavs(dir, &args);
     let (out, err) = (
@@ -4155,11 +4205,14 @@ fn bench_rtl_designs_give_the_same_output_in_cycle_mode() {
         for t in tiers() {
             let flags = [&t[..], generics].concat();
             let (normal, _) = run_text(&dir, &flags, top);
-            let (cycle, err) = run_text(
-                &dir,
-                &[&flags[..], &["--cycle", "--two-state"]].concat(),
-                top,
-            );
+            // The inverter chain is its own testbench: two-state from its start values on, its
+            // chain glitches in the normal mode's deltas, which the region does not have; the
+            // exact contract keeps the testbench's view.
+            let mode: &[&str] = match name {
+                "rtl_chain" => &["--cycle"],
+                _ => &["--cycle", "--two-state"],
+            };
+            let (cycle, err) = run_text(&dir, &[&flags[..], mode].concat(), top);
             assert!(normal.contains("Note"), "{name}: {normal}");
             assert_eq!(cycle, normal, "{name} {t:?}\n{err}");
             assert!(
@@ -4170,8 +4223,10 @@ fn bench_rtl_designs_give_the_same_output_in_cycle_mode() {
     }
 }
 
-/// Bench designs whose processes cannot join (yet), with the reason the report gives; `rtl_lfsr`'s
-/// processes are of the top-level unit, whose compares with a metavalue literal keep them out (A57).
+/// Bench designs whose processes cannot join (yet), with the reason the report gives, or that
+/// join: `rtl_lfsr`'s processes, of the top-level unit, compare with a metavalue literal, which
+/// kept them out while the top-level unit had rules of its own; in its scope they follow the
+/// design's (A64), and compare as a two-state value does (A74).
 #[test]
 fn bench_designs_cycle_mode_leaves_out_say_why() {
     for (name, src, top, why) in [
@@ -4179,7 +4234,7 @@ fn bench_designs_cycle_mode_leaves_out_say_why() {
             "rtl_lfsr",
             include_str!("../../../tools/bench/designs/rtl_lfsr.vhd"),
             "bench_rtl_lfsr",
-            "a comparison with a metavalue literal",
+            "cycle mode: 512 of 514 processes",
         ),
         (
             "rtl_bus",
@@ -4198,7 +4253,10 @@ fn bench_designs_cycle_mode_leaves_out_say_why() {
             top,
         );
         assert_eq!(cycle, normal, "{name}\n{err}");
-        assert!(err.contains(" 0 of "), "{name}: {err}");
+        assert!(
+            name == "rtl_lfsr" || err.contains(" 0 of "),
+            "{name}: {err}"
+        );
         assert!(err.contains(why), "{name}: {err}");
     }
 }
@@ -4276,6 +4334,7 @@ end architecture;
 
 /// The verdicts of the subset checker on a design, without running it.
 fn verdicts(dir: &Path, top: &str) -> String {
+    // The whole design is the scope, so every process gives its own reason.
     let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
         .current_dir(dir)
         .env("YAVS_STD_CACHE", "off")
@@ -4285,8 +4344,9 @@ fn verdicts(dir: &Path, top: &str) -> String {
             "run",
             "--work=work:lib",
             "--no-cache",
+            &format!("--cycle={top}"),
             "--cycle-report",
-            "--two-state",
+            &format!("--two-state={top}"),
             top,
         ])
         .output()
@@ -4831,6 +4891,8 @@ fn several_clocks_and_crossings_give_the_same_result() {
             normal[1].ends_with("g1=01 gx=06 gs=07 nl=02 nr=01"),
             "{normal:?}"
         );
+        // The normal mode with the same two-state scope, the whole design here (A64).
+        let (normal, _) = run(&dir, &[&t[..], &["--two-state"]].concat(), "cycle_clocks");
         assert_eq!(cycle, normal, "{t:?}\n{err}");
         assert!(
             err.contains(
@@ -5023,23 +5085,18 @@ fn inputs_read_only_when_they_changed_give_the_same_result() {
             ),
             "{normal:?}"
         );
-        // Two-state: `m` reads as 0 for its metavalues.
-        let want: Vec<String> = normal
-            .iter()
-            .map(|l| {
-                l.replace("qm=UUUU", "qm=0000")
-                    .replace("qm=XX01", "qm=0001")
-            })
-            .collect();
+        // Two-state: the normal mode with the same scope, the whole design here (A64).
+        let (want, _) = run(&dir, &[&t[..], &["--two-state"]].concat(), "cycle_inputs");
         assert_eq!(cycle, want, "{t:?}\n{err}");
         assert!(
             err.contains("cycle mode: 3 of 5 processes run cycle-based"),
             "{err}"
         );
-        // The 4 of `m` at initialisation, then its 2 once, at its change.
+        // The 4 of `m` at initialisation; its literals are two-state from then on, `m` being a
+        // signal of the two-state scope (the whole design here).
         assert!(
             err.contains(
-                "cycle mode: 6 metavalue elements read as 0 (4 at initialisation, 2 at changes of \
+                "cycle mode: 4 metavalue elements read as 0 (4 at initialisation, 0 at changes of \
                  the region's inputs)"
             ),
             "{err}"
@@ -5482,7 +5539,8 @@ fn asserts_and_reports_of_the_top_level_unit_are_evaluated() {
         }
         assert!(!normal.contains("never"), "{normal}");
         assert_eq!(code, Some(1), "{normal}");
-        // The two-state contract against the normal mode's two-state run.
+        // The two-state contract against the normal mode's two-state run. By default the
+        // checkers of the testbench are outside the cycle scope, the design under test `u`.
         let (code, normal, _) = go(&["--two-state"], "cycle_topcheck");
         let (stop_code, stop, _) = go(&[], "cycle_topstop");
         assert!(stop.contains("q reached 5"), "{stop}");
@@ -5491,39 +5549,60 @@ fn asserts_and_reports_of_the_top_level_unit_are_evaluated() {
                 let flags = [&t[..], &[mode, "--two-state"]].concat();
                 let (c, out, err) = go(&flags, "cycle_topcheck");
                 assert_eq!((c, &out), (code, &normal), "{w} {flags:?}\n{err}");
-                // The design below the top and the clocked checkers.
                 assert!(
-                    err.contains("cycle mode: 8 of 13 processes run cycle-based"),
+                    err.contains("cycle mode: 3 of 13 processes run cycle-based"),
                     "{w} {mode}: {err}"
                 );
                 let (c, out, err) = go(&flags, "cycle_topstop");
                 assert_eq!((c, &out), (stop_code, &stop), "{w} {flags:?}\n{err}");
             }
         }
-        let report = with_report(
-            &dir,
-            &["--cycle", "--two-state"],
-            "cycle_topcheck",
-            String::new(),
-        );
-        assert_eq!(
-            report
-                .matches("it holds an assert or report of the top-level unit that cycle mode evaluates only in the event kernel: an assert or report that runs outside a clock edge")
-                .count(),
-            2,
-            "{report}"
-        );
-        for p in ["rep", "assert"] {
+        // With the top-level unit in the scope its checkers follow the design's rules (A64):
+        // the clocked ones and the combinational report join and evaluate on settled values.
+        let (code, normal, _) = go(&["--two-state=cycle_topcheck"], "cycle_topcheck");
+        for t in tiers() {
+            let flags = [
+                &t[..],
+                &["--cycle=cycle_topcheck", "--two-state=cycle_topcheck"],
+            ]
+            .concat();
+            let (c, out, err) = go(&flags, "cycle_topcheck");
+            assert_eq!((c, &out), (code, &normal), "{w} {flags:?}\n{err}");
             assert!(
-                report.contains(&format!("cycle_topcheck.{p} ")),
+                err.contains("cycle mode: 11 of 13 processes run cycle-based"),
+                "{w}: {err}"
+            );
+        }
+        // Plain `--cycle` takes the whole design (A76): the top-level unit keeps its own rules
+        // (A19), the combinational checkers and the one reading `flag` stay in the event kernel.
+        let plain = go(&[], "cycle_topcheck");
+        let (c, out, _) = go(&["--cycle"], "cycle_topcheck");
+        assert_eq!((c, &out), (plain.0, &plain.1), "{w}");
+        let (_, _, report) = go(&["--cycle", "--cycle-report"], "cycle_topcheck");
+        assert!(
+            report.contains("cycle mode: 8 of 13 processes run cycle-based")
+                && report
+                    .matches("it holds an assert or report of the top-level unit that cycle mode evaluates only in the event kernel")
+                    .count()
+                    == 2
+                && report.contains(
+                    "E4136 an assert reading a signal the region does not drive alone: cycle_topcheck.flag"
+                ),
+            "{w}: {report}"
+        );
+        let (_, _, report) = go(
+            &["--cycle", "--cycle-report", "--two-state"],
+            "cycle_topcheck",
+        );
+        for p in ["chk", "chk2", "chk3", "pass"] {
+            assert!(
+                report
+                    .lines()
+                    .any(|l| l.starts_with(&format!("      cycle_topcheck.{p} "))
+                        && l.ends_with("it could run cycle-based, but is not in the cycle scope")),
                 "{p}: {report}"
             );
         }
-        assert!(
-            report
-                .contains("E4136 an assert reading a signal the region does not drive alone: cycle_topcheck.flag"),
-            "{report}"
-        );
         assert!(
             !report.contains("not evaluated in cycle mode, held by"),
             "{report}"
@@ -6118,6 +6197,7 @@ fn explain_texts_of_the_subset_codes_match_what_the_checker_gives() {
         &[
             "run",
             "--work=work:lib",
+            "--cycle",
             "--cycle-report",
             "--two-state",
             "cycle_codes",
@@ -6591,6 +6671,8 @@ fn resolved_out_ports_on_unresolved_actuals_equal_the_normal_mode() {
             );
             assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
             assert!(normal.iter().any(|l| l.contains('X')), "{normal:?}");
+            // The normal mode with the same two-state scope, the whole design here (A64).
+            let (normal, _) = run(&dir, &[&t[..], &["--two-state"]].concat(), "cycle_portres");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
             assert!(
                 err.contains("cycle mode: 3 of 6 processes run cycle-based")
@@ -7613,7 +7695,8 @@ fn reports_of_constants_are_made_once() {
             let normal = go(&f);
             assert_eq!(normal.2.len(), 9, "{:?}", normal.2);
             let cycle = go(&[&f[..], &["--cycle", "--two-state"]].concat());
-            let members = "cycle mode: 2 of 5 processes run cycle-based";
+            // The design under test; the testbench's checker is outside its scope.
+            let members = "cycle mode: 1 of 5 processes run cycle-based";
             assert!(cycle.3.contains(members), "{}", cycle.3);
             assert_eq!(
                 (&cycle.0, &cycle.1, &cycle.2),
@@ -7691,17 +7774,12 @@ fn undriven_inputs_with_a_metavalue_are_named() {
             let mut args = vec!["run", "--work=work:lib", "--no-cache", &g];
             args.extend(&t);
             let normal = yavs(&dir, &[&args[..], &["cycle_undriven"]].concat());
-            let cycle = yavs(
-                &dir,
-                &[&args[..], &["--cycle", "--two-state", "cycle_undriven"]].concat(),
-            );
+            // The design is the clocked process `m`; the testbench's signals keep their 'U'.
+            let scope = ["--cycle=cycle_undriven.m", "--two-state=cycle_undriven.m"];
+            let cycle = yavs(&dir, &[&args[..], &scope, &["cycle_undriven"]].concat());
             let report = yavs(
                 &dir,
-                &[
-                    &args[..],
-                    &["--cycle-report", "--two-state", "cycle_undriven"],
-                ]
-                .concat(),
+                &[&args[..], &scope, &["--cycle-report", "cycle_undriven"]].concat(),
             );
             let (n, c) = (
                 String::from_utf8_lossy(&normal.stdout),
@@ -7711,7 +7789,8 @@ fn undriven_inputs_with_a_metavalue_are_named() {
                 String::from_utf8_lossy(&cycle.stderr),
                 String::from_utf8_lossy(&report.stderr),
             );
-            let members = if drive { "2 of 4" } else { "1 of 3" };
+            // `m` alone; the driver of `v` is outside its scope.
+            let members = if drive { "1 of 4" } else { "1 of 3" };
             let head = format!("cycle mode: {members} processes run cycle-based");
             assert!(err.contains(&head), "{err}");
             assert_eq!(err.contains(notice), !drive, "{err}");
@@ -7739,7 +7818,10 @@ fn metavalues_the_testbench_reads_are_kept() {
             let normal = yavs(&dir, &[&args[..], &["cycle_metaout"]].concat());
             let exact = ["cycle_metaout"];
             let cycle = yavs(&dir, &[&args[..], &["--cycle"], &exact].concat());
-            let report = yavs(&dir, &[&args[..], &["--cycle-report"], &exact].concat());
+            let report = yavs(
+                &dir,
+                &[&args[..], &["--cycle", "--cycle-report"], &exact].concat(),
+            );
             // The default: the members join and give '0' for the metavalues (A31).
             let two = yavs(
                 &dir,
@@ -7749,7 +7831,7 @@ fn metavalues_the_testbench_reads_are_kept() {
                 &dir,
                 &[
                     &args[..],
-                    &["--cycle-report", "--two-state", "cycle_metaout"],
+                    &["--cycle", "--cycle-report", "--two-state", "cycle_metaout"],
                 ]
                 .concat(),
             );
@@ -8121,11 +8203,25 @@ fn a_register_with_a_reset_on_a_late_clock_keeps_the_logic_it_samples_out() {
 /// `--cycle-strict` on `top` of a design analysed in `dir`: exit 2, nothing simulated, and the
 /// standard error with the directory written as `$DIR`.
 fn strict_err(dir: &Path, top: &str, extra: &[&str]) -> String {
+    // The scope is each design's `dut` (some hold a testbench-kind process, so the design under
+    // test found would not be it), `t_many`'s generate, `sub_tb`'s the instances found.
+    let scope = match top {
+        "sub_tb" => String::new(),
+        "t_many" => "=t_many.g".to_string(),
+        _ => format!("={top}.dut"),
+    };
+    let (strict, two) = (
+        format!("--cycle-strict{scope}"),
+        format!("--two-state{scope}"),
+    );
+    let extra: Vec<&str> = (extra.iter())
+        .map(|&x| if x == "--two-state" { two.as_str() } else { x })
+        .collect();
     let o = yavs(
         dir,
         &[
-            &["run", "--work=work:lib", "--no-cache", "--cycle-strict"],
-            extra,
+            &["run", "--work=work:lib", "--no-cache", strict.as_str()],
+            &extra[..],
             &[top],
         ]
         .concat(),
@@ -8444,6 +8540,17 @@ fn rare_reasons_are_named_in_the_report_and_under_strict() {
         ),
     ];
     for (top, rows) in cases {
+        // The design under test holds a shared variable and an access value, so it is named
+        // (`rare_b_tb`'s processes are its own).
+        let dut = match rows.iter().all(|r| r.0.starts_with("dut.")) {
+            true => format!("{top}.dut"),
+            false => top.to_string(),
+        };
+        let (cycle, strict, two) = (
+            format!("--cycle={dut}"),
+            format!("--cycle-strict={dut}"),
+            format!("--two-state={dut}"),
+        );
         let o = yavs(
             &dir,
             &[
@@ -8451,8 +8558,9 @@ fn rare_reasons_are_named_in_the_report_and_under_strict() {
                 "--relaxed",
                 "--work=work:lib",
                 "--no-cache",
+                &cycle,
                 "--cycle-report",
-                "--two-state",
+                &two,
                 top,
             ],
         );
@@ -8465,8 +8573,8 @@ fn rare_reasons_are_named_in_the_report_and_under_strict() {
                 "--relaxed",
                 "--work=work:lib",
                 "--no-cache",
-                "--cycle-strict",
-                "--two-state",
+                &strict,
+                &two,
                 top,
             ],
         );
@@ -8646,7 +8754,17 @@ fn u_at_start_is_followed_on_a_second_image() {
             let t = [&t[..], &[&g[..]]].concat();
             let (normal, _) = run(&dir, &t, "cycle_rail");
             assert_eq!(normal.len(), 13, "{normal:?}");
-            let exact = [&t[..], &["--cycle"]].concat();
+            // The design is the six pipelines; the testbench's processes (the reporter of `s3`
+            // among them) and signals are outside both scopes.
+            let paths: Vec<String> = ["pipe", "hp", "vp", "cpp", "hold", "bp"]
+                .iter()
+                .map(|p| format!("cycle_rail.{p}"))
+                .collect();
+            let cyc: Vec<String> = paths.iter().map(|p| format!("--cycle={p}")).collect();
+            let two: Vec<String> = paths.iter().map(|p| format!("--two-state={p}")).collect();
+            let cyc: Vec<&str> = cyc.iter().map(String::as_str).collect();
+            let two: Vec<&str> = two.iter().map(String::as_str).collect();
+            let exact = [&t[..], &cyc[..]].concat();
             let (cycle, err) = run(&dir, &exact, "cycle_rail");
             // Up to the cap the normal mode's lines; `held` gives '0' after it.
             let k = normal.len() - 1;
@@ -8674,11 +8792,7 @@ fn u_at_start_is_followed_on_a_second_image() {
             let mut want = zero(&normal);
             want.insert(0, normal[0].clone());
             want[1] = want[1].replace("0fs+0", "0fs+1");
-            let (two, _) = run(
-                &dir,
-                &[&t[..], &["--cycle", "--two-state"]].concat(),
-                "cycle_rail",
-            );
+            let (two, _) = run(&dir, &[&exact[..], &two[..]].concat(), "cycle_rail");
             assert_eq!(two, want, "{w} {t:?}");
             let (off, err) = run_vars(&dir, &exact, "cycle_rail", &[("YAVS_CYCLE_RAIL", "off")]);
             assert_eq!(off, want, "{w} {t:?}");

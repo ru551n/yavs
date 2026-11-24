@@ -18,6 +18,7 @@ mod lean;
 pub mod libstage;
 mod pkgcall;
 pub mod reach;
+mod scope;
 mod sim;
 mod srep;
 mod stuck;
@@ -102,6 +103,11 @@ pub mod codes {
     pub const TIME_BELOW_RESOLUTION: &str = "E2120";
     /// An external name's subtype indication does not match the object it names (LRM 8.7).
     pub const EXTERNAL_MISMATCH: &str = "E2121";
+    /// A path of `--two-state=PATH` or `--cycle=PATH` names no part of the design hierarchy.
+    pub const SCOPE_PATH: &str = "E2122";
+    /// The cycle scope partly overlaps the `--two-state` scope: the region would hold processes
+    /// of both value semantics.
+    pub const SCOPE_OVERLAP: &str = "E2123";
     /// Not implemented yet in yavs (names the construct, no milestone).
     pub const NOT_IMPLEMENTED: &str = "E2199";
     /// Internal error: a broken invariant ("this is a bug in yavs").
@@ -166,11 +172,86 @@ pub struct ElabConfig {
     /// `--init-unset`: the start value of the `std_ulogic` elements of signals without an
     /// initial value (`'U'` when `None`).
     pub init_unset: Option<yavs_logic::start::Fill>,
-    /// `--two-state`: the design below the top-level unit is two-state (its start values,
-    /// lowering, no kernel-native statements).
-    pub two_state: bool,
+    /// `--two-state[=PATH]`: the scope that is two-state (its start values, lowering, no
+    /// kernel-native statements); `None` without the option.
+    pub two_state: Option<ScopeReq>,
+    /// `--cycle[=PATH]` (or `--cycle-strict[=PATH]`): the scope whose processes may join the
+    /// cycle region; `None` without a cycle option.
+    pub cycle_scope: Option<ScopeReq>,
+    /// Finds the design under test for a [`ScopeReq::Auto`] scope: asked once, after the walk
+    /// and before ports are collapsed (cycle mode's checker classifies the processes).
+    pub detect: Option<DetectHook>,
     /// `--init-x`: find the metavalue literals it gives a value (`Elaborated::x_sites`).
     pub init_x: bool,
+}
+
+/// What a scope option names (A64): the design under test found by [`ElabConfig::detect`],
+/// instance paths (`tb.dut`; `tb.g` is every iteration of generate `g`, `tb.g(1)` one), or the
+/// whole design (the cycle scope of `--cycle` without PATH and without `--two-state`, A76).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ScopeReq {
+    Auto,
+    Paths(Vec<String>),
+    Whole,
+}
+
+/// See [`ElabConfig::detect`].
+#[derive(Clone)]
+pub struct DetectHook(pub std::sync::Arc<DetectFn>);
+
+/// The function of a [`DetectHook`].
+pub type DetectFn = dyn Fn(&Db, &Elaborated) -> Detected + Send + Sync;
+
+/// The design under test found: its roots, empty when the design has no RTL, and the processes
+/// in them that are not of it (the testbench's own, when the root is the top-level unit).
+#[derive(Clone, Debug, Default)]
+pub struct Detected {
+    pub roots: Vec<ScopeId>,
+    pub outside: Vec<usize>,
+}
+
+impl std::fmt::Debug for DetectHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DetectHook")
+    }
+}
+
+/// The scopes of `--two-state` and of cycle mode, resolved (A64): per [`ScopeId`], whether the
+/// scope is in; empty without the option.
+#[derive(Clone, Debug, Default)]
+pub struct Scopes {
+    pub two: Vec<bool>,
+    pub cycle: Vec<bool>,
+    /// The roots each one was given as, for texts: the paths named or detected.
+    pub two_roots: Vec<ScopeId>,
+    pub cycle_roots: Vec<ScopeId>,
+    /// The roots of the design under test, when a scope was detected.
+    pub auto: Option<Vec<ScopeId>>,
+    /// Which scope is the design under test (no path given).
+    pub two_auto: bool,
+    pub cycle_auto: bool,
+    /// The cycle scope is the whole design (A76): the processes of the top-level unit keep the
+    /// top-level rules (A19) instead of the rules of a scope.
+    pub cycle_whole: bool,
+}
+
+impl Scopes {
+    /// The roots of both scopes, for a cache key.
+    pub fn key(&self) -> Vec<u8> {
+        let mut k = Vec::new();
+        for (on, roots) in [
+            (!self.two.is_empty(), &self.two_roots),
+            (!self.cycle.is_empty(), &self.cycle_roots),
+        ] {
+            k.push(u8::from(on));
+            k.extend((roots.len() as u32).to_le_bytes());
+            for r in roots {
+                k.extend(r.0.to_le_bytes());
+            }
+        }
+        k.push(u8::from(self.cycle_whole));
+        k
+    }
 }
 
 /// See [`ElabConfig::values`].
@@ -199,6 +280,8 @@ pub struct GenericReads {
     pub skipped: bool,
     /// The value passes printed a report.
     pub reported: bool,
+    /// The scopes of `--two-state` and cycle mode as resolved (`Scopes::key`).
+    pub scopes: Vec<u8>,
 }
 
 impl Default for ElabConfig {
@@ -210,7 +293,9 @@ impl Default for ElabConfig {
             keep_values: false,
             values: None,
             init_unset: None,
-            two_state: false,
+            two_state: None,
+            cycle_scope: None,
+            detect: None,
             init_x: false,
         }
     }
@@ -624,6 +709,8 @@ pub struct Elaborated {
     pub x_sites: std::collections::HashSet<yavs_sem::ExprId>,
     /// The package state those calls left, for the simulation to start from (#383).
     pub(crate) start: Option<pkgcall::Start>,
+    /// What `--two-state` and cycle mode cover.
+    pub scopes: Scopes,
 }
 
 /// The protected object a 2019 variable port denotes (LRM 6.5.2, #188): the shared
@@ -692,6 +779,16 @@ impl Elaborated {
             cur = self.hier.scope(s).parent;
         }
         None
+    }
+
+    /// Whether scope `s` is in the `--two-state` scope.
+    pub fn two_in(&self, s: ScopeId) -> bool {
+        self.scopes.two.get(s.index()).copied().unwrap_or(false)
+    }
+
+    /// Whether the processes of scope `s` may join the cycle region (its scope).
+    pub fn cycle_in(&self, s: ScopeId) -> bool {
+        self.scopes.cycle.get(s.index()).copied().unwrap_or(false)
     }
 
     /// The value of generic or constant `d` seen from `scope`, if elaboration computed it.

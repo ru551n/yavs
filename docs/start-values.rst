@@ -119,10 +119,10 @@ mode (an array of records may get others). Then no ``'U'`` start value is left f
 to follow.
 
 ``--init-x`` gives the literals above the normal mode's value too. With ``--two-state`` it goes further, in cycle
-mode and in the normal mode alike: the design below the top-level unit computes with ``0`` and ``1`` only, so every
+mode and in the normal mode alike: its scope (the design under test by default) computes with ``0`` and ``1`` only, so every
 metavalue literal it assigns there, also one in a string or a ``case`` alternative, takes the value of ``--init-x``,
 ``0`` without it. A metavalue literal it compares with keeps its meaning: a ``0`` or ``1`` never equals ``'U'``,
 ``'X'``, ``'Z'`` or ``'W'``, so ``x = 'X'`` is false, ``assert clk /= 'U'`` holds, and a ``case`` choice ``"0X"`` is
-never taken; a ``'-'`` in ``std_match``, ``?=`` or a ``case?`` choice still matches anything. The processes of the
-top-level unit keep their literals' meaning, as in the normal mode. ``--cycle-report`` counts the literals per
+never taken; a ``'-'`` in ``std_match``, ``?=`` or a ``case?`` choice still matches anything. The processes outside the
+scope keep their literals' meaning, as in the normal mode. ``--cycle-report`` counts the literals per
 process.

@@ -269,19 +269,31 @@ identical to a run without it, at any `--threads`.
   LLVM tier kept its modules there as `obj-<key>.img`.) `route-<key>.img`, one per design, holds how each compiled function
   first called the others, so that an unchanged design makes the same bodies in every run (#1035).
 - `--two-state` (user, 2026-11-21 and 2026-11-23, A53, A57, A64, A65; replaces 0.21's `--cycle-exact-meta`, removed,
-  an unknown option now): the design below the top-level unit is two-state, in the event kernel and in cycle mode
+  an unknown option now): its scope (below) is two-state, in the event kernel and in cycle mode
   alike. Its processes and the subprograms declared with them hold only `0` and `1`: a value they read from a signal,
   a generic, a constant outside their frame, an attribute or a package's subprogram maps `'1'` and `'H'` to `1` and
   anything else to `0`; a metavalue literal (`'U'`, `'X'`, `'Z'`, `'W'`, `'-'` but in `std_match`, `?=`, `?/=`)
   takes `--init-x` (`0` without it), `'L'` is `0` and `'H'` is `1`; signals and process variables without an
-  initial value start at `--init-unset` (`0` without it), subprogram variables at `0`. The top-level unit keeps the
-  nine values. Not covered yet: `case` choices with metavalues keep them (they match no two-state value). In cycle
-  mode the region is two-state and no process stays out for a metavalue. Without it (the default of `--cycle`, `--cycle-strict` and `--cycle-report` alike) cycle mode keeps the
+  initial value start at `--init-unset` (`0` without it), subprogram variables at `0`. The rest keeps the
+  nine values. In cycle mode a region whose scope lies inside the two-state scope is two-state and no process stays
+  out for a metavalue. Without it (the default of `--cycle` and `--cycle-strict` alike) cycle mode keeps the
   metavalue rules that hold processes out of the cycle region so the testbench sees the normal mode's metavalues,
   follows the `'U'` start values on a second image for up to 1024 clock edges and drives `'U'` where the output
   depends on them (owner decision A38, 2026-11-17); its end is a line of the summary on standard error starting
   `cycle mode: 'U' start values` (an interim: cycle mode is to keep the normal mode's nine values, A66). It is part
   of the key of the lowering and of the cached analysis of cycle mode.
+- Scopes (user, 2026-11-23, A64 addenda): `--cycle=PATH`, `--cycle-strict=PATH` and `--two-state=PATH`, each
+  repeatable, take dotted paths from the top-level unit (instances, blocks, generates, labelled processes; `tb.g` every iteration,
+  `tb.g(1)` one; no case). Only processes of the cycle scope may join the region; one that fits outside it is
+  reported as `outside the cycle scope`. Without PATH the cycle scope is the whole design (the top-level unit under
+  its own rules) unless `--two-state` is given; the `--two-state` scope, and with it the cycle scope, is then the
+  design under test, found from the processes (`docs/decisions.md` "Scopes of `--cycle` and `--two-state`"), and
+  standard error gets one line before the simulation: `design under test: P1, P2 (the scope of --cycle and --two-state; an option's PATH chooses another)`,
+  or `design under test: none found, no instance holds RTL (the scope of ... is empty)`. Exit 2: E2122 (a path
+  names nothing), E2123 (the cycle scope partly inside the two-state scope), E4105 (`--cycle-report` without a cycle
+  option), E4106 (`--cycle-strict` without PATH next to `--two-state` and no design under test found). The report starts with `  cycle scope[, the design under test found]: ...` (`  cycle scope: the whole design ...` for plain `--cycle`) and, with `--two-state`,
+  `  two-state scope...`. The paths given are part of the cached analysis key; the two-state variants of the
+  architectures part of the lowering key.
 - `yavs run --no-asserts` (owner decision A54, 2026-11-21) drops the `assert` and `report` statements of the
   processes below the top-level design unit (whose instance's architecture is not the top's), in the normal mode
   and in cycle mode; the statements inside subprograms and those of the top-level unit's processes run. The run

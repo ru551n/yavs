@@ -544,11 +544,12 @@ fn cycle_mode_page() {
     let (_, _, err) = e.yavs(&["run", "--no-asserts", WORK, "tb_rtl_failure"]);
     on_page(running, &err);
     // The reports: the one with a block of dropped asserts, and the strict errors.
-    let (code, _, err) = e.yavs(&["run", "--cycle-report", WORK, "tb_left_out"]);
+    let (code, _, err) = e.yavs(&["run", "--cycle", "--cycle-report", WORK, "tb_left_out"]);
     assert_eq!(code, 0, "{err}");
     on_page(page, &err);
     let (code, _, err) = e.yavs(&[
         "run",
+        "--cycle",
         "--cycle-report",
         "--no-asserts",
         WORK,

@@ -560,6 +560,10 @@ Elaboration (E2 and W2)
      - A TIME physical literal or unit name has a unit below the resolution limit selected with ``yavs run --resolution`` and appears in the design hierarchy, in a package it uses or in code that never runs (LRM 5.2.4.2).
    * - _`E2121`
      - An external name's subtype indication does not match the object it names: the type differs, or a constrained array dimension has another length (LRM 8.7).
+   * - _`E2122`
+     - A path given to ``--two-state=PATH``, ``--cycle=PATH`` or ``--cycle-strict=PATH`` names no instance, block, generate or labelled process of the elaborated design.
+   * - _`E2123`
+     - The cycle scope and the ``--two-state`` scope overlap in part: some processes of the cycle scope are in the two-state scope and some are not.
    * - _`E2199`
      - A feature needed during elaboration is not implemented yet.
 
@@ -618,6 +622,10 @@ Cycle mode (E4 and W4)
      - The file given to ``yavs run --cycle-report=FILE`` cannot be created or written (missing directory, permissions, full disk).
    * - _`E4104`
      - An environment variable of cycle mode has a value it does not take, such as ``YAVS_CYCLE_CACHE_MIB=0`` (it takes a whole number of MiB of at least 1).
+   * - _`E4105`
+     - ``yavs run --cycle-report`` is given without ``--cycle`` or ``--cycle-strict``.
+   * - _`E4106`
+     - ``yavs run --cycle-strict --two-state`` without a cycle PATH found no design under test: no instance of the design holds RTL (clocked or combinational processes), so a strict run would check nothing.
    * - _`E4110`
      - Cycle mode takes a process with a wait only in one shape: ``wait until <edge>;`` as the first statement, the only wait, a clocked process (``rising_edge(clk)``, ``falling_edge(clk)`` or ``clk'event and clk = '1'``, optionally followed by ``and`` more conditions).
    * - _`E4111`

@@ -281,6 +281,8 @@ def normalise(rc, out, err, yavs=False, names=False):
         for line in text.splitlines():
             if yavs and line.startswith("note: process order is shuffled with seed"):
                 continue  # `--shuffle` announces its seed on stderr
+            if yavs and stream == "err" and line.startswith("design under test: "):
+                continue  # the scope `--cycle` and `--two-state` found
             if swallow and stream == "err" and (FMT1_TRACE.match(line) or FMT1_SNIP.match(line)):
                 continue
             swallow = False

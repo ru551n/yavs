@@ -26,6 +26,9 @@ pub(crate) enum Why {
     /// In the subset; cycle mode does not implement something it needs yet, or a rule of the
     /// region as a whole keeps it out.
     NotYet(Reason),
+    /// Outside the cycle scope (`--cycle=PATH`, or the design under test found): a process of
+    /// the testbench.
+    Outside,
 }
 
 /// The region: members (clocked first, then combinational in dependency order) and the boundary.
@@ -676,7 +679,13 @@ pub(crate) fn subset(db: &Db, e: &Elaborated) -> Subset {
         let t = std::time::Instant::now();
         let v = check::check(db, e, pi, &mut callees);
         slow.push((t.elapsed().as_micros(), pi));
+        // Outside the cycle scope a process that fits never joins; the others keep their
+        // reason, which what follows paths through logic reads.
         match v {
+            check::Verdict::Fit(_) if outside_scope(e, pi) => {
+                checked.insert(pi);
+                out.push((pi, Why::Outside));
+            }
             check::Verdict::Fit(f) => {
                 fits.insert(pi, f);
                 checked.insert(pi);
@@ -1294,12 +1303,12 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
                 ));
                 continue;
             }
-            // A checker of the top-level unit evaluated in region code (A19) reads what members
-            // drive only: it sees the values the normal mode's checker would see of them (the
-            // region exports two-state values), never a metavalue of the kernel read as 0.
-            // What the checker counts too: the lowering reads nothing of a value it folds
-            // (`is_x` is false on two-state values). Without `--two-state` the same for every
-            // member with notes, which must see the kernel's metavalues (E4140 below the top).
+            // A checker of the top-level unit evaluated in region code (A19, whole-design scope)
+            // reads what members drive only: it sees the values the normal mode's checker would
+            // see of them, never a metavalue of the kernel read as 0. Without `--two-state` the
+            // same for every member with notes, which must see the kernel's metavalues. What it
+            // counts too: the lowering reads nothing of a value it folds (`is_x` is false on
+            // two-state values).
             let fit_reads = f.reads.iter().map(|(k, _, _)| LeafId(k as u32));
             let top = in_top_unit(e, pi);
             if b.notes > 0
@@ -1522,7 +1531,9 @@ fn meta_rule(
     // joins 57 processes and loses 387 to `cross_delta`, for no gain (owner decision pending).
     let mut all = !db.externals.is_empty();
     let tb: BTreeSet<usize> = (out.iter())
-        .filter(|(pi, w)| matches!(w, Why::Behavioural(_)) || in_top_unit(e, *pi))
+        .filter(|(pi, w)| {
+            matches!(w, Why::Behavioural(_)) || in_top_unit(e, *pi) || outside_scope(e, *pi)
+        })
         .map(|(pi, _)| *pi)
         .collect();
     let mut seen = BTreeSet::new();
@@ -2943,7 +2954,7 @@ pub fn downstream(db: &Db, e: &Elaborated, sel: &Selection) -> Vec<usize> {
 /// subprograms it calls), and of those the ones it waits on; `None` when the scan cannot follow
 /// it (an external name without the alias elaboration bound it to, a call it cannot see into):
 /// it may read every leaf.
-fn proc_reads(
+pub(crate) fn proc_reads(
     db: &Db,
     e: &Elaborated,
     pi: usize,
@@ -3079,7 +3090,10 @@ fn delta_seeds(
                 // A testbench process sees the region's settled values earlier by contract
                 // ("Delta cycles inside the region are not visible" of the user guide): one of
                 // the top-level unit, and below it one that drives nothing (a monitor).
-                _ if in_top_unit(e, *pi) || e.procs[*pi].drivers.is_empty() => return None,
+                // Only the top-level unit: a model outside the cycle scope can count its runs.
+                _ if in_top_scope(e, e.procs[*pi].scope) || e.procs[*pi].drivers.is_empty() => {
+                    return None;
+                }
                 Why::Subset(r) if r.code == crate::codes::SENSITIVITY => {
                     "has an incomplete sensitivity list"
                 }
@@ -4012,7 +4026,7 @@ fn exprs_calls(db: &Db, xs: &[ExprId], out: &mut Vec<LocalCall>) -> bool {
 /// waits on by name: the LSPs of the signals its body names that are not its formals, and
 /// whether a wait names a formal (then the signals of each call's actuals are waited on).
 #[derive(Clone, Default)]
-struct CallSigs {
+pub(crate) struct CallSigs {
     reads: Vec<yavs_sem::hir::Lsp>,
     waits: Vec<yavs_sem::hir::Lsp>,
     waits_formal: bool,
@@ -4144,10 +4158,17 @@ fn local_subprogram(db: &Db, d: yavs_sem::DeclId) -> bool {
     false
 }
 
+/// The process is outside the cycle scope (A64): of the testbench, exempt under
+/// `--cycle-strict`, never a member.
+pub(crate) fn outside_scope(e: &Elaborated, pi: usize) -> bool {
+    !e.cycle_in(e.procs[pi].scope)
+}
+
 /// The process is directly in the top-level design unit (its architecture, or a block or
-/// generate of it): the testbench, exempt under `--cycle-strict`.
+/// generate of it) and the cycle scope is the whole design (A76): the testbench, under the
+/// top-level rules (A19) and exempt under `--cycle-strict`.
 pub(crate) fn in_top_unit(e: &Elaborated, pi: usize) -> bool {
-    in_top_scope(e, e.procs[pi].scope)
+    e.scopes.cycle_whole && in_top_scope(e, e.procs[pi].scope)
 }
 
 /// Whether a process of scope `scope` is one of the top-level unit.

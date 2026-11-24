@@ -111,6 +111,33 @@ enum ResolutionArg {
     Sec,
 }
 
+/// The line naming the design under test yavs found for the options without PATH (A64).
+fn dut_line(e: &yavs_elab::Elaborated, roots: &[yavs_elab::ScopeId]) -> String {
+    let sc = &e.scopes;
+    let flags: Vec<&str> = [("--cycle", sc.cycle_auto), ("--two-state", sc.two_auto)]
+        .into_iter()
+        .filter_map(|(f, on)| on.then_some(f))
+        .collect();
+    let flags = flags.join(" and ");
+    match roots {
+        [] => format!(
+            "design under test: none found, no instance holds RTL (the scope of {flags} is empty)"
+        ),
+        _ => format!(
+            "design under test: {} (the scope of {flags}; an option's PATH chooses another)",
+            e.scope_paths(roots).join(", ")
+        ),
+    }
+}
+
+/// A scope option's paths: none given is the design under test.
+fn scope_req(paths: Option<&Vec<String>>) -> Option<yavs_elab::ScopeReq> {
+    paths.map(|p| match p.is_empty() {
+        true => yavs_elab::ScopeReq::Auto,
+        false => yavs_elab::ScopeReq::Paths(p.clone()),
+    })
+}
+
 #[cfg_attr(test, derive(Debug))]
 #[derive(ClapArgs)]
 #[command(group(clap::ArgGroup::new("cycle_mode").multiple(true)
@@ -248,46 +275,55 @@ pub struct RunArgs {
     #[arg(long)]
     no_asserts: bool,
     /// Cycle mode, experimental (its options and results may change in a later release): the
-    /// processes that can run cycle-based (clocked and combinational ones in what it supports) run
-    /// as one region on a static schedule with compiled code; the rest stays in the event kernel.
-    /// One line on standard error says how many processes joined; `--cycle-report` lists them all,
-    /// with reasons. Cycle-based processes evaluate their asserts and reports, a clocked one at its
-    /// clock edge, a combinational one once its inputs are settled, with the normal mode's text,
-    /// severity, time and process; one cycle mode cannot evaluate keeps its process in the event
-    /// kernel (`--no-asserts` drops those below the top-level unit). `--wave` (and `--surfer`)
-    /// records the signals inside the region per time step, without delta cycles. Values keep the
-    /// metavalues unless `--two-state` is given. Not with a debug session,
-    /// `--wave-variables`, `--cov`, `--vhpi` or `--activity` (E4102). The strict form
-    /// is `--cycle-strict`, given instead of this option.
-    #[arg(long, conflicts_with = "cycle_strict")]
-    cycle: bool,
-    /// Cycle mode in its strict form, experimental, instead of `--cycle`: the same selection, but a
-    /// process below the top-level design unit that is not behavioural and cannot run cycle-based
-    /// is an error, and the run stops before simulation. Each error names the construct that is not
-    /// supported, points at its statement, and says why and how to fix it, with the code of the
-    /// reason (E4110 to E4140; E4101 for what yavs does not implement yet); one error per statement
-    /// lists the processes it keeps out, sorted by file and line, at most 40.
-    #[arg(long)]
-    cycle_strict: bool,
-    /// Analyse the design for cycle mode (experimental) and print the region report to standard
-    /// error, or with FILE write it there: the summary, the processes that stay in the event kernel
-    /// grouped by reason (most common first), the asserts and reports `--no-asserts` drops,
-    /// the clocks, the loop groups, the boundary and the cycle-based processes. Nothing is compiled
-    /// or simulated; the exit status is 0. Given instead of `--cycle` and `--cycle-strict`. An
-    /// unwritable FILE is E4103, before any work.
-    #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true,
-          conflicts_with_all = ["cycle", "cycle_strict"])]
+    /// processes of the cycle scope that can run cycle-based (clocked and combinational ones in
+    /// what it supports) run as one region on a static schedule with compiled code; the rest stays
+    /// in the event kernel. The scope is PATH (an instance, block, generate or process path from the
+    /// top-level unit, such as `tb.dut`; `tb.g` is every iteration of generate `g`; repeat the
+    /// option for more). Without PATH it is the whole design, the processes of the top-level unit
+    /// under their own rules, and with `--two-state` the design under test that yavs finds (one
+    /// line on standard error names it). One line on standard error says how many processes joined;
+    /// `--cycle-report` lists them all, with reasons. Cycle-based processes evaluate their asserts
+    /// and reports, a clocked one at its clock edge, a combinational one once its inputs are
+    /// settled, with the normal mode's text, severity, time and process; one cycle mode cannot
+    /// evaluate keeps its process in the event kernel (`--no-asserts` drops those below the
+    /// top-level unit). `--wave` (and `--surfer`) records the signals inside the region per time
+    /// step, without delta cycles. Values keep the metavalues unless the cycle scope is inside the
+    /// `--two-state` scope. Not with a debug session, `--wave-variables`, `--cov`, `--vhpi` or
+    /// `--activity` (E4102). The strict form is `--cycle-strict`, given instead of this option.
+    #[arg(long, value_name = "PATH", num_args = 0..=1, require_equals = true,
+          conflicts_with = "cycle_strict")]
+    cycle: Option<Vec<String>>,
+    /// Cycle mode in its strict form, experimental, instead of `--cycle` (PATH as there): the same
+    /// selection, but a process of the cycle scope that is not behavioural and cannot run
+    /// cycle-based is an error, and the run stops before simulation. Each error names the
+    /// construct that is not supported, points at its statement, and says why and how to fix it,
+    /// with the code of the reason (E4110 to E4140; E4101 for what yavs does not implement yet);
+    /// one error per statement lists the processes it keeps out, sorted by file and line, at most
+    /// 40.
+    #[arg(long, value_name = "PATH", num_args = 0..=1, require_equals = true)]
+    cycle_strict: Option<Vec<String>>,
+    /// With `--cycle` or `--cycle-strict`: analyse the design for cycle mode and print the region
+    /// report to standard error, or with FILE write it there: the scopes, the summary, the
+    /// processes that stay in the event kernel grouped by reason (most common first), the asserts
+    /// and reports `--no-asserts` drops, the clocks, the loop groups, the boundary and the
+    /// cycle-based processes. Nothing is compiled or simulated; the exit status is 0 (with
+    /// `--cycle-strict`, its errors come first). Without a cycle option it is E4105. An unwritable
+    /// FILE is E4103, before any work.
+    #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true)]
     cycle_report: Option<Option<String>>,
-    /// Two-state values (experimental): the design below the top-level unit holds only `0` and
-    /// `1`. A metavalue it reads from the testbench or a resolved signal counts as `0` (`'H'` as
+    /// Two-state values (experimental): the two-state scope holds only `0` and `1`. The scope is
+    /// PATH, as for `--cycle` (repeatable; the top-level unit's name puts the whole design in),
+    /// or without PATH the design under test that yavs finds (with `--cycle` without PATH, its
+    /// cycle scope too). A
+    /// metavalue the scope reads from outside it or from a resolved signal counts as `0` (`'H'` as
     /// `1`), its literals `'U'`, `'X'`, `'Z'`, `'W'` and `'-'` take the `--init-x` value (`0`
     /// without it; `'L'` is `0`, `'H'` is `1`), and what it declares without an initial value
-    /// starts at `--init-unset` (`0` without it). The top-level unit keeps the nine values. With
-    /// a cycle option the cycle-based processes are two-state too; without this option cycle mode
-    /// keeps the metavalues (for now a register without a start value shows `'U'` for up to 1024
-    /// clock edges).
-    #[arg(long)]
-    two_state: bool,
+    /// starts at `--init-unset` (`0` without it). The rest keeps the nine values. A cycle region
+    /// inside the scope is two-state too; the cycle scope must lie inside this scope or outside it
+    /// (E2123). Without this option cycle mode keeps the metavalues (for now a register without a
+    /// start value shows `'U'` for up to 1024 clock edges).
+    #[arg(long, value_name = "PATH", num_args = 0..=1, require_equals = true)]
+    two_state: Option<Vec<String>>,
     // The text names the tiers this build has, so it is built by `tier_help`.
     #[arg(long, value_enum, help = tier_help())]
     tier: Option<TierArg>,
@@ -636,9 +672,25 @@ impl RunArgs {
         self.dap.is_some() || self.interactive || !self.do_commands.is_empty()
     }
 
-    /// Whether cycle mode analyses the design: `--cycle`, `--cycle-strict` or `--cycle-report`.
+    /// Whether cycle mode analyses the design: `--cycle` or `--cycle-strict`.
     fn cycle_on(&self) -> bool {
-        self.cycle || self.cycle_strict || self.cycle_report.is_some()
+        self.cycle.is_some() || self.cycle_strict.is_some()
+    }
+
+    /// The cycle scope asked for (A64): without PATH the design under test under `--two-state`,
+    /// else the whole design (A76: the most processes join).
+    fn cycle_scope(&self) -> Option<yavs_elab::ScopeReq> {
+        match scope_req(self.cycle.as_ref().or(self.cycle_strict.as_ref())) {
+            Some(yavs_elab::ScopeReq::Auto) if self.two_state.is_none() => {
+                Some(yavs_elab::ScopeReq::Whole)
+            }
+            r => r,
+        }
+    }
+
+    /// The `--two-state` scope asked for.
+    fn two_scope(&self) -> Option<yavs_elab::ScopeReq> {
+        scope_req(self.two_state.as_ref())
     }
 
     /// The option `--cycle` cannot be used with: it shows, counts or changes signals or variables
@@ -780,6 +832,7 @@ fn elaborate(
     collapse_ports: bool,
     keep_values: bool,
     values: Option<yavs_elab::ValuesHook>,
+    (two_state, cycle_scope): (Option<yavs_elab::ScopeReq>, Option<yavs_elab::ScopeReq>),
     format: MessageFormat,
     color: bool,
     encoding: yavs_syntax::Encoding,
@@ -913,7 +966,12 @@ fn elaborate(
             values,
             init_unset: yavs_logic::start::unset(),
             init_x: yavs_logic::start::x().is_some(),
-            two_state: lowering.two_state,
+            // The design under test is found by cycle mode's checker (A64).
+            detect: [&two_state, &cycle_scope]
+                .contains(&&Some(yavs_elab::ScopeReq::Auto))
+                .then(|| yavs_elab::DetectHook(std::sync::Arc::new(yavs_cycle::detect))),
+            two_state,
+            cycle_scope,
             ..yavs_elab::ElabConfig::default()
         };
         yavs_elab::elaborate(&mut db, t, &c.generics, &cfg)
@@ -1227,6 +1285,7 @@ pub fn elab(
         true,
         false,
         None,
+        (None, None),
         format,
         color,
         encoding,
@@ -1624,7 +1683,7 @@ fn prepare(
         no_asserts: a.no_asserts,
         init_unset: a.init_unset.is_some(),
         init_x: a.init_x.is_some(),
-        two_state: a.two_state,
+        two_state: a.two_state.is_some(),
         ..yavs_elab::LowerOptions::default()
     };
     // Read by elaboration, the lowering's natives and cycle mode.
@@ -1647,7 +1706,7 @@ fn prepare(
         let work = c.work.split_once(':').map_or("", |(_, d)| d);
         // Not the library paths: the analysis key names every file of the closure and its library.
         let part = format!(
-            "{}|{}|{}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}",
+            "{}|{}|{}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
             c.top,
             collapse && !c.no_collapse_ports,
             compile_all,
@@ -1657,7 +1716,8 @@ fn prepare(
             c.load,
             a.plusargs,
             a.source_map,
-            a.two_state,
+            a.two_scope(),
+            a.cycle_scope(),
         ) + &format!(
             "|{:?}|{:?}",
             // The kind only: a seed is read when the run starts (A68).
@@ -1676,7 +1736,7 @@ fn prepare(
             (!c.no_cache && !work.is_empty()).then(|| std::path::Path::new(work)),
             part.into_bytes(),
             c.generics.clone(),
-            !a.cycle_strict && a.cycle_report.is_none(),
+            a.cycle_strict.is_none() && a.cycle_report.is_none(),
         )
     });
     let (mut out, db, e) = elaborate(
@@ -1687,12 +1747,46 @@ fn prepare(
         // Cycle mode lowers code that reads constants a plain run evaluates only when needed.
         a.cycle_on(),
         values.flatten(),
+        (a.two_scope(), a.cycle_scope()),
         format,
         color,
         encoding,
     )?;
     if a.common.print_hierarchy {
         print_hierarchy(&db, &e);
+    }
+    if let Some(roots) = &e.scopes.auto {
+        eprintln!("{}", dut_line(&e, roots));
+        // A strict run checks a design: with none found it would check nothing (A76).
+        if a.cycle_strict.as_ref().is_some_and(|p| p.is_empty()) && roots.is_empty() {
+            let kids: Vec<String> = (e.hier.scope(yavs_elab::ScopeId(0)).children.iter())
+                .filter(|&&c| {
+                    matches!(
+                        e.hier.scope(c).kind,
+                        yavs_elab::ScopeKind::Instance { .. }
+                            | yavs_elab::ScopeKind::Component { .. }
+                    )
+                })
+                .map(|&c| e.scope_paths(&[c]).remove(0))
+                .collect();
+            let mut d = Diagnostic::error(
+                yavs_cycle::codes::NO_DUT,
+                "`--cycle-strict` found no design under test to check: no instance holds RTL",
+            );
+            d = match kids.first() {
+                Some(k) => d
+                    .with_note(format!(
+                        "the instances of the top-level unit: {}",
+                        kids.join(", ")
+                    ))
+                    .with_help(format!(
+                        "give the scope as a path, such as `--cycle-strict={k}`"
+                    )),
+                None => d.with_help("give the scope as a path: `--cycle-strict=PATH`"),
+            };
+            out.emit(&SourceMap::default(), &d);
+            return Err((out, 2));
+        }
     }
     let none = SourceMap::default();
     let flag = if a.dap.is_some() {
@@ -1977,6 +2071,20 @@ fn run_design(
         out.emit(&SourceMap::default(), &d);
         return out.finish(2);
     }
+    // `--cycle-report` modifies a cycle option (A64).
+    if a.cycle_report.is_some() && !a.cycle_on() {
+        let mut out = Out::new(format, color);
+        out.emit(
+            &SourceMap::default(),
+            &Diagnostic::error(
+                yavs_cycle::codes::REPORT_ALONE,
+                "`--cycle-report` is given without `--cycle` or `--cycle-strict`",
+            )
+            .with_note("the report describes a cycle region, whose scope a cycle option sets")
+            .with_help("add `--cycle` (the whole design) or `--cycle=PATH`, or `--cycle-strict`"),
+        );
+        return out.finish(2);
+    }
     // A report file that cannot be written fails before any work.
     let mut report_file = None;
     if let Some(Some(path)) = &a.cycle_report {
@@ -1997,10 +2105,10 @@ fn run_design(
         }
     }
     // Cycle mode cannot serve what observes or changes signals inside its region.
-    if (a.cycle || a.cycle_strict)
+    if a.cycle_on()
         && let Some(option) = a.not_with_cycle()
     {
-        let flag = if a.cycle_strict {
+        let flag = if a.cycle_strict.is_some() {
             "--cycle-strict"
         } else {
             "--cycle"
@@ -2134,10 +2242,11 @@ fn run_design(
     let mut cycle_metas = None;
     let mut cycle_reporter: Option<yavs_cycle::Reporter> = None;
     if a.cycle_on() {
-        let mode = match (a.cycle_strict, a.cycle_report.is_some()) {
-            (true, _) => yavs_cycle::Mode::Strict,
-            (_, true) => yavs_cycle::Mode::Report,
-            _ => yavs_cycle::Mode::Run,
+        let mode = match (a.cycle_strict.is_some(), a.cycle_report.is_some()) {
+            (true, true) => yavs_cycle::Mode::StrictReport,
+            (true, false) => yavs_cycle::Mode::Strict,
+            (false, true) => yavs_cycle::Mode::Report,
+            (false, false) => yavs_cycle::Mode::Run,
         };
         // The region's machine code is kept in the work library's compilation cache, as the
         // compiled tier's is; not with `--no-cache`.
@@ -2154,7 +2263,11 @@ fn run_design(
                 .clone()
                 .map(|p| p as std::sync::Arc<dyn yavs_kernel::Tokens>),
         );
-        yavs_cycle::set_two_state(a.two_state);
+        // The region is two-state when its scope lies inside the `--two-state` scope (E2123 keeps
+        // the two from overlapping in part).
+        yavs_cycle::set_two_state(
+            (e.procs.iter()).any(|p| e.cycle_in(p.scope) && e.two_in(p.scope)),
+        );
         yavs_cycle::set_no_asserts(a.no_asserts);
         yavs_cycle::set_wave(
             a.wave
@@ -2163,7 +2276,7 @@ fn run_design(
         );
         match yavs_cycle::plan(&db, &e, mode) {
             Ok(plan) => {
-                if mode == yavs_cycle::Mode::Report {
+                if a.cycle_report.is_some() {
                     use std::io::Write as _;
                     let written = match &mut report_file {
                         Some(f) => f.write_all(plan.report.as_bytes()),

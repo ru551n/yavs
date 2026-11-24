@@ -282,6 +282,7 @@ fn cycle_report_lists_the_registers_init_unset_sets() {
             "run",
             "--work=work:lib",
             "--no-cache",
+            "--cycle",
             "--cycle-report",
             "--two-state",
             "initunset",
@@ -454,8 +455,9 @@ fn a_two_state_value_never_equals_a_metavalue_literal() {
                 let (lines, code, err) = run(&dir, &f, "metacmp");
                 assert_eq!((code, lines.len()), (0, 5), "{f:?}: {err}");
                 if !mode.is_empty() {
-                    // Every process of the design joins.
-                    assert!(err.contains("cycle mode: 11 of 18"), "{f:?}: {err}");
+                    // Every process of the design under test joins (the testbench's drivers of
+                    // its inputs are outside the scope).
+                    assert!(err.contains("cycle mode: 5 of 18"), "{f:?}: {err}");
                 }
                 assert!(
                     lines.iter().all(|l| l.ends_with(" hit='0' c='0' m='1'")),
@@ -468,7 +470,7 @@ fn a_two_state_value_never_equals_a_metavalue_literal() {
     let report = |flags: &[&str]| {
         let mut a = vec!["run", "--work=work:lib", "--no-cache"];
         a.extend(flags);
-        a.extend(["--cycle-report", "metacmp"]);
+        a.extend(["--cycle", "--cycle-report", "metacmp"]);
         String::from_utf8_lossy(&yavs(&dir, &a).stderr).into_owned()
     };
     let r = report(&["--two-state", "--init-x=1"]);

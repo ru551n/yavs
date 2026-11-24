@@ -95,18 +95,23 @@ The testbench's output is the same. The ``cycle mode`` lines go to standard erro
 * The third says that the region followed those start values on a second set of values until the two agreed
   (:ref:`cycle-meta`). ``--two-state`` leaves that line out, and that work.
 
-``yavs run`` has three cycle flags. Give one of them; two together are a usage error (exit status 2).
+``yavs run`` has two cycle flags and a third that modifies them. ``--cycle`` and ``--cycle-strict`` are
+alternatives; both together are a usage error (exit status 2).
 
 .. code-block:: bash
 
-    yavs run --cycle --work=work:build/work tb_counter          # run; what does not fit stays out
-    yavs run --cycle-strict --work=work:build/work tb_counter   # what does not fit is an error
-    yavs run --cycle-report --work=work:build/work tb_counter   # say what would join; run nothing
+    yavs run --cycle --work=work:build/work tb_counter                 # run; what does not fit stays out
+    yavs run --cycle-strict --work=work:build/work tb_counter          # what does not fit is an error
+    yavs run --cycle --cycle-report --work=work:build/work tb_counter  # say what would join; run nothing
 
-``--two-state`` goes with any of them, or alone. With it the region computes on ``0`` and ``1`` only: more processes
+``--cycle-report`` without one of the two is an error (E4105). Both take a scope, the part of the design whose
+processes may join: ``--cycle=PATH`` names it; without PATH it is the whole design, and with ``--two-state`` the
+design under test that yavs finds (:ref:`cycle-scope`).
+
+``--two-state`` goes with either, or alone. With it the region computes on ``0`` and ``1`` only: more processes
 join and the run is faster. Without it plain ``--cycle`` keeps the metavalues the testbench would see (:ref:`cycle-meta`).
-The values come from ``--two-state`` alone, the same for ``--cycle``, ``--cycle-strict`` and ``--cycle-report``; the
-rest of this page is about the scheduling, and ``--two-state`` is on :doc:`two-state`.
+The values come from ``--two-state`` alone, the same for ``--cycle`` and ``--cycle-strict``; the rest of this page is
+about the scheduling, and ``--two-state`` is on :doc:`two-state`.
 
 .. code-block:: bash
 
@@ -161,12 +166,91 @@ configurations of its own needs each of them twice):
   ``--yavs-interactive`` fails before yavs starts, with a message that names both options. So a coverage job needs
   ``yavs.cycle`` ``"off"``. ``--yavs-surfer`` works. A ``--wave-variables``, ``--cov`` or ``--vhpi`` in
   ``yavs.sim_flags`` is refused by yavs itself (E4102).
+* ``yavs.cycle_scope`` (a path, or a list of paths) gives ``--cycle`` its PATH (:ref:`cycle-scope`); without
+  ``yavs.cycle`` it is refused at the start of the test.
 * To see the report of one test, set ``yavs.sim_flags`` to ``["--cycle-report"]`` for that test, with
-  ``yavs.cycle`` ``"off"`` (the two flags cannot be combined). yavs prints the report and simulates nothing, so the
-  test fails on purpose: use it for a look on your machine, with ``-v``, not in CI.
+  ``yavs.cycle`` ``"on"``. yavs prints the report and simulates nothing, so the test fails on purpose: use it for a
+  look on your machine, with ``-v``, not in CI.
 * ``yavs.no_asserts`` is the sim option of ``--no-asserts`` (:ref:`no-asserts`), and ``yavs.init_unset`` and
   ``yavs.init_x`` those of the start-value flags (:doc:`start-values`). ``yavs.two_state`` set to ``True`` adds
-  ``--two-state`` (:doc:`two-state`).
+  ``--two-state``, set to a path or a list of paths ``--two-state=PATH`` for each (:doc:`two-state`).
+
+.. code-block:: python
+
+    # Only the design and its memory, cycle-based and two-state.
+    lib.set_sim_option("yavs.cycle", "on")
+    lib.set_sim_option("yavs.cycle_scope", ["tb.dut", "tb.mem"])
+    lib.set_sim_option("yavs.two_state", ["tb.dut", "tb.mem"])
+
+.. _cycle-scope:
+
+The scope: which part of the design
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Only the processes of the *cycle scope* may join the region; every other process stays in the event simulation,
+whatever it is. ``--two-state`` has a scope of its own (:doc:`two-state`). The defaults, when no PATH is given:
+
+* ``--cycle`` (or ``--cycle-strict``) alone: the whole design. Every process that fits may join, those of the
+  testbench and its verification components included, so the most processes run cycle-based; the processes of the
+  top-level unit keep their own rules (one with an assert or report that cycle mode would evaluate only after the
+  region settles stays in the event kernel, and under ``--cycle-strict`` none of them is an error).
+* ``--two-state``, alone or with ``--cycle``: the *design under test*, which yavs finds without being told. With
+  ``--cycle`` without PATH the cycle scope is the design under test too, so the region is two-state and the
+  testbench's models and checkers keep the nine values.
+
+A path names another scope:
+
+.. code-block:: bash
+
+    yavs run --cycle=tb.dut --work=work:build/work tb                  # one instance and what is below it
+    yavs run --cycle=tb.dut --cycle=tb.mem --work=work:build/work tb   # two of them
+    yavs run --cycle=tb.g --work=work:build/work tb                    # every iteration of generate g
+    yavs run --cycle=tb.g(1) --work=work:build/work tb                 # one of them
+    yavs run --cycle=tb --two-state=tb --work=work:build/work tb       # the whole design, testbench included
+
+A path names an instance, a block, a generate or a labelled process from the top-level unit down, as ``--print-hierarchy`` and the
+report write them, without case; everything at and below it is in the scope. One that names nothing is an error
+that names a similar path (E2122). The processes of the top-level unit are in a named scope only when the path is the
+top-level unit's name; there they follow the rules of every other process of the scope (under ``--cycle-strict`` an
+RTL-shaped one that cannot join is an error). ``--no-asserts`` does not follow the scope: it drops the asserts and
+reports below the top-level unit (:ref:`no-asserts`).
+
+**The design under test.** A testbench often holds verification components next to the design: a bus model, a
+memory model, a clock generator, a checker. yavs finds the design from what the processes do, never from names. A
+process is of the testbench when it waits for a time, waits more than once, calls a procedure that waits, uses
+files, text input and output, protected objects or access values, or makes a waveform with ``after`` from nothing or
+from its own output without a clock (``clk <= not clk after 5 ns;``); a process that runs ``wait;`` once and every
+other process are RTL, delayed assignments of logic included. From the top-level unit down, the design under test is
+each instance of a level that holds RTL and whose processes, its own and those below it, are at most one in twenty
+of the testbench kind. When an instance holds RTL and more of the testbench (a harness around the design and its
+models), yavs looks inside it the same way. The scope is all the instances found; the top-level unit itself when
+none is found and it holds RTL of its own, its testbench-kind processes left out (so a flat testbench's stimulus
+keeps the nine values); and empty when the design has no RTL at all, which ``--cycle-strict --two-state`` without
+a cycle PATH refuses (E4106). A process that assigns a ``'Z'`` literal (a pad's tri-state driver) is left out of the
+scope found, so it keeps the nine values (:doc:`two-state`). A memory or FIFO the
+testbench instantiates next to the design is found too, being RTL: that is usually what you want, and a path
+leaves it out.
+
+Without PATH, one line on standard error names it:
+
+.. code-block:: text
+
+    design under test: tb.dut, tb.mem (the scope of --cycle and --two-state; an option's PATH chooses another)
+
+The report (:ref:`cycle-report`) starts with the scopes. A process that could join but is outside the cycle scope
+is listed under ``outside the cycle scope``.
+
+**The two scopes together.** They may differ, but the cycle region computes with one kind of values: two-state when
+the cycle scope lies inside the ``--two-state`` scope, with the metavalues when it lies outside it (no
+``--two-state``, or a ``--two-state`` scope elsewhere). Scopes that overlap in part are an error (E2123), such as
+``--cycle=tb --two-state=tb.dut``.
+
+.. note::
+
+   **Changed in this release.** ``--two-state`` used to cover everything below the top-level unit; it now covers the
+   design under test, and so does ``--cycle`` without PATH when ``--two-state`` is given. For the old reach of
+   ``--two-state``, name the instances below the top. Plain ``--cycle`` without PATH still takes the whole design.
+   ``--cycle-report`` no longer turns cycle mode on by itself.
 
 .. _cycle-changes:
 
@@ -183,7 +267,7 @@ cycle-based processes, this is the whole list of differences that come from the 
   library warnings are not given;
 * with ``--two-state``, a failed check does not print its values (:ref:`cycle-checks`);
 * waveforms show the region's signals per time step, without deltas (:ref:`cycle-waves`);
-* a delayed assignment in the top-level unit stays in the event kernel, so a one-delta glitch of cycle-based logic
+* a delayed assignment outside the cycle scope stays in the event kernel, so a one-delta glitch of cycle-based logic
   feeding it can change that waveform. Compute the delayed value from registered signals, or check
   timing-sensitive waveforms in the normal mode;
 * coverage, VHPI, activity counts, variable waveforms and the debugger are refused (:ref:`cycle-refused`).
@@ -231,7 +315,7 @@ What can differ:
   cycle mode it runs once per wake on settled values: such a message is made once, with the settled values, or not at
   all when the settled values satisfy the assert.
 * **Values.** With ``--two-state`` an assert sees the region's values (:ref:`cycle-two-state`): one that fires only
-  because a value is still ``'U'`` does not fire. Without it a process below the top-level unit with an assert or
+  because a value is still ``'U'`` does not fire. Without it a process of the cycle scope with an assert or
   report that reads a signal the region does not drive alone stays in the event kernel (E4140), so it sees the
   metavalues the rest of the design gives it.
 * ``--assert-summary`` and ``--exit-severity`` count the messages of the region as those of the normal mode.
@@ -242,17 +326,16 @@ What can differ:
 * A known gap: when every process around a constant joins, an ``ieee`` warning or an overflow in the constant's
   initial value (a truncating ``to_unsigned``) is not produced, and the overflow does not stop the run.
 
-An assert or report cycle mode cannot evaluate keeps its process in the event kernel (E4140; an error below the
-top-level unit under ``--cycle-strict``). It takes a message made of string literals, ``&``, ``'image`` and
+An assert or report cycle mode cannot evaluate keeps its process in the event kernel (E4140; an error under
+``--cycle-strict``). It takes a message made of string literals, ``&``, ``'image`` and
 ``to_string`` of integers, enumerations, ``std_ulogic`` and ``boolean`` values, and ``to_string``, ``to_hstring`` and
 ``to_ostring`` of vectors, with a severity known during elaboration. It does not take one in the asynchronous reset
 branch of a clocked process, or in a combinational process whose sensitivity list names a signal the process does not
 read. Write the message in that form, move the check out of the reset branch, or use ``--no-asserts``.
 
-The testbench's own checks are the processes of the top-level unit. A clocked one that reads only the design's
-outputs and has such a message joins and evaluates at the clock edge; any other top-level process with an assert stays
-in the event kernel (E4136 when it reads a signal the region does not drive alone). VUnit ``check_*`` calls in the
-testbench process run as before.
+The testbench's own checks are outside the cycle scope by default (:ref:`cycle-scope`) and run in the event kernel as
+in the normal mode. With the top-level unit in the scope (``--cycle=TOP``) its processes follow the rules above, as
+every other process of the scope. VUnit ``check_*`` calls in the testbench process run as before.
 
 .. _cycle-deltas:
 
@@ -282,6 +365,7 @@ image):
 
 .. code-block:: text
 
+    design under test: tb_delta (the scope of --cycle and --two-state; an option's PATH chooses another)
     cycle mode: 2 of 4 processes run cycle-based, 2 in the event kernel (see --cycle-report)
     ** Note: 25000000fs+1: a delta after the edge: q=3 r=103
         Process tb_delta.main
@@ -315,6 +399,7 @@ them out, which saves code in every check. ``overflow.vhd`` counts an integer pa
 
 .. code-block:: text
 
+    design under test: tb_overflow.dut (the scope of --cycle and --two-state; an option's PATH chooses another)
     cycle mode: 1 of 3 processes run cycle-based, 2 in the event kernel (see --cycle-report)
     error[E3009]: result of + cannot be represented as INTEGER (run without --cycle to see the values)
       --> overflow.vhd:11:12
@@ -423,10 +508,10 @@ Repeat the comparison after large changes to the design or the testbench.
 ~~~~~~~~~~~~~~~~~~
 
 Use it for a design that should join as a whole, for example in CI, so that a change that moves a process out of the
-region fails the job. It changes the selection only: each process below the top that cannot join is an error instead of
+region fails the job. It changes the selection only: each process of the cycle scope that cannot join is an error instead of
 staying out, and the run stops before simulating, with exit status 2. What the region computes and what it evaluates
-is the same as with ``--cycle``, so it does not make results more trustworthy; the top-level unit and behavioural
-processes (:ref:`cycle-selection`) are never an error. The errors are shown in :ref:`cycle-stays-out`.
+is the same as with ``--cycle``, so it does not make results more trustworthy; processes outside the cycle scope and
+behavioural processes (:ref:`cycle-selection`) are never an error. The errors are shown in :ref:`cycle-stays-out`.
 
 .. _cycle-meta:
 
@@ -452,7 +537,7 @@ while.
   ``1`` (``q and not q`` gives ``0`` where the normal mode gives ``'U'``).
 * Failed checks give their values, with the normal mode's message.
 * The asserts and reports of the region show ``'U'`` or ``'X'`` where the two runs differ, as the outputs do. A process
-  below the top-level unit with an assert or report that reads a signal the region does not drive alone stays in the
+  of the cycle scope with an assert or report that reads a signal the region does not drive alone stays in the
   event kernel (E4140).
 * The price is speed: more processes stay out, and the region does more work at first.
 * ``--init-unset`` gives the start values a value from time 0, so no ``'U'`` start value is left to follow
@@ -516,11 +601,12 @@ nothing; a FILE it cannot write is error E4103, before any work.
 
 .. code-block:: bash
 
-    yavs run --cycle-report --work=work:build/work tb_left_out
+    yavs run --cycle --cycle-report --work=work:build/work tb_left_out
 
 .. code-block:: text
 
     cycle mode: 1 of 7 processes run cycle-based, on the rising edge of tb_left_out.clk
+      cycle scope: the whole design (the top-level unit under its own rules)
       6 processes stay in the event kernel:
         E4111 a delay, `transport`, `reject` or a waveform (2 processes):
           tb_left_out.clk <= ... (left_out.vhd:62)    E4111 a delayed assignment (`after`) (left_out.vhd:62)
@@ -590,7 +676,9 @@ differences above.
 * **Behavioural processes** stay in the event kernel and are never an error: a wait for a time, ``wait;``, several
   waits, a call of a procedure that waits, files or text I/O, or a declared protected object, file or access value.
   This is testbench code, also when it is a bus model below the top.
-* **Every process of the top-level unit** is never an error under ``--cycle-strict``.
+* **Every process outside the cycle scope** (by default the testbench and its verification components,
+  :ref:`cycle-scope`) stays in the event kernel and is never an error; one that could join is listed under
+  ``outside the cycle scope``.
 
 The codes
 ~~~~~~~~~
@@ -669,7 +757,7 @@ The report and ``--cycle-strict`` give each reason a code. ``yavs --explain E411
      - Limitation. Force from the testbench instead.
    * - E4129
      - Feeds a process outside the region that depends on delta cycles (the message names it). A delayed
-       assignment (``after``, ``transport``, ``reject``) below the top-level unit is such a process: a one-delta
+       assignment (``after``, ``transport``, ``reject``) in the cycle scope is such a process: a one-delta
        glitch in the normal mode removes or adds its pending value, so it stays out, and so does the logic
        feeding it
      - Let that reader join too (complete sensitivity list, no latch), or make it clocked. For a delayed
@@ -693,8 +781,8 @@ The report and ``--cycle-strict`` give each reason a code. ``yavs --explain E411
      - Drives a signal that also gets a value from a port connection or a constant
      - Limitation. Drive it from one process only.
    * - E4136
-     - Is a top-level process whose assert reads a signal the region does not drive alone (report only)
-     - Nothing to fix: it keeps the testbench's check exact.
+     - Retired: processes outside the cycle scope never join, and those inside it follow one set of rules
+     - Nothing to fix.
    * - E4137
      - Without ``--two-state``: would hide a metavalue from the testbench
      - Assign ``'0'`` or ``'1'``, or run with ``--two-state``.
@@ -781,8 +869,8 @@ When it is slower
 Read the first line of ``--cycle-report``:
 
 * **Few processes joined.** The rows say what keeps the rest out; start with the largest group and the table above.
-  Large numbers in the ``boundary`` line mean the split between region and event kernel is expensive. A clocked
-  checker of the top-level unit with an assert on a signal the region does not drive alone stays out by design.
+  Large numbers in the ``boundary`` line mean the split between region and event kernel is expensive. The scope
+  lines at the start of the report say what may join at all (:ref:`cycle-scope`).
 * **The testbench is most of the run.** ``--profile`` shows where the time goes (:doc:`running-faster`). Cycle mode
   does not speed up that part.
 * **The test is short.** The first run compiles the region, which takes longer the larger the region is. Later runs
@@ -864,21 +952,24 @@ Reference
 
    * - Flag of ``yavs run``
      - What it does
-   * - ``--cycle``
-     - Runs what fits cycle-based and the rest in the event kernel. Selection never fails the run.
-   * - ``--cycle-strict``
-     - As ``--cycle``, but a process below the top-level unit that is not behavioural and cannot join is an
+   * - ``--cycle[=PATH]``
+     - Runs what fits of the cycle scope cycle-based and the rest in the event kernel. Selection never fails the
+       run. PATH (repeatable) names the scope, the design under test without it (:ref:`cycle-scope`); one that
+       names nothing is E2122.
+   * - ``--cycle-strict[=PATH]``
+     - As ``--cycle``, but a process of the cycle scope that is not behavioural and cannot join is an
        error; the run stops before simulating, exit status 2.
    * - ``--cycle-report[=FILE]``
-     - Prints the report (or writes it to FILE, printing nothing), compiles and simulates nothing, exit status 0.
+     - With ``--cycle`` or ``--cycle-strict``: prints the report (or writes it to FILE, printing nothing), compiles
+       and simulates nothing, exit status 0 (``--cycle-strict``'s errors first). Alone it is E4105.
        An unwritable FILE is E4103.
-   * - ``--two-state``
-     - With one of the three above, or alone: the design below the testbench computes with ``0`` and ``1``
-       (:doc:`two-state`).
+   * - ``--two-state[=PATH]``
+     - With one of the above, or alone: its scope (the design under test without PATH) computes with ``0`` and
+       ``1`` (:doc:`two-state`). A cycle scope partly inside it is E2123.
 
-* The three mode flags exclude each other (exit status 2). ``yavs analyze`` and ``yavs elab`` take none of them.
+* ``--cycle`` and ``--cycle-strict`` exclude each other (exit status 2). ``yavs analyze`` and ``yavs elab`` take none of them.
 * ``--no-asserts`` is a flag of every run (:ref:`no-asserts`, :doc:`cli-reference`).
-* vunit-yavs: the sim options ``yavs.cycle`` (``"off"``, ``"on"``, ``"strict"``) and ``yavs.no_asserts``,
+* vunit-yavs: the sim options ``yavs.cycle`` (``"off"``, ``"on"``, ``"strict"``), ``yavs.cycle_scope`` and ``yavs.no_asserts``,
   :doc:`vunit-yavs`.
 * Environment: ``YAVS_CYCLE_CACHE_MIB``, the limit of the cycle cache in MiB (default 2048), :doc:`environment`.
   The other ``YAVS_CYCLE_*`` variables are for developers of yavs.

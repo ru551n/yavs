@@ -1207,13 +1207,13 @@ const DEPTH_MAX: usize = if cfg!(unoptimised) { 12 } else { 32 };
 const NOTE_RESET: &str =
     "an assert or report in the asynchronous reset branch of a clocked process";
 
-/// Why a combinational process of the top-level unit with an assert or report stays in the event
-/// kernel (A19): the testbench's checks of the values of every delta stay exact.
-const NOTE_COMB: &str = "an assert or report that runs outside a clock edge";
-
 /// `Part::lit` of an aggregate that holds a metavalue literal and other values: its codes are
 /// not kept, so a matching comparison with it (and any under exact-meta (without `--two-state`)) stays out.
 const LIT_MIXED: u32 = u32::MAX;
+
+/// Why a combinational process of the top-level unit with an assert or report stays in the event
+/// kernel (A19, whole-design scope): the testbench's checks of the values of every delta stay exact.
+const NOTE_COMB: &str = "an assert or report that runs outside a clock edge";
 
 /// Why a comparison or arithmetic with a literal holding a metavalue keeps its process out.
 const META_CMP: &str = "a comparison with a metavalue literal (`'U'`, `'X'`, `'-'`, ...), which two-state \
@@ -1400,7 +1400,7 @@ struct Lx<'a> {
     var_words: Vec<(u32, u32)>,
     dropped: u32,
     drops: Vec<(Span, u8, bool)>,
-    /// A process of the top-level unit (A19).
+    /// A process of the top-level unit under the top-level rules (A19, whole-design scope).
     top: bool,
     /// Its asserts and reports are evaluated (A52): at the clock edge of a clocked process
     /// (`at_edge`), after the settle in a combinational one (`fresh`). Off for a process below
@@ -3882,11 +3882,10 @@ impl Lx<'_> {
     }
 
     /// Whether a metavalue literal of this body takes the bits of `--init-x` instead of keeping
-    /// the process out (A57): in a two-state region, below the top-level unit. A process of the
-    /// top-level unit keeps the rule before A57, so a testbench's `assert q /= 'X'` checks as in
-    /// the normal mode.
+    /// the process out (A57): in a two-state region, whose members are all in the `--two-state`
+    /// scope (A64).
     fn meta_joins(&self) -> bool {
-        crate::region::two_state() && !self.top
+        crate::region::two_state()
     }
 
     /// The bits of a metavalue literal here: `--init-x`'s, but `0` inside an inlined subprogram

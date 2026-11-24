@@ -123,7 +123,7 @@ def main():
         lst.write_text(Path(o.seeds).read_text())
     else:
         env = dict(os.environ, YAVS_CYCLE_SEEDS=str(lst))
-        r = subprocess.run([o.bin, *args[:1], "--cycle-report", *two, *args[1:]], cwd=o.cwd, env=env,
+        r = subprocess.run([o.bin, *args[:1], "--cycle", "--cycle-report", *two, *args[1:]], cwd=o.cwd, env=env,
                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         if not lst.exists():
             sys.exit(f"seeddiff: --cycle-report wrote no list (exit {r.returncode}): {r.stderr[-2000:]}")

@@ -308,7 +308,8 @@ impl Elaborated {
             own.dedup();
             // A plain signal copy runs in the kernel when no one observes its activations
             // (statement counters, a debugger, foreign callbacks).
-            let native = cfg.edge_triggers && counters_off;
+            // `--two-state`: not in its scope, where the lowered code maps what it reads.
+            let native = cfg.edge_triggers && counters_off && !self.two_in(p.scope);
             let copy = p.copy.as_ref().filter(|_| native).and_then(|src| {
                 (src.iter().zip(p.lsps.first()?))
                     .map(|(&(sl, sr), &(k, dl, dr))| {

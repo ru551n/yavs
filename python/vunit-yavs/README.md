@@ -85,15 +85,15 @@ vu.library("lib").test_bench("tb_counter").set_sim_option("yavs.cycle", "strict"
 ```
 
 `"on"` runs the clocked and combinational processes that fit cycle mode as compiled code and leaves the rest to the
-event kernel; the test output shows `cycle mode: N of M processes run cycle-based` (VUnit prints a passing test's output with `-v`). `"strict"` makes a process below
-the top-level unit that does not fit an error. A wrong value is refused at setup, naming the three values. There is no
+event kernel; the test output shows `cycle mode: N of M processes run cycle-based` (VUnit prints a passing test's output with `-v`). `"strict"` makes a process of
+the cycle scope that does not fit an error. The scope is the whole design, or with `yavs.two_state` the design under test yavs finds; `yavs.cycle_scope` (a path such as `"tb.dut"`, or a list) names another. A wrong value is refused at setup, naming the three values. There is no
 command-line flag: set the option in the run script.
 
 - Cycle-based processes evaluate their `report` and `assert` statements, but give no library warnings. `yavs.no_asserts` drops those below the test bench entity, in both modes: see [Running faster](https://yavs.readthedocs.io/en/latest/running-faster.html).
-- With `yavs.two_state` they compute with `0` and `1` (metavalues read as `0`); without it cycle mode keeps the metavalues the testbench would see, with limits. Outside processes keep full semantics ([two-state values](https://yavs.readthedocs.io/en/latest/two-state.html)).
+- With `yavs.two_state` they compute with `0` and `1` (metavalues read as `0`); without it cycle mode keeps the metavalues the testbench would see, with limits. Outside processes keep full semantics. `yavs.two_state` also takes a path or a list of paths (`--two-state=PATH`); `True` is the design under test ([two-state values](https://yavs.readthedocs.io/en/latest/two-state.html)).
 - `--yavs-surfer` shows the waves, with the signals inside the region per time step; none of coverage, `--yavs-debug` or `--yavs-interactive` in the same test (the test fails before yavs starts, error E4102 of yavs).
 
-The scheduling, what joins and the report are on the [cycle mode page](https://yavs.readthedocs.io/en/latest/cycle-mode.html) of the yavs user guide. To see what would join, set `yavs.sim_flags` to `["--cycle-report"]` for one test with `yavs.cycle` `"off"`: yavs prints the report and does not simulate, so that test fails. `yavs.two_state` `True` with `yavs.cycle` `"on"` or `"strict"` runs the region on two-state values (metavalues read as `0`, faster); without it cycle mode keeps the metavalues the testbench would see and the values in the message of a failed check.
+The scheduling, what joins and the report are on the [cycle mode page](https://yavs.readthedocs.io/en/latest/cycle-mode.html) of the yavs user guide. To see what would join, set `yavs.sim_flags` to `["--cycle-report"]` for one test with `yavs.cycle` `"on"`: yavs prints the report and does not simulate, so that test fails. `yavs.two_state` `True` with `yavs.cycle` `"on"` or `"strict"` runs the region on two-state values (metavalues read as `0`, faster); without it cycle mode keeps the metavalues the testbench would see and the values in the message of a failed check.
 
 ## Coverage
 

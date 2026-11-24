@@ -46,18 +46,25 @@ as ``--name=value``.
    * - ``yavs.cycle``
      - Experimental. ``yavs run --cycle`` or ``--cycle-strict``: ``"off"`` (the default), ``"on"`` (the processes that fit run cycle-based,
        the rest stays in the event kernel; the test output gets the line ``cycle mode: N of M processes run
-       cycle-based``, shown with ``-v`` for a passing test) or ``"strict"`` (the same, but a clocked or combinational process below the top-level unit that does
-       not fit is an error that lists them all). Set it per library, testbench, test or configuration. The scheduling,
+       cycle-based``, shown with ``-v`` for a passing test) or ``"strict"`` (the same, but a clocked or combinational process of the cycle scope that does
+       not fit is an error that lists them all). The scope is the whole design, with ``yavs.two_state`` the design under test yavs finds, or ``yavs.cycle_scope``. Set it per library, testbench, test or configuration. The scheduling,
        what it changes and how to read the report are in :doc:`cycle-mode`; the values the cycle-based processes
        compute with are chosen by ``yavs.two_state`` (below, :doc:`two-state`); the flags are in the
        :doc:`cli-reference` (``--cycle``). Their signals are recorded per time step (``--yavs-surfer`` shows them). A
        test that also has coverage, ``--yavs-debug`` or ``--yavs-interactive`` fails before yavs starts, naming both.
        Not passed to ``elab``. To see what would join, set ``yavs.sim_flags`` to ``["--cycle-report"]`` for one test
-       with ``yavs.cycle`` ``"off"``: yavs prints the report and does not simulate, so that test fails.
+       with ``yavs.cycle`` ``"on"``: yavs prints the report and does not simulate, so that test fails.
+   * - ``yavs.cycle_scope``
+     - Experimental. The scope of ``yavs.cycle``: an instance path from the top-level unit (``"tb.dut"``; ``"tb.g"`` is
+       every iteration of generate ``g``) or a list of them, passed as ``--cycle=PATH`` (or ``--cycle-strict=PATH``) for
+       each. Without it the scope is the whole design, or with ``yavs.two_state`` the design under test yavs finds. Refused at the start of a test with ``yavs.cycle``
+       ``"off"``; anything but a non-empty string or list of them is refused when it is set (:ref:`cycle-scope`).
    * - ``yavs.two_state``
-     - Experimental. ``yavs run --two-state`` for ``True``: the design below the testbench holds only ``0`` and
-       ``1`` (metavalues it reads count as ``'0'``), with or without ``yavs.cycle``; in cycle mode no process is kept
-       out for a metavalue. Default ``False``; a value other than ``True`` or ``False`` is refused when it is set. Not passed to ``elab`` (:doc:`two-state`, :doc:`cli-reference`, ``--two-state``).
+     - Experimental. ``yavs run --two-state`` for ``True``: the design under test yavs finds holds only ``0`` and
+       ``1`` (metavalues it reads count as ``'0'``), the testbench and its verification components keep the nine values;
+       a path or a list of paths (``--two-state=PATH`` for each) names another scope. With or without ``yavs.cycle``; in
+       cycle mode no process is kept out for a metavalue. Default ``False``; any other value is refused when it is set,
+       ``"on"`` and ``"off"`` too (they would be paths). Not passed to ``elab`` (:doc:`two-state`, :doc:`cli-reference`, ``--two-state``).
    * - ``yavs.no_asserts``
      - ``yavs run --no-asserts`` for ``True``: the ``assert`` and ``report`` statements of the processes below the test
        bench entity are not evaluated, in the normal mode and in cycle mode alike. Below the test bench entity is

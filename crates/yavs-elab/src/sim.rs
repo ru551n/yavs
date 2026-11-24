@@ -22,7 +22,8 @@ use crate::hier::{LeafRes, ScopeId, ScopeKind};
 /// The IR of the design: one program, one `UnitIr` per architecture that owns processes.
 pub struct Ir {
     pub program: Arc<yavs_ir::Program>,
-    pub units: HashMap<UnitId, UnitIr>,
+    /// By architecture and whether it is the `--two-state` variant (`Elaborated::unit_key`).
+    pub units: HashMap<(UnitId, bool), UnitIr>,
     /// The function of each user resolution function of a signal.
     pub resolvers: HashMap<yavs_sem::DeclId, yavs_ir::FuncId>,
     /// IR types of the parameter and the result of each user resolution function (#193,
@@ -373,6 +374,16 @@ impl Elaborated {
         self.hier.instance_of(s)
     }
 
+    /// The lowered unit that runs what scope `s` holds: its instance's architecture, in the
+    /// `--two-state` variant when `s` is in that scope (a process's code by its own scope, instance
+    /// data by the instance's: one layout in both variants).
+    pub fn unit_key(&self, s: ScopeId) -> Option<(UnitId, bool)> {
+        match self.hier.scope(self.instance_of(s)).kind {
+            ScopeKind::Instance { arch, .. } => Some((arch, self.two_in(s))),
+            _ => None,
+        }
+    }
+
     /// Lower the architectures that own processes, and the package bodies they may call.
     /// Fail early: lowering diagnostics are errors.
     pub fn lower(&mut self, db: &mut Db) -> Result<(), Vec<Diagnostic>> {
@@ -381,16 +392,20 @@ impl Elaborated {
 
     /// [`Elaborated::lower`] with options (coverage counters).
     pub fn lower_with(&mut self, db: &mut Db, opts: LowerOptions) -> Result<(), Vec<Diagnostic>> {
-        let mut archs: Vec<UnitId> = Vec::new();
+        let mut archs: Vec<(UnitId, bool)> = Vec::new();
         let mut with_procs = std::collections::HashSet::new();
-        for p in &self.procs {
-            let i = self.instance_of(p.scope);
-            with_procs.insert(i);
-            if let ScopeKind::Instance { arch, .. } = self.hier.scope(i).kind
-                && !archs.contains(&arch)
+        let add = |archs: &mut Vec<(UnitId, bool)>, s: ScopeId| {
+            if let Some(k) = self.unit_key(s)
+                && !archs.contains(&k)
             {
-                archs.push(arch);
+                archs.push(k);
             }
+        };
+        for p in &self.procs {
+            with_procs.insert(self.instance_of(p.scope));
+            // A process's code, and its instance's data.
+            add(&mut archs, p.scope);
+            add(&mut archs, self.instance_of(p.scope));
         }
         // A constant whose value only the run-time evaluation gives can fail (a call, an
         // overflow, `'value` of a bad string): the declarative part of an instance without
@@ -403,9 +418,7 @@ impl Elaborated {
                     .iter()
                     .any(|&u| runtime_constant(db, db.units[u].scope))
             {
-                if !archs.contains(&arch) {
-                    archs.push(arch);
-                }
+                add(&mut archs, ScopeId(k as u32));
                 init_regions.push(ScopeId(k as u32));
             }
         }
@@ -422,11 +435,7 @@ impl Elaborated {
         file_regions.sort();
         file_regions.dedup();
         for r in file_regions {
-            if let ScopeKind::Instance { arch, .. } = self.hier.scope(self.instance_of(r)).kind
-                && !archs.contains(&arch)
-            {
-                archs.push(arch);
-            }
+            add(&mut archs, self.instance_of(r));
             if !init_regions.contains(&r) {
                 init_regions.push(r);
             }
@@ -441,32 +450,20 @@ impl Elaborated {
             let Some(region) = self.res_region(db, d, self.nets.obj(leaf.obj).scope)? else {
                 continue;
             };
-            if let ScopeKind::Instance { arch, .. } = self.hier.scope(self.instance_of(region)).kind
-                && !archs.contains(&arch)
-            {
-                archs.push(arch);
-            }
+            add(&mut archs, self.instance_of(region));
             res_regions.insert(crate::LeafId(k as u32), region);
         }
         // The shared variable a variable port denotes lives in its region's instance data,
         // so that region's architecture is lowered even when it owns no process (#188).
         for v in self.var_ports.values() {
-            if let crate::VarObj::Region { region, .. } = *v
-                && let ScopeKind::Instance { arch, .. } =
-                    self.hier.scope(self.instance_of(region)).kind
-                && !archs.contains(&arch)
-            {
-                archs.push(arch);
+            if let crate::VarObj::Region { region, .. } = *v {
+                add(&mut archs, self.instance_of(region));
             }
         }
         // The regions of external shared variables hold their objects (#93), those of
         // external constants their run-time values (#255).
         for &(t, _) in self.ext_vars.values().chain(self.ext_consts.values()) {
-            if let ScopeKind::Instance { arch, .. } = self.hier.scope(self.instance_of(t)).kind
-                && !archs.contains(&arch)
-            {
-                archs.push(arch);
-            }
+            add(&mut archs, self.instance_of(t));
         }
         // In the order elaboration initialised them, those it never saw last (#873).
         let known: Vec<UnitId> = self.elab_pkgs.iter().map(|&(u, _)| u).collect();
@@ -597,7 +594,7 @@ impl Elaborated {
                 Some((d, res_index_of(db, sp.params.first()?.subtype)))
             })
             .collect();
-        let units: HashMap<UnitId, UnitIr> = archs.into_iter().zip(arch_units).collect();
+        let units: HashMap<(UnitId, bool), UnitIr> = archs.into_iter().zip(arch_units).collect();
         let mut names = HashMap::new();
         // The regions processes run in, and those holding the targets of external names
         // (their thunks may name entities, #255).
@@ -615,12 +612,11 @@ impl Elaborated {
                     .map(|&(t, _)| t),
             );
         for region in regions {
-            let ScopeKind::Instance { arch, .. } = self.hier.scope(self.instance_of(region)).kind
-            else {
+            let Some(key) = self.unit_key(self.instance_of(region)) else {
                 continue;
             };
             for n in units
-                .get(&arch)
+                .get(&key)
                 .map(|u: &UnitIr| u.names.as_slice())
                 .unwrap_or(&[])
             {
@@ -645,12 +641,11 @@ impl Elaborated {
         let mut may: HashMap<_, bool> = HashMap::new();
         let (mut instances, mut ir, mut seen) = (0, 0, std::collections::HashSet::new());
         for p in self.procs.iter().filter(|p| p.actual.is_none()) {
-            let i = self.instance_of(p.scope);
-            let ScopeKind::Instance { arch, .. } = self.hier.scope(i).kind else {
+            let Some(key) = self.unit_key(p.scope) else {
                 continue;
             };
-            instances += usize::from(*may.entry((arch, p.stmt)).or_insert_with(|| {
-                units.get(&arch).is_some_and(|u: &UnitIr| {
+            instances += usize::from(*may.entry((key, p.stmt)).or_insert_with(|| {
+                units.get(&key).is_some_and(|u: &UnitIr| {
                     u.processes
                         .iter()
                         .find(|x| x.actual.is_none() && x.stmt == p.stmt)
@@ -723,7 +718,7 @@ impl Elaborated {
         db: &Db,
         opts: LowerOptions,
         packages: &[UnitId],
-        archs: &[UnitId],
+        archs: &[(UnitId, bool)],
         resumed: Option<Lowerer>,
         mut lib: Option<crate::libstage::LibUse>,
     ) -> Result<(yavs_ir::Program, Rest, Option<crate::libstage::LibUse>), Vec<Diagnostic>> {
@@ -805,12 +800,16 @@ impl Elaborated {
         let mut idx = Vec::new();
         // The functions lowered for each architecture: their `SigVal`s index its signals.
         let mut of_arch = Vec::new();
-        for &a in archs {
+        for (i, &(a, two)) in archs.iter().enumerate() {
+            // The second variant of an architecture lowers its subprograms anew.
+            if archs[..i].iter().any(|x| x.0 == a) {
+                l.forget_locals(a);
+            }
             let first = l.funcs();
             // `--no-asserts` (A54): the processes below the top-level unit lose theirs.
             l.drop_asserts(opts.no_asserts && a != self.top.arch);
-            // `--two-state`: the architectures below the top-level unit.
-            l.two_state(opts.two_state && a != self.top.arch);
+            // `--two-state`: its variant of an architecture, for what is in its scope.
+            l.two_state(two);
             let u = l.architecture(a)?;
             idx.push(u);
             of_arch.push((first..l.funcs(), u));
@@ -860,7 +859,7 @@ impl Elaborated {
         db: &Db,
         opts: &LowerOptions,
         packages: &[UnitId],
-        archs: &[UnitId],
+        archs: &[(UnitId, bool)],
         session: Option<&crate::pkgcall::Start>,
     ) -> Option<LoweringKey> {
         use yavs_sem::Id;
@@ -879,10 +878,6 @@ impl Elaborated {
         // `--no-asserts` drops what it drops by the top-level architecture.
         if opts.no_asserts {
             ids(&mut p, b't', &mut std::iter::once(self.top.arch.index()));
-        }
-        // `--two-state` too.
-        if opts.two_state {
-            ids(&mut p, b'w', &mut std::iter::once(self.top.arch.index()));
         }
         fn ids(p: &mut Vec<u8>, tag: u8, it: &mut dyn Iterator<Item = usize>) {
             p.push(tag);
@@ -947,7 +942,15 @@ impl Elaborated {
                 _ => None,
             }),
         );
-        ids(&mut p, b'h', &mut archs.iter().map(|u| u.index()));
+        ids(&mut p, b'h', &mut archs.iter().map(|&(u, _)| u.index()));
+        // The `--two-state` variants among them, by position.
+        if archs.iter().any(|a| a.1) {
+            ids(
+                &mut p,
+                b'w',
+                &mut (archs.iter().enumerate()).filter_map(|(i, a)| a.1.then_some(i)),
+            );
+        }
         Some(LoweringKey {
             cache,
             extent: db.stage_extent(),
@@ -1539,9 +1542,9 @@ impl Elaborated {
             cfg,
             |p, ds| {
                 let i = self.instance_of(p.scope);
-                let ScopeKind::Instance { arch, .. } = self.hier.scope(i).kind else {
-                    return Err(sim_err("process outside an instance".into()));
-                };
+                let arch = self
+                    .unit_key(p.scope)
+                    .ok_or_else(|| sim_err("process outside an instance".into()))?;
                 let u = ir
                     .units
                     .get(&arch)
@@ -1953,11 +1956,9 @@ impl Elaborated {
         match obj {
             crate::VarObj::Region { region, decl } => {
                 let data = self.region_data(rt, ir, region, shared, once, insts, base)?;
-                let ScopeKind::Instance { arch, .. } =
-                    self.hier.scope(self.instance_of(region)).kind
-                else {
-                    return Err(sim_err("region outside an instance".into()));
-                };
+                let arch = self
+                    .unit_key(self.instance_of(region))
+                    .ok_or_else(|| sim_err("region outside an instance".into()))?;
                 let off = ir
                     .units
                     .get(&arch)
@@ -2410,9 +2411,8 @@ fn time_resolution(u: yavs_kernel::Unit) -> yavs_std::arith::TimeResolution {
 
 /// The lowered architecture of the instance `region` belongs to.
 fn unit_ir<'a>(e: &Elaborated, ir: &'a Ir, region: ScopeId) -> Result<&'a UnitIr, SimError> {
-    let ScopeKind::Instance { arch, .. } = e.hier.scope(e.instance_of(region)).kind else {
-        return Err(sim_err("region outside an instance".into()));
-    };
+    let arch = (e.unit_key(e.instance_of(region)))
+        .ok_or_else(|| sim_err("region outside an instance".into()))?;
     ir.units
         .get(&arch)
         .ok_or_else(|| sim_err("architecture not lowered".into()))

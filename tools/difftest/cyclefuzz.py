@@ -2180,7 +2180,7 @@ def script(binary, tiers, warm, checks, std="2008"):
     x = CONTRACT["exact"]
     y = ("export YAVS_CYCLE_EXACT_CLOCKS=1; " if x else "unset YAVS_CYCLE_EXACT_CLOCKS; ") + f"Y={binary}; S='--std={std} --work=work:lib{'' if x else ' ' + TWO}'; "
     st = ['$Y analyze $S d.vhd > a.out 2>&1 || exit 97', '$Y elab $S fz_tb > e.out 2>&1 || exit 98',
-          'YAVS_CYCLE_DOWNSTREAM=down.txt $Y run $S --cycle-report fz_tb > report.out 2> report.err']
+          'YAVS_CYCLE_DOWNSTREAM=down.txt $Y run $S --cycle --cycle-report fz_tb > report.out 2> report.err']
     st[:2] = [c.replace("$S", "$A") for c in st[:2]]  # analyze and elab take no cycle flag
     y += f"A='--std={std} --work=work:lib'; "
     runs = []
@@ -2234,7 +2234,7 @@ def norm(out):
 
 
 def strip(err):
-    return "\n".join(l for l in err.splitlines() if not l.startswith("cycle mode: "))
+    return "\n".join(l for l in err.splitlines() if not l.startswith(("cycle mode: ", "design under test: ")))
 
 
 def one(seed, a, binary):

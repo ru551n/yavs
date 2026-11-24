@@ -109,19 +109,6 @@ impl Hierarchy {
         &self.scopes[s.index()]
     }
 
-    /// Scope `s` is in an entity instance below the top-level unit (`--two-state`), not in the
-    /// top level's own blocks and generates or a package.
-    pub fn below_top(&self, mut s: ScopeId) -> bool {
-        loop {
-            let sc = self.scope(s);
-            match (&sc.kind, sc.parent) {
-                (ScopeKind::Instance { .. } | ScopeKind::Component { .. }, Some(_)) => return true,
-                (_, Some(p)) => s = p,
-                (_, None) => return false,
-            }
-        }
-    }
-
     pub(crate) fn add(&mut self, parent: Option<ScopeId>, kind: ScopeKind, name: Ident) -> ScopeId {
         let id = ScopeId(self.scopes.len() as u32);
         self.scopes.push(Scope {

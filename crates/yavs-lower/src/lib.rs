@@ -1042,6 +1042,30 @@ impl<'a> Lowerer<'a> {
         self.cx.two_state = on;
     }
 
+    /// Forget the subprograms declared in architecture `unit` or its entity (those of its
+    /// processes too), so that lowering it again, the other `--two-state` variant, gives them
+    /// functions of their own: of that variant, below that variant's processes.
+    pub fn forget_locals(&mut self, unit: UnitId) {
+        let db = self.db;
+        let mut roots = vec![db.units[unit].scope];
+        if let UnitHir::Architecture { entity, .. } = &db.units[unit].hir {
+            roots.push(db.units[*entity].scope);
+        }
+        let inside = |d: &DeclId| {
+            let mut s = Some(db.decls[*d].scope);
+            while let Some(x) = s {
+                if roots.contains(&x) {
+                    return true;
+                }
+                s = db.scopes[x].parent;
+            }
+            false
+        };
+        self.cx.funcs.retain(|d, _| !inside(d));
+        self.cx.checked_funcs.retain(|d, _| !inside(d));
+        self.cx.two_subs.retain(|d| !inside(d));
+    }
+
     /// Lower an architecture: its signals, instance constants and processes.
     pub fn architecture(&mut self, unit: UnitId) -> Result<usize, Vec<Diagnostic>> {
         let r = func::architecture(self.db, &mut self.pb, &mut self.cx, unit);

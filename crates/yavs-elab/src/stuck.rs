@@ -12,7 +12,6 @@ use yavs_kernel::{
 };
 
 use crate::Elaborated;
-use crate::hier::ScopeKind;
 
 /// What a process is, by kernel process id: its IR function; where the signals are declared.
 #[derive(Clone, Default)]
@@ -74,10 +73,7 @@ impl Elaborated {
             .procs
             .iter()
             .map(|p| {
-                let i = self.instance_of(p.scope);
-                let ScopeKind::Instance { arch, .. } = self.hier.scope(i).kind else {
-                    return None;
-                };
+                let arch = self.unit_key(p.scope)?;
                 let u = ir.units.get(&arch)?;
                 match &p.actual {
                     Some(pa) => u.processes.iter().find_map(|x| {

@@ -317,12 +317,20 @@ class TestPackage(unittest.TestCase):
 
     def test_two_state_option_is_validated(self):
         self._vunit().get_simulator_name()
-        for value in (True, False):
+        for value in (True, False, "tb.dut", ["tb.dut", "tb.g(1)"]):
             self.factory.check_sim_option("yavs.two_state", value)
-        wrong = (("on", "Did you mean True"), ("off", "Did you mean False"), ("twostate", ""))
+        wrong = (("on", "Did you mean True"), ("off", "Did you mean False"), ("", ""), ([], ""), (["tb", 1], ""), (2, ""))
         for value, hint in wrong:
-            with self.assertRaisesRegex(ValueError, f"yavs.two_state.*must be True.*--two-state.*or False.*{hint}"):
+            with self.assertRaisesRegex(ValueError, f"yavs.two_state.*must be True.*--two-state.*path.*False.*{hint}"):
                 self.factory.check_sim_option("yavs.two_state", value)
+
+    def test_cycle_scope_option_is_validated(self):
+        self._vunit().get_simulator_name()
+        for value in ("tb.dut", ["tb.dut", "tb.g"]):
+            self.factory.check_sim_option("yavs.cycle_scope", value)
+        for value in ("", [], True, ["tb", ""]):
+            with self.assertRaisesRegex(ValueError, "yavs.cycle_scope.*instance path.*--cycle=PATH"):
+                self.factory.check_sim_option("yavs.cycle_scope", value)
 
     def test_no_asserts_option_is_validated(self):
         self._vunit().get_simulator_name()
@@ -861,6 +869,30 @@ class TestYavsInterface(unittest.TestCase):
         _, cmd, _ = self._simulate(make_config(sim_options={"yavs.two_state": True}))
         self.assertEqual(cmd.count("--two-state"), 1)
         self.assertNotIn("--cycle", cmd)
+
+    def test_scope_paths(self):
+        config = make_config(
+            sim_options={"yavs.cycle": "strict", "yavs.cycle_scope": ["tb.dut", "tb.g(1)"], "yavs.two_state": "tb"}
+        )
+        _, cmd, _ = self._simulate(config)
+        self.assertEqual(
+            [arg for arg in cmd if arg.startswith(("--cycle", "--two-state"))],
+            ["--cycle-strict=tb.dut", "--cycle-strict=tb.g(1)", "--two-state=tb"],
+        )
+        _, cmd, _ = self._simulate(make_config(sim_options={"yavs.cycle": "on", "yavs.cycle_scope": "tb.dut"}))
+        self.assertIn("--cycle=tb.dut", cmd)
+        _, cmd, _ = self._simulate(config, elaborate_only=True)
+        self.assertFalse(any(arg.startswith(("--cycle", "--two-state")) for arg in cmd))
+
+    def test_cycle_scope_needs_cycle_mode(self):
+        stdout = mock.patch("sys.stdout", new=io.StringIO())
+        with mock.patch("vunit_yavs.Process", autospec=True) as process, stdout as out:
+            self.simif.setup_library_mapping(self._project("2008"))
+            config = make_config(sim_options={"yavs.cycle_scope": "tb.dut"})
+            self.assertFalse(self.simif.simulate(self.output_path, "lib.tb", config, False))
+        process.assert_not_called()
+        for text in ("yavs.cycle_scope='tb.dut'", 'yavs.cycle "on" or "strict"'):
+            self.assertIn(text, out.getvalue())
 
     def test_init_flags(self):
         config = make_config(

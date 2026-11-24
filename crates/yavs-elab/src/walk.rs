@@ -178,6 +178,8 @@ pub(crate) struct Elab<'d> {
     /// `_guard` processes whose condition names an external object not elaborated yet: their
     /// reads are resolved once the whole hierarchy is.
     late_guards: Vec<(ProcIdx, ScopeId, DeclId, Span)>,
+    /// The scopes of `--two-state` and cycle mode (`apply_scopes`).
+    scopes: crate::Scopes,
     /// Aliases of the external names used in package subprograms, by package (#255).
     pkg_uses: Vec<(UnitId, DeclId)>,
     /// How many units were loaded when the package bodies were last loaded (`load_new_bodies`).
@@ -555,7 +557,7 @@ pub(crate) fn elaborate(
         db,
         m: Model {
             init_unset: cfg.init_unset,
-            two_state: cfg.two_state,
+            two_state: cfg.two_state.is_some(),
             ..Model::default()
         },
         procs: Vec::new(),
@@ -577,6 +579,7 @@ pub(crate) fn elaborate(
         units_seen: 0,
         parts_memo: None,
         dynamic_regions: Vec::new(),
+        scopes: Default::default(),
     };
     e.units_seen = e.db.units.len();
     let name = e.db.units[top.entity].name;
@@ -716,6 +719,13 @@ pub(crate) fn elaborate(
     if e.errors.is_empty() {
         e.check_sources();
     }
+    // The scopes of `--two-state` and cycle mode, before ports are collapsed: collapsing moves
+    // start values between formals and actuals.
+    if e.errors.is_empty()
+        && let Err(x) = e.apply_scopes(top)
+    {
+        e.errors.push(*x);
+    }
     if e.errors.is_empty() && e.cfg.collapse_ports {
         crate::collapse::ports(
             e.db,
@@ -738,6 +748,7 @@ pub(crate) fn elaborate(
     let mut reads = crate::GenericReads {
         walk: crate::watch::reads(),
         decls: top_generics,
+        scopes: e.scopes.key(),
         ..Default::default()
     };
     reads.skipped =
@@ -812,7 +823,156 @@ pub(crate) fn elaborate(
         unset_elems: e.m.unset_elems,
         drawn: e.m.drawn.iter().copied().collect(),
         x_sites: e.x_sites,
+        scopes: e.scopes,
     })
+}
+
+impl Elab<'_> {
+    /// Resolve the scopes of `--two-state[=PATH]` and `--cycle[=PATH]` (A64) and give the signals
+    /// without an initial value in the two-state scope their start value.
+    fn apply_scopes(&mut self, top: Top) -> R<()> {
+        use crate::ScopeReq;
+        use yavs_logic::StdULogic;
+        let (two, cycle) = (self.cfg.two_state.clone(), self.cfg.cycle_scope.clone());
+        if two.is_none() && cycle.is_none() {
+            return Ok(());
+        }
+        let found = match (&two, &cycle) {
+            (Some(ScopeReq::Auto), _) | (_, Some(ScopeReq::Auto)) => {
+                // Its reads of generics are not the design's: the scope found is in the cycle
+                // analysis key instead (`GenericReads::scopes`).
+                Some(match self.cfg.detect.clone() {
+                    Some(h) => crate::watch::hold(|| self.with_view(top, |db, v| (h.0)(db, v))),
+                    None => crate::Detected::default(),
+                })
+            }
+            _ => None,
+        };
+        let auto = found.as_ref().map(|f| f.roots.clone());
+        // The processes of the roots found that are not of the design leave a scope found.
+        let leave = |v: &mut Vec<bool>, procs: &[ProcInst]| {
+            for &pi in found.iter().flat_map(|f| &f.outside) {
+                v[procs[pi].scope.index()] = false;
+            }
+        };
+        let h = &self.m.hier;
+        let mut sc = crate::Scopes {
+            auto: auto.clone(),
+            two_auto: two == Some(ScopeReq::Auto),
+            cycle_auto: cycle == Some(ScopeReq::Auto),
+            cycle_whole: cycle == Some(ScopeReq::Whole),
+            ..Default::default()
+        };
+        if let Some(r) = &two {
+            sc.two_roots = crate::scope::roots_of(h, "--two-state", r, &auto)?;
+            sc.two = crate::scope::mark(h, &sc.two_roots);
+            if sc.two_auto {
+                leave(&mut sc.two, &self.procs);
+            }
+        }
+        if let Some(r) = &cycle {
+            sc.cycle_roots = crate::scope::roots_of(h, "--cycle", r, &auto)?;
+            sc.cycle = match sc.cycle_whole {
+                true => vec![true; h.scopes.len()],
+                false => crate::scope::mark(h, &sc.cycle_roots),
+            };
+            if sc.cycle_auto {
+                leave(&mut sc.cycle, &self.procs);
+            }
+        }
+        if let Some(d) = crate::scope::overlap(h, &self.procs, &sc.cycle, &sc.two) {
+            return Err(Box::new(d));
+        }
+        for o in std::mem::take(&mut self.m.two_unset) {
+            let obj = &self.m.nets.objs[o.index()];
+            if !sc.two[obj.scope.index()] {
+                continue;
+            }
+            let scalars: Vec<yavs_sem::TypeId> = (obj.shape.leaves().into_iter())
+                .filter_map(|(_, l, _)| match l {
+                    Shape::Scalar { ty, .. } => Some(*ty),
+                    _ => None,
+                })
+                .collect();
+            let first = obj.leaves.0.index();
+            for (k, ty) in scalars.into_iter().enumerate() {
+                if !crate::eval::is_std_ulogic(self.db, ty) {
+                    continue;
+                }
+                if let yavs_kernel::Value::Logic(lv) = &mut self.m.nets.leaves[first + k].init {
+                    let n = (0..lv.len()).filter(|&i| lv.get(i) == StdULogic::U).count();
+                    if n > 0 {
+                        *lv = yavs_logic::LogicVec::from_fn(lv.len(), |i| match lv.get(i) {
+                            StdULogic::U => StdULogic::Zero,
+                            c => c,
+                        });
+                        self.m.unset_elems += n as u64;
+                    }
+                }
+            }
+        }
+        self.scopes = sc;
+        Ok(())
+    }
+
+    /// `f` of the design walked so far, as an `Elaborated` holding the hierarchy, nets,
+    /// processes and values (ports not collapsed yet; nothing of the value passes).
+    fn with_view<T>(&mut self, top: Top, f: impl FnOnce(&Db, &Elaborated) -> T) -> T {
+        use std::mem::take;
+        let v = Elaborated {
+            lean: Vec::new(),
+            bare: Vec::new(),
+            no_codes: Vec::new(),
+            top,
+            hier: take(&mut self.m.hier),
+            nets: take(&mut self.m.nets),
+            procs: take(&mut self.procs),
+            foreign_archs: Vec::new(),
+            ext_procs: Vec::new(),
+            region: None,
+            convs: Vec::new(),
+            model_vals: take(&mut self.m.vals),
+            pkg_vals: Default::default(),
+            region_vals: Default::default(),
+            region_ranges: Default::default(),
+            region_calls: Default::default(),
+            generic_reads: Default::default(),
+            loud_consts: Default::default(),
+            sigs: take(&mut self.m.sigs),
+            pkg_sigs: Default::default(),
+            regions: take(&mut self.m.regions),
+            var_ports: Default::default(),
+            ext_vars: Default::default(),
+            ext_consts: Default::default(),
+            ext_const_lens: Default::default(),
+            pkg_ext: Default::default(),
+            ext_unbound: Default::default(),
+            shared_vars: take(&mut self.m.shared_vars),
+            var_shapes: take(&mut self.m.var_shapes),
+            ranges: take(&mut self.m.ranges),
+            warnings: Vec::new(),
+            ir: None,
+            start: None,
+            elab_calls: Vec::new(),
+            elab_pkgs: Vec::new(),
+            elab_printed: 0,
+            unset_elems: 0,
+            drawn: Default::default(),
+            x_sites: Default::default(),
+            scopes: Default::default(),
+        };
+        let r = f(self.db, &v);
+        self.m.hier = v.hier;
+        self.m.nets = v.nets;
+        self.procs = v.procs;
+        self.m.vals = v.model_vals;
+        self.m.sigs = v.sigs;
+        self.m.regions = v.regions;
+        self.m.shared_vars = v.shared_vars;
+        self.m.var_shapes = v.var_shapes;
+        self.m.ranges = v.ranges;
+        r
+    }
 }
 
 impl Elab<'_> {
@@ -3201,9 +3361,8 @@ impl Elab<'_> {
             None => self.idle_comb_reads(s, st),
         };
         // A statement with an `--init-x` literal runs its lowered code, which gives it its value.
-        // `--two-state`: below the top-level unit, the lowered code maps what it reads.
-        let native =
-            !self.x_stmts.contains(&st) && !(self.cfg.two_state && self.m.hier.below_top(s));
+        // `--two-state`: `build` gives none to the statements in its scope.
+        let native = !self.x_stmts.contains(&st);
         let copy = self.copy_source(s, st).filter(|_| native);
         let toggle = self.toggle_source(s, st).filter(|_| native);
         let gate = self.gate_source(s, st).filter(|_| native);
@@ -5656,10 +5815,8 @@ impl Model {
         })?;
         let mut vals = vals;
         let mut drawn = Vec::new();
-        let two =
-            (self.two_state && self.hier.below_top(s)).then_some(yavs_logic::start::Fill::Zero);
         if init.is_none()
-            && let Some(f) = self.init_unset.or(two)
+            && let Some(f) = self.init_unset
         {
             drawn = self.unset_starts(db, s, decl, &shape, &mut vals, f);
             if !matches!(f, yavs_logic::start::Fill::Random(_)) {
@@ -5673,6 +5830,10 @@ impl Model {
         whole_nodes(&shape, &mut Vec::new(), 1, &mut wholes);
         let id = ObjId(self.nets.objs.len() as u32);
         let first = LeafId(self.nets.leaves.len() as u32);
+        // `--two-state` without `--init-unset`: `'U'` starts become `0` once the scope is known.
+        if init.is_none() && self.init_unset.is_none() && self.two_state {
+            self.two_unset.push(id);
+        }
         for (k, ((path, leaf, n), init)) in shape.leaves().into_iter().zip(vals).enumerate() {
             let Shape::Scalar { elem, res, .. } = leaf else {
                 continue;

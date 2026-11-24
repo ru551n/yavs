@@ -1,7 +1,7 @@
 Two-state values
 ================
 
-``--two-state`` makes the design below the testbench compute with ``0`` and ``1`` only. It is a flag of its own: it
+``--two-state`` makes the design under test compute with ``0`` and ``1`` only. It is a flag of its own: it
 changes what a run computes with, not how it is scheduled, so it works with and without ``--cycle``. This page says
 what it changes and what you give up, and how to use it to find out where a difference from the normal mode comes
 from.
@@ -45,8 +45,19 @@ one and a half to four times as long. Bringing it to parity is planned.
 What it does
 ------------
 
-Every process below the top-level unit, and every subprogram declared in an architecture below it, is two-state. The
-testbench (the top-level unit) keeps the nine values of ``std_ulogic``.
+Every process of the two-state scope, and every subprogram declared in an architecture of it, is two-state. The scope
+is the design under test yavs finds, and with ``--cycle`` without PATH that is the cycle scope too (:ref:`cycle-scope`), so the testbench and its
+verification components (bus models and other processes that wait for a time) keep the nine values of ``std_ulogic``.
+``--two-state=PATH`` (repeatable) names another scope, ``--two-state=TOP`` (the top-level unit's name) the whole design:
+
+.. code-block:: bash
+
+    yavs run --two-state=tb.dut --work=work:build/work tb       # one instance and what is below it
+    yavs run --two-state=tb --work=work:build/work tb           # the whole design, testbench included
+
+Without PATH one line on standard error names the design under test, and ``--cycle --cycle-report`` starts with the
+scopes. With ``--cycle`` the region is two-state when the cycle scope lies inside the two-state scope; a cycle scope
+partly inside it is an error (E2123).
 
 * A value it reads from outside (a signal, a port, a generic, a constant of a package or an architecture, the result of
   a package's subprogram, an ``out`` argument a package procedure such as ``read`` gives back) counts ``'1'`` and
@@ -59,7 +70,7 @@ testbench (the top-level unit) keeps the nine values of ``std_ulogic``.
   ``x ?= 'X'`` is ``'0'``, and a ``case`` choice ``when "0X"`` is never taken. A ``'-'`` in ``std_match``, ``?=``,
   ``?/=`` or a ``case?`` choice matches anything. The region does the same.
 * A ``'Z'`` literal or constant driven onto a resolved signal (``std_logic``, ``std_logic_vector``) stays ``'Z'``, so
-  tri-state buses and the event signals of verification components below the top work. Reading the bus back gives
+  tri-state buses and the event signals of verification components in the scope work. Reading the bus back gives
   ``'0'`` while nothing drives it.
 * A signal or process variable without an initial value starts at the ``--init-unset`` value, ``'0'`` without the
   option. A variable of a subprogram starts at ``'0'``.
@@ -73,18 +84,21 @@ What you give up
 With or without ``--cycle``:
 
 * A bug that shows as ``'X'`` or ``'U'`` in the normal mode (a register without reset, an unconnected input, a conflict
-  on a bus) cannot show below the top-level unit. A testbench that expects ``'X'`` or ``'Z'`` from the design sees
-  ``'0'``.
-* A ``'Z'`` read below the top-level unit is a ``'0'``. A verification component or model below the top-level unit that
-  checks a line for ``'Z'`` or models its bus with ``'Z'`` and ``'X'`` (an MDIO, I2C, 1-wire or QSPI flash model, a
-  bidirectional bus monitor) reads the released line as ``'0'``, so it can report protocol errors that are not there or
-  answer with the wrong data. Until ``--two-state`` can be limited to the design under test (planned next, so that such
-  components keep the nine values), do not use ``--two-state`` on such testbenches.
+  on a bus) cannot show in the scope. A testbench that expects ``'X'`` or ``'Z'`` from the design sees ``'0'``.
+* A ``'Z'`` read in the scope is a ``'0'``. A verification component or model in the scope that checks a line for
+  ``'Z'`` or models its bus with ``'Z'`` and ``'X'`` (an MDIO, I2C, 1-wire or QSPI flash model, a bidirectional bus
+  monitor) reads the released line as ``'0'``, so it can report protocol errors that are not there or answer with the
+  wrong data. Such a component waits for time, so the design under test leaves it out and it keeps the nine values;
+  check the ``design under test`` line when a model is written as RTL only, and when you give ``--two-state=PATH``.
+* A process of the design under test that assigns a ``'Z'`` literal, such as the tri-state driver of a pad model
+  (``pad <= o when oe = '1' else 'Z';``), is left out of the scope found too, so the line keeps its ``'Z'`` and what
+  the testbench drives on it; the rest of the design stays two-state. A ``--two-state=PATH`` keeps such a process in
+  when the path covers it.
 * Only a ``'Z'`` written in the driven value itself stays ``'Z'``: one kept in a variable first is a ``'0'`` when
   driven. A pull-up or pull-down literal (``'H'``, ``'L'``) drives a strong ``'1'`` or ``'0'``, so pull-ups and
-  open-drain buses below the top-level unit break: a driver pulling the line low conflicts with the pull-up, and the
+  open-drain buses in the scope break: a driver pulling the line low conflicts with the pull-up, and the
   line reads as ``'0'``.
-* A clock copied below the testbench (``clk2 <= clk``) from a clock that starts at ``'U'`` starts at ``'0'``, so its
+* A clock copied in the scope (``clk2 <= clk``) from a clock that starts at ``'U'`` starts at ``'0'``, so its
   first rise is a ``rising_edge`` the normal mode does not see.
 
 .. _cycle-two-state:
@@ -144,6 +158,7 @@ true, and the library warning is not produced.
 
 .. code-block:: text
 
+    design under test: tb_metavalue.dut (the scope of --cycle and --two-state; an option's PATH chooses another)
     cycle mode: 2 of 4 processes run cycle-based, 2 in the event kernel (see --cycle-report)
     ** Note: 0fs+0: at 0 ns:  ticks=0000
         Process tb_metavalue.main
@@ -175,8 +190,8 @@ comes from:
     yavs run --two-state --work=work:build/work tb_counter
     yavs run --cycle --two-state --work=work:build/work tb_counter
 
-The vunit-yavs sim option ``yavs.two_state`` set to ``True`` adds ``--two-state``, with or without ``yavs.cycle``
-(:doc:`vunit-yavs`):
+The vunit-yavs sim option ``yavs.two_state`` set to ``True`` adds ``--two-state``, set to a path or a list of paths
+``--two-state=PATH`` for each, with or without ``yavs.cycle`` (:doc:`vunit-yavs`):
 
 .. code-block:: python
 

@@ -132,6 +132,10 @@ jobs:
       - name: Unit tests with gc-stress
         if: runner.os == 'Linux'
         run: cargo test -p yavs-clift --features clift,gc-stress --locked --no-fail-fast
+      - name: Difftest tool self-tests
+        if: runner.os == 'Linux'
+        run: |
+          for t in cyclebig cyclegate cyclereplay seeddiff; do python3 -I tools/difftest/$t.py --selftest; done
       - name: Simulation smoke with --tier=clift
         if: runner.os == 'Linux'
         run: |

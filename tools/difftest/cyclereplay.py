@@ -131,7 +131,7 @@ def raw_names(rep):
             sec = "held" if " not evaluated in cycle mode, held by " in l else "members" if re.match(r"^  cycle-based, \d+ process", l) else ""
         elif sec == "held" and (m := re.match(r"^\s+\d+  (.*?)(?: \((\S+:\d+)\))?$", l)):
             held.update({m.group(1), l.strip().partition("  ")[2]})
-        elif sec == "members" and (m := re.match(r"^    (.*?) \((\S+:\d+)\)  \S", l)):
+        elif sec == "members" and (m := re.match(r"^    (.*?) \((\S+:\d+)\)\s+\S", l)):
             members.update({m.group(1), f"{m.group(1)} ({m.group(2)})"})
     return held, members
 
@@ -459,10 +459,12 @@ def selftest():
     w = "diag\twarning\t0\t1\t:tb:d:r\tNUMERIC_STD.\">\": metavalue detected, returning FALSE"
     assert cmp(n + [w], n, members={":tb:d:r"}) == "documented"  # a library warning of a cycle-based process
     assert cmp(n + [w], n) == "differs" and cmp(n + [w], n, members={":tb:x"}) == "differs"
-    assert G.member_paths(["cycle mode: 1 of 2 processes", "  cycle-based, 2 processes:", "    tb.d.r (a.vhd:3)  clocked", "    tb.q <= ... (a.vhd:4)  combinational", "  next"]) == {":tb:d:r", D.lrm_path("tb.q <= ..."), ":tb:q"}
+    assert G.member_paths(["cycle mode: 1 of 2 processes", "  cycle-based, 3 processes:", "    tb.d.r (a.vhd:3)  clocked", "    tb.q <= ... (a.vhd:4)  combinational", "    tb.e (a.vhd:5)         clocked", "  next"]) == {
+        ":tb:d:r", ":tb:d:r (a.vhd:3)", ":tb:q", D.lrm_path("tb.q <= ..."), D.lrm_path("tb.q <= ...") + " (a.vhd:4)",
+        ":tb:e", ":tb:e (a.vhd:5)"}  # each by name and by place; a shorter name is padded to the column
     rep = ["cycle mode: 2 of 5 processes run cycle-based", "  2 asserts and reports not evaluated in cycle mode, held by 2 cycle-based processes:",
            "       1  tb.q <= ... (a.vhd:3)", "       1  tb.p", "  cycle-based, 3 processes:", "    tb.q <= ... (a.vhd:3)  combinational",
-           "    tb.p (a.vhd:9)  clocked", "    tb.r (a.vhd:12)  clocked", "  subset"]
+           "    tb.p (a.vhd:9)   clocked", "    tb.r (a.vhd:12)  clocked", "  subset"]
     held, mem = raw_names(rep)
     assert held == {"tb.q <= ...", "tb.q <= ... (a.vhd:3)", "tb.p"} and "tb.r" in mem and "tb.r (a.vhd:12)" in mem, (held, mem)
     txt = ("** Note: 5ns+1: kept\n    Process tb.o\n** Note: 5ns+1: lost\n    Process tb.q <= ... (a.vhd:3)\n"

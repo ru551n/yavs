@@ -288,7 +288,7 @@ def member_paths(rep):
         if re.match(r"^  \S", l):
             on = bool(re.match(r"^  cycle-based, \d+ process", l))
         elif on:
-            m = re.match(r"^    (.*?) (\(\S+:\d+\))  \S", l)
+            m = re.match(r"^    (.*?) (\(\S+:\d+\))\s+\S", l)  # the report pads names to a column
             if m:
                 out.update({D.lrm_path(m.group(1)), D.lrm_path(re.sub(r" <= \.\.\.$", "", m.group(1)))})
                 out.add(D.lrm_path(m.group(1)) + " " + m.group(2))  # an unlabelled one by its place (`names`)

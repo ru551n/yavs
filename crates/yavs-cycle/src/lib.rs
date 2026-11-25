@@ -593,6 +593,7 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
     region::exact_clocks().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
     rt::rail_knob().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
     store::store_bytes().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
+    rt::skip_knob().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
     let sel = match store::select(db, e)? {
         store::Got::Sel(sel) => *sel,
         // `--cycle` on a hit: the region as it was built, its code as it was compiled.
@@ -1170,6 +1171,9 @@ fn built(
     // members).
     let edge_words: Vec<u32> = (0..sel.clocks.len() as u32).map(|k| n + k).collect();
     n += sel.clocks.len().max(1) as u32;
+    // One word per edge class: 1 when its clocked bodies run untracked (`rt::Adapt`).
+    let mode_words: Vec<u32> = (0..sel.clocks.len() as u32).map(|k| n + k).collect();
+    n += sel.clocks.len() as u32;
     // Without `--two-state` the two words of `Ref::Oth` (`rt::Rail`).
     let oth = n;
     if region::exact_meta() {
@@ -1238,6 +1242,9 @@ fn built(
     // Per member: its clocked body with the memory writes kept back, those writes, and the slot
     // that says one of them happened.
     let mut deferred: Vec<(Vec<Op>, Vec<Pending>, u32)> = Vec::new();
+    let knob = rt::skip_knob()?;
+    let skip_on = knob != rt::Knob::Off;
+    let mut track_at: Vec<Option<u32>> = Vec::new();
     for (pi, b) in &sel.members {
         let base = n;
         n += b.locs;
@@ -1260,6 +1267,11 @@ fn built(
             Vec::new()
         };
         deferred.push((ops, pend, any));
+        // A clocked member's flag (`Op::Track`) and run word (`rt::Skip`), after its other slots.
+        track_at.push((b.kind == Kind::Clocked && skip_on).then(|| {
+            n += 2;
+            n - 2 - base
+        }));
         init.extend(b.init.iter().map(|&(w, v)| (base + w, v)));
         let sites = checks.len() as u32;
         checks.extend(b.checks.iter().map(|(c, at)| {
@@ -1321,6 +1333,28 @@ fn built(
             snap: &none,
         });
     }
+    // A clocked member's edge body: its stores tracked (`Op::Track`) and, unless it logs notes or
+    // tests the edges of several classes itself, behind its run word (`rt::Skip`).
+    let skips = |k: usize| sel.members[k].1.notes == 0 && (!several || class_word(k).is_some());
+    let tracked = |k: usize, body: Vec<Op>| -> Vec<Op> {
+        let Some(t) = track_at[k] else {
+            return body;
+        };
+        let mut v = vec![Op::Track {
+            flag: Ref::Loc(t),
+            first: true,
+        }];
+        if skips(k) {
+            v.push(Op::If {
+                cond: Ref::Loc(t + 1),
+                then: body,
+                else_: Vec::new(),
+            });
+        } else {
+            v.extend(body);
+        }
+        v
+    };
     // The settle: the combinational members and, while their reset holds, the reset branches
     // of clocked ones (written to the current words: the commit is past). A member of a loop group
     // is a body of its own, run at each pass level of what it drives: checked at its last run, on
@@ -1385,16 +1419,28 @@ fn built(
     for ks in by_key.into_iter().filter(|ks| ks.len() > 1) {
         let body = |k: usize| {
             let b = &sel.members[k].1;
-            shared_body(
+            let ops = shared_body(
                 &b.ops,
                 b.kind == Kind::Clocked,
                 several && class_word(k).is_none(),
-            )
+            );
+            if b.kind == Kind::Clocked {
+                tracked(k, ops)
+            } else {
+                ops
+            }
         };
-        let lead = blocks(&body(ks[0]), &sel.members[ks[0]].1, &rs[ks[0]], klen);
+        let extra = |k: usize| if track_at[k].is_some() { 2 } else { 0 };
+        let lead = blocks(
+            &body(ks[0]),
+            &sel.members[ks[0]].1,
+            &rs[ks[0]],
+            klen,
+            extra(ks[0]),
+        );
         let mut members = Vec::new();
         for &k in &ks {
-            let bl = blocks(&body(k), &sel.members[k].1, &rs[k], klen);
+            let bl = blocks(&body(k), &sel.members[k].1, &rs[k], klen, extra(k));
             // The same blocks in the same order with the same lengths, or the member keeps
             // its own code.
             if bl.len() == lead.len()
@@ -1658,6 +1704,9 @@ fn built(
     // (`rt::RegionProc::notes`).
     clocked.sort_by_key(|&k| gate_of(k));
     let mut gate: Vec<u32> = Vec::new();
+    // The edge's steps with the clocked bodies untracked (`codegen::compile`'s `plain`): their
+    // places in `edge` and their operations.
+    let mut plain_bodies: Vec<(usize, Vec<Op>)> = Vec::new();
     for k in clocked {
         let (r, b) = (&rs[k], &sel.members[k].1);
         let w = gate_of(k);
@@ -1675,7 +1724,8 @@ fn built(
                 &deferred[k].0
             };
             let body = shared_body(ops, true, several && class_word(k).is_none());
-            let ops = body.iter().map(|op| r.op(op)).collect();
+            plain_bodies.push((edge.len(), body.iter().map(|op| r.op(op)).collect()));
+            let ops = tracked(k, body).iter().map(|op| r.op(op)).collect();
             edge.push(codegen::Step::Ops(ops));
         }
     }
@@ -1762,6 +1812,20 @@ fn built(
         edge.push(codegen::Step::Ops(ops));
     }
     edge.extend(copies(false));
+    let mut plain = edge.clone();
+    for (i, ops) in plain_bodies {
+        plain[i] = codegen::Step::Ops(ops);
+    }
+    // Per edge word the mode word of its class; the part before any gate is the only class's.
+    let modes: Vec<(u32, u32)> = edge_words
+        .iter()
+        .copied()
+        .zip(mode_words.iter().copied())
+        .collect();
+    let mode0 = match &mode_words[..] {
+        [m] => *m,
+        _ => u32::MAX,
+    };
     let err = n;
     n += 2;
     // The log of the notes that fired in a run: a count, then a site per note (each runs at most
@@ -1849,6 +1913,7 @@ fn built(
         &settle,
         &units,
         &edge,
+        skip_on.then_some((&plain[..], &modes[..], mode0)),
         &init_fn,
         &bodies,
         &shapes,
@@ -1886,7 +1951,145 @@ fn built(
             .collect();
         code.settle_outs = plan.settle_outs.clone();
     }
-    let (cone, class_cones, class_members) = cones(sel, nets, &code.settle_units, &named);
+    let (cone, class_cones, class_members, clocked_cones) =
+        cones(sel, nets, &code.settle_units, &named);
+    // `rt::Skip`: per clocked member its words, its cone and the clocked members its writes reach
+    // (those reading what it or a member of its cone writes).
+    let clocked: Vec<usize> = (0..sel.members.len())
+        .filter(|&k| sel.members[k].1.kind == Kind::Clocked && track_at[k].is_some())
+        .collect();
+    let cw = clocked.len().div_ceil(64);
+    let bit = |v: &mut [u64], i: usize| v[i / 64] |= 1 << (i % 64);
+    let mut readers: BTreeMap<LeafId, Vec<usize>> = BTreeMap::new();
+    for (ci, &k) in clocked.iter().enumerate() {
+        for l in member_leaves(sel, nets, &named, k, true) {
+            readers.entry(l).or_default().push(ci);
+        }
+    }
+    let read_by = |ls: &mut dyn Iterator<Item = LeafId>| -> Vec<u64> {
+        let mut v = vec![0; cw];
+        for l in ls {
+            for &c in readers.get(&l).into_iter().flatten() {
+                bit(&mut v, c);
+            }
+        }
+        v
+    };
+    let member_cr: Vec<Vec<u64>> = if clocked.is_empty() {
+        Vec::new()
+    } else {
+        (0..sel.members.len())
+            .map(|k| read_by(&mut member_leaves(sel, nets, &named, k, false).into_iter()))
+            .collect()
+    };
+    // What a source reaches: `own`, and the readers of what the members `ms` write.
+    let reach_of = |mut own: Vec<u64>, ms: &[u64]| -> Vec<u64> {
+        for (j, &w) in ms.iter().enumerate() {
+            let mut w = w;
+            while w != 0 {
+                let k = 64 * j + w.trailing_zeros() as usize;
+                w &= w - 1;
+                own.iter_mut().zip(&member_cr[k]).for_each(|(a, b)| *a |= b);
+            }
+        }
+        own
+    };
+    let sparse = |v: &[u64]| -> rt::Sparse {
+        (v.iter().enumerate())
+            .filter(|x| *x.1 != 0)
+            .map(|(j, &w)| (j as u32, w))
+            .collect()
+    };
+    let mut skip = rt::Skip {
+        classes: vec![vec![0; cw].into_boxed_slice(); sel.clocks.len()],
+        always: vec![0; cw].into_boxed_slice(),
+        noclass: vec![0; cw].into_boxed_slice(),
+        modes: mode_words.clone(),
+        knob,
+        class_ops: vec![0; sel.clocks.len()],
+        step_ops: (code.settle_units.iter())
+            .map(|us| {
+                (us.iter())
+                    .map(|&u| weight(&sel.members[u as usize].1.ops) as u32)
+                    .sum()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let mut seen_cone: std::collections::HashMap<rt::Sparse, u32> = Default::default();
+    let mut seen_reach: std::collections::HashMap<rt::Sparse, u32> = Default::default();
+    let intern = |v: rt::Sparse,
+                  seen: &mut std::collections::HashMap<rt::Sparse, u32>,
+                  all: &mut Vec<rt::Sparse>| {
+        *seen.entry(v.clone()).or_insert_with(|| {
+            all.push(v);
+            all.len() as u32 - 1
+        })
+    };
+    let cone_of: Vec<&Cone> = (0..sel.members.len())
+        .filter(|&k| sel.members[k].1.kind == Kind::Clocked)
+        .zip(&clocked_cones)
+        .filter(|(k, _)| track_at[*k].is_some())
+        .map(|x| x.1)
+        .collect();
+    for (ci, &k) in clocked.iter().enumerate() {
+        let (t, base) = (track_at[k].expect("tracked"), rs[k].base);
+        let run = if skips(k) { base + t + 1 } else { u32::MAX };
+        if run == u32::MAX {
+            bit(&mut skip.always, ci);
+        }
+        let ops = weight(&sel.members[k].1.ops) as u32;
+        match class_word(k).and_then(|w| edge_words.iter().position(|&x| x == w)) {
+            Some(c) => {
+                bit(&mut skip.classes[c], ci);
+                skip.class_ops[c] += u64::from(ops);
+            }
+            None => {
+                skip.classes.iter_mut().for_each(|c| bit(c, ci));
+                if several {
+                    bit(&mut skip.noclass, ci);
+                }
+            }
+        }
+        skip.ops.push(ops);
+        let (st, ms) = cone_of[ci];
+        let c = intern(sparse(st), &mut seen_cone, &mut skip.cones);
+        let h = intern(
+            sparse(&reach_of(member_cr[k].clone(), ms)),
+            &mut seen_reach,
+            &mut skip.reach,
+        );
+        skip.tracks.push((run, base + t, c, h));
+    }
+    // Per class: what an edge of its bodies run untracked makes dirty (all their reaches).
+    skip.class_reach = (skip.classes.iter())
+        .map(|m| {
+            let mut v = m.to_vec();
+            for (j, &w) in m.iter().enumerate() {
+                let mut w = w;
+                while w != 0 {
+                    let t = 64 * j + w.trailing_zeros() as usize;
+                    w &= w - 1;
+                    or_dense(&mut v, &skip.reach[skip.tracks[t].3 as usize]);
+                }
+            }
+            sparse(&v)
+        })
+        .collect();
+    if stats {
+        eprintln!(
+            "cycle stats: {} clocked bodies tracked, {} always run; {} cones, {} reaches",
+            skip.tracks.len(),
+            skip.always.iter().map(|w| w.count_ones()).sum::<u32>(),
+            skip.cones.len(),
+            skip.reach.len()
+        );
+    }
+    plan.run_words = (skip.tracks.iter())
+        .map(|t| t.0)
+        .filter(|&w| w != u32::MAX)
+        .collect();
+    code.run_words = plan.run_words.clone();
     if stats {
         // The settle steps each edge class's clocked members reach: an edge runs only those and
         // the steps its inputs reach.
@@ -2108,6 +2311,12 @@ fn built(
             .map(|&(l, _, _)| {
                 *by_leaf.entry(l).or_insert_with(|| {
                     let (c, m) = cone(l);
+                    if !clocked.is_empty() {
+                        let own = read_by(&mut std::iter::once(l));
+                        let h =
+                            intern(sparse(&reach_of(own, &m)), &mut seen_reach, &mut skip.reach);
+                        skip.chunk.push(h);
+                    }
                     cones.push(c);
                     members.push(m);
                     cones.len() as u32 - 1
@@ -2151,6 +2360,7 @@ fn built(
         chunk_members,
         class_cones,
         class_members,
+        skip,
         words: n as usize,
         init,
         all,
@@ -2212,6 +2422,7 @@ pub(crate) struct Built {
     chunk_members: Vec<Box<[u64]>>,
     class_cones: Vec<Box<[u64]>>,
     class_members: Vec<Box<[u64]>>,
+    skip: rt::Skip,
     words: usize,
     init: Vec<(u32, u64)>,
     all: Vec<rt::Read>,
@@ -2264,6 +2475,7 @@ fn finish(
     let import_check = std::env::var_os("YAVS_CYCLE_IMPORT_CHECK").is_some_and(|v| v == "1");
     let code = Arc::new(code);
     let class_cones = Arc::new(b.class_cones);
+    let skip = Arc::new(b.skip);
     let mark_words = code.settle_units.len().div_ceil(64);
     if stats {
         let ops: Vec<u64> = b.ops;
@@ -2417,6 +2629,15 @@ fn finish(
                         on: words <= rt::IDLE_WORDS && clocks.len() <= 64,
                         ..Default::default()
                     },
+                    dirty: vec![!0; skip.always.len()],
+                    ored: (vec![0; skip.cones.len()], vec![0; skip.reach.len()], 0),
+                    adapt: vec![rt::Adapt::default(); skip.modes.len()],
+                    frozen: false,
+                    tracked: skip.modes.len(),
+                    go: vec![0; skip.always.len()],
+                    later: vec![0; skip.always.len()],
+                    in_edge: false,
+                    skip: skip.clone(),
                     cones: cones.clone(),
                     chunk_cone: chunk_cone.clone(),
                     mark: vec![0; mark_words],
@@ -2501,24 +2722,14 @@ fn cones<'a>(
     nets: &'a yavs_elab::NetGraph,
     settle_units: &[Vec<u32>],
     named: &[[BTreeSet<u32>; 2]],
-) -> (impl Fn(LeafId) -> Cone + 'a, rt::Marks, rt::Marks) {
-    let ksig = move |l: LeafId| nets.loc[l.index()].signal.0;
+) -> (
+    impl Fn(LeafId) -> Cone + 'a,
+    rt::Marks,
+    rt::Marks,
+    Vec<Cone>,
+) {
     let n = sel.members.len();
-    // Every leaf of a signal named but not listed.
-    let leaves = move |k: usize, reads: bool| -> BTreeSet<LeafId> {
-        let b = &sel.members[k].1;
-        let listed: BTreeSet<u32> = b.reads.iter().chain(&b.writes).map(|&l| ksig(l)).collect();
-        let mut v: BTreeSet<LeafId> = if reads {
-            b.reads.clone()
-        } else {
-            b.writes.clone()
-        };
-        for k in named[k][usize::from(!reads)].difference(&listed) {
-            let (a, z) = nets.packs[*k as usize];
-            v.extend((a.0..z.0).map(LeafId));
-        }
-        v
-    };
+    let leaves = |k: usize, reads: bool| member_leaves(sel, nets, named, k, reads);
     let (words, mw) = (settle_units.len().div_ceil(64), n.div_ceil(64));
     // Each member's own steps.
     let mut own: Vec<Vec<u64>> = vec![vec![0; words]; n];
@@ -2635,6 +2846,17 @@ fn cones<'a>(
             ms.iter_mut().zip(xm).for_each(|(a, b)| *a |= b);
         }
     };
+    // Per clocked member: the steps and members its writes reach.
+    let clocked: Vec<Cone> = (0..n)
+        .filter(|&k| sel.members[k].1.kind == Kind::Clocked)
+        .map(|k| {
+            let (mut st, mut ms) = (vec![0; words], vec![0; mw]);
+            for l in leaves(k, false) {
+                of(&l, &mut st, &mut ms);
+            }
+            (st.into_boxed_slice(), ms.into_boxed_slice())
+        })
+        .collect();
     let (mut classes, mut class_members) = (Vec::new(), Vec::new());
     for c in 0..sel.clocks.len() {
         let (mut st, mut reach, mut mine) = (vec![0; words], vec![0; mw], vec![0; mw]);
@@ -2659,7 +2881,38 @@ fn cones<'a>(
         of(&l, &mut st, &mut ms);
         (st.into_boxed_slice(), ms.into_boxed_slice())
     };
-    (of_leaf, classes, class_members)
+    (of_leaf, classes, class_members, clocked)
+}
+
+/// `v |= s`.
+fn or_dense(v: &mut [u64], s: &[(u32, u64)]) {
+    for &(k, w) in s {
+        v[k as usize] |= w;
+    }
+}
+
+/// The leaves member `k` reads (or writes): those it lists, and every leaf of a signal its
+/// operations name without listing one.
+fn member_leaves(
+    sel: &region::Selection,
+    nets: &yavs_elab::NetGraph,
+    named: &[[BTreeSet<u32>; 2]],
+    k: usize,
+    reads: bool,
+) -> BTreeSet<LeafId> {
+    let ksig = |l: LeafId| nets.loc[l.index()].signal.0;
+    let b = &sel.members[k].1;
+    let listed: BTreeSet<u32> = b.reads.iter().chain(&b.writes).map(|&l| ksig(l)).collect();
+    let mut v: BTreeSet<LeafId> = if reads {
+        b.reads.clone()
+    } else {
+        b.writes.clone()
+    };
+    for k in named[k][usize::from(!reads)].difference(&listed) {
+        let (a, z) = nets.packs[*k as usize];
+        v.extend((a.0..z.0).map(LeafId));
+    }
+    v
 }
 
 /// Per member: the signals its operations read and those they write by name (`Ref::Sig`).
@@ -2855,8 +3108,14 @@ fn shared_body(ops: &[Op], clocked: bool, test: bool) -> Vec<Op> {
 }
 
 /// The blocks `ops` (of member `b`, resolved by `r`) address, in order of first use: each with its
-/// first word in the image and its length.
-fn blocks(ops: &[Op], b: &lower::Body, r: &Resolve, klen: impl Fn(u32) -> u32) -> Blocks {
+/// first word in the image and its length (its slots `extra` more: a flag and a run word).
+fn blocks(
+    ops: &[Op],
+    b: &lower::Body,
+    r: &Resolve,
+    klen: impl Fn(u32) -> u32,
+    extra: u32,
+) -> Blocks {
     let seen = std::cell::RefCell::new(Vec::<Block>::new());
     let add = |x: Block| {
         let mut s = seen.borrow_mut();
@@ -2889,7 +3148,7 @@ fn blocks(ops: &[Op], b: &lower::Body, r: &Resolve, klen: impl Fn(u32) -> u32) -
         .map(|x| match x {
             Block::Cur(k) => (x, r.cur[&k], codegen::words(klen(k))),
             Block::Next(k) => (x, r.next[&k], codegen::words(klen(k))),
-            Block::Locals => (x, r.base, b.locs.max(1)),
+            Block::Locals => (x, r.base, (b.locs + extra).max(1)),
             Block::Edge => (x, r.edge, 1),
             Block::Oth => (x, r.oth, 2),
         })

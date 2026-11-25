@@ -876,7 +876,12 @@ Read the first line of ``--cycle-report``:
 * **The test is short.** The first run compiles the region, which takes longer the larger the region is. Later runs
   take it from the cache (:ref:`cycle-cache`).
 * **An idle design is cheap.** When a whole clock edge would change nothing in the cycle-based part, that edge is
-  skipped. An idle block inside a busy design still costs its full share.
+  skipped. Inside a busy design, a clocked process whose last edge changed none of its registers, with nothing it
+  reads changed since, is not run at the next edge, and the logic after a clock's registers runs only where an edge
+  changed one, so a block that waits while the rest works (an accelerator while the processor boots) costs little.
+  yavs watches each clock for this and stops watching where it does not pay (a processor busy at every edge),
+  looking again now and then. The watching costs a busy design a little, and the region's code is compiled in two
+  forms for it, so a run on a cold cache compiles more.
 
 .. _cycle-mode-ci:
 

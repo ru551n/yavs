@@ -5240,6 +5240,12 @@ fn loop_groups_run_in_the_region_and_give_the_same_result() {
             err.contains("cycle mode: 11 of 14 processes run cycle-based"),
             "{err}"
         );
+        // Without the skip check the settle under a mark is walked by its bits; with every check
+        // the confirm pass after each group (steps without units) runs among them.
+        let env = [("YAVS_CYCLE_SKIP_CHECK", ""), ("YAVS_CYCLE_CHECKS", "all")];
+        let flags = ["--cycle", "--two-state"];
+        let (walked, err) = run_vars(&dir, &[&t[..], &flags].concat(), "cycle_loops", &env);
+        assert_eq!(walked, normal, "{t:?}\n{err}");
         let names = [
             "cycle_loops.pa",
             "cycle_loops.pb",
@@ -6532,9 +6538,116 @@ fn an_edge_run_that_would_change_nothing_is_skipped() {
                     let skipped = n("edge runs skipped as idle");
                     assert_eq!(skipped > 0, env.len() == 2, "{env:?}\n{err}");
                 }
+                // As many as with the skip of clocked bodies off: its flag, run and mode words say
+                // how a run went, not what it changed (`rt::RegionProc::idle_end`). Without the
+                // helpers' guards and import check, which move the count.
+                if w > 2 && env.len() == 2 {
+                    let idle = |knob: &str| -> String {
+                        let env = [
+                            ("YAVS_CYCLE_SKIP_CHECK", ""),
+                            ("YAVS_CYCLE_GUARD", ""),
+                            ("YAVS_CYCLE_IMPORT_CHECK", ""),
+                            ("YAVS_CYCLE_STATS", "1"),
+                            ("YAVS_CYCLE_BLOCKSKIP", knob),
+                        ];
+                        let flags = [&t[..], &["--cycle", "--two-state"]].concat();
+                        let (_, err) = run_vars(&dir, &flags, "cycle_idle", &env);
+                        (err.lines())
+                            .find(|l| l.starts_with("cycle stats: edge runs skipped as idle: "))
+                            .unwrap_or_else(|| panic!("no idle count\n{err}"))
+                            .to_string()
+                    };
+                    assert_eq!(idle(""), idle("off"), "width {w} {t:?}");
+                }
             }
         }
     }
+}
+
+/// Clocked bodies skipped while idle, and the settle at an edge only where a body changed a word
+/// (`rt::Skip`): registers that stop, hold or load an input that does not move, a register read
+/// by its writer and another body, a reset from outside and one from a register of the other
+/// clock pulsed between two edges, a clocked variable, a vector written at a run-time index, a
+/// memory, registers read across clocks; inputs moved between edges and in the delta of an edge.
+/// The normal mode's values with the skip check, without it, with every member cut into parts,
+/// always tracked and with each class tracked and untracked in turn, under `--two-state` and
+/// without it (its rail on, and ended early); bodies skipped and changes seen.
+#[test]
+fn a_clocked_body_whose_inputs_did_not_change_is_skipped() {
+    let dir = tempdir("cycle-blockskip");
+    let envs: [&[(&str, &str)]; 5] = [
+        &[],
+        &[("YAVS_CYCLE_SKIP_CHECK", "")],
+        &[("YAVS_CYCLE_CHUNK", "7")],
+        &[("YAVS_CYCLE_BLOCKSKIP", "on")],
+        &[
+            ("YAVS_CYCLE_BLOCKSKIP", "flip"),
+            ("YAVS_CYCLE_SKIP_CHECK", ""),
+        ],
+    ];
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("blockskip{w}.vhd"),
+            &with_width(include_str!("cycle/blockskip.vhd"), w),
+        );
+        for t in tiers() {
+            let (normal, _) = run(&dir, &t, "cycle_blockskip");
+            assert_eq!(normal.len(), 389, "{w} {t:?} {normal:?}");
+            let modes: [&[&str]; 3] = [&["--cycle", "--two-state"], &["--cycle"], &["--cycle"]];
+            for (m, flags) in modes.iter().enumerate() {
+                for env in envs {
+                    let mut env = env.to_vec();
+                    env.push(("YAVS_CYCLE_STATS", "1"));
+                    if m == 2 {
+                        env.push(("YAVS_CYCLE_RAIL", "cap=8"));
+                    }
+                    let (cycle, err) =
+                        run_vars(&dir, &[&t[..], flags].concat(), "cycle_blockskip", &env);
+                    assert_eq!(cycle, normal, "width {w} {t:?} {flags:?} {env:?}\n{err}");
+                    assert!(
+                        err.contains("cycle mode: 21 of 24 processes run cycle-based"),
+                        "{w}: {err}"
+                    );
+                    let n = |what: &str| -> u64 {
+                        (err.lines())
+                            .find_map(|l| l.strip_prefix(&format!("cycle stats: {what}: ")))
+                            .unwrap_or_else(|| panic!("no count of {what}\n{err}"))
+                            .parse()
+                            .expect("a number")
+                    };
+                    assert!(n("clocked bodies that changed a word") > 0, "{err}");
+                    if m != 1 {
+                        assert!(n("clocked bodies skipped as idle") > 0, "{err}");
+                    }
+                    if env.contains(&("YAVS_CYCLE_BLOCKSKIP", "flip")) && m != 1 {
+                        assert!(n("classes gone untracked") > 0, "{err}");
+                        assert!(n("class edges run untracked") > 0, "{err}");
+                    }
+                }
+            }
+            // Off: every body at each edge, the same values.
+            let env = [("YAVS_CYCLE_BLOCKSKIP", "off"), ("YAVS_CYCLE_STATS", "1")];
+            let flags = ["--cycle", "--two-state"];
+            let (cycle, err) = run_vars(&dir, &[&t[..], &flags].concat(), "cycle_blockskip", &env);
+            assert_eq!(cycle, normal, "width {w} {t:?} off\n{err}");
+            assert!(err.contains("clocked bodies skipped as idle: 0\n"), "{err}");
+        }
+    }
+    let args = [
+        "run",
+        "--work=work:lib",
+        "--no-cache",
+        "--cycle",
+        "cycle_blockskip",
+    ];
+    let o = yavs_env(&dir, &args, &[("YAVS_CYCLE_BLOCKSKIP", "of")]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success() && o.stdout.is_empty(), "{err}");
+    assert!(
+        err.contains("error[E4104]: YAVS_CYCLE_BLOCKSKIP takes `off`, `on` or `flip`, not `of`"),
+        "{err}"
+    );
 }
 
 /// A region that waits on clocks and data: a wake for an event of a clock without its edge is

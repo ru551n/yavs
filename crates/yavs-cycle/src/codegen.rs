@@ -43,9 +43,9 @@ type SharedEntry = unsafe extern "C" fn(*mut u64, *const usize) -> u32;
 pub(crate) struct Code {
     _module: JITModule,
     /// By [`Fun`]: what it runs, in order.
-    entries: [Vec<Run>; 3],
+    entries: [Vec<Run>; 4],
     /// The edge's own steps in parts: a part runs when one of its words is not 0 (none: always).
-    edge_parts: Vec<(Vec<u32>, std::ops::Range<usize>)>,
+    edge_parts: Vec<EdgePart>,
     /// The words each loop group drives: (first, count), and where [`Run::Save`] copies them.
     groups: Vec<(Vec<(u32, u32)>, u32)>,
     /// The runs of words each [`Run::Copy`] copies: (to, from, count).
@@ -60,10 +60,15 @@ pub(crate) struct Code {
     pub(crate) settle_units: Vec<Vec<u32>>,
     /// The steps with units, as a mark: a mark that holds them all runs the settle unmarked.
     pub(crate) every: Box<[u64]>,
+    /// The steps without units, which run under any mark; none when one lies behind a guard
+    /// (then `steps` looks at every step).
+    fixed: Option<Box<[u64]>>,
     /// The words of the region's signals, the first ones of the image (`YAVS_CYCLE_SKIP_CHECK`).
     signal_words: usize,
     /// With `YAVS_CYCLE_SKIP_CHECK`: per step of the settle, the words its members drive.
     pub(crate) settle_outs: Vec<Vec<(u32, u32)>>,
+    /// The word of each clocked body run only when it is 1 (`rt::Skip`).
+    pub(crate) run_words: Vec<u32>,
     /// The count word of the log of notes (`compile`'s `log`): a run of the skip check logs none.
     log_count: usize,
     /// `YAVS_CYCLE_SKIP_CHECK=1`: a run a guard would skip runs and must change nothing.
@@ -109,6 +114,7 @@ enum Run {
 }
 
 /// A step of the settle as [`compile`] takes it.
+#[derive(Clone)]
 pub(crate) enum Step {
     /// Operations, cut into functions with their neighbours.
     Ops(Vec<Op>),
@@ -145,6 +151,20 @@ pub(crate) struct Shape {
     pub blocks: Vec<(u32, u32)>,
     pub keep: Vec<bool>,
 }
+
+/// A part of the edge's own steps: it runs when one of its words is not 0 (none: always); its
+/// steps tracked (`Code::entries[1]`) and untracked (`[3]`), and the word choosing the untracked
+/// ones when it is 1 (`u32::MAX`: none).
+type EdgePart = (
+    Vec<u32>,
+    std::ops::Range<usize>,
+    std::ops::Range<usize>,
+    u32,
+);
+
+/// The edge's steps with its clocked bodies untracked, per edge word the mode word of its class,
+/// and the mode word of the part before any gate ([`EdgePart`]).
+pub(crate) type Untracked<'a> = (&'a [Step], &'a [(u32, u32)], u32);
 
 /// The site [`Code::run`] gives when a loop group changed in a pass after its fixed point.
 pub(crate) const UNSETTLED: u32 = u32::MAX;
@@ -224,7 +244,8 @@ impl Code {
         );
         match f {
             Fun::Edge if edge => {
-                for (ws, r) in &self.edge_parts {
+                self.open(img);
+                for (ws, r, _, _) in &self.edge_parts {
                     if ws.is_empty() || ws.iter().any(|&w| img[w as usize] != 0) {
                         self.steps(img, &self.entries[1][r.clone()], None, false)?;
                     }
@@ -245,16 +266,28 @@ impl Code {
         guards: bool,
     ) -> Result<(), u32> {
         let mark = mark.filter(|m| m.iter().zip(&self.every[..]).any(|(m, e)| e & !m != 0));
-        if f == Fun::Edge {
-            for (ws, r) in &self.edge_parts {
+        if matches!(f, Fun::Edge | Fun::Own) {
+            for (ws, r, p, m) in &self.edge_parts {
                 if ws.is_empty() || ws.iter().any(|&w| img[w as usize] != 0) {
-                    self.steps(img, &self.entries[1][r.clone()], None, guards)?;
+                    // The reference (no guards) runs every body untracked.
+                    let v = !guards || (*m != u32::MAX && img[*m as usize] != 0);
+                    let (e, r) = if v && !p.is_empty() { (3, p) } else { (1, r) };
+                    self.steps(img, &self.entries[e][r.clone()], None, guards)?;
                 }
             }
         }
         match f {
             Fun::Init => self.steps(img, &self.entries[2], None, guards),
+            Fun::Own => Ok(()),
             _ => self.steps(img, &self.entries[0], mark, guards),
+        }
+    }
+
+    /// Every clocked body behind a run word (`run_words`) runs: the reference of the skip check
+    /// and the second image of the rail (no `--two-state`).
+    pub(crate) fn open(&self, img: &mut [u64]) {
+        for &w in &self.run_words {
+            img[w as usize] = 1;
         }
     }
 
@@ -269,6 +302,7 @@ impl Code {
         state: &[(u32, u32)],
     ) -> Result<(), u32> {
         let mut whole = img.to_vec();
+        self.open(&mut whole);
         let a = self.run_as(&mut whole, f, None, false);
         let b = self.run_as(img, f, mark, true);
         let differs = (state.iter()).any(|&(w, c)| {
@@ -288,6 +322,35 @@ impl Code {
         mark: Option<&[u64]>,
         guards: bool,
     ) -> Result<(), u32> {
+        // The settle with a mark that holds a quarter of the steps or fewer: only those and the
+        // steps without units, found by their bits (a wake reaching few steps walks few).
+        if let (Some(m), Some(fx)) = (mark, &self.fixed)
+            && !self.skip_check
+            && rs.len() == self.settle_units.len()
+            && 4 * (m.iter().zip(&fx[..]))
+                .map(|(m, f)| (m | f).count_ones() as usize)
+                .sum::<usize>()
+                <= rs.len()
+        {
+            let mut i = 0;
+            while i < rs.len() {
+                let mut w = i / 64;
+                let mut bits = (m[w] | fx[w]) & (!0u64 << (i % 64));
+                while bits == 0 {
+                    w += 1;
+                    if w >= fx.len() {
+                        return Ok(());
+                    }
+                    bits = m[w] | fx[w];
+                }
+                i = 64 * w + bits.trailing_zeros() as usize;
+                if i >= rs.len() {
+                    break;
+                }
+                i = self.one(img, rs, i, guards)?;
+            }
+            return Ok(());
+        }
         let mut i = 0;
         while i < rs.len() {
             if let Some(m) = mark
@@ -304,58 +367,64 @@ impl Code {
                 i += n;
                 continue;
             }
-            match rs[i] {
-                // SAFETY: the code reads and writes only words below `words`, checked in `run`.
-                Run::Fn(e) => match unsafe { e(img.as_mut_ptr()) } {
-                    0 => {}
-                    s => return Err(s - 1),
-                },
-                Run::Save(g) => {
-                    let (ws, mut at) = (&self.groups[g].0, self.groups[g].1 as usize);
-                    for &(w, c) in ws {
-                        img.copy_within(w as usize..(w + c) as usize, at);
-                        at += c as usize;
-                    }
-                }
-                Run::Shared(e, t, sites) => {
-                    // SAFETY: every block of every table lies below `words` (checked in `compile`).
-                    match unsafe { e(img.as_mut_ptr(), self.tables[t as usize].as_ptr()) } {
-                        0 => {}
-                        s => return Err(sites + s - 1),
-                    }
-                }
-                Run::Copy(c) => {
-                    for &(d, s, n) in &self.copies[c] {
-                        img.copy_within(s as usize..(s + n) as usize, d as usize);
-                    }
-                }
-                Run::Same(g) => {
-                    let (ws, mut at) = (&self.groups[g].0, self.groups[g].1 as usize);
-                    for &(w, c) in ws {
-                        let (w, c) = (w as usize, c as usize);
-                        if img[w..w + c] != img[at..at + c] {
-                            return Err(UNSETTLED);
-                        }
-                        at += c;
-                    }
-                }
-                Run::Guard(g, n, checked) if guards => {
-                    let skip = self.guard(img, g, checked);
-                    if let Some(c) = &self.counts {
-                        c[g][usize::from(skip)].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    if skip {
-                        if self.skip_check {
-                            self.recheck(img, g, &rs[i + 1..i + 1 + n])?;
-                        }
-                        i += n;
-                    }
-                }
-                Run::Guard(..) => {}
-            }
-            i += 1;
+            i = self.one(img, rs, i, guards)?;
         }
         Ok(())
+    }
+
+    /// Step `i` of `rs`; the next step to look at.
+    #[inline(always)]
+    fn one(&self, img: &mut [u64], rs: &[Run], i: usize, guards: bool) -> Result<usize, u32> {
+        match rs[i] {
+            // SAFETY: the code reads and writes only words below `words`, checked in `run`.
+            Run::Fn(e) => match unsafe { e(img.as_mut_ptr()) } {
+                0 => {}
+                s => return Err(s - 1),
+            },
+            Run::Save(g) => {
+                let (ws, mut at) = (&self.groups[g].0, self.groups[g].1 as usize);
+                for &(w, c) in ws {
+                    img.copy_within(w as usize..(w + c) as usize, at);
+                    at += c as usize;
+                }
+            }
+            Run::Shared(e, t, sites) => {
+                // SAFETY: every block of every table lies below `words` (checked in `compile`).
+                match unsafe { e(img.as_mut_ptr(), self.tables[t as usize].as_ptr()) } {
+                    0 => {}
+                    s => return Err(sites + s - 1),
+                }
+            }
+            Run::Copy(c) => {
+                for &(d, s, n) in &self.copies[c] {
+                    img.copy_within(s as usize..(s + n) as usize, d as usize);
+                }
+            }
+            Run::Same(g) => {
+                let (ws, mut at) = (&self.groups[g].0, self.groups[g].1 as usize);
+                for &(w, c) in ws {
+                    let (w, c) = (w as usize, c as usize);
+                    if img[w..w + c] != img[at..at + c] {
+                        return Err(UNSETTLED);
+                    }
+                    at += c;
+                }
+            }
+            Run::Guard(g, n, checked) if guards => {
+                let skip = self.guard(img, g, checked);
+                if let Some(c) = &self.counts {
+                    c[g][usize::from(skip)].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                if skip {
+                    if self.skip_check {
+                        self.recheck(img, g, &rs[i + 1..i + 1 + n])?;
+                    }
+                    return Ok(i + n + 1);
+                }
+            }
+            Run::Guard(..) => {}
+        }
+        Ok(i + 1)
     }
 
     /// Whether guard `g`'s member may be skipped; if not, the inputs that changed are copied for
@@ -364,7 +433,7 @@ impl Code {
     /// row it did not skip (bits 32 to 39) and, after [`GUARD_MISSES`] of them, the runs left
     /// (bits 40 to 55) of [`GUARD_OFF`] it runs without a compare (an active member costs no
     /// more than a few instructions a run).
-    #[inline]
+    #[inline(always)]
     fn guard(&self, img: &mut [u64], g: usize, checked: bool) -> bool {
         let gd = &self.guards[g];
         let (flag, n) = (gd.flag as usize, gd.ins.len());
@@ -497,6 +566,9 @@ pub(crate) enum Fun {
     Settle,
     /// The clocked bodies, the commit, the combinational bodies.
     Edge,
+    /// The edge's own steps alone: the clocked bodies and the commit (the settle after it runs
+    /// on its own, with the mark of what changed).
+    Own,
     /// Once, before the first settle: initial values of the variables.
     Init,
 }
@@ -786,7 +858,13 @@ fn parts(ops: &[Op]) -> Vec<Part<'_>> {
     if weight(ops) <= chunk() {
         return vec![(Cow::Borrowed(ops), None)];
     }
-    let ps = cut(ops, chunk());
+    let mut ps = cut(ops, chunk());
+    // Every part of a tracked member tracks its own stores (`Op::Track`).
+    if let Some(&Op::Track { flag, .. }) = ops.first() {
+        for p in &mut ps[1..] {
+            p.insert(0, Op::Track { flag, first: false });
+        }
+    }
     let mut later: Option<Arc<Words<()>>> = None;
     let mut out: Vec<Part<'_>> = Vec::new();
     for p in ps.into_iter().rev() {
@@ -920,6 +998,8 @@ fn reads(op: &Op, f: &mut impl FnMut(i32, u32)) {
             }
         }
         Op::If { cond, .. } => r(cond, 0, 1),
+        // Its flag is not a word the operations read (`Gen::track_end`).
+        Op::Track { .. } => {}
         Op::Other { src, len, oth, .. } => {
             r(src, 0, words(*len));
             r(oth, 0, 1);
@@ -1274,7 +1354,7 @@ fn span(op: &Op) -> u32 {
         | Op::Int { .. }
         | Op::Reduce { .. }
         | Op::ToInt { .. } => 1,
-        Op::Range { .. } | Op::If { .. } | Op::Note { .. } => 0,
+        Op::Range { .. } | Op::If { .. } | Op::Note { .. } | Op::Track { .. } => 0,
     }
 }
 
@@ -1337,6 +1417,7 @@ pub(crate) fn compile<'a>(
     settle: &'a [Step],
     units: &[u32],
     edge: &'a [Step],
+    plain: Option<Untracked<'a>>,
     init: &'a [Step],
     bodies: &'a [(Vec<Op>, bool)],
     shapes: &'a [Shape],
@@ -1406,12 +1487,19 @@ pub(crate) fn compile<'a>(
     // with its table and first site, or a step of the runner.
     let mut tables: Vec<Box<[usize]>> = Vec::new();
     let mut copies: Vec<Vec<(u32, u32, u32)>> = Vec::new();
-    let mut runs: [Vec<Pend>; 3] = Default::default();
+    let mut runs: [Vec<Pend>; 4] = Default::default();
     let mut settle_units: Vec<Vec<u32>> = Vec::new();
-    let mut edge_parts = Vec::new();
-    for (f, (what, steps)) in [("settle", settle), ("edge", edge), ("init", init)]
-        .into_iter()
-        .enumerate()
+    // The edge's parts of each variant: words and range.
+    let mut parts_of: [Vec<(Vec<u32>, std::ops::Range<usize>)>; 2] = Default::default();
+    let (plain_steps, modes, mode0) = plain.unwrap_or((&[], &[], u32::MAX));
+    for (f, (what, steps)) in [
+        ("settle", settle),
+        ("edge", edge),
+        ("init", init),
+        ("plain", plain_steps),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let mut cur: Vec<Part<'a>> = Vec::new();
         // The settle's units (`compile`'s `units`) of the parts in `cur`, and of each step made.
@@ -1585,14 +1673,35 @@ pub(crate) fn compile<'a>(
         if f == 0 {
             settle_units = eunits;
         }
-        if f == 1 {
+        if f == 1 || f == 3 {
             let n = runs[f].len();
-            edge_parts = (gates.iter().enumerate())
+            parts_of[f / 2] = (gates.iter().enumerate())
                 .map(|(k, &(w, a))| (w.to_vec(), a..gates.get(k + 1).map_or(n, |g| g.1)))
-                .filter(|(_, r)| !r.is_empty())
                 .collect();
         }
     }
+    // A part runs untracked when its class's mode word is 1 (a part of no class or of several
+    // classes holds no body whose variants differ: the tracked one).
+    let [tracked, untracked] = parts_of;
+    if plain.is_some()
+        && (tracked.len() != untracked.len()
+            || (tracked.iter().zip(&untracked)).any(|(a, b)| a.0 != b.0))
+    {
+        return Err("the edge's untracked variant has other gates".into());
+    }
+    let edge_parts: Vec<EdgePart> = (tracked.into_iter().enumerate())
+        .map(|(k, (w, r))| {
+            let mode = match &w[..] {
+                _ if plain.is_none() => u32::MAX,
+                [] => mode0,
+                [x] => modes.iter().find(|m| m.0 == *x).map_or(u32::MAX, |m| m.1),
+                _ => u32::MAX,
+            };
+            let p = untracked.get(k).map_or(0..0, |u| u.1.clone());
+            (w, r, p, mode)
+        })
+        .filter(|x| !x.1.is_empty())
+        .collect();
     // Per shape, per block: the block whose base it is addressed from and the distance to it, the
     // same in every instance (an instance's signals lie in one order: a body needs few bases).
     let mut inst: Vec<Vec<usize>> = vec![Vec::new(); shapes.len()];
@@ -1664,6 +1773,7 @@ pub(crate) fn compile<'a>(
             v
         }),
         settle_outs: Vec::new(),
+        run_words: Vec::new(),
     };
     // Three passes: the cache in function order; the functions it does not have built and
     // compiled on up to `threads()` threads; the code defined in function order, so the module,
@@ -1972,6 +2082,7 @@ impl Env<'_> {
                 next: 0,
                 last: Words::default(),
                 later: None,
+                track: None,
                 #[cfg(debug_assertions)]
                 gone: Default::default(),
             };
@@ -1996,6 +2107,7 @@ impl Env<'_> {
                 } else {
                     g.write_back();
                 }
+                g.track_end();
                 // What is in memory now: state, and what the next part of the member reads; a
                 // value is handed on through at most `CARRY` pieces.
                 g.piece += 1;
@@ -2103,7 +2215,7 @@ fn finish(
                 .0,
         ))
     };
-    let mut entries: [Vec<Run>; 3] = Default::default();
+    let mut entries: [Vec<Run>; 4] = Default::default();
     for (f, rs) in plan.runs.iter().enumerate() {
         entries[f] = (rs.iter())
             .map(|r| {
@@ -2150,11 +2262,28 @@ fn finish(
     if (plan.copies.iter().flatten()).any(|&(d, s, n)| (d.max(s) + n) as usize > words) {
         return Err("a copy's words do not fit the image".into());
     }
-    if (plan.edge_parts.iter()).any(|(ws, _)| ws.iter().any(|&w| w as usize >= words)) {
+    if (plan.edge_parts.iter()).any(|(ws, _, _, m)| {
+        ws.iter().any(|&w| w as usize >= words) || (*m != u32::MAX && *m as usize >= words)
+    }) {
         return Err("an edge gate's word does not fit the image".into());
+    }
+    // A step without units behind a guard runs only after it: `steps` walks every step then.
+    let mut fixed = vec![0u64; settle_units.len().div_ceil(64)];
+    let mut covered = 0usize;
+    let mut fixed_ok = true;
+    for (i, us) in settle_units.iter().enumerate() {
+        if us.is_empty() {
+            fixed[i / 64] |= 1 << (i % 64);
+            fixed_ok &= covered == 0;
+        }
+        covered = match entries[0][i] {
+            Run::Guard(_, n, _) => n.max(covered.saturating_sub(1)),
+            _ => covered.saturating_sub(1),
+        };
     }
     Ok(Code {
         _module: module,
+        fixed: fixed_ok.then(|| fixed.into_boxed_slice()),
         entries,
         edge_parts: plan.edge_parts,
         groups: plan.groups,
@@ -2166,6 +2295,7 @@ fn finish(
         every: every.into_boxed_slice(),
         signal_words: plan.signal_words,
         settle_outs: plan.settle_outs,
+        run_words: plan.run_words,
         log_count: plan.log_count,
         skip_check: skip_check()? != SkipCheck::Off,
         full_check: plan.full_check,
@@ -2181,9 +2311,9 @@ fn finish(
 pub(crate) struct CodePlan {
     /// Per function: its symbol, and whether it is a shape's body (with a table).
     funs: Vec<(String, bool)>,
-    runs: [Vec<Pend>; 3],
+    runs: [Vec<Pend>; 4],
     /// [`Code::edge_parts`].
-    edge_parts: Vec<(Vec<u32>, std::ops::Range<usize>)>,
+    edge_parts: Vec<EdgePart>,
     groups: Vec<(Vec<(u32, u32)>, u32)>,
     copies: Vec<Vec<(u32, u32, u32)>>,
     words: usize,
@@ -2195,6 +2325,8 @@ pub(crate) struct CodePlan {
     full_check: Option<Vec<(u32, u32)>>,
     /// `YAVS_CYCLE_SKIP_CHECK`: set by the caller ([`Code::settle_outs`]).
     pub settle_outs: Vec<Vec<(u32, u32)>>,
+    /// Set by the caller ([`Code::run_words`]).
+    pub run_words: Vec<u32>,
 }
 
 impl CodePlan {
@@ -2275,6 +2407,9 @@ struct Gen<'a> {
     /// unless a later part reads it, `later`).
     last: Words<u32>,
     later: Option<Arc<Words<()>>>,
+    /// `Op::Track` in this part: its flag's byte offset, whether it is the member's first part,
+    /// and the OR of what each store of a word that holds state changed.
+    track: Option<(i32, bool, cranelift_frontend::Variable)>,
     /// Debug builds: scratch words dropped from registers unstored as dead, which no code may
     /// read from memory before writing them again.
     #[cfg(debug_assertions)]
@@ -2412,7 +2547,39 @@ impl Gen<'_> {
 
     fn store(&mut self, off: i32, v: Value) {
         let (a, o) = self.at(off);
+        if self.track.is_some() && self.kept(off) {
+            let old = self.b.ins().load(I64, MemFlagsData::trusted(), a, o);
+            self.changed(old, v);
+        }
         self.b.ins().store(MemFlagsData::trusted(), v, a, o);
+    }
+
+    /// Under `Op::Track`: a store of `new` over `old`, ORed into what the part changed.
+    fn changed(&mut self, old: Value, new: Value) {
+        let Some((_, _, var)) = self.track else {
+            return;
+        };
+        let x = self.b.ins().bxor(old, new);
+        let acc = self.b.use_var(var);
+        let acc = self.b.ins().bor(acc, x);
+        self.b.def_var(var, acc);
+    }
+
+    /// The end of a tracked part: its flag word 1 when a store changed a word (ORed into the
+    /// flag of the member's earlier parts).
+    fn track_end(&mut self) {
+        let Some((off, first, var)) = self.track.take() else {
+            return;
+        };
+        let acc = self.b.use_var(var);
+        let one = self.b.ins().icmp_imm_s(IntCC::NotEqual, acc, 0);
+        let mut f = self.b.ins().uextend(I64, one);
+        let (a, o) = self.at(off);
+        if !first {
+            let old = self.b.ins().load(I64, MemFlagsData::trusted(), a, o);
+            f = self.b.ins().bor(old, f);
+        }
+        self.b.ins().store(MemFlagsData::trusted(), f, a, o);
     }
 
     /// The words that hold state, into memory (the end of the function).
@@ -2790,10 +2957,19 @@ impl Gen<'_> {
             for (j, &x) in v.iter().enumerate() {
                 let n = (w - 64 * j as u32).min(64);
                 let o = 8 * j as i32;
-                let x = if n < 64 {
+                let tracked = self.track.is_some() && self.kept(word(r));
+                let x = if n < 64 || tracked {
                     let w0 = self.b.ins().load(I64, MemFlagsData::trusted(), a, o);
-                    let keep = self.b.ins().band_imm_s(w0, !mask(n) as i64);
-                    self.b.ins().bor(keep, x)
+                    let x = if n < 64 {
+                        let keep = self.b.ins().band_imm_s(w0, !mask(n) as i64);
+                        self.b.ins().bor(keep, x)
+                    } else {
+                        x
+                    };
+                    if tracked {
+                        self.changed(w0, x);
+                    }
+                    x
                 } else {
                     x
                 };
@@ -2810,20 +2986,27 @@ impl Gen<'_> {
             let n = (w - 64 * j as u32).min(64);
             let (a, s) = self.bit_addr(r, b);
             let m = self.konst(mask(n));
-            let w0 = self.b.ins().load(I64, MemFlagsData::trusted(), a, 0);
+            let tracked = self.track.is_some() && self.kept(word(r));
+            let old = self.b.ins().load(I64, MemFlagsData::trusted(), a, 0);
             let ms = self.b.ins().ishl(m, s);
-            let keep = self.b.ins().band_not(w0, ms);
+            let keep = self.b.ins().band_not(old, ms);
             let xs = self.b.ins().ishl(x, s);
             let w0 = self.b.ins().bor(keep, xs);
+            if tracked {
+                self.changed(old, w0);
+            }
             self.b.ins().store(MemFlagsData::trusted(), w0, a, 0);
             if !one_word {
                 // The bits that cross into the next word (none when `s` is 0); its other bits are
                 // stored back unchanged.
-                let w1 = self.b.ins().load(I64, MemFlagsData::trusted(), a, 8);
+                let old = self.b.ins().load(I64, MemFlagsData::trusted(), a, 8);
                 let mh = self.ushr_rest(m, s);
-                let keep = self.b.ins().band_not(w1, mh);
+                let keep = self.b.ins().band_not(old, mh);
                 let xh = self.ushr_rest(x, s);
                 let w1 = self.b.ins().bor(keep, xh);
+                if tracked {
+                    self.changed(old, w1);
+                }
                 self.b.ins().store(MemFlagsData::trusted(), w1, a, 8);
             }
         }
@@ -3485,6 +3668,13 @@ impl Gen<'_> {
                 self.top(&mut v, *len);
                 self.sts(*dst, &v);
             }
+            Op::Track { flag, first } => {
+                self.track_end();
+                let var = self.b.declare_var(I64);
+                let zero = self.b.ins().iconst(I64, 0);
+                self.b.def_var(var, zero);
+                self.track = Some((word(*flag), *first, var));
+            }
             // Only in a member's last run, which has the exits of its checks.
             Op::Note { .. } if !self.exits => {}
             Op::Note { site, args } => {
@@ -3844,6 +4034,7 @@ mod tests {
             &[Step::Ops(vec![op])],
             &[0],
             &[],
+            None,
             &[],
             &[],
             &[],

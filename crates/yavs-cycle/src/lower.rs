@@ -609,6 +609,13 @@ pub(crate) enum Op {
         len: u32,
         oth: Ref,
     },
+    /// From here to the end of the part (a clocked member's body): word `flag` is 1 when a store
+    /// of a word that holds state changed it, else 0; a later part of the member (`first` false)
+    /// ORs its own into it.
+    Track {
+        flag: Ref,
+        first: bool,
+    },
 }
 
 impl Op {
@@ -644,6 +651,7 @@ impl Op {
             | Op::IndexWrite { .. }
             | Op::Range { .. }
             | Op::Note { .. }
+            | Op::Track { .. }
             | Op::If { .. } => None,
         }
     }
@@ -756,6 +764,7 @@ impl Op {
                 *dst = d(*dst);
                 *oth = s(*oth);
             }
+            Op::Track { flag, .. } => *flag = d(*flag),
             Op::Note { site: x, args } => {
                 *x = site(*x);
                 for a in args {

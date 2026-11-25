@@ -2813,7 +2813,7 @@ impl Fx<'_, '_> {
         let Waveform::Elements(elems) = w else {
             return Ok(()); // `unaffected`
         };
-        if self.two && db.is_resolved(db.exprs[target.expr].subtype) {
+        if self.two && resolved_target(db, target.expr) {
             for v in elems.iter().filter_map(|e| e.value) {
                 self.two_keep_z(v);
             }
@@ -3522,5 +3522,21 @@ impl<'a> Fx<'a, '_> {
         };
         let covered = self.leaves_under(d, &crate::func::lsp_fields(lsp));
         Ok(Some((d, steps, base, covered)))
+    }
+}
+
+/// Whether target `x` is (part of) a resolved signal: its own subtype, or that of a prefix, has a
+/// resolution (an element of `std_logic_vector` is a `std_ulogic` of a resolved array, #1199).
+fn resolved_target(db: &yavs_sem::Db, mut x: ExprId) -> bool {
+    loop {
+        if db.is_resolved(db.exprs[x].subtype) {
+            return true;
+        }
+        match &db.exprs[x].kind {
+            ExprKind::Index { prefix, .. }
+            | ExprKind::Slice { prefix, .. }
+            | ExprKind::Field { prefix, .. } => x = *prefix,
+            _ => return false,
+        }
     }
 }

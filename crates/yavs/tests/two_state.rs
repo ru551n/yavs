@@ -221,6 +221,41 @@ fn a_z_driven_onto_a_resolved_signal_stays_z() {
     }
 }
 
+/// #1199: a `'Z'` driven onto an element of a resolved vector (a pad's element driver, in a
+/// generate or not) stays `'Z'` in the scope of `--two-state=PATH`, as one onto a whole signal
+/// does; it used to drive `'0'` against the testbench (`X` on the line).
+#[test]
+fn a_z_driven_onto_an_element_of_a_resolved_vector_stays_z() {
+    let dir = tempdir("twostate-zelem");
+    analyze(&dir, "twostate_zelem.vhd");
+    for t in tiers() {
+        for mode in [None, Some("--cycle")] {
+            let mut args = vec![
+                "run",
+                "--work=work:lib",
+                "--no-cache",
+                "--two-state=zelem_tb.dut",
+            ];
+            args.extend(mode);
+            args.extend(t.iter().copied());
+            args.push("zelem_tb");
+            let o = yavs(&dir, &args);
+            let out = String::from_utf8_lossy(&o.stdout);
+            assert!(
+                o.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&o.stderr)
+            );
+            // The second line: `o(0)` = 0 driven against the testbench's 1 is a conflict.
+            let got: Vec<&str> = out
+                .lines()
+                .filter_map(|l| l.split_once("pad=").map(|x| x.1))
+                .collect();
+            assert_eq!(got, ["101", "10X"], "{args:?}: {out}");
+        }
+    }
+}
+
 /// The bounds of a subtype or range below the top keep their metavalues under `--two-state`
 /// (`X01` is `'X'` to `'1'`): with `--init-x=1` a variable of `X01` assigned `'0'` used to fail
 /// its range check, and a loop over `X01` ran once. A two-state value never equals a metavalue

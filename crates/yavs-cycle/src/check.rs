@@ -1703,10 +1703,40 @@ impl Cx<'_> {
         self.fold(x).map(Rc::new)
     }
 
+    /// Whether argument `a` folds to a `std_ulogic` value holding a metavalue.
+    fn meta_arg(&mut self, a: &yavs_sem::hir::Arg) -> bool {
+        let db = self.db;
+        let &Actual::Expr(x) = &a.actual else {
+            return false;
+        };
+        let t = db.base(db.exprs[x].subtype);
+        let elem = match &db.types[t].kind {
+            TypeKind::Array { elem, .. } => db.base(*elem),
+            _ => t,
+        };
+        let wk = &db.well_known;
+        if Some(elem) == wk.bit
+            || Some(elem) == wk.boolean
+            || yavs_elab::elem_of(db, elem) != Elem::Logic
+        {
+            return false;
+        }
+        self.fold(x).is_some_and(|c| holds_meta(&c))
+    }
+
     fn fold_raw(&mut self, x: ExprId) -> Option<ConstValue> {
         let (db, e) = (self.db, self.e);
         if let Some(v) = db.value(x) {
             return Some(v.clone());
+        }
+        // In a two-state region a metavalue argument holds its `--init-x` bits, as the lowering
+        // reads it (`lower::meta_arg`): a call elaboration evaluated on it is not its value (#1202).
+        if crate::region::two_state()
+            && !crate::region::in_top_scope(e, self.p.scope)
+            && let ExprKind::Call { args, .. } = &db.exprs[x].kind
+            && args.iter().any(|a| self.meta_arg(a))
+        {
+            return None;
         }
         // A globally static call of a pure function elaboration evaluated for this process
         // without a report (a `while` loop over a string generic): its scalar value, under the
@@ -4182,6 +4212,21 @@ fn add_layout(
         parts: Vec::new(),
     });
     id
+}
+
+/// Whether a `std_ulogic` value holds a metavalue (`'U'`, `'X'`, `'Z'`, `'W'`, `'-'`; positions
+/// are the codes).
+fn holds_meta(c: &ConstValue) -> bool {
+    let meta = |p: u32| matches!(p, 0 | 1 | 4 | 5 | 8);
+    match c {
+        ConstValue::Enum(p) => meta(*p),
+        ConstValue::Array(a) => match &a.elems {
+            Elems::Bytes(bs) => bs.iter().any(|&b| meta(u32::from(b))),
+            Elems::Runs(rs) => rs.iter().any(|(_, v)| holds_meta(v)),
+        },
+        ConstValue::Record(fs) => fs.iter().any(holds_meta),
+        _ => false,
+    }
 }
 
 #[cfg(test)]

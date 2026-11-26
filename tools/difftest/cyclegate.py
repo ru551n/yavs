@@ -82,6 +82,7 @@ CYCLE_TESTS = {
     "cmpcount.vhd": [("cycle_cmpcount", "", None)],
     "consts.vhd": [("cycle_consts", "", None)],
     "dashpat.vhd": [("cycle_dash", "", lambda s, w=w: dash(s, w)) for w in (1, 64, 65)],
+    "dashtab.vhd": [("cycle_dashtab", "", None)],
     "constcall.vhd": [("cycle_constcall", "", None)],
     "constelem.vhd": [("cycle_constelem", "", lambda s, w=w: pats(s, w)) for w in (1, 64, 65)],
     "elempart.vhd": [("cycle_elempart", "", lambda s, w=w: W.sub(str(w), s)) for w in (64, 65, 128)],

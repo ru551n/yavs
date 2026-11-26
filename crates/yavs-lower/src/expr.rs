@@ -501,6 +501,16 @@ impl<'a> Fx<'a, '_> {
             self.two_cmp.insert(x);
             if matching {
                 self.two_dash.insert(x);
+                // The prefixes of a field, element or slice read too: mapped whole first, a table
+                // element lost its `'-'` before the part read could keep it (#1201).
+                let mut p = x;
+                while let ExprKind::Index { prefix, .. }
+                | ExprKind::Slice { prefix, .. }
+                | ExprKind::Field { prefix, .. } = &self.db.exprs[p].kind
+                {
+                    p = *prefix;
+                    self.two_dash.insert(p);
+                }
             }
             match &self.db.exprs[x].kind {
                 ExprKind::Aggregate { assocs, .. } => todo.extend(assocs.iter().map(|a| a.value)),

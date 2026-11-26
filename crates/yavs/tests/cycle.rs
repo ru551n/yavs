@@ -1703,6 +1703,45 @@ fn a_pattern_with_dont_cares_compares_by_element_as_the_normal_mode() {
     }
 }
 
+/// #1201, #1202: `std_match` and `?=` against a field of a record-constant table keep its `'-'`
+/// under `--two-state` too (loop index, index chosen at run time, constant index, a slice of the
+/// field); a call on a `'-'` constant is not folded where two-state code maps the argument.
+#[test]
+fn a_table_of_dont_care_patterns_matches_alike_in_every_mode() {
+    let dir = tempdir("cycle-dashtab");
+    analyze(&dir, "dashtab.vhd", include_str!("cycle/dashtab.vhd"));
+    let counts = |l: &[String]| l[0].split(" ys=").next().map(String::from);
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_dashtab");
+        assert!(
+            normal[0].ends_with("n1=12 n2=2 n3=1604 ys=120"),
+            "{t:?} {normal:?}"
+        );
+        let (two, _) = run(&dir, &[&t[..], &["--two-state"]].concat(), "cycle_dashtab");
+        // `zeros(pc)` counts the `'-'` as `0` under `--two-state`: `y` follows `b`.
+        assert!(two[0].ends_with(" ys=15"), "{t:?} {two:?}");
+        assert_eq!(counts(&two), counts(&normal), "{t:?}");
+        for (flags, want, members) in [
+            (&[][..], &normal, "2 of 5"),
+            (&["--two-state"][..], &two, "3 of 5"),
+        ] {
+            let (cycle, err) = run(
+                &dir,
+                &[&t[..], flags, &["--cycle"]].concat(),
+                "cycle_dashtab",
+            );
+            assert_eq!(&cycle, want, "{t:?} {flags:?}\n{err}");
+            // `by_pick` (an element chosen at run time) stays out; `by_loop` assigns a metavalue
+            // literal the testbench reads, which plain cycle mode keeps out.
+            assert!(
+                err.contains(&format!("cycle mode: {members} processes")),
+                "{t:?} {flags:?}: {err}"
+            );
+            assert!(!err.contains("internal mismatch"), "{err}");
+        }
+    }
+}
+
 /// All nine values at a region input, a metavalue literal and registers without an initial
 /// value: two-state reads `'1'` and `'H'` as 1 and everything else as 0, the outputs go back as
 /// `'0'` and `'1'`, and the metavalues read as 0 are counted (hand-checked).

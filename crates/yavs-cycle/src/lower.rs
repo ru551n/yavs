@@ -3300,7 +3300,8 @@ impl Lx<'_> {
         };
         let site = self.index_site(&p, b, ix);
         let mut t = self.tmp(p.len);
-        (t.dims, t.int) = (p.dims, p.int);
+        // An element of a literal chosen at run time keeps `LIT_MIXED` (`narrow_lit`, #1202).
+        (t.dims, t.int, t.lit) = (p.dims, p.int, p.lit);
         self.ops.push(Op::IndexRead {
             dst: t.r,
             src: p.r,
@@ -6930,9 +6931,9 @@ fn at_each(v: Val, b: Bounds, f: &mut dyn FnMut(Part) -> Part) -> R<Val> {
 }
 
 /// The literal codes of `p` after an index or slice narrowed it from elements `was` (lo, len):
-/// those of its own elements, none when they hold no metavalue. An element chosen at run time,
-/// or a literal with `--init-x=random` bits, has no codes known here: in a two-state region its
-/// bits decide (as a materialised element), else `LIT_MIXED` keeps a comparison with it out.
+/// those of its own elements, none when they hold no metavalue. An element chosen at run time
+/// has no codes known here: `LIT_MIXED` keeps a matching comparison with it out (#1202). A
+/// literal with `--init-x=random` bits: in a two-state region its bits decide, else the same.
 fn narrow_lit(
     lits: &mut Vec<Vec<u8>>,
     vals: &mut Vec<Bits>,
@@ -6945,7 +6946,11 @@ fn narrow_lit(
     };
     let (codes, bits) = (&lits[k as usize], &vals[k as usize]);
     let (lo, len) = (p.lo - was.0, p.len);
-    if p.at.is_some() || bits.1.is_some() || codes.len() != was.1 as usize || lo + len > was.1 {
+    if p.at.is_some() {
+        p.lit = Some(LIT_MIXED);
+        return;
+    }
+    if bits.1.is_some() || codes.len() != was.1 as usize || lo + len > was.1 {
         p.lit = if two { None } else { Some(LIT_MIXED) };
         return;
     }

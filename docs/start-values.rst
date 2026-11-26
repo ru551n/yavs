@@ -115,8 +115,7 @@ In cycle mode
 
 In cycle mode (:doc:`cycle-mode`) ``--init-unset`` gives the cycle-based processes the values the normal mode
 gives: the signals' start values come from the same elaboration, and a clocked variable gets the bits of the normal
-mode (an array of records may get others). Then no ``'U'`` start value is left for a run without ``--two-state``
-to follow.
+mode (an array of records may get others).
 
 ``--init-x`` gives the literals above the normal mode's value too. With ``--two-state`` it goes further, in cycle
 mode and in the normal mode alike: its scope (the design under test by default) computes with ``0`` and ``1`` only, so every

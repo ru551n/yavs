@@ -466,7 +466,7 @@ fn a_two_state_value_never_equals_a_metavalue_literal() {
             }
         }
     }
-    // The report counts the literals; the exact contract keeps the process out.
+    // The report counts the literals; without `--two-state` every process joins too (nine values).
     let report = |flags: &[&str]| {
         let mut a = vec!["run", "--work=work:lib", "--no-cache"];
         a.extend(flags);
@@ -477,7 +477,7 @@ fn a_two_state_value_never_equals_a_metavalue_literal() {
     assert!(r.contains("literals with a metavalue read as 1"), "{r}");
     assert!(report(&["--two-state"]).contains("literals with a metavalue read as 0"));
     let r = report(&[]);
-    assert!(r.contains("a comparison with a metavalue literal"), "{r}");
+    assert!(r.contains("cycle mode: 11 of 18"), "{r}");
 }
 
 #[test]

@@ -796,7 +796,7 @@ used. A value a variable does not take is error ``E4104``. Users need only ``YAV
    * - ``YAVS_CYCLE_CHUNK``
      - The operations per compiled function of the region; a longer process is cut into parts.
      - a whole number of at least 1
-     - ``4000``
+     - ``4000`` with ``--two-state``, ``8000`` without
      - ``run``
    * - ``YAVS_CYCLE_DISASM``
      - Prints the machine code of the region on standard error.
@@ -837,11 +837,6 @@ used. A value a variable does not take is error ``E4104``. Users need only ``YAV
      - Tests: reads every input of the region again after each run and stops with an internal error if one differs.
      - ``1``
      - unset
-     - ``run``
-   * - ``YAVS_CYCLE_RAIL``
-     - How a cycle region without ``--two-state`` follows the start values: ``off``, ``cap=N`` clock edges, ``no-reseed``.
-     - ``off``, ``cap=N``, ``no-reseed``
-     - 1024 edges
      - ``run``
    * - ``YAVS_CYCLE_REGS``
      - The most words of the region its code keeps in registers at once.

@@ -39,9 +39,10 @@ MEMBERS = re.compile(r"(\d+) of (\d+) processes")
 # an assert or report that reads a signal the region does not drive alone stays out under
 # no `--two-state` (E4140): `wb_x_state` reads `soc_reset`, and 26 core processes with asserts
 # (caches, TLBs, register file, execute, FPU, MMU, log buffer) then read what processes outside drive.
+# 233 -> 258 (nine-valued region, A66): that rule is gone, the members' notes see the nine values.
 GATE = {
     "neorv32_dual_full": dict(stop=None, normal=None, cycle=None, members="3801 of 3910"),
-    "microwatt_coremark_short": dict(stop="1369us", normal=1, cycle=1, members="233 of 418"),
+    "microwatt_coremark_short": dict(stop="1369us", normal=1, cycle=1, members="258 of 418"),
 }
 
 

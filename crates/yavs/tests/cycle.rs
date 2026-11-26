@@ -989,7 +989,7 @@ fn report_set(out: &str) -> Vec<String> {
 /// an element they wait on changed (a part of a vector across a word boundary, one field of a
 /// record, an integer, the same value assigned again), a concurrent assert. Membership asserted:
 /// `wide` (a sensitivity list naming more than it reads) and `rst_chk` (a report in its reset
-/// branch) stay out with E4140.
+/// branch) stay out with E4140; without `--two-state` the same members join.
 #[test]
 fn asserts_below_the_top_are_evaluated_as_in_the_normal_mode() {
     for w in [63, 64, 65, 128] {
@@ -1020,12 +1020,10 @@ fn asserts_below_the_top_are_evaluated_as_in_the_normal_mode() {
                 let (rc, out, err) = asserts_run(&dir, &[&t[..], &flags].concat());
                 assert_eq!(rc, Some(1), "{w} {t:?} {mode}: {err}");
                 assert_eq!(report_set(&out), want, "{w} {t:?} {mode}\n{out}");
-                // Under the exact rules a member with notes reads only what members drive:
-                // `reg` reads the testbench's `a`, and its readers then read `n` from outside.
-                let n = if exact { 3 } else { 11 };
+                // Both contracts take the same members (nine values, A66).
                 assert!(
-                    err.contains(&format!("cycle mode: {n} of 15 processes run cycle-based")),
-                    "{err}"
+                    err.contains("cycle mode: 11 of 15 processes run cycle-based"),
+                    "{mode}: {err}"
                 );
             }
         }
@@ -1052,17 +1050,7 @@ fn asserts_below_the_top_are_evaluated_as_in_the_normal_mode() {
             );
         }
         let exact = with_report(&dir, &["--cycle"], "cycle_asserts", String::new());
-        for (p, l, what) in [
-            ("sum", 79, "cycle_asserts.a"),
-            ("early", 41, "cycle_asserts.dut.n"),
-        ] {
-            assert!(
-                exact.contains(&format!("    cycle_asserts.dut.{p} (asserts.vhd:{l})")) && exact.contains(&format!(
-                    "E4140 an assert or report without `--two-state` reading a signal the region does not drive alone: {what} (asserts.vhd:{l})"
-                )),
-                "{p}: {exact}"
-            );
-        }
+        assert!(!exact.contains("without `--two-state` reading"), "{exact}");
         assert!(
             err.contains("E4140 an assert or report in a process whose sensitivity list names more than it reads: it does not read cycle_asserts.b (asserts.vhd:109)")
                 && err.contains("E4140 an assert or report of this form: an assert or report in the asynchronous reset branch of a clocked process (asserts.vhd:118)"),
@@ -1181,12 +1169,11 @@ fn an_edge_tested_concurrent_assert_is_a_check_at_the_edge() {
 }
 
 /// Without `--two-state` a member below the top-level unit whose report reads a signal the
-/// region does not drive alone stays out (E4140) and reports the 'U' start as the normal mode;
-/// under the two-state contract it joins and reports 0. The top-level checker that reads only a
-/// member's register joins and reports its 'U' start as 'U' without `--two-state` (the second
-/// image), as 0 under the two-state contract.
+/// region does not drive alone joins and reports the 'U' start as the normal mode (nine values);
+/// under the two-state contract it reports 0. The top-level checker that reads only a member's
+/// register joins and reports its 'U' start as 'U' without `--two-state`, as 0 with it.
 #[test]
-fn exact_meta_keeps_out_a_report_reading_the_kernel() {
+fn a_report_reading_the_kernel_shows_its_u_without_two_state() {
     let dir = tempdir("cycle-exactnote");
     analyze(&dir, "exactnote.vhd", include_str!("cycle/exactnote.vhd"));
     let go = |flags: &[&str]| {
@@ -1225,8 +1212,7 @@ fn exact_meta_keeps_out_a_report_reading_the_kernel() {
     }
     let err = with_report(&dir, &["--cycle"], "cycle_exactnote", String::new());
     assert!(
-        err.contains("cycle mode: 3 of 5 processes run cycle-based")
-            && err.contains("E4140 an assert or report without `--two-state` reading a signal the region does not drive alone: cycle_exactnote.d (exactnote.vhd:16)"),
+        err.contains("cycle mode: 4 of 5 processes run cycle-based"),
         "{err}"
     );
     let err = with_report(
@@ -1241,15 +1227,14 @@ fn exact_meta_keeps_out_a_report_reading_the_kernel() {
     );
 }
 
-/// A59: without `--two-state` asserts and reports of members read the second image: a 'U' or
-/// 'X' start (whole, in a field, in a part of a vector; widths 1/63/64/65/128; `to_hstring` digits
-/// `X`) prints as in the normal mode from a clocked checker and from a combinational process; a BIT
-/// copy of a 'U' prints 0. Differences: `zero` fires on the region's image only (two-state text, a
-/// line the normal mode does not make), `one` on the second image only (not made), and the
-/// combinational report of the event from 'U' to 0 at 0 fs is gone (two-state twins). Membership
-/// asserted: every process but the stimulus joins in both contracts.
+/// Without `--two-state` asserts and reports of members show the nine values: a 'U' or 'X' start
+/// (whole, in a field, in a part of a vector; widths 1/63/64/65/128; `to_hstring` digits `X`)
+/// prints as in the normal mode from a clocked checker and from a combinational process; a BIT
+/// copy of a 'U' prints 0; `zero` and `one` fire where the normal mode fires them, and so does the
+/// combinational report of the event from 'U' to 0 at 0 fs: the lines are the normal mode's.
+/// Membership asserted: every process but the stimulus joins in both contracts.
 #[test]
-fn exact_meta_notes_show_the_second_images_metavalues() {
+fn notes_show_the_nine_values_without_two_state() {
     let dir = tempdir("cycle-notemeta");
     analyze(&dir, "notemeta.vhd", include_str!("cycle/notemeta.vhd"));
     let go = |flags: &[&str]| {
@@ -1285,10 +1270,13 @@ fn exact_meta_notes_show_the_second_images_metavalues() {
         let exact = go(&[&t[..], &["--cycle"]].concat());
         let extra: Vec<&String> = exact.iter().filter(|l| !normal.contains(l)).collect();
         let lost: Vec<&String> = normal.iter().filter(|l| !exact.contains(l)).collect();
+        // Nine values: no line of the region's own two-state values; only the combinational
+        // report of the event from 'U' to 0 at 0 fs, a delta of the normal mode, is gone.
         assert!(
-            extra == [zero] && lost == [&comb],
+            extra.is_empty() && lost.is_empty(),
             "{t:?} {extra:#?} {lost:#?}"
         );
+        let _ = (zero, &comb);
         let plain = go(&[&t[..], &["--cycle", "--two-state"]].concat());
         assert!(
             at(&plain, "0", "q1=0 qx='0' q63=000") && at(&plain, "0", "comb s1=0 sx=0 s65=000"),
@@ -1692,10 +1680,9 @@ fn a_pattern_with_dont_cares_compares_by_element_as_the_normal_mode() {
                 assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
                 let (cycle, err) = run(&dir, &[&t[..], two, &["--cycle"]].concat(), "cycle_dash");
                 assert_eq!(cycle, normal, "width {w} {t:?} {two:?}\n{err}");
-                // Under `--two-state` the matcher joins; plain cycle mode keeps it out (`'-'`).
-                let members = if two.is_empty() { "0 of 2" } else { "1 of 2" };
+                // The matcher joins under both contracts (nine values without `--two-state`).
                 assert!(
-                    err.contains(&format!("cycle mode: {members} processes")),
+                    err.contains("cycle mode: 1 of 2 processes"),
                     "{w} {two:?}: {err}"
                 );
             }
@@ -1722,7 +1709,7 @@ fn a_table_of_dont_care_patterns_matches_alike_in_every_mode() {
         assert!(two[0].ends_with(" ys=15"), "{t:?} {two:?}");
         assert_eq!(counts(&two), counts(&normal), "{t:?}");
         for (flags, want, members) in [
-            (&[][..], &normal, "2 of 5"),
+            (&[][..], &normal, "4 of 5"),
             (&["--two-state"][..], &two, "3 of 5"),
         ] {
             let (cycle, err) = run(
@@ -1731,8 +1718,8 @@ fn a_table_of_dont_care_patterns_matches_alike_in_every_mode() {
                 "cycle_dashtab",
             );
             assert_eq!(&cycle, want, "{t:?} {flags:?}\n{err}");
-            // `by_pick` (an element chosen at run time) stays out; `by_loop` assigns a metavalue
-            // literal the testbench reads, which plain cycle mode keeps out.
+            // Under `--two-state` `by_pick` (an element chosen at run time) stays out; plain cycle
+            // mode (nine values) takes every process but the testbench's.
             assert!(
                 err.contains(&format!("cycle mode: {members} processes")),
                 "{t:?} {flags:?}: {err}"
@@ -3203,6 +3190,89 @@ fn numeric_operations_equal_the_normal_mode_at_widths_around_a_word() {
     }
 }
 
+/// The stimulus of `numeric.vhd` with metavalues in two of every three steps: each element of
+/// `a` and `b` one of the nine values now and then.
+const META_STIM: &str = "      if c mod 3 /= 0 then
+        for j in 0 to W - 1 loop
+          if (j + c) mod 5 = 0 then va(j) := ALL9((j * 3 + c) mod 9); end if;
+          if (j + 2 * c) mod 7 = 0 then vb(j) := ALL9((j + c * 5) mod 9); end if;
+        end loop;
+      end if;
+      a <= va;
+";
+
+#[test]
+fn numeric_operations_on_metavalues_equal_the_normal_mode_without_two_state() {
+    let dir = tempdir("cycle-nine-numeric");
+    for w in [1, 63, 64, 65, 128, 200] {
+        let t = numeric_design(w)
+            .replace("      a <= va;\n", &with_width(META_STIM, w))
+            .replace(
+                "  main : process\n",
+                "  main : process\n    constant ALL9 : std_ulogic_vector(0 to 8) := \"UX01ZWLH-\";\n",
+            );
+        analyze(&dir, &format!("nine{w}.vhd"), &t);
+        let members = match w {
+            ..=31 => "9 of 10",
+            32..=64 => "7 of 8",
+            _ => "6 of 7",
+        };
+        for t in tiers() {
+            // The members give no library warnings (A33): the normal mode's are left out.
+            let flags = [&t[..], &["--ieee-warnings=off"]].concat();
+            let (normal, _) = run(&dir, &flags, "cycle_ops2");
+            let (cycle, err) = run(&dir, &[&flags[..], &["--cycle"]].concat(), "cycle_ops2");
+            assert_eq!(normal.len(), 16, "{w} {t:?} {normal:?}");
+            assert!(
+                normal.iter().any(|l| l.contains('X')),
+                "{w}: no metavalue reached"
+            );
+            assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            assert!(
+                err.contains(&format!("cycle mode: {members} processes run cycle-based")),
+                "{w}: {err}"
+            );
+        }
+    }
+}
+
+/// The notes of a clocked member below the top-level unit print nine values as the normal mode
+/// does: `to_string`, `to_hstring` and `to_ostring` of every pattern (`'Z'` groups as Z), `'image`.
+#[test]
+fn notes_print_the_nine_values_as_the_normal_mode() {
+    let dir = tempdir("cycle-ninenote");
+    analyze(&dir, "ninenote.vhd", include_str!("cycle/ninenote.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_ninenote");
+        let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), "cycle_ninenote");
+        assert_eq!(normal.len(), 8, "{t:?} {normal:?}");
+        assert!(normal.iter().any(|l| l.contains(" h=ZZ ")), "{normal:?}");
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        assert!(
+            err.contains("cycle mode: 1 of 2 processes run cycle-based"),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn every_pair_of_the_nine_values_equals_the_normal_mode_without_two_state() {
+    let dir = tempdir("cycle-nine-pairs");
+    analyze(&dir, "nine.vhd", include_str!("cycle/nine.vhd"));
+    for t in tiers() {
+        let flags = [&t[..], &["--ieee-warnings=off"]].concat();
+        let (normal, _) = run(&dir, &flags, "cycle_nine");
+        let (cycle, err) = run(&dir, &[&flags[..], &["--cycle"]].concat(), "cycle_nine");
+        assert_eq!(normal.len(), 81, "{t:?} {normal:?}");
+        assert_eq!(cycle, normal, "{t:?}\n{err}");
+        // Every process but the testbench's `main`.
+        assert!(
+            err.contains("cycle mode: 7 of 8 processes run cycle-based"),
+            "{err}"
+        );
+    }
+}
+
 #[test]
 fn subprogram_calls_equal_the_normal_mode_at_widths_around_a_word() {
     let dir = tempdir("cycle-calls");
@@ -3258,13 +3328,11 @@ fn arrays_of_records_equal_the_normal_mode_at_widths_around_a_word() {
 }
 
 /// A 'Z' copied by a process that stays out for another reason (a delay) reaches a register the
-/// testbench reads: the register stays out too and the testbench sees the 'Z'; a register of a
-/// line without one joins, and so do one of a line with a pull-up (it never resolves to 'Z') and
-/// one of a copy outside that only tests the line; copies through a variable, `to_x01` and
-/// `'delayed`, and a line pulled up on one element only, keep theirs out. Against the normal mode
-/// at widths 1 to 128.
+/// testbench reads: without `--two-state` the register joins and the testbench sees the 'Z' (nine
+/// values), as it does through copies by a variable, `to_x01`, `'delayed` and a line pulled up on
+/// one element only. Against the normal mode at widths 1 to 128.
 #[test]
-fn a_z_passed_on_by_a_process_outside_keeps_its_reader_out() {
+fn a_z_passed_on_by_a_process_outside_reaches_the_testbench() {
     let dir = tempdir("cycle-zpass");
     for w in [1, 63, 64, 65, 128] {
         analyze(
@@ -3296,8 +3364,9 @@ fn a_z_passed_on_by_a_process_outside_keeps_its_reader_out() {
             assert_eq!(normal.len(), 8, "{w} {t:?} {normal:?}");
             assert!(normal.iter().any(|l| l.contains("q=Z")), "{normal:?}");
             assert_eq!(cycle, normal, "width {w} {t:?}\n{err}");
+            // Nine values: the registers of a 'Z' line join too, as without the line.
             assert!(
-                err.contains("cycle mode: 3 of 20 processes run cycle-based"),
+                err.contains("cycle mode: 8 of 20 processes run cycle-based"),
                 "{w}: {err}"
             );
             // The members, listed as clocked.
@@ -4302,7 +4371,7 @@ fn bench_designs_cycle_mode_leaves_out_say_why() {
 
 /// `std_match` and `?=` with a `'-'` aggregate whose length a generic sets: it matches anything in
 /// the region too (it was compared with 0 there, a wrong result, #1192); an aggregate of a `'-'`
-/// and other values keeps a matching comparison out, under both contracts.
+/// and other values keeps a matching comparison out with `--two-state` and joins without it.
 #[test]
 fn a_dont_care_aggregate_of_a_generic_length_matches_anything() {
     let dir = tempdir("cycle-matchagg");
@@ -4328,8 +4397,14 @@ fn a_dont_care_aggregate_of_a_generic_length_matches_anything() {
                 run(&dir, &["--tier=interp", "--two-state"], "matchagg").0
             };
             assert_eq!(cycle, want, "{f:?}: {err}");
-            // The first member of each instance joins, the one with the mixed aggregate stays out.
-            assert!(err.contains("cycle mode: 5 of"), "{f:?}: {err}");
+            // The first member of each instance joins, the one with the mixed aggregate stays out
+            // with `--two-state`; with nine values both join.
+            let m = if exact {
+                "cycle mode: 10 of"
+            } else {
+                "cycle mode: 5 of"
+            };
+            assert!(err.contains(m), "{f:?}: {err}");
         }
     }
 }
@@ -4664,17 +4739,13 @@ fn forces_keep_out_only_the_drivers_of_what_they_force() {
                     err.contains(&format!("cycle mode: {members} processes run cycle-based")),
                     "{w} {top}: {err}"
                 );
-                // The metavalue contract does not follow forced values: every process stays out.
+                // Nine values: forced signals are inputs as with `--two-state` (A77).
                 if top == "fsc_ext_tb" {
                     let ex = [&t[..], &["--cycle"]].concat();
                     let (exact, err) = run(d, &ex, top);
                     let (four, _) = run(d, &[&t[..], flags].concat(), top);
                     assert_eq!(exact, four, "width {w} {top} {t:?}\n{err}");
-                    assert!(err.contains("cycle mode: 0 of 9 processes"), "{err}");
-                    assert!(
-                        err.contains("without `--two-state` no process joins"),
-                        "{err}"
-                    );
+                    assert!(err.contains("cycle mode: 5 of 9 processes"), "{err}");
                 }
             }
         }
@@ -6571,7 +6642,7 @@ fn an_edge_run_that_would_change_nothing_is_skipped() {
 /// memory, registers read across clocks; inputs moved between edges and in the delta of an edge.
 /// The normal mode's values with the skip check, without it, with every member cut into parts,
 /// always tracked and with each class tracked and untracked in turn, under `--two-state` and
-/// without it (its rail on, and ended early); bodies skipped and changes seen.
+/// without it (nine values); bodies skipped and changes seen.
 #[test]
 fn a_clocked_body_whose_inputs_did_not_change_is_skipped() {
     let dir = tempdir("cycle-blockskip");
@@ -6594,14 +6665,11 @@ fn a_clocked_body_whose_inputs_did_not_change_is_skipped() {
         for t in tiers() {
             let (normal, _) = run(&dir, &t, "cycle_blockskip");
             assert_eq!(normal.len(), 389, "{w} {t:?} {normal:?}");
-            let modes: [&[&str]; 3] = [&["--cycle", "--two-state"], &["--cycle"], &["--cycle"]];
-            for (m, flags) in modes.iter().enumerate() {
+            let modes: [&[&str]; 2] = [&["--cycle", "--two-state"], &["--cycle"]];
+            for flags in modes {
                 for env in envs {
                     let mut env = env.to_vec();
                     env.push(("YAVS_CYCLE_STATS", "1"));
-                    if m == 2 {
-                        env.push(("YAVS_CYCLE_RAIL", "cap=8"));
-                    }
                     let (cycle, err) =
                         run_vars(&dir, &[&t[..], flags].concat(), "cycle_blockskip", &env);
                     assert_eq!(cycle, normal, "width {w} {t:?} {flags:?} {env:?}\n{err}");
@@ -6617,10 +6685,8 @@ fn a_clocked_body_whose_inputs_did_not_change_is_skipped() {
                             .expect("a number")
                     };
                     assert!(n("clocked bodies that changed a word") > 0, "{err}");
-                    if m != 1 {
-                        assert!(n("clocked bodies skipped as idle") > 0, "{err}");
-                    }
-                    if env.contains(&("YAVS_CYCLE_BLOCKSKIP", "flip")) && m != 1 {
+                    assert!(n("clocked bodies skipped as idle") > 0, "{err}");
+                    if env.contains(&("YAVS_CYCLE_BLOCKSKIP", "flip")) {
                         assert!(n("classes gone untracked") > 0, "{err}");
                         assert!(n("class edges run untracked") > 0, "{err}");
                     }
@@ -7954,10 +8020,9 @@ fn undriven_inputs_with_a_metavalue_are_named() {
     }
 }
 
-/// A member that would hide a metavalue the testbench reads stays in the event kernel: one that
-/// assigns a metavalue literal to a signal a process outside reads, and one that passes on a
-/// 'Z' an outside driver may give. The same literal on a signal only members read, and a copy of
-/// a signal without 'Z', stay members. Widths 1 to 128.
+/// Metavalues the testbench reads: without `--two-state` a member that assigns a metavalue
+/// literal to a signal a process outside reads, and one that passes on a 'Z' an outside driver
+/// may give, join (nine values) and the testbench sees the normal mode's values. Widths 1 to 128.
 #[test]
 fn metavalues_the_testbench_reads_are_kept() {
     let dir = tempdir("cycle-metaout");
@@ -8021,19 +8086,9 @@ fn metavalues_the_testbench_reads_are_kept() {
                 "{w} {t:?}\n{rep}"
             );
             assert!(
-                rep.contains("cycle mode: 3 of 10 processes run cycle-based"),
+                rep.contains("cycle mode: 7 of 10 processes run cycle-based"),
                 "{rep}"
             );
-            for p in [
-                "cycle_metaout.copy ",
-                "cycle_metaout.copy3 ",
-                "cycle_metaout.drv ",
-            ] {
-                assert!(
-                    rep.lines().any(|l| l.trim_start().starts_with(p)),
-                    "{p}: {rep}"
-                );
-            }
         }
     }
 }
@@ -8437,7 +8492,6 @@ fn cycle_strict_gives_each_code_with_what_where_why_and_fix() {
         ("E4133", &["--two-state"]),
         ("E4134", &["--two-state"]),
         ("E4135", &["--two-state"]),
-        ("E4137", &[]),
         ("E4138", &["--two-state"]),
         ("E4139", &["--two-state"]),
     ];
@@ -8886,107 +8940,103 @@ fn cycle_strict_reason_variants_are_triggered() {
     );
 }
 
-/// 'U' at start without `--two-state` (owner decision A38): the second image shows the
-/// testbench 'U' where the normal mode has it, from registers and a clocked variable without a
-/// start value, a vector whose high word alone stays 'U', an input that becomes 'U' after time 0,
-/// outputs read with and without a wait on them, and `BIT` and `BOOLEAN` outputs (also fields
-/// of a record with a `std_ulogic` one), never 'U'; a register whose enable is 'U' keeps its
-/// value as in the normal mode, not 'U'; a register that keeps 'U' gives '0' from
-/// the cap of 1024 clock edges on. The two-state contract (`--cycle --two-state`) and `YAVS_CYCLE_RAIL=off`
-/// give '0' throughout, and an event at 0 fs from 'U' to '0' the normal mode does not have.
-/// Widths 1 to 128.
+/// The designs of the second image that showed 'U' start values while it ran (A38, A43; the
+/// mechanism is gone, A66, A77): plain `--cycle` gives exactly the normal mode's lines, with
+/// registers and clocked variables without a start value, a vector whose high word alone stays
+/// 'U', inputs made 'U' after time 0, 'U' enables, memories, inlined calls, 'X' starts and choices
+/// on 'U' in clocked and combinational members, a check whose index is a 'U', a register file of
+/// 80 words; widths 1 to 128 where the design takes one; every tier. The two-state contract
+/// gives '0' for the 'U' starts.
 #[test]
-fn u_at_start_is_followed_on_a_second_image() {
-    let dir = tempdir("cycle-rail");
-    analyze(&dir, "rail.vhd", include_str!("cycle/rail.vhd"));
-    let zero = |l: &[String]| -> Vec<String> { l.iter().map(|x| x.replace('U', "0")).collect() };
-    for w in [1, 63, 64, 65, 128] {
-        let g = format!("-gW={w}");
-        for t in tiers() {
-            let t = [&t[..], &[&g[..]]].concat();
-            let (normal, _) = run(&dir, &t, "cycle_rail");
-            assert_eq!(normal.len(), 13, "{normal:?}");
-            // The design is the six pipelines; the testbench's processes (the reporter of `s3`
-            // among them) and signals are outside both scopes.
-            let paths: Vec<String> = ["pipe", "hp", "vp", "cpp", "hold", "bp"]
+fn u_start_designs_equal_the_normal_mode_without_two_state() {
+    let dir = tempdir("cycle-ustart");
+    let w5 = ["-gW=1", "-gW=63", "-gW=64", "-gW=65", "-gW=128"];
+    let both = |k: &str| -> Vec<Vec<String>> {
+        (w5.iter())
+            .flat_map(|w| {
+                [
+                    vec![w.to_string(), format!("-g{k}=false")],
+                    vec![w.to_string(), format!("-g{k}=true")],
+                ]
+            })
+            .collect()
+    };
+    let widths: Vec<Vec<String>> = w5.iter().map(|w| vec![w.to_string()]).collect();
+    // (file, text, top, generic sets, member line)
+    type Case<'a> = (&'a str, &'a str, &'a str, Vec<Vec<String>>, &'a str);
+    let cases: [Case; 7] = [
+        (
+            "rail.vhd",
+            include_str!("cycle/rail.vhd"),
+            "cycle_rail",
+            both("KEEP"),
+            "cycle mode: 6 of 9 processes run cycle-based",
+        ),
+        (
+            "railchk.vhd",
+            include_str!("cycle/railchk.vhd"),
+            "cycle_railchk",
+            both("MID"),
+            "cycle mode: 2 of 4 processes run cycle-based",
+        ),
+        (
+            "rail2.vhd",
+            include_str!("cycle/rail2.vhd"),
+            "cycle_rail2",
+            both("LATE"),
+            "cycle mode: 10 of 12 processes run cycle-based",
+        ),
+        (
+            "railclk.vhd",
+            include_str!("cycle/railclk.vhd"),
+            "cycle_railclk",
+            widths.clone(),
+            "cycle mode: 1 of 3 processes run cycle-based",
+        ),
+        (
+            "railguard.vhd",
+            include_str!("cycle/railguard.vhd"),
+            "cycle_railguard",
+            widths.clone(),
+            "cycle mode: 2 of 4 processes run cycle-based",
+        ),
+        (
+            "railcomb.vhd",
+            include_str!("cycle/railcomb.vhd"),
+            "cycle_railcomb",
+            widths,
+            "cycle mode: 5 of 6 processes run cycle-based",
+        ),
+        (
+            "railkeep.vhd",
+            include_str!("cycle/railkeep.vhd"),
+            "cycle_railkeep",
+            [3, 63, 64, 70, 79]
                 .iter()
-                .map(|p| format!("cycle_rail.{p}"))
-                .collect();
-            let cyc: Vec<String> = paths.iter().map(|p| format!("--cycle={p}")).collect();
-            let two: Vec<String> = paths.iter().map(|p| format!("--two-state={p}")).collect();
-            let cyc: Vec<&str> = cyc.iter().map(String::as_str).collect();
-            let two: Vec<&str> = two.iter().map(String::as_str).collect();
-            let exact = [&t[..], &cyc[..]].concat();
-            let (cycle, err) = run(&dir, &exact, "cycle_rail");
-            // Up to the cap the normal mode's lines; `held` gives '0' after it.
-            let k = normal.len() - 1;
-            assert!(
-                normal[k].contains(" k ") && normal[k].contains(&"U".repeat(w)),
-                "{normal:?}"
-            );
-            assert_eq!(cycle[..k], normal[..k], "width {w} {t:?}\n{err}");
-            let (head, held) = normal[k].split_once("held=").expect("held");
-            assert_eq!(
-                cycle[k],
-                format!("{head}held={}", held.replace('U', "0")),
-                "{w}"
-            );
-            assert!(
-                err.contains("cycle mode: 6 of 9 processes run cycle-based")
-                    && err.contains("second image: stopped at the cap of 1024 clock edges"),
-                "{w}: {err}"
-            );
-            for p in ["pipe", "hp", "vp", "cpp", "hold", "bp"] {
-                let p = format!("    cycle_rail.{p} ");
-                assert!(err.lines().any(|l| l.starts_with(&p)), "{p}: {err}");
+                .map(|i| vec![format!("-gI={i}")])
+                .collect(),
+            "cycle mode: 1 of 3 processes run cycle-based",
+        ),
+    ];
+    for (file, text, top, gens, members) in cases {
+        analyze(&dir, file, text);
+        for g in gens {
+            let g: Vec<&str> = g.iter().map(String::as_str).collect();
+            for t in tiers() {
+                // The members give no library warnings (A33).
+                let t = [&t[..], &g[..], &["--ieee-warnings=off"]].concat();
+                let (normal, _) = run(&dir, &t, top);
+                assert!(!normal.is_empty(), "{top} {g:?}");
+                let (cycle, err) = run(&dir, &[&t[..], &["--cycle"]].concat(), top);
+                assert_eq!(cycle, normal, "{top} {g:?} {t:?}\n{err}");
+                assert!(err.contains(members), "{top} {g:?}: {err}");
             }
-            // Without the second image `s3` starts 'U' and is driven '0' a delta later.
-            let mut want = zero(&normal);
-            want.insert(0, normal[0].clone());
-            want[1] = want[1].replace("0fs+0", "0fs+1");
-            let (two, _) = run(&dir, &[&exact[..], &two[..]].concat(), "cycle_rail");
-            assert_eq!(two, want, "{w} {t:?}");
-            let (off, err) = run_vars(&dir, &exact, "cycle_rail", &[("YAVS_CYCLE_RAIL", "off")]);
-            assert_eq!(off, want, "{w} {t:?}");
-            assert!(!err.contains("second image"), "{err}");
-            // The knob: no edge is the same as off; a cap of 5 gives `held` '0' from the
-            // first lines on; without the inputs set at import `cp` reads '0' after 100 ns.
-            let knob = |v: &str| run_vars(&dir, &exact, "cycle_rail", &[("YAVS_CYCLE_RAIL", v)]).0;
-            assert_eq!(knob("cap=0"), want, "{w}");
-            let five = knob("cap=5");
-            assert_eq!(five[..3], cycle[..3], "{w}");
-            assert!(
-                five[9].contains(&format!("held={}", "0".repeat(w))),
-                "{five:?}"
-            );
-            let no = knob("no-reseed");
-            assert!(
-                cycle[9].contains(&format!("cp={}", "U".repeat(w))),
-                "{cycle:?}"
-            );
-            assert_eq!(
-                no[9],
-                cycle[9].replace(
-                    &format!("cp={}", "U".repeat(w)),
-                    &format!("cp={}", "0".repeat(w))
-                ),
-                "{w}"
-            );
-            // Where every 'U' is overwritten the images agree and the run is the normal mode's.
-            let hold = [&exact[..], &["-gKEEP=false"]].concat();
-            let (n2, _) = run(&dir, &[&t[..], &["-gKEEP=false"]].concat(), "cycle_rail");
-            let (c2, err) = run(&dir, &hold, "cycle_rail");
-            assert_eq!(c2, n2, "{w} {t:?}");
-            assert!(
-                err.contains("second image: the images agreed after 32 clock edges"),
-                "{err}"
-            );
         }
     }
 }
 
-/// The second image's region is the one the caches keep: a warm run (each hit compiled again
-/// and compared) gives what a cold one gives.
+/// The nine-valued region is the one the caches keep: a warm run (each hit compiled again and
+/// compared) gives what a cold one gives.
 #[test]
 fn u_at_start_from_the_caches_gives_the_same_result() {
     let dir = tempdir("cycle-rail-cache");
@@ -9002,44 +9052,6 @@ fn u_at_start_from_the_caches_gives_the_same_result() {
     let err = String::from_utf8_lossy(&again.stderr);
     assert!(err.contains("cycle stats: region from the cache"), "{err}");
     assert!(String::from_utf8_lossy(&cold.stdout).contains("hi=U"));
-}
-
-/// A check that fails on the second image alone ends it and never the run: at initialisation
-/// the run is that of `YAVS_CYCLE_RAIL=off`; at a later wake the 'U' shown before stays, the
-/// outputs are driven from the region's values from there on, and the summary names the check.
-#[test]
-fn a_check_failing_on_the_second_image_ends_it() {
-    let dir = tempdir("cycle-railchk");
-    analyze(&dir, "railchk.vhd", include_str!("cycle/railchk.vhd"));
-    for w in [1, 63, 64, 65, 128] {
-        for mid in [false, true] {
-            let t = [format!("-gW={w}"), format!("-gMID={mid}")];
-            let t = [t[0].as_str(), t[1].as_str(), "--cycle"];
-            let (normal, _) = run(&dir, &t[..2], "cycle_railchk");
-            let (cycle, err) = run(&dir, &t, "cycle_railchk");
-            let (off, _) = run_vars(&dir, &t, "cycle_railchk", &[("YAVS_CYCLE_RAIL", "off")]);
-            assert_eq!(normal.len(), 3, "{normal:?}");
-            assert!(
-                normal[0].contains("r=U") && normal[1].contains("r=U"),
-                "{normal:?}"
-            );
-            if mid {
-                assert_eq!(cycle[0], normal[0], "{w}");
-                assert_eq!(cycle[1..], off[1..], "{w}");
-            } else {
-                assert_eq!(cycle, off, "{w}");
-            }
-            assert!(
-                err.contains("cycle mode: 2 of 4 processes run cycle-based")
-                    && err.contains(&format!(
-                        "stopped after {}: a check failed on it in cycle_railchk.ix (value 1 \
-                         outside of INTEGER range 0 to 0 for signal IDX)",
-                        if mid { "1 clock edge" } else { "0 clock edges" }
-                    )),
-                "{w} {mid}: {err}"
-            );
-        }
-    }
 }
 
 /// `YAVS_CYCLE_CACHE_MIB` takes a whole number of MiB of at least 1; another value is an error
@@ -9072,286 +9084,6 @@ fn the_cycle_store_size_takes_mib() {
             String::from_utf8_lossy(&o.stderr)
         );
     }
-}
-
-/// The second image follows memories, the locals of an inlined call, 'X' and choices of
-/// combinational members on 'U' (owner decision A43): a memory word never written and one
-/// written from an input that becomes 'U' show 'U', a local of a call starts 'U', `when ... else`
-/// (also on `??`) and `to_integer` as an index in combinational members take the region's
-/// choice, which is the normal mode's here (no check fails on the second image), and a
-/// comparison of a value only the second image got wrong (`xx`, chosen on a variable) still
-/// gives the normal mode's result (`zz`); an 'X' start value or input shows 'X', a mix with 'U'
-/// 'U'. Clocked members read their own image (taking the region's choices there made a 'U' in
-/// Microwatt the normal mode does not have): their choices on a 'U' give 'U' (`c`, `r`, `lt`,
-/// `r0`, `lt0`, `z` before `t` has a value) and, as they keep registers (`rail_keep`), a
-/// register taking an input's 'U' while its own value stays (`q`) or an 'X' (`qx`, 'U') loses
-/// it. `YAVS_CYCLE_RAIL=off` gives '0' for every metavalue. Widths 1 to 128.
-#[test]
-fn the_second_image_follows_memories_calls_and_choices() {
-    let dir = tempdir("cycle-rail2");
-    analyze(&dir, "rail2.vhd", include_str!("cycle/rail2.vhd"));
-    for (w, late) in [1, 63, 64, 65, 128]
-        .into_iter()
-        .flat_map(|w| [(w, false), (w, true)])
-    {
-        let g = [format!("-gW={w}"), format!("-gLATE={late}")];
-        for t in tiers() {
-            let t = [&t[..], &[&g[0][..], &g[1][..]]].concat();
-            // The notes (a library warning's process line has an `=` too).
-            let notes = |l: Vec<String>| -> Vec<String> {
-                l.into_iter().filter(|x| x.contains(" m0=")).collect()
-            };
-            let (normal, _) = run(&dir, &t, "cycle_rail2");
-            let normal = notes(normal);
-            assert_eq!(normal.len(), 3, "{normal:?}");
-            let exact = [&t[..], &["--cycle"]].concat();
-            let (cycle, err) = run(&dir, &exact, "cycle_rail2");
-            let cycle = notes(cycle);
-            assert_eq!(cycle.len(), 3, "{cycle:?}");
-            let (zero, one, u) = ("0".repeat(w), "1".repeat(w), "U".repeat(w));
-            let field = |l: &str, k: &str| -> String {
-                let at = l.find(&format!(" {k}=")).expect(k) + k.len() + 2;
-                l[at..].split(' ').next().unwrap_or_default().to_string()
-            };
-            let same = [
-                "m0", "m1", "f", "y", "y2", "w2", "rd", "qa", "qo", "k", "k2", "qxi", "zz",
-            ];
-            for (i, (n, c)) in normal.iter().zip(&cycle).enumerate() {
-                for k in same {
-                    assert_eq!(field(c, k), field(n, k), "width {w} {k}: {c}\n{n}\n{err}");
-                }
-                for k in ["c", "r", "lt", "r0", "lt0", "xx", "qx"] {
-                    assert_eq!(field(c, k), u, "{w} {k}: {c}");
-                }
-                assert_eq!(field(c, "q"), zero, "{c}");
-                assert_eq!(&field(c, "z"), if i < 2 { &u } else { &one }, "{c}");
-            }
-            // The normal mode's values of those fields.
-            let b = &normal[2];
-            let mut m1 = format!("{}U", "1".repeat(w - 1));
-            assert_eq!(field(b, "m1"), m1, "{b}");
-            assert_eq!(field(&normal[0], "m1"), u);
-            assert_eq!(field(b, "f"), format!("{}1", "U".repeat(w - 1)));
-            assert_eq!(field(b, "q"), format!("{}U", "0".repeat(w - 1)));
-            for (k, v) in [
-                ("y", &zero),
-                ("y2", &zero),
-                ("w2", &one),
-                ("rd", &one),
-                ("xx", &zero),
-                ("zz", &one),
-                ("qa", &u),
-                ("qo", &u),
-                ("k", &zero),
-                ("k2", &zero),
-                ("z", &one),
-            ] {
-                assert_eq!(&field(b, k), v, "{k}: {b}");
-            }
-            let xs = "X".repeat(w);
-            assert_eq!(field(b, "qx"), if late { &u } else { &xs }.clone());
-            assert_eq!(field(b, "qxi"), if late { &xs } else { &zero }.clone());
-            assert!(
-                err.contains("cycle mode: 10 of 12 processes run cycle-based")
-                    && err.contains("second image: still followed when the run ended"),
-                "{w}: {err}"
-            );
-            for p in ["wr", "ch", "kp", "xp", "cv"] {
-                let p = format!("    cycle_rail2.{p} ");
-                assert!(err.lines().any(|l| l.starts_with(&p)), "{p}: {err}");
-            }
-            let (off, _) = run_vars(&dir, &exact, "cycle_rail2", &[("YAVS_CYCLE_RAIL", "off")]);
-            let off = notes(off);
-            m1.pop();
-            m1.push('0');
-            let ob = &off[2];
-            assert_eq!(field(ob, "m1"), m1, "{ob}");
-            for k in ["f", "q", "qx", "qa", "qo", "qxi", "xx", "c"] {
-                assert!(!field(ob, k).contains(['U', 'X']), "{k}: {ob}");
-            }
-        }
-    }
-}
-
-/// Clocked members choose on each image's own values without `--two-state`: where the
-/// region's image reads a 'U' as 0 and so takes a branch the normal mode does not (`s = '0'`,
-/// `unsigned(ad) < 2`, `when "00"`), the second image takes the normal mode's, and a register
-/// loaded from a 'U' there shows the normal mode's value, not 'U' (A43: following the region's
-/// branch in clocked members failed an assert in Microwatt's icache). Widths 1 to 128.
-#[test]
-fn clocked_choices_on_a_u_take_each_images_own_branch() {
-    let dir = tempdir("cycle-railclk");
-    analyze(&dir, "railclk.vhd", include_str!("cycle/railclk.vhd"));
-    for w in [1, 63, 64, 65, 128] {
-        let g = format!("-gW={w}");
-        for t in tiers() {
-            let t = [&t[..], &[&g[..]]].concat();
-            let notes = |l: Vec<String>| -> Vec<String> {
-                l.into_iter().filter(|x| x.contains(" qn=")).collect()
-            };
-            let (normal, _) = run(&dir, &t, "cycle_railclk");
-            let normal = notes(normal);
-            let zero = "0".repeat(w);
-            let want = format!("q0={zero} qn={zero} qc={zero}");
-            assert!(
-                normal.len() == 1 && normal[0].ends_with(&want),
-                "{normal:?}"
-            );
-            let exact = [&t[..], &["--cycle"]].concat();
-            let (cycle, err) = run(&dir, &exact, "cycle_railclk");
-            let cycle = notes(cycle);
-            assert!(
-                cycle.len() == 1 && cycle[0].ends_with(&want),
-                "{w}: {cycle:?}\n{err}"
-            );
-            assert!(
-                err.contains("cycle mode: 1 of 3 processes run cycle-based")
-                    && err.contains("second image: still followed when the run ended")
-                    && err.lines().any(|l| l.starts_with("    cycle_railclk.ck ")),
-                "{w}: {err}"
-            );
-        }
-    }
-}
-
-/// A guarded combinational member that reads the region's image runs again on the second image
-/// when only the region's image changed: `y <= a when s = '1' else b` reads `s` as the region's
-/// image holds it, and when `s` goes from 'U' to '1' (already 1 on the second image) `y` and `q`
-/// show `a` as in the normal mode (with every step guarded). Widths 1 to 128.
-#[test]
-fn the_second_image_runs_a_member_that_reads_the_regions_image() {
-    let dir = tempdir("cycle-railguard");
-    analyze(&dir, "railguard.vhd", include_str!("cycle/railguard.vhd"));
-    for w in [1, 63, 64, 65, 128] {
-        let g = format!("-gW={w}");
-        for t in tiers() {
-            let t = [&t[..], &[&g[..]]].concat();
-            let notes = |l: Vec<String>| -> Vec<String> {
-                l.into_iter().filter(|x| x.contains("y=")).collect()
-            };
-            let (normal, _) = run(&dir, &t, "cycle_railguard");
-            let normal = notes(normal);
-            let (zero, one) = ("0".repeat(w), "1".repeat(w));
-            assert!(
-                normal.len() == 2 && normal[0].ends_with(&format!("y={zero}")),
-                "{normal:?}"
-            );
-            assert!(
-                normal[1].ends_with(&format!("y={one} q={one}")),
-                "{normal:?}"
-            );
-            let exact = [&t[..], &["--cycle"]].concat();
-            let env = [("YAVS_CYCLE_GUARD", "all")];
-            let (cycle, err) = run_vars(&dir, &exact, "cycle_railguard", &env);
-            let cycle = notes(cycle);
-            let tail = |l: &[String]| -> Vec<String> {
-                l.iter()
-                    .map(|x| x[x.find("y=").expect("y")..].to_string())
-                    .collect()
-            };
-            assert_eq!(tail(&cycle), tail(&normal), "{w}: {err}");
-            assert!(
-                err.contains("cycle mode: 2 of 4 processes run cycle-based")
-                    && err.contains("second image: still followed when the run ended"),
-                "{w}: {err}"
-            );
-        }
-    }
-}
-
-/// A register the second image changes on a 'U' enable is given back its value in every word of
-/// a register file of 80 words (`rail_keep`), as the normal mode keeps it.
-#[test]
-fn the_second_image_keeps_every_word_of_a_wide_register() {
-    let dir = tempdir("cycle-railkeep");
-    analyze(&dir, "railkeep.vhd", include_str!("cycle/railkeep.vhd"));
-    for i in [3, 63, 64, 70, 79] {
-        let g = format!("-gI={i}");
-        for t in tiers() {
-            let t = [&t[..], &[&g[..]]].concat();
-            let notes = |l: Vec<String>| -> Vec<String> {
-                l.into_iter().filter(|x| x.contains("rf=")).collect()
-            };
-            let (normal, _) = run(&dir, &t, "cycle_railkeep");
-            let normal = notes(normal);
-            let want = format!("rf={:016X} rf0=0000000000000011", i * 4099 + 17);
-            assert!(
-                normal.len() == 1 && normal[0].ends_with(&want),
-                "{normal:?}"
-            );
-            let exact = [&t[..], &["--cycle"]].concat();
-            let (cycle, err) = run(&dir, &exact, "cycle_railkeep");
-            let cycle = notes(cycle);
-            assert!(
-                cycle.len() == 1 && cycle[0].ends_with(&want),
-                "{i}: {cycle:?}\n{err}"
-            );
-            assert!(
-                err.contains("second image: still followed when the run ended"),
-                "{i}: {err}"
-            );
-        }
-    }
-}
-
-/// Combinational choices on a 'U' never show a 'U' the normal mode does not have: where the
-/// region's image reads the 'U' as 0 and takes a branch the normal mode does not (`s = '0'`,
-/// `unsigned(ad) < 2`), the member's outputs take the region's values on the second image too;
-/// a 'U' that reaches an output without a choice still shows. Widths 1 to 128.
-#[test]
-fn combinational_choices_on_a_u_show_no_u_the_normal_mode_lacks() {
-    let dir = tempdir("cycle-railcomb");
-    analyze(&dir, "railcomb.vhd", include_str!("cycle/railcomb.vhd"));
-    for w in [1, 63, 64, 65, 128] {
-        let g = format!("-gW={w}");
-        for t in tiers() {
-            let t = [&t[..], &[&g[..]]].concat();
-            let notes = |l: Vec<String>| -> Vec<String> {
-                l.into_iter().filter(|x| x.contains(" yd=")).collect()
-            };
-            let (zero, u) = ("0".repeat(w), "U".repeat(w));
-            let want = format!("y0={zero} y1={zero} yn={zero} yl={zero} yd={u}");
-            let (normal, _) = run(&dir, &t, "cycle_railcomb");
-            let normal = notes(normal);
-            assert!(
-                normal.len() == 1 && normal[0].ends_with(&want),
-                "{normal:?}"
-            );
-            let exact = [&t[..], &["--cycle"]].concat();
-            let (cycle, err) = run(&dir, &exact, "cycle_railcomb");
-            let cycle = notes(cycle);
-            assert!(
-                cycle.len() == 1 && cycle[0].ends_with(&want),
-                "{w}: {cycle:?}\n{err}"
-            );
-            assert!(
-                err.contains("second image: still followed when the run ended"),
-                "{w}: {err}"
-            );
-        }
-    }
-}
-
-/// `YAVS_CYCLE_RAIL` takes `off`, `no-reseed` and `cap=N`; another value is an error naming
-/// them, before the run.
-#[test]
-fn the_rail_knob_names_its_values() {
-    let dir = tempdir("cycle-railknob");
-    analyze(&dir, "rail.vhd", include_str!("cycle/rail.vhd"));
-    let args = [
-        "run",
-        "--work=work:lib",
-        "--no-cache",
-        "--cycle",
-        "--two-state",
-        "cycle_rail",
-    ];
-    let o = yavs_env(&dir, &args, &[("YAVS_CYCLE_RAIL", "of")]);
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert!(!o.status.success() && o.stdout.is_empty(), "{err}");
-    assert!(err.contains("E4104") && err.contains("`off`"), "{err}");
-    let o = yavs_env(&dir, &args, &[("YAVS_CYCLE_RAIL", "no-reseed")]);
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }
 
 /// A scalar `out` variable parameter starts at its subtype's `'left` in cycle mode as in the

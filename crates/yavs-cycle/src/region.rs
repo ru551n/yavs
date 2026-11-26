@@ -104,11 +104,11 @@ type Subset = (
 /// Clock elements that are copies of another: (leaf, element) to its source.
 type Copies = BTreeMap<(LeafId, u32), (LeafId, u32)>;
 
-/// The metavalue contract, every run without `--two-state` (A53, A57): the metavalue rules keep
-/// processes out. Off: two-state values at the boundary too, nothing kept out for a metavalue.
+/// Without `--two-state` (A66): the region computes with the normal mode's nine values
+/// (`nine.rs`). Off: two-state values (`--two-state`).
 static EXACT_META: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
-/// `--two-state` (true) drops the metavalue rules; without it they hold (the default).
+/// `--two-state` (true): a two-state region; without it nine-valued (the default).
 pub fn set_two_state(on: bool) {
     EXACT_META.store(!on, std::sync::atomic::Ordering::Relaxed);
 }
@@ -148,8 +148,8 @@ pub(crate) fn wave_held(e: &Elaborated, members: &[usize], outputs: &BTreeSet<Le
         .collect()
 }
 
-/// Whether the metavalue contract holds (no `--two-state`): also, failed checks keep their
-/// operands for the message.
+/// Whether the region is nine-valued (no `--two-state`): also, failed checks keep their operands
+/// for the message.
 pub(crate) fn exact_meta() -> bool {
     EXACT_META.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -179,38 +179,49 @@ fn fresh_ops(e: &Elaborated, b: &mut Body) {
             // made again on an unchanged wait set.
             None => (0, 64 * n, 64 * n),
         };
-        let w = crate::codegen::words(bits);
-        let (snap, tmp, ne) = (b.locs, b.locs + w, b.locs + 2 * w);
-        b.locs += 2 * w + 1;
-        snaps.push((snap, w));
-        ops.extend([
-            Op::Extract {
-                dst: Ref::Loc(tmp),
-                src: Ref::Sig(at.signal.0),
-                lo,
-                len: bits,
-                full,
-            },
-            Op::VecEq {
-                dst: Ref::Loc(ne),
-                a: Ref::Loc(tmp),
-                b: Ref::Loc(snap),
-                len: bits,
-                ne: true,
-            },
-            Op::Gate {
-                g: lower::Gate::Or,
-                dst: Ref::Loc(f),
-                a: Ref::Loc(f),
-                b: Ref::Loc(ne),
-                len: 1,
-            },
-            Op::Copy {
-                dst: Ref::Loc(snap),
-                src: Ref::Loc(tmp),
-                len: bits,
-            },
-        ]);
+        // Nine values: each plane of a logic signal (`nine.rs`).
+        let logic = nets.leaf(l).ty.elem == yavs_kernel::Elem::Logic;
+        let pw = 64 * crate::codegen::words(n);
+        let planes = if exact_meta() && logic { 4 } else { 1 };
+        for p in 0..planes {
+            let (lo, full) = if planes == 4 {
+                (lo + p * pw, 4 * pw)
+            } else {
+                (lo, full)
+            };
+            let w = crate::codegen::words(bits);
+            let (snap, tmp, ne) = (b.locs, b.locs + w, b.locs + 2 * w);
+            b.locs += 2 * w + 1;
+            snaps.push((snap, w));
+            ops.extend([
+                Op::Extract {
+                    dst: Ref::Loc(tmp),
+                    src: Ref::Sig(at.signal.0),
+                    lo,
+                    len: bits,
+                    full,
+                },
+                Op::VecEq {
+                    dst: Ref::Loc(ne),
+                    a: Ref::Loc(tmp),
+                    b: Ref::Loc(snap),
+                    len: bits,
+                    ne: true,
+                },
+                Op::Gate {
+                    g: lower::Gate::Or,
+                    dst: Ref::Loc(f),
+                    a: Ref::Loc(f),
+                    b: Ref::Loc(ne),
+                    len: 1,
+                },
+                Op::Copy {
+                    dst: Ref::Loc(snap),
+                    src: Ref::Loc(tmp),
+                    len: bits,
+                },
+            ]);
+        }
     }
     ops.push(Op::Lit {
         dst: Ref::Loc(armed),
@@ -1207,13 +1218,6 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         implicit.extend(l.implicit_more.iter().map(|x| x.0));
     }
     stat(|| format!("select: history {} ms", t0.elapsed().as_millis()));
-    // The drivers (process, leaf) of processes outside that may give a 'Z' (no member can:
-    // two-state values have none).
-    let exact_meta = EXACT_META.load(std::sync::atomic::Ordering::Relaxed);
-    let zsrc: BTreeSet<(usize, LeafId)> = (0..e.procs.len())
-        .filter(|pi| exact_meta && !taken.contains_key(pi))
-        .flat_map(|pi| z_leaves(db, e, pi).into_iter().map(move |l| (pi, l)))
-        .collect();
     // Leave out what the set as a whole does not allow yet, until nothing changes.
     loop {
         stat(|| format!("select: round at {} ms", t0.elapsed().as_millis()));
@@ -1305,31 +1309,22 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             }
             // A checker of the top-level unit evaluated in region code (A19, whole-design scope)
             // reads what members drive only: it sees the values the normal mode's checker would
-            // see of them, never a metavalue of the kernel read as 0. Without `--two-state` the
-            // same for every member with notes, which must see the kernel's metavalues. What it
-            // counts too: the lowering reads nothing of a value it folds (`is_x` is false on
-            // two-state values).
+            // see of them, never a metavalue of the kernel read as 0. What the checker counts too:
+            // the lowering reads nothing of a value it folds (`is_x` is false on two-state values).
             let fit_reads = f.reads.iter().map(|(k, _, _)| LeafId(k as u32));
             let top = in_top_unit(e, pi);
             if b.notes > 0
-                && (top || exact_meta)
+                && top
                 && let Some(l) = (b.reads.iter().copied()).chain(fit_reads).find(|&l| {
                     b.clock.is_none_or(|c| c.leaf != l)
                         && own_clock.get(&pi).is_none_or(|&c| c != l)
                         && (outside.contains_key(&l) || !inside.contains(&l) || consts.contains(&l))
                 })
             {
-                let (code, what) = if top {
-                    (
-                        crate::codes::CHECK_OUTSIDE,
-                        "an assert reading a signal the region does not drive alone",
-                    )
-                } else {
-                    (
-                        crate::codes::ASSERT,
-                        "an assert or report without `--two-state` reading a signal the region does not drive alone",
-                    )
-                };
+                let (code, what) = (
+                    crate::codes::CHECK_OUTSIDE,
+                    "an assert reading a signal the region does not drive alone",
+                );
                 gone.push((
                     pi,
                     Reason::new(code, pspan(pi), format!("{what}: {}", e.leaf_name(l))),
@@ -1350,12 +1345,6 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             }
         }
         stat(|| format!("select: sources {} ms", t0.elapsed().as_millis()));
-        // The testbench sees the metavalues the normal mode gives it: a member that assigns a
-        // metavalue literal, or passes on a 'Z' from outside, to a leaf a process outside reads
-        // stays out (the region gives back '0' and '1' only).
-        if gone.is_empty() && exact_meta {
-            gone = meta_rule(db, e, &taken, &zsrc, &out);
-        }
         if gone.is_empty() && copy_rule(db, e, &copies, &mut taken, &mut moved) {
             continue;
         }
@@ -1501,343 +1490,6 @@ pub(crate) fn undriven_metas(e: &Elaborated) -> BTreeSet<LeafId> {
             .then_some(id)
         })
         .collect()
-}
-
-/// The members that would hide a metavalue from the testbench (see `select`), with why. The
-/// testbench: the processes of the top-level unit and the behavioural ones, outside the region.
-fn meta_rule(
-    db: &Db,
-    e: &Elaborated,
-    taken: &BTreeMap<usize, (Fit, Body)>,
-    zclaim: &BTreeSet<(usize, LeafId)>,
-    out: &[(usize, Why)],
-) -> Vec<(usize, Reason)> {
-    let reads = |f: &Fit, b: &Body| -> Vec<LeafId> {
-        let fit = f.reads.iter().map(|(k, _, _)| LeafId(k as u32));
-        b.reads.iter().copied().chain(fit).collect()
-    };
-    let zsrc = pass_on_z(db, e, taken, zclaim, out);
-    let cands: Vec<(usize, Option<LeafId>)> = (taken.iter())
-        .filter_map(|(&pi, (f, b))| {
-            let z = reads(f, b).into_iter().find(|l| zsrc.contains(l));
-            (b.meta_out > 0 || z.is_some()).then_some((pi, z))
-        })
-        .collect();
-    if cands.is_empty() {
-        return Vec::new();
-    }
-    let members: BTreeSet<usize> = taken.keys().copied().collect();
-    // ponytail: any external name still counts as reading every signal here; resolved, ac701 boot
-    // joins 57 processes and loses 387 to `cross_delta`, for no gain (owner decision pending).
-    let mut all = !db.externals.is_empty();
-    let tb: BTreeSet<usize> = (out.iter())
-        .filter(|(pi, w)| {
-            matches!(w, Why::Behavioural(_)) || in_top_unit(e, *pi) || outside_scope(e, *pi)
-        })
-        .map(|(pi, _)| *pi)
-        .collect();
-    let mut seen = BTreeSet::new();
-    let mut memo = BTreeMap::new();
-    for &pi in tb.iter().filter(|pi| !members.contains(pi)) {
-        if all {
-            break;
-        }
-        match proc_reads(db, e, pi, &mut memo) {
-            Some((r, _)) => seen.extend(r),
-            None => all = true,
-        }
-    }
-    // What the testbench reads through an uncollapsed port: the formal the member drives.
-    for _ in 0..64 {
-        let n = seen.len();
-        for pe in &e.nets.ports {
-            if seen.contains(&pe.actual.0) {
-                seen.insert(pe.formal.0);
-            }
-        }
-        for cp in &e.nets.conv_ports {
-            if cp.actual.iter().any(|a| seen.contains(&a.0)) {
-                seen.extend(cp.formal.iter().map(|x| x.0));
-            }
-        }
-        if seen.len() == n {
-            break;
-        }
-    }
-    let mut gone = Vec::new();
-    for (pi, z) in cands {
-        let Some(o) = (e.procs[pi].drivers.iter())
-            .map(|&d| e.nets.drivers[d].leaf)
-            .find(|l| all || seen.contains(l))
-        else {
-            continue;
-        };
-        let what = match z {
-            Some(z) if taken[&pi].1.meta_out == 0 => format!(
-                "a 'Z' passed on to a signal the testbench reads: {}, which a process outside sets to 'Z', reaches",
-                e.leaf_name(z)
-            ),
-            _ => "a metavalue literal assigned to a signal the testbench reads:".to_string(),
-        };
-        let mut r = Reason::new(
-            crate::codes::META_OUT,
-            db.stmts[e.procs[pi].stmt].span,
-            format!("{what} {}", e.leaf_name(o)),
-        );
-        // A testbench process that reads it, when the scan names one.
-        if let Some(&q) = (tb.iter())
-            .find(|&&q| proc_reads(db, e, q, &mut memo).is_some_and(|(r, _)| r.contains(&o)))
-        {
-            r = r.also(
-                db.stmts[e.procs[q].stmt].span,
-                format!("{} reads {}", e.proc_label(&e.procs[q]), e.leaf_name(o)),
-            );
-        }
-        gone.push((pi, r));
-    }
-    gone
-}
-
-/// The leaves that may hold a 'Z', from the drivers `claim` that may give one, those of processes
-/// outside that pass one on (every leaf a process drives, when a value it assigns reads such a
-/// leaf or its reads are not known: `value_reads`) and both sides of a port of such a leaf, until nothing changes: a copy of a
-/// tri-state line carries its 'Z'. A leaf resolved by `resolved` holds one only where every
-/// driver of an element may give it. A behavioural process (a bus model, the stimulus) computes
-/// what it drives: it is not followed.
-fn pass_on_z(
-    db: &Db,
-    e: &Elaborated,
-    taken: &BTreeMap<usize, (Fit, Body)>,
-    claim: &BTreeSet<(usize, LeafId)>,
-    out: &[(usize, Why)],
-) -> BTreeSet<LeafId> {
-    let mut zsrc = BTreeSet::new();
-    if claim.is_empty() {
-        return zsrc;
-    }
-    let mut claim = claim.clone();
-    let behav: BTreeSet<usize> = (out.iter())
-        .filter(|(_, w)| matches!(w, Why::Behavioural(_)))
-        .map(|(pi, _)| *pi)
-        .collect();
-    let mut memo = BTreeMap::new();
-    let outside: Vec<(usize, Option<BTreeSet<LeafId>>)> = (0..e.procs.len())
-        .filter(|pi| !taken.contains_key(pi) && !behav.contains(pi))
-        .map(|pi| (pi, value_reads(db, e, pi, &mut memo)))
-        .collect();
-    let mut drivers: BTreeMap<LeafId, Vec<(usize, yavs_kernel::Range)>> = BTreeMap::new();
-    for d in &e.nets.drivers {
-        drivers
-            .entry(d.leaf)
-            .or_default()
-            .push((d.proc.index(), d.range));
-    }
-    let ports: Vec<(LeafId, LeafId)> = (e.nets.ports.iter())
-        .map(|pe| (pe.actual.0, pe.formal.0))
-        .chain(e.nets.conv_ports.iter().flat_map(|cp| {
-            (cp.actual.iter()).flat_map(|a| cp.formal.iter().map(move |f| (a.0, f.0)))
-        }))
-        .collect();
-    // `x'delayed(T)` holds what `x` held.
-    let delayed: Vec<(LeafId, LeafId)> = (e.nets.leaves.iter().enumerate())
-        .filter_map(|(k, l)| match l.implicit {
-            Some((yavs_elab::ImplicitKind::Delayed(_), src, _)) => Some((LeafId(k as u32), src)),
-            _ => None,
-        })
-        .collect();
-    let holds = |l: LeafId, claim: &BTreeSet<(usize, LeafId)>| -> bool {
-        let ds = drivers.get(&l).map_or(&[][..], |v| &v[..]);
-        if ds.len() < 2 || !matches!(e.nets.leaf(l).resolution, Some(LeafRes::StdLogic)) {
-            return true;
-        }
-        // The drivers of an element change only where a driver's range starts or ends.
-        let mut at: Vec<u32> = ds.iter().map(|(_, r)| r.offset).collect();
-        at.extend(ds.iter().map(|(_, r)| r.offset + r.len));
-        at.into_iter().any(|x| {
-            let mut on = ds
-                .iter()
-                .filter(|(_, r)| (r.offset..r.offset + r.len).contains(&x));
-            let first = on.next();
-            first.is_some()
-                && first
-                    .into_iter()
-                    .chain(on)
-                    .all(|(pi, _)| claim.contains(&(*pi, l)))
-        })
-    };
-    loop {
-        let n = (zsrc.len(), claim.len());
-        let claimed: BTreeSet<LeafId> = claim.iter().map(|&(_, l)| l).collect();
-        zsrc.extend(claimed.into_iter().filter(|&l| holds(l, &claim)));
-        for (pi, r) in &outside {
-            if r.as_ref()
-                .is_none_or(|r| r.iter().any(|l| zsrc.contains(l)))
-            {
-                claim.extend(all_driven(e, *pi).into_iter().map(|l| (*pi, l)));
-            }
-        }
-        for &(a, f) in &ports {
-            if zsrc.contains(&a) || zsrc.contains(&f) {
-                zsrc.extend([a, f]);
-            }
-        }
-        for &(d, src) in &delayed {
-            if zsrc.contains(&src) {
-                zsrc.insert(d);
-            }
-        }
-        if (zsrc.len(), claim.len()) == n {
-            return zsrc;
-        }
-    }
-}
-
-/// The leaves the values process `pi` assigns may read: the values of its signal and variable
-/// assignments, not its conditions (`'0' when pad = '0' else '1'` passes on no 'Z'); every leaf
-/// it reads when it calls a procedure, a subprogram that reads a signal itself, or names an
-/// external signal; `None` when its reads are not known.
-fn value_reads(
-    db: &Db,
-    e: &Elaborated,
-    pi: usize,
-    memo: &mut BTreeMap<yavs_sem::DeclId, Option<CallSigs>>,
-) -> Option<BTreeSet<LeafId>> {
-    use yavs_sem::hir::{Rhs, Waveform};
-    fn values<T>(rhs: &Rhs<T>, each: &mut dyn FnMut(&T)) {
-        match rhs {
-            Rhs::Simple(t) => each(t),
-            Rhs::Conditional(alts) => alts.iter().for_each(|(t, _)| each(t)),
-            Rhs::Selected { alts, .. } => alts.iter().for_each(|(t, _)| each(t)),
-        }
-    }
-    let full = proc_reads(db, e, pi, memo)?.0;
-    let p = &e.procs[pi];
-    if p.actual.is_some() {
-        return Some(full);
-    }
-    let mut stmts = vec![p.stmt];
-    deep(db, &db.stmt_children(p.stmt), &mut stmts);
-    let mut vals: Vec<ExprId> = Vec::new();
-    let mut calls = Vec::new();
-    for &s in &stmts {
-        match &db.stmts[s].kind {
-            StmtKind::SignalAssign { rhs, .. } | StmtKind::ConcSignalAssign { rhs, .. } => {
-                values(rhs, &mut |w| {
-                    if let Waveform::Elements(els) = w {
-                        vals.extend(els.iter().filter_map(|el| el.value));
-                    }
-                })
-            }
-            StmtKind::VarAssign { rhs, .. } => values(rhs, &mut |x| vals.push(*x)),
-            StmtKind::ProcCall(_)
-            | StmtKind::ConcProcCall { .. }
-            | StmtKind::Force { .. }
-            | StmtKind::Return(_) => return Some(full),
-            _ => {}
-        }
-        if !stmt_calls(db, s, &mut calls) {
-            return Some(full);
-        }
-    }
-    for (c, _) in &calls {
-        if callee_sigs(db, *c, 0, memo).is_none_or(|sum| !sum.reads.is_empty()) {
-            return Some(full);
-        }
-    }
-    let mut lsps = Vec::new();
-    for x in vals {
-        db.reads(x, &mut lsps);
-    }
-    let mut out = BTreeSet::new();
-    for l in &lsps {
-        match l.root {
-            // An implicit signal names its own leaf (`x'delayed(T)` is followed from `x`).
-            ObjRoot::Decl(d) | ObjRoot::ImplicitSignal(d) => {
-                if let Some(o) = e.signal(p.scope, d) {
-                    let (a, z) = e.nets.obj(o).leaves;
-                    out.extend((a.0..z.0).map(LeafId));
-                }
-            }
-            ObjRoot::External(_) => return Some(full),
-        }
-    }
-    Some(out)
-}
-
-/// The leaves process `pi` may set to `'Z'`: the targets of its signal assignments whose value
-/// names a logic value holding `'Z'` (a literal or a folded constant), every leaf it drives when
-/// another statement names one (a variable may carry it).
-fn z_leaves(db: &Db, e: &Elaborated, pi: usize) -> Vec<LeafId> {
-    let p = &e.procs[pi];
-    let mut stmts = vec![p.stmt];
-    deep(db, &db.stmt_children(p.stmt), &mut stmts);
-    let mut out = Vec::new();
-    for s in stmts {
-        let mut z = false;
-        db.stmt_exprs(s, &mut |x, _| {
-            db.walk_expr(x, &mut |y| {
-                let c = match db.exprs[y].kind {
-                    ExprKind::Const(c) => Some(c),
-                    _ => db.exprs[y].value,
-                };
-                z |= c.is_some_and(|c| z_value(db, y, &db.consts[c]));
-            })
-        });
-        if !z {
-            continue;
-        }
-        match &db.stmts[s].kind {
-            StmtKind::SignalAssign { target, .. } | StmtKind::ConcSignalAssign { target, .. } => {
-                for l in target.lsps.iter() {
-                    match l.root {
-                        ObjRoot::Decl(d) => match e.signal(p.scope, d) {
-                            Some(o) => {
-                                let (a, b) = e.nets.obj(o).leaves;
-                                out.extend((a.0..b.0).map(LeafId));
-                            }
-                            None => return all_driven(e, pi),
-                        },
-                        _ => return all_driven(e, pi),
-                    }
-                }
-            }
-            _ => return all_driven(e, pi),
-        }
-    }
-    out
-}
-
-fn all_driven(e: &Elaborated, pi: usize) -> Vec<LeafId> {
-    (e.procs[pi].drivers.iter())
-        .map(|&d| e.nets.drivers[d].leaf)
-        .collect()
-}
-
-/// A value of a logic type (a `std_ulogic` element or array of them) holding `'Z'`.
-fn z_value(db: &Db, x: ExprId, v: &yavs_sem::stat::ConstValue) -> bool {
-    use yavs_sem::stat::{ConstValue, Elems};
-    use yavs_sem::types::TypeKind;
-    let t = db.base(db.exprs[x].subtype);
-    let elem = match &db.types[t].kind {
-        TypeKind::Array { elem, .. } => db.base(*elem),
-        _ => t,
-    };
-    let wk = &db.well_known;
-    if Some(elem) == wk.bit
-        || Some(elem) == wk.boolean
-        || yavs_elab::elem_of(db, elem) != yavs_kernel::Elem::Logic
-        || !matches!(db.types[elem].kind, TypeKind::Enum { .. })
-    {
-        return false;
-    }
-    match v {
-        ConstValue::Enum(4) => true,
-        ConstValue::Array(a) => match &a.elems {
-            Elems::Bytes(b) => b.contains(&4),
-            Elems::Runs(r) => r.iter().any(|(_, v)| *v == ConstValue::Enum(4)),
-        },
-        _ => false,
-    }
 }
 
 /// The signal of a clock, with its element when the signal has several.
@@ -3832,12 +3484,6 @@ impl Forced {
 
     fn reason(&self, db: &Db, e: &Elaborated, pi: usize, span: yavs_diag::Span) -> Option<Reason> {
         let (text, s) = match self {
-            Forced::All(s) if exact_meta() => (
-                "`force` or `release` in the design: without `--two-state` no process joins \
-                 a design that forces a signal"
-                    .to_string(),
-                *s,
-            ),
             Forced::All(s) => ("`force` or `release` in the design".to_string(), *s),
             Forced::Leaves(m) => {
                 let (l, s) = (e.procs[pi].drivers.iter())
@@ -3889,9 +3535,7 @@ fn forced(db: &Db, e: &Elaborated) -> Forced {
         else {
             return Forced::All(s);
         };
-        // ponytail: the 'Z' rules of the metavalue contract (`z_leaves`, `pass_on_z`) do not follow
-        // forced values, so there a force keeps every process out; follow them if it matters.
-        if target.lsps.is_empty() || exact_meta() {
+        if target.lsps.is_empty() {
             return Forced::All(s);
         }
         for l in &target.lsps {

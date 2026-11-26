@@ -109,7 +109,7 @@ processes that cycle mode does not evaluate, or delta cycles a monitor no longer
 themselves, also with the reports of different processes in another order within one time step when each process's
 last reports of each time step are equal, an unlabelled process told apart by its place (`names`); a vanished report counts as a member's when its process path is one of a member with dropped asserts,
 or `-` for an unlabelled process while such a member exists); known (differs, and `cyclegate.expected` lists the
-test with the checksum of its diff, or several comma-separated where the contracts or `YAVS_CYCLE_RAIL=off`
+test with the checksum of its diff, or several comma-separated where the contracts
 give different diffs, and the reviewed cause: a changed diff is not known any more); differs
 otherwise (a wrong result in cycle mode: exit status 1, and the line to paste into the list after a review);
 refused (`E41xx`); skipped (the normal mode does not run it). A lost failure of a member ends the normal run

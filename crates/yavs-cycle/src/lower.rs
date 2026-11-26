@@ -1,8 +1,9 @@
-//! The bodies of member processes, from the elaborated HIR to region operations on two-state
-//! words: a logic value of `len` elements is `ceil(len / 64)` words (element 0 in bit 0, the bits
-//! above `len` zero), an integer or an enumeration position one word. Metavalues read as 0: a
-//! literal's are counted per site, a variable's missing initial value per element. Anything else
-//! is a reason to leave the process in the event kernel, never a guess.
+//! The bodies of member processes, from the elaborated HIR to region operations on words: a
+//! logic value of `len` elements is `ceil(len / 64)` words (element 0 in bit 0, the bits above
+//! `len` zero), an integer or an enumeration position one word. With `--two-state` metavalues
+//! read as 0 (a literal's counted per site, a variable's missing initial value per element);
+//! without it a logic value has four planes of such words and `nine.rs` makes the operations
+//! nine-valued. Anything else is a reason to leave the process in the event kernel, never a guess.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -30,9 +31,6 @@ pub(crate) enum Ref {
     Sig(u32),
     Loc(u32),
     Edge,
-    /// Under exact-meta (without `--two-state`): two words, how far the region's image lies from this one (0
-    /// on the region's own, see [`Op::Other`]) and the bits of a `'U'` start value ([`Op::Seed`]).
-    Oth,
 }
 
 /// The `ieee` subprogram with this mangled name that has a native key, remembered per name (a
@@ -109,6 +107,36 @@ pub(crate) enum ShiftK {
     Ror,
 }
 
+/// A function of nine-valued logic with no two-state operation (`Op::Nine`).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) enum NineF {
+    /// `??` of a `std_ulogic`: a boolean.
+    Truthy,
+    /// `is_x`: a boolean.
+    IsX,
+    ToX01,
+    ToUX01,
+    ToX01Z,
+    /// `to_bit`, `to_bitvector` with the default `xmap`.
+    ToBit,
+    /// `to_01` with the default `xmap`.
+    To01,
+    /// `std_match`: a boolean.
+    Match,
+    /// `?=` (`?/=`): a `std_ulogic`.
+    MatchEq {
+        ne: bool,
+    },
+    /// The boolean `b`, a `numeric_std` comparison of the vector `a` and an integer: false
+    /// (`/=`: true) when `a` holds a metavalue.
+    NumGuard {
+        ne: bool,
+    },
+    /// The value `a`, or all `'X'` when the operand `b` (as long) holds a metavalue: a
+    /// `numeric_std` function that tests its operands first (`minimum`, `abs`).
+    XIf,
+}
+
 /// What a check says when it fails: the texts of the normal mode (`ErrorKind::Runtime`).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Check {
@@ -155,8 +183,8 @@ pub(crate) enum Piece {
     /// The enumeration value in the words of arg `n` (a position, or a logic value's 0 or 1):
     /// the text of each.
     Enum(usize, Box<[Box<[u8]>]>),
-    /// A `std_ulogic` value in arg `n` (0 or 1): the texts of `'0'`, `'1'`, `'U'` and `'X'`, the
-    /// last two for the second image of exact-meta (without `--two-state`) (`Note::text_meta`).
+    /// A `std_ulogic` value in arg `n`: the texts of `'0'`, `'1'`, `'U'` and `'X'` (`Note::text_meta`),
+    /// without `--two-state` those of the nine values in the order of their codes (`Note::text_nine`).
     Logic(usize, Box<[Box<[u8]>]>),
     /// The `len` elements of arg `n`, leftmost first, `bits` per digit (1, 3 or 4); `logic`:
     /// `std_ulogic` elements, which may show `'U'` or `'X'` (`Note::text_meta`).
@@ -172,6 +200,88 @@ impl Note {
     /// The message, from the image words of the args.
     pub(crate) fn text(&self, img: &[u64]) -> String {
         self.text_meta(img, |_, _| (0, 0))
+    }
+
+    /// The message without `--two-state`: a logic arg holds four planes (`nine.rs`), each
+    /// element its code; `to_hstring` and `to_ostring` digits as `std_logic_1164` makes them
+    /// (`To_X01Z` of each element, `'Z'` when all are, else `'X'` for a metavalue).
+    pub(crate) fn text_nine(&self, img: &[u64]) -> String {
+        const CH: &[u8; 9] = b"UX01ZWLH-";
+        let mut out: Vec<u8> = Vec::new();
+        let word = |n: usize, k: u32| match self.args[n].0 {
+            Ref::Loc(w) => img[(w + k) as usize],
+            _ => 0,
+        };
+        // Element `i` of logic arg `n` of `len` elements: its code.
+        let code = |n: usize, len: u32, i: u32| -> u8 {
+            let nw = words(len);
+            (0..4).fold(0u8, |c, p| {
+                c | (((word(n, p * nw + i / 64) >> (i % 64)) & 1) as u8) << p
+            })
+        };
+        for p in &self.pieces {
+            match p {
+                Piece::Text(t) => out.extend_from_slice(t),
+                Piece::Int(n) => out.extend(yavs_std::image::integer_image(word(*n, 0) as i64)),
+                Piece::Enum(n, names) => {
+                    let v = word(*n, 0) as usize;
+                    out.extend_from_slice(names.get(v).map_or(&b"?"[..], |t| &t[..]));
+                }
+                Piece::Logic(n, names) => {
+                    let c = code(*n, 1, 0) as usize;
+                    out.extend_from_slice(names.get(c).map_or(&b"?"[..], |t| &t[..]));
+                }
+                Piece::Bits {
+                    n,
+                    len,
+                    bits,
+                    logic,
+                } => {
+                    let digits = len.div_ceil(*bits);
+                    // `To_X01Z`: 0, 1, 2 for `'Z'`, 3 for `'X'`.
+                    let x01z = |i: u32| -> u8 {
+                        if !logic {
+                            return ((word(*n, i / 64) >> (i % 64)) & 1) as u8;
+                        }
+                        match code(*n, *len, i) {
+                            2 | 6 => 0,
+                            3 | 7 => 1,
+                            4 => 2,
+                            _ => 3,
+                        }
+                    };
+                    let pad = if *logic && code(*n, *len, len - 1) == 4 {
+                        2
+                    } else {
+                        0
+                    };
+                    for d in (0..digits).rev() {
+                        if *bits == 1 {
+                            out.push(if *logic {
+                                CH[code(*n, *len, d) as usize]
+                            } else {
+                                b'0' + x01z(d)
+                            });
+                            continue;
+                        }
+                        let (mut v, mut z, mut x) = (0usize, true, false);
+                        for b in (0..*bits).rev() {
+                            let i = d * bits + b;
+                            let e = if i < *len { x01z(i) } else { pad };
+                            v = v << 1 | usize::from(e & 1);
+                            z &= e == 2;
+                            x |= e >= 2;
+                        }
+                        out.push(match (z, x) {
+                            (true, _) => b'Z',
+                            (false, true) => b'X',
+                            _ => b"0123456789ABCDEF"[v],
+                        });
+                    }
+                }
+            }
+        }
+        out.iter().map(|&b| b as char).collect()
     }
 
     /// The message with `meta(arg, word)`: the `'U'` or `'X'` bits of that word and, of those,
@@ -271,7 +381,7 @@ fn range(lo: impl std::fmt::Display, hi: impl std::fmt::Display, down: bool) -> 
 
 impl Check {
     /// The message for the operands the code stored (`a`, and `b` for arithmetic); `None`: the
-    /// code stored none (A34, without exact-meta (without `--two-state`)), the message says what failed.
+    /// code stored none (A34, with `--two-state`), the message says what failed.
     pub(crate) fn message(&self, vals: Option<(i64, i64)>) -> String {
         let Some((a, b)) = vals else {
             return self.bare();
@@ -593,21 +703,15 @@ pub(crate) enum Op {
         site: u32,
         args: Vec<(Ref, u32)>,
     },
-    /// Under exact-meta (without `--two-state`): `src` (`len` elements) as the region's image holds it, read
-    /// from that image by the second one (`oth`, the [`Ref::Oth`] word: the distance to it in
-    /// bytes, 0 on the region's own image, which reads its own `src`).
-    Other {
+    /// Without `--two-state` (the nine-valued region): a function of `std_ulogic` values with no
+    /// two-state operation, made into plane operations by `nine::expand` (`b` unused by the
+    /// functions of one operand).
+    Nine {
+        f: NineF,
         dst: Ref,
-        src: Ref,
+        a: Ref,
+        b: Ref,
         len: u32,
-        oth: Ref,
-    },
-    /// Under exact-meta (without `--two-state`): a start value `'U'`: `len` ones on the images that set `'U'`
-    /// seeds to 1, zeros on the region's (the second word of `oth`).
-    Seed {
-        dst: Ref,
-        len: u32,
-        oth: Ref,
     },
     /// From here to the end of the part (a clocked member's body): word `flag` is 1 when a store
     /// of a word that holds state changed it, else 0; a later part of the member (`first` false)
@@ -616,10 +720,37 @@ pub(crate) enum Op {
         flag: Ref,
         first: bool,
     },
+    /// Without `--two-state` (made by `nine::expand`): a function of the four planes of `a` and
+    /// `b` (plane `p` of a value `x` at word `x + p * xw`) into the four planes of `dst`, or for a
+    /// boolean result (`dw` 0) into the one word `dst`.
+    P4 {
+        f: P4F,
+        dst: Ref,
+        dw: u32,
+        a: Ref,
+        aw: u32,
+        b: Ref,
+        bw: u32,
+        len: u32,
+    },
+}
+
+/// The functions of [`Op::P4`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) enum P4F {
+    /// IEEE 1164 `and`, `or`, `xor` and their inverses, element by element.
+    Gate(Gate),
+    Not,
+    /// The same codes in every element (the predefined `=`; `ne`: `/=`).
+    Eq {
+        ne: bool,
+    },
+    /// The bits of the one-word value `a` as the codes of `'0'` and `'1'`.
+    Codes,
 }
 
 impl Op {
-    fn dst_mut(&mut self) -> Option<&mut Ref> {
+    pub(crate) fn dst_mut(&mut self) -> Option<&mut Ref> {
         match self {
             Op::Copy { dst, .. }
             | Op::Lit { dst, .. }
@@ -643,8 +774,8 @@ impl Op {
             | Op::IntCmp { dst, .. }
             | Op::Int { dst, .. }
             | Op::IndexRead { dst, .. }
-            | Op::Other { dst, .. }
-            | Op::Seed { dst, .. } => Some(dst),
+            | Op::Nine { dst, .. }
+            | Op::P4 { dst, .. } => Some(dst),
             // These read what they write.
             Op::Blend { .. }
             | Op::Insert { .. }
@@ -755,14 +886,10 @@ impl Op {
                 *x = site(*x);
             }
             Op::If { .. } => {}
-            Op::Other { dst, src, oth, .. } => {
+            Op::Nine { dst, a, b, .. } | Op::P4 { dst, a, b, .. } => {
                 *dst = d(*dst);
-                *src = s(*src);
-                *oth = s(*oth);
-            }
-            Op::Seed { dst, oth, .. } => {
-                *dst = d(*dst);
-                *oth = s(*oth);
+                *a = s(*a);
+                *b = s(*b);
             }
             Op::Track { flag, .. } => *flag = d(*flag),
             Op::Note { site: x, args } => {
@@ -863,9 +990,6 @@ pub(crate) struct Body {
     pub meta_out: u32,
     /// Elements of logic variables without an initial value (`'U'`), which start at 0.
     pub uninit: u64,
-    /// The process variables among those (first word, elements): the second image of
-    /// exact-meta (without `--two-state`) starts them at 1 (`rt::Rail`).
-    pub useed: Vec<(u32, u32)>,
     /// The `std_ulogic` leaves of clocked variables without an initial value (first word,
     /// elements, the salt of the variable): `--init-unset` sets them at initialisation
     /// (`rt::RegionProc::unset`).
@@ -879,12 +1003,6 @@ pub(crate) struct Body {
     /// only, so a run with another seed reuses the code and the cache (A68).
     #[serde(default)]
     pub rands: Vec<(u32, u32, u64)>,
-    /// Under exact-meta (without `--two-state`): a comparison or conversion of logic values the code cannot
-    /// give the normal mode's result on a metavalue (`Lx::differs`): the second image may take
-    /// another branch, so its registers keep the region's values where only it changed them
-    /// (`rt::RegionProc::rail_keep`).
-    #[serde(default)]
-    pub keep: bool,
     /// The checks of the body, numbered by `site`, each with the source place of the statement
     /// (an operation for arithmetic) it belongs to, then the statements of the calls it is inlined
     /// in, innermost first.
@@ -998,6 +1116,16 @@ struct IntElem {
     hi: i64,
     down: bool,
     place: Option<Place>,
+}
+
+impl IntElem {
+    /// A placeholder until the caller sets the elements' range.
+    const ANY: IntElem = IntElem {
+        lo: i64::MIN,
+        hi: i64::MAX,
+        down: false,
+        place: None,
+    };
 }
 
 /// What an assignment to a place is checked against.
@@ -1217,7 +1345,7 @@ const NOTE_RESET: &str =
     "an assert or report in the asynchronous reset branch of a clocked process";
 
 /// `Part::lit` of an aggregate that holds a metavalue literal and other values: its codes are
-/// not kept, so a matching comparison with it (and any under exact-meta (without `--two-state`)) stays out.
+/// not kept, so a matching comparison with it stays out (with `--two-state`).
 const LIT_MIXED: u32 = u32::MAX;
 
 /// Why a combinational process of the top-level unit with an assert or report stays in the event
@@ -1296,12 +1424,11 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
         notes: 0,
         metas: 0,
         uninit: 0,
-        useed: Vec::new(),
         unset: Vec::new(),
         unset_names: Vec::new(),
         x: None,
-        sure: HashSet::new(),
-        unsure: None,
+        allocs: Vec::new(),
+        two_locs: HashSet::new(),
         checks: Vec::new(),
         at: db.stmts[p.stmt].span,
         unrolled: 0,
@@ -1318,7 +1445,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
     };
     if let Some(pa) = &p.actual {
         lx.port_actual(pa)?;
-        return Ok(lx.body(Kind::Comb, None, None));
+        return lx.body(Kind::Comb, None, None);
     }
     match &db.stmts[p.stmt].kind {
         StmtKind::Process {
@@ -1351,14 +1478,14 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
                 lx.at_edge = true;
                 lx.eval_note(p.stmt);
                 lx.at_edge = false;
-                return Ok(lx.body(Kind::Clocked, Some(clock), None));
+                return lx.body(Kind::Clocked, Some(clock), None);
             }
             if lx.eval {
                 lx.eval_note(p.stmt);
             } else {
                 lx.drop_stmt(p.stmt);
             }
-            Ok(lx.body(Kind::Comb, None, None))
+            lx.body(Kind::Comb, None, None)
         }
         StmtKind::ConcProcCall {
             postponed: false,
@@ -1366,7 +1493,7 @@ pub(crate) fn lower(db: &Db, e: &Elaborated, pi: usize) -> R<Body> {
             ..
         } => {
             lx.proc_call(call)?;
-            Ok(lx.body(Kind::Comb, None, None))
+            lx.body(Kind::Comb, None, None)
         }
         _ => Err(bug("a concurrent statement of this kind")),
     }
@@ -1423,17 +1550,14 @@ struct Lx<'a> {
     notes: u32,
     metas: u32,
     uninit: u64,
-    useed: Vec<(u32, u32)>,
     unset: Vec<(u32, u32, u64)>,
     unset_names: Vec<String>,
     /// While an `--init-x` literal is lowered: the option and the literal's salt.
     x: Option<(yavs_logic::start::Fill, u64)>,
-    /// Under exact-meta (without `--two-state`): booleans computed from the region's values on every image
-    /// (`Lx::other`), for `Body::keep`.
-    sure: HashSet<Ref>,
-    /// Under exact-meta (without `--two-state`): a word set on the second image when an operand `Lx::other`
-    /// reads there differs from the region's (a combinational member, `Lx::body`).
-    unsure: Option<Ref>,
+    /// Without `--two-state`: the slots holding nine-valued values (`nine::Allocs`), and those
+    /// of BIT and BOOLEAN objects, which start at `'0'`.
+    allocs: crate::nine::Allocs,
+    two_locs: HashSet<u32>,
     checks: Vec<(Check, Vec<Span>)>,
     /// The place new check sites report: the statement being lowered.
     at: Span,
@@ -1462,44 +1586,31 @@ struct Lx<'a> {
 }
 
 impl Lx<'_> {
-    fn body(mut self, kind: Kind, clock: Option<Clock>, reset: Option<(LeafId, u32, u8)>) -> Body {
-        // A combinational member that drives a signal it reads reads it as of its own run, which
-        // the region's image no longer holds at the end of that run: its own value there.
-        // A clocked member reads its own image: taking the region's choices there kept a memory
-        // read's 'U' that then met clocked choices further on (Microwatt's cache, 2026-11-21);
-        // so its conditions are none of `sure` and it keeps registers (`Body::keep`).
-        if kind == Kind::Clocked {
-            self.ops = all_own(std::mem::take(&mut self.ops));
-            self.sure.clear();
-        }
-        if kind == Kind::Comb && crate::region::exact_meta() {
-            let mut w = HashSet::new();
-            sig_writes(&self.ops, &mut w);
-            if !w.is_empty() {
-                self.ops = own_sigs(std::mem::take(&mut self.ops), &w);
-            }
-            if let Some(u) = self.unsure {
-                let collapse = self.collapse();
-                self.ops.insert(
-                    0,
-                    Op::Lit {
-                        dst: u,
-                        val: Box::new([0]),
-                    },
-                );
-                self.ops.push(Op::If {
-                    cond: u,
-                    then: collapse,
-                    else_: Vec::new(),
-                });
+    fn body(
+        mut self,
+        kind: Kind,
+        clock: Option<Clock>,
+        reset: Option<(LeafId, u32, u8)>,
+    ) -> R<Body> {
+        // Without `--two-state`: the operations on the planes of nine-valued values.
+        if crate::region::exact_meta() {
+            let nets = &self.e.nets;
+            let sig = |k: u32| {
+                let s = yavs_kernel::SignalId(k);
+                (nets.leaf(nets.packs[k as usize].0).ty.elem == yavs_kernel::Elem::Logic)
+                    .then(|| nets.signal_len(s))
+            };
+            self.allocs.sort_unstable();
+            for ops in [&mut self.ops, &mut self.init_ops] {
+                *ops =
+                    crate::nine::expand(std::mem::take(ops), &self.allocs, &sig, &mut self.locs)?;
             }
         }
         let reports = (self.loud.borrow().iter())
             .filter_map(|&x| self.e.region_calls.get(&(self.p.scope, x)))
             .flat_map(|c| c.reports.iter().cloned())
             .collect();
-        let keep = crate::region::exact_meta() && !conds_sure(&self.ops, &self.sure);
-        Body {
+        Ok(Body {
             reports,
             kind,
             clock,
@@ -1523,13 +1634,11 @@ impl Lx<'_> {
             metas: self.metas,
             meta_out: self.metas - self.lit_cmp.len() as u32,
             uninit: self.uninit,
-            useed: self.useed,
             unset: self.unset,
             unset_names: self.unset_names,
             rands: self.rands,
-            keep,
             checks: self.checks,
-        }
+        })
     }
 
     fn process(mut self, sensitivity: &Sensitivity, body: &[StmtId]) -> R<Body> {
@@ -1552,7 +1661,7 @@ impl Lx<'_> {
                     ));
                 };
                 self.edge_body(c, rest)?;
-                return Ok(self.body(Kind::Clocked, Some(clock), None));
+                return self.body(Kind::Clocked, Some(clock), None);
             }
             let [s] = body else {
                 return Err(bug(
@@ -1570,7 +1679,7 @@ impl Lx<'_> {
                 // A reset branch elaboration found never runs (`rst = '1' and G`, `G` false).
                 ([(cond, inner)] | [_, (cond, inner)], None) => {
                     self.edge_body(*cond, inner)?;
-                    return Ok(self.body(Kind::Clocked, Some(clock), None));
+                    return self.body(Kind::Clocked, Some(clock), None);
                 }
                 ([(r, a), (cond, b)], Some(reset)) => {
                     // `if <reset> then A elsif <edge> then B`: the edge word decides B.
@@ -1586,7 +1695,7 @@ impl Lx<'_> {
                             else_: Vec::new(),
                         }],
                     });
-                    return Ok(self.body(Kind::Clocked, Some(clock), Some(reset)));
+                    return self.body(Kind::Clocked, Some(clock), Some(reset));
                 }
                 _ => return Err(bug("a clocked process with an `elsif` branch")),
             }
@@ -1603,11 +1712,10 @@ impl Lx<'_> {
         self.stmts(body)?;
         // A combinational variable is assigned before any read: its start value is never seen.
         self.uninit = 0;
-        self.useed.clear();
         self.unset.clear();
         self.unset_names.clear();
         self.init_ops.clear();
-        Ok(self.body(Kind::Comb, None, None))
+        self.body(Kind::Comb, None, None)
     }
 
     /// Why a process with an edge test that elaboration found no clock-edge trigger for stays
@@ -1724,10 +1832,10 @@ impl Lx<'_> {
                 rising: t.rising,
                 legacy: t.legacy,
             };
-            return Ok(self.body(Kind::Clocked, Some(clock), None));
+            return self.body(Kind::Clocked, Some(clock), None);
         }
         self.signal_rhs(target, rhs)?;
-        Ok(self.body(Kind::Comb, None, None))
+        self.body(Kind::Comb, None, None)
     }
 
     /// The equivalent process `formal <= expr` of a port's expression actual (LRM 6.5.6.3): the
@@ -1777,7 +1885,7 @@ impl Lx<'_> {
         });
         if let Some((salt, mask)) = &bits.1 {
             let w = self.locs;
-            let src = self.loc(words(n));
+            let src = self.logic_loc(n);
             self.rands.push((w, n, *salt));
             self.ops.push(Op::Blend {
                 dst,
@@ -1792,22 +1900,83 @@ impl Lx<'_> {
         Ref::Loc(self.locs - words)
     }
 
-    fn tmp(&mut self, len: u32) -> Part {
-        Part {
-            r: self.loc(words(len)),
-            lo: 0,
-            len,
-            full: len,
-            dims: Dims::NONE,
-            fresh: true,
-            leaf: None,
-            at: None,
-            obj: None,
-            lit: None,
-            int: None,
+    /// Slots of a logic value of `len` elements: four planes of them without `--two-state`
+    /// (`nine::Allocs`).
+    fn logic_loc(&mut self, len: u32) -> Ref {
+        if !crate::region::exact_meta() {
+            return self.loc(words(len));
+        }
+        let r = self.loc(4 * words(len));
+        if let Ref::Loc(s) = r {
+            self.allocs.push((s, words(len), len));
+        }
+        r
+    }
+
+    /// A shape of BIT or BOOLEAN elements (`two_valued`).
+    fn shape_two(&self, s: &Shape) -> bool {
+        match s {
+            Shape::Scalar { ty, .. } => self.two_valued(*ty),
+            Shape::Array { elem, .. } => self.shape_two(elem),
+            Shape::Record { .. } => false,
         }
     }
 
+    /// BIT, BOOLEAN or an array of them: never a metavalue, they start at `'0'`.
+    fn two_valued(&self, t: TypeId) -> bool {
+        let db = self.db;
+        let mut t = t;
+        while let TypeKind::Array { elem, .. } = &db.types[t].kind {
+            t = db.base(*elem);
+        }
+        let wk = &db.well_known;
+        Some(t) == wk.bit || Some(t) == wk.boolean
+    }
+
+    /// A temporary for a value of `len` elements: one word per element of an array of integers
+    /// (`int`), logic slots else.
+    fn tmp_for(&mut self, len: u32, int: Option<IntElem>) -> Part {
+        let r = match int {
+            Some(_) => self.loc(words(len)),
+            None => self.logic_loc(len),
+        };
+        Part {
+            int,
+            ..fresh_at(r, len)
+        }
+    }
+
+    fn tmp(&mut self, len: u32) -> Part {
+        let r = self.logic_loc(len);
+        fresh_at(r, len)
+    }
+}
+
+/// Only the first argument of a call is given (an `xmap` its default, `'0'`).
+fn one_given(args: &[yavs_sem::hir::Arg]) -> bool {
+    args.iter()
+        .skip(1)
+        .all(|a| matches!(a.actual, Actual::Default))
+}
+
+/// A fresh temporary of `len` elements at `r`.
+fn fresh_at(r: Ref, len: u32) -> Part {
+    Part {
+        r,
+        lo: 0,
+        len,
+        full: len,
+        dims: Dims::NONE,
+        fresh: true,
+        leaf: None,
+        at: None,
+        obj: None,
+        lit: None,
+        int: None,
+    }
+}
+
+impl Lx<'_> {
     fn tmp_int(&mut self, lo: i64, hi: i64) -> IntV {
         IntV {
             r: self.loc(1),
@@ -1832,6 +2001,46 @@ impl Lx<'_> {
             dst: t.r,
             val: Box::new([u64::from(b)]),
         });
+        t
+    }
+
+    /// A function of nine values (`Op::Nine`) of one operand: a boolean for `??` and `is_x`, a
+    /// value as long as `v` else.
+    fn nine_fn(&mut self, f: NineF, v: Val) -> R<Val> {
+        let p = self.part(v)?;
+        let a = self.whole(p);
+        let t = self.tmp(if matches!(f, NineF::Truthy | NineF::IsX) {
+            1
+        } else {
+            p.len
+        });
+        self.ops.push(Op::Nine {
+            f,
+            dst: t.r,
+            a,
+            b: a,
+            len: p.len,
+        });
+        Ok(Val::Part(t))
+    }
+
+    /// Without `--two-state`: `t`, or all `'X'` when one of the operands `of` (each as long as
+    /// `t`) holds a metavalue (`NineF::XIf`); `t` itself with `--two-state`.
+    fn x_if(&mut self, mut t: Part, of: &[Ref]) -> Part {
+        if !crate::region::exact_meta() {
+            return t;
+        }
+        for &b in of {
+            let r = self.tmp(t.len);
+            self.ops.push(Op::Nine {
+                f: NineF::XIf,
+                dst: r.r,
+                a: t.r,
+                b,
+                len: t.len,
+            });
+            t = Part { r: r.r, ..t };
+        }
         t
     }
 
@@ -1900,15 +2109,16 @@ impl Lx<'_> {
         }
         let mut cond = flags[0];
         for &f in &flags[1..] {
-            let o = self.tmp(1);
+            // Jump flags are one word, also without `--two-state`.
+            let o = self.loc(1);
             self.ops.push(Op::Gate {
                 g: Gate::Or,
-                dst: o.r,
+                dst: o,
                 a: cond,
                 b: f,
                 len: 1,
             });
-            cond = o.r;
+            cond = o;
         }
         let saved = std::mem::take(&mut self.pend);
         let r = self.capture(f);
@@ -2190,17 +2400,9 @@ impl Lx<'_> {
     /// `case` (and a selected assignment) as a chain of tests of the choices; the last
     /// alternative, or `others`, needs no test (the choices cover every value).
     fn case(&mut self, sel: ExprId, matching: bool, alts: &[(&ChoiceSet, Br)]) -> R<()> {
-        let v = self.expr(sel)?;
-        // Under exact-meta (without `--two-state`) a selector with a metavalue matches no choice of
-        // `std_ulogic` codes: the `others` branch, as in the normal mode.
-        let nine = self.nine_valued(self.db.base(self.db.exprs[sel].subtype));
-        let (v, follow) = match v {
-            Val::Part(p) if nine => match self.other(&p) {
-                Some(o) => (Val::Part(o), true),
-                None => (Val::Part(self.materialise(p)), false),
-            },
-            Val::Part(p) => (Val::Part(self.materialise(p)), false),
-            v => (v, false),
+        let v = match self.expr(sel)? {
+            Val::Part(p) => Val::Part(self.materialise(p)),
+            v => v,
         };
         let mut chain: Vec<(Option<Ref>, Br)> = Vec::new();
         for (k, (cs, b)) in alts.iter().enumerate() {
@@ -2210,9 +2412,6 @@ impl Lx<'_> {
                 break;
             }
             let c = self.choices(&v, cs, matching)?;
-            if follow {
-                self.sure.insert(c);
-            }
             chain.push((Some(c), *b));
         }
         self.ref_chain(&chain)
@@ -2282,6 +2481,32 @@ impl Lx<'_> {
     /// (A74: a two-state value is never one) and keeps the process out otherwise.
     fn match_codes(&mut self, p: Part, codes: &[u8], matching: bool) -> R<Ref> {
         let n = codes.len();
+        // Nine values: the codes themselves (`std_match` when matching).
+        if crate::region::exact_meta() {
+            let Val::Part(l) = self.logic_lit(codes.to_vec(), Dims::NONE)? else {
+                return Err(bug("a literal of no elements"));
+            };
+            let a = self.whole(p);
+            let t = self.tmp(1);
+            self.ops.push(if matching {
+                Op::Nine {
+                    f: NineF::Match,
+                    dst: t.r,
+                    a,
+                    b: l.r,
+                    len: n as u32,
+                }
+            } else {
+                Op::VecEq {
+                    dst: t.r,
+                    a,
+                    b: l.r,
+                    len: n as u32,
+                    ne: false,
+                }
+            });
+            return Ok(t.r);
+        }
         let mut val = vec![0u64; words(n as u32) as usize];
         let mut care = vec![0u64; val.len()];
         let two = self.meta_joins();
@@ -2878,7 +3103,7 @@ impl Lx<'_> {
             TypeKind::Integer | TypeKind::UniversalInteger => {
                 let v = self.expr(x)?;
                 let i = self.int(v)?;
-                let r = self.keep_arg(i.r, 64, args);
+                let r = self.keep_arg(i.r, 64, args, false);
                 out.push(Piece::Int(r));
                 Ok(())
             }
@@ -2898,8 +3123,11 @@ impl Lx<'_> {
                                     matches!(db.decls[d].name, yavs_sem::decl::Designator::Char(x) if x == c)
                                 })
                             };
+                            // Nine values: every literal, in the order of their codes.
                             let mut cs = vec!['0', '1'];
-                            if self.nine_valued(ty) {
+                            if crate::region::exact_meta() && self.nine_valued(ty) {
+                                cs = "UX01ZWLH-".chars().collect();
+                            } else if self.nine_valued(ty) {
                                 cs.extend(['U', 'X']);
                             }
                             let Some(ds) = cs.into_iter().map(at).collect::<Option<Vec<_>>>()
@@ -2913,8 +3141,8 @@ impl Lx<'_> {
                     }
                     _ => return Err("an enumeration value of another form in a report".into()),
                 };
-                let n = self.keep_arg(r, len, args);
-                out.push(if names.len() == 4 && len == 1 {
+                let n = self.keep_arg(r, len, args, len == 1);
+                out.push(if matches!(names.len(), 4 | 9) && len == 1 {
                     Piece::Logic(n, names)
                 } else {
                     Piece::Enum(n, names)
@@ -2945,7 +3173,7 @@ impl Lx<'_> {
         }
         let len = p.len;
         let w = self.whole(p);
-        let n = self.keep_arg(w, len, args);
+        let n = self.keep_arg(w, len, args, true);
         let logic = self.nine_valued(self.db.base(self.db.exprs[x].subtype));
         out.push(Piece::Bits {
             n,
@@ -2956,9 +3184,14 @@ impl Lx<'_> {
         Ok(())
     }
 
-    /// The value in `r` (`len` elements) copied into words of its own, as arg `n` of a note.
-    fn keep_arg(&mut self, r: Ref, len: u32, args: &mut Vec<(Ref, u32)>) -> usize {
-        let t = self.loc(words(len));
+    /// The value in `r` (`len` elements, `logic` ones: four planes without `--two-state`)
+    /// copied into words of its own, as arg `n` of a note.
+    fn keep_arg(&mut self, r: Ref, len: u32, args: &mut Vec<(Ref, u32)>, logic: bool) -> usize {
+        let t = if logic {
+            self.logic_loc(len)
+        } else {
+            self.loc(words(len))
+        };
         self.ops.push(Op::Copy {
             dst: t,
             src: r,
@@ -3308,9 +3541,9 @@ impl Lx<'_> {
             return p;
         };
         let site = self.index_site(&p, b, ix);
-        let mut t = self.tmp(p.len);
+        let mut t = self.tmp_for(p.len, p.int);
         // An element of a literal chosen at run time keeps `LIT_MIXED` (`narrow_lit`, #1202).
-        (t.dims, t.int, t.lit) = (p.dims, p.int, p.lit);
+        (t.dims, t.lit) = (p.dims, p.lit);
         self.ops.push(Op::IndexRead {
             dst: t.r,
             src: p.r,
@@ -3332,7 +3565,11 @@ impl Lx<'_> {
         if p.lo == 0 && p.len == p.full {
             return p.r;
         }
-        let t = self.loc(words(p.len));
+        let t = if p.int.is_some() {
+            self.loc(words(p.len))
+        } else {
+            self.logic_loc(p.len)
+        };
         self.ops.push(Op::Extract {
             dst: t,
             src: p.r,
@@ -3775,7 +4012,7 @@ impl Lx<'_> {
                 let v = self
                     .tree(shape, d, &mut |_| Ref::Loc(u32::MAX))
                     .map_err(|w| format!("{w} (variable `{}`)", decl.name))?;
-                let v = self.place_vars(v, o.default.is_some());
+                let v = self.place_vars(v, shape, o.default.is_some());
                 if o.default.is_none() {
                     self.unset_leaves(&v, shape, d)?;
                 }
@@ -3879,7 +4116,7 @@ impl Lx<'_> {
         let v = self
             .tree(shape, d, &mut |_| Ref::Loc(u32::MAX))
             .map_err(|w| format!("{w} (shared variable `{}`)", decl.name))?;
-        let v = self.place_vars(v, true);
+        let v = self.place_vars(v, shape, true);
         self.vars.insert(d, v.clone());
         let known = std::mem::take(&mut self.known);
         let made = self.capture(|lx| {
@@ -3966,12 +4203,30 @@ impl Lx<'_> {
 
     /// Give a variable's leaves their slots: a logic leaf starts at 0 (its `'U'`, counted, unless
     /// it has an initial value), an integer at its `'left`.
-    fn place_vars(&mut self, v: Val, has_init: bool) -> Val {
+    fn place_vars(&mut self, v: Val, shape: &Shape, has_init: bool) -> Val {
         match v {
             Val::Part(mut p) => {
-                p.r = self.loc(words(p.full));
+                let two = self.shape_two(shape);
+                let nine = crate::region::exact_meta() && p.int.is_none();
+                p.r = if nine {
+                    self.logic_loc(p.full)
+                } else {
+                    self.loc(words(p.full))
+                };
                 if let Ref::Loc(w) = p.r {
-                    self.var_words.push((w, words(p.full)));
+                    let nw = words(p.full);
+                    self.var_words.push((w, if nine { 4 * nw } else { nw }));
+                    if two {
+                        self.two_locs.insert(w);
+                    }
+                    // Nine values: BIT and BOOLEAN start at `'0'` (plane 1 set), the others at
+                    // `'U'` (no plane).
+                    if nine && two && !has_init {
+                        for k in 0..nw {
+                            let m = crate::codegen::mask((p.full - 64 * k).min(64));
+                            self.init.push((w + nw + k, m));
+                        }
+                    }
                     match p.int {
                         // Integer elements start at their `'left`.
                         Some(e) if !has_init => {
@@ -3981,10 +4236,7 @@ impl Lx<'_> {
                             }
                         }
                         Some(_) => {}
-                        None if !has_init => {
-                            self.uninit += u64::from(p.full);
-                            self.useed.push((w, p.full));
-                        }
+                        None if !has_init && !(two && nine) => self.uninit += u64::from(p.full),
                         None => {}
                     }
                 }
@@ -4004,11 +4256,23 @@ impl Lx<'_> {
                 }
                 Val::Int(i)
             }
-            Val::Rec(fs) => Val::Rec(
-                fs.into_iter()
-                    .map(|f| self.place_vars(f, has_init))
-                    .collect(),
-            ),
+            Val::Rec(fs) => {
+                // `tree` built the fields from the record's shape (also under arrays of records).
+                let mut s = shape;
+                while let Shape::Array { elem, .. } = s {
+                    s = elem;
+                }
+                let Shape::Record { fields, .. } = s else {
+                    unreachable!("a record value from a shape that is no record");
+                };
+                debug_assert_eq!(fs.len(), fields.len());
+                Val::Rec(
+                    fs.into_iter()
+                        .zip(fields)
+                        .map(|(f, (_, fs))| self.place_vars(f, fs, has_init))
+                        .collect(),
+                )
+            }
             v @ Val::Null(_) => v,
         }
     }
@@ -4925,6 +5189,10 @@ impl Lx<'_> {
                     leaf: None,
                     ..i
                 })),
+                // Nine values: the code is the position, not a choice on its bit.
+                Val::Part(_) if logic && zero == 2 && crate::region::exact_meta() => {
+                    Err("`'pos` of a `std_ulogic` value with nine values".into())
+                }
                 Val::Part(p) if logic && p.len == 1 => {
                     let c = self.whole(p);
                     let (one, z) = (self.int_lit(zero + 1), self.int_lit(zero));
@@ -5552,7 +5820,7 @@ impl Lx<'_> {
                 }
                 // Element `p` from the left is word `n - 1 - p`.
                 let val: Box<[u64]> = vs.iter().rev().map(|&v| v as u64).collect();
-                let mut t = self.tmp(64 * vs.len() as u32);
+                let mut t = self.tmp_for(64 * vs.len() as u32, Some(IntElem::ANY));
                 self.ops.push(Op::Lit { dst: t.r, val });
                 t.dims = Dims::wrap(b, Dims::wrap(WORD, Dims::NONE).expect("one deep"))
                     .expect("two deep");
@@ -5630,7 +5898,7 @@ impl Lx<'_> {
                     .map(|v| v.as_int().ok_or("a literal of an unexpected shape"))
                     .collect::<Result<_, _>>()?;
                 let val: Box<[u64]> = vs.iter().rev().map(|&v| v as u64).collect();
-                let mut p = self.tmp(64 * vs.len() as u32);
+                let mut p = self.tmp_for(64 * vs.len() as u32, Some(IntElem::ANY));
                 self.ops.push(Op::Lit { dst: p.r, val });
                 p.dims = Dims::wrap(b, Dims::wrap(WORD, Dims::NONE).expect("one deep"))
                     .expect("two deep");
@@ -5668,6 +5936,41 @@ impl Lx<'_> {
         let mut val = vec![0u64; words(n) as usize];
         let mut rnd = vec![0u64; val.len()];
         let mut meta = false;
+        // Nine values: the codes in four planes; an `--init-x` literal's metavalues `'0'`, `'1'`
+        // or the run's random bits (`Body::rands`, blended in by `lit_value`).
+        if crate::region::exact_meta() {
+            let w = words(n) as usize;
+            let mut planes = vec![0u64; 4 * w];
+            let mut salt = self.lit_at.map_or(0, |at| lit_salt(self.db, at));
+            for (p, &code) in codes.iter().enumerate() {
+                let el = n as usize - 1 - p;
+                let c = match (code, self.x) {
+                    (0 | 1 | 5 | 8, Some((f, s))) => {
+                        salt = s;
+                        match f {
+                            yavs_logic::start::Fill::Zero => 2,
+                            yavs_logic::start::Fill::One => 3,
+                            yavs_logic::start::Fill::Random(_) => {
+                                rnd[el / 64] |= 1 << (el % 64);
+                                2
+                            }
+                        }
+                    }
+                    (c, _) => c,
+                };
+                for k in 0..4 {
+                    planes[k * w + el / 64] |= u64::from(c >> k & 1) << (el % 64);
+                }
+            }
+            let mut t = self.tmp(n);
+            let bits: Bits = (
+                planes.into(),
+                (rnd.iter().any(|&w| w != 0)).then(|| (salt, rnd.into())),
+            );
+            self.lit_value(t.r, n, &bits);
+            t.dims = dims;
+            return Ok(Val::Part(t));
+        }
         // A two-state region gives a metavalue the bits of `--init-x` (A57), 0 without it.
         let (two, fill) = (self.meta_joins(), self.lit_fill());
         let mut salt = self.lit_at.map_or(0, |at| lit_salt(self.db, at));
@@ -5935,7 +6238,7 @@ impl Lx<'_> {
         let fill = match k {
             ShiftK::Rol | ShiftK::Ror => a,
             ShiftK::Sll | ShiftK::Srl => {
-                let z = self.loc(words(p.len));
+                let z = self.logic_loc(p.len);
                 self.ops.push(Op::Lit {
                     dst: z,
                     val: vec![0; words(p.len) as usize].into(),
@@ -5943,7 +6246,7 @@ impl Lx<'_> {
                 z
             }
             ShiftK::Sra => {
-                let s = self.loc(1);
+                let s = self.logic_loc(1);
                 self.ops.push(Op::Extract {
                     dst: s,
                     src: a,
@@ -5951,7 +6254,7 @@ impl Lx<'_> {
                     len: 1,
                     full: p.len,
                 });
-                let f = self.loc(words(p.len));
+                let f = self.logic_loc(p.len);
                 self.ops.push(Op::Splat {
                     dst: f,
                     a: s,
@@ -5966,7 +6269,7 @@ impl Lx<'_> {
         } else {
             (fill, a)
         };
-        let d = self.loc(words(2 * p.len));
+        let d = self.logic_loc(2 * p.len);
         self.ops.push(Op::Cat {
             dst: d,
             hi,
@@ -6047,7 +6350,7 @@ impl Lx<'_> {
         let a = self.whole(p);
         let t = self.tmp(len);
         let ext = |lx: &mut Self, lo: u32, l: u32| {
-            let e = lx.loc(words(l));
+            let e = lx.logic_loc(l);
             lx.ops.push(Op::Extract {
                 dst: e,
                 src: a,
@@ -6076,7 +6379,7 @@ impl Lx<'_> {
         match k {
             ShiftK::Sll => {
                 let hi = ext(self, 0, len - n);
-                let z = self.loc(words(n));
+                let z = self.logic_loc(n);
                 self.ops.push(Op::Lit {
                     dst: z,
                     val: vec![0; words(n) as usize].into(),
@@ -6103,7 +6406,7 @@ impl Lx<'_> {
             }
             ShiftK::Sra => {
                 let s = ext(self, len - 1, 1);
-                let fill = self.loc(words(n));
+                let fill = self.logic_loc(n);
                 self.ops.push(Op::Splat {
                     dst: fill,
                     a: s,
@@ -6379,8 +6682,7 @@ impl Lx<'_> {
                             (a, b) => (self.part(a)?, self.part(b)?),
                         };
                         let (ra, rb) = (self.whole(a), self.whole(b));
-                        let mut t = self.tmp(a.len + b.len);
-                        t.int = a.int.or(b.int);
+                        let t = self.tmp_for(a.len + b.len, a.int.or(b.int));
                         self.ops.push(Op::Cat {
                             dst: t.r,
                             hi: ra,
@@ -6452,15 +6754,32 @@ impl Lx<'_> {
                     }
                     let name = decl.name.key().as_str().to_ascii_lowercase();
                     if sp.mangled.as_str().starts_with("ieee.") && args.len() <= 2 {
+                        let nine = crate::region::exact_meta();
+                        let f = match name.as_str() {
+                            "is_x" => Some(NineF::IsX),
+                            "to_bit" | "to_bitvector" => Some(NineF::ToBit),
+                            "to_01" => Some(NineF::To01),
+                            "to_x01" => Some(NineF::ToX01),
+                            "to_x01z" => Some(NineF::ToX01Z),
+                            "to_ux01" => Some(NineF::ToUX01),
+                            _ => None,
+                        };
                         match name.as_str() {
+                            // Nine values: with the default `xmap` ('0') only.
+                            // `std_match` of two `std_ulogic` values.
+                            "std_match" if nine && args.len() == 2 => {
+                                let (a, b) = two(self)?;
+                                return self.vec_eq(a, b, false, true, true);
+                            }
+                            _ if nine && f.is_some() => {
+                                if !one_given(args) {
+                                    return not_yet();
+                                }
+                                let v = one(self)?;
+                                return self.nine_fn(f.expect("matched"), v).map(no_dims);
+                            }
                             // A two-state value is never a metavalue.
                             "is_x" => return Ok(Val::Part(self.bool_lit(false))),
-                            // A metavalue gives '0' (the default `xmap`): so on every image of
-                            // exact-meta (without `--two-state`).
-                            "to_bit" | "to_bitvector" | "to_01" if args.len() == 1 => {
-                                let v = one(self)?;
-                                return self.meta_zero(v).map(no_dims);
-                            }
                             // Identities in two-state values (their index ranges are their own).
                             "to_stdulogic" | "to_bit" | "to_bitvector" | "to_stdlogicvector"
                             | "to_stdulogicvector" | "to_x01" | "to_x01z" | "to_ux01" | "to_01" => {
@@ -6601,11 +6920,24 @@ impl Lx<'_> {
                         });
                         Ok(Val::Part(t))
                     }
-                    // `??` of a metavalue is false, `to_01` and `to_bitvector` give '0' for one
-                    // (the default `xmap`): so on every image of exact-meta (without `--two-state`).
-                    I::Truthy | I::To01 | I::ToBitVector if args.len() == 1 => {
+                    // Nine values: `??`, `to_01` and `to_bitvector` with the default `xmap` ('0').
+                    I::Truthy | I::To01 | I::ToBitVector | I::Conv(..) | I::IsX(_)
+                        if crate::region::exact_meta() =>
+                    {
+                        let f = match op {
+                            I::Truthy => NineF::Truthy,
+                            I::To01 => NineF::To01,
+                            I::ToBitVector => NineF::ToBit,
+                            I::Conv(0, _) => NineF::ToX01,
+                            I::Conv(1, _) => NineF::ToX01Z,
+                            I::Conv(_, _) => NineF::ToUX01,
+                            _ => NineF::IsX,
+                        };
+                        if !one_given(args) {
+                            return not_yet();
+                        }
                         let v = one(self)?;
-                        self.meta_zero(v).map(no_dims)
+                        self.nine_fn(f, v).map(no_dims)
                     }
                     // Identities in two-state values.
                     I::ToSulv | I::Conv(..) | I::To01 | I::ToBitVector | I::Truthy => {
@@ -6653,6 +6985,7 @@ impl Lx<'_> {
                         Ok(Val::Part(t))
                     }
                     I::Div { kind, signed, form } => self.num_div(args, kind, signed, form),
+                    I::QCompare { .. } if crate::region::exact_meta() => not_yet(),
                     I::Compare {
                         cmp: c,
                         signed,
@@ -6688,7 +7021,7 @@ impl Lx<'_> {
                             b: q,
                             len: n,
                         });
-                        Ok(Val::Part(t))
+                        Ok(Val::Part(self.x_if(t, &[ra, rb])))
                     }
                     I::Match | I::MatchEq { .. } => {
                         let ne = matches!(op, I::MatchEq { ne: true, .. });
@@ -6704,9 +7037,6 @@ impl Lx<'_> {
                         if a.len > 64 {
                             return Err("`to_integer` of a vector of more than 64 elements".into());
                         }
-                        // The region's value on every image (`Lx::other`): an index of a
-                        // start value reads where the region's reads.
-                        let a = self.other(&a).unwrap_or(a);
                         let ra = self.whole(a);
                         let (lo, hi) = if signed {
                             (
@@ -6806,7 +7136,7 @@ impl Lx<'_> {
                             len: to,
                             full: a.len,
                         });
-                        let s = self.loc(1);
+                        let s = self.logic_loc(1);
                         self.ops.push(Op::Extract {
                             dst: s,
                             src: ra,
@@ -6846,7 +7176,7 @@ impl Lx<'_> {
                         if op == I::Neg {
                             return Ok(Val::Part(t));
                         }
-                        let s = self.loc(1);
+                        let s = self.logic_loc(1);
                         self.ops.push(Op::Extract {
                             dst: s,
                             src: ra,
@@ -6862,7 +7192,7 @@ impl Lx<'_> {
                             b: ra,
                             len: a.len,
                         });
-                        Ok(Val::Part(r))
+                        Ok(Val::Part(self.x_if(r, &[ra])))
                     }
                     _ => not_yet(),
                 }
@@ -7184,6 +7514,38 @@ impl Lx<'_> {
             // Arrays of different lengths are never equal (LRM 9.2.3).
             return Ok(Val::Part(self.bool_lit(ne)));
         }
+        // Nine values: the codes compared as they are, a literal's too (`Lx::logic_lit`).
+        if crate::region::exact_meta() {
+            let (ra, rb) = (self.whole(a), self.whole(b));
+            let t = self.tmp(1);
+            self.ops.push(match (matching, nine) {
+                (false, _) => Op::VecEq {
+                    dst: t.r,
+                    a: ra,
+                    b: rb,
+                    len: a.len,
+                    ne,
+                },
+                (true, true) => Op::Nine {
+                    f: NineF::Match,
+                    dst: t.r,
+                    a: ra,
+                    b: rb,
+                    len: a.len,
+                },
+                (true, false) => Op::Nine {
+                    f: NineF::MatchEq { ne },
+                    dst: t.r,
+                    a: ra,
+                    b: rb,
+                    len: a.len,
+                },
+            });
+            if matching && nine && ne {
+                return self.not(Val::Part(t));
+            }
+            return Ok(Val::Part(t));
+        }
         match b.lit.or(a.lit) {
             // An aggregate of a metavalue literal and other values: its codes are not kept.
             Some(LIT_MIXED) => return Err(META_CMP.into()),
@@ -7193,25 +7555,13 @@ impl Lx<'_> {
                 let v = if b.lit.is_some() { a } else { b };
                 self.lit_cmp.insert(k);
                 let codes = self.lits[k as usize].clone();
-                let ov = if nine && !ne { self.other(&v) } else { None };
-                let r = self.match_codes(ov.unwrap_or(v), &codes, matching)?;
-                if ov.is_some() {
-                    self.sure.insert(r);
-                }
+                let r = self.match_codes(v, &codes, matching)?;
                 if !ne {
                     return Ok(Val::Part(part_of(r, 1)));
                 }
                 return self.not(Val::Part(part_of(r, 1)));
             }
         }
-        // Under exact-meta (without `--two-state`) every image compares the region's values: a choice on a
-        // start value is the region's on the second image too (`Lx::other`).
-        let o = if nine && !(matching && ne) {
-            self.other(&a).zip(self.other(&b))
-        } else {
-            None
-        };
-        let (a, b) = o.unwrap_or((a, b));
         let (ra, rb) = (self.whole(a), self.whole(b));
         let t = self.tmp(1);
         self.ops.push(Op::VecEq {
@@ -7221,169 +7571,7 @@ impl Lx<'_> {
             len: a.len,
             ne,
         });
-        if o.is_some() {
-            self.sure.insert(t.r);
-        }
         Ok(Val::Part(t))
-    }
-
-    /// Under exact-meta (without `--two-state`): `p` as the region's image holds it, read there by every
-    /// image ([`Op::Other`]; its own value on the region's image), so a comparison or conversion
-    /// of it takes the region's choice on each, as without the second image, and never makes a
-    /// `'U'` where the normal mode has a value. A literal is itself; `None` where that image's
-    /// value at this point is not in memory (a temporary, a variable, an element chosen at run
-    /// time, an array of integers).
-    fn other(&mut self, p: &Part) -> Option<Part> {
-        if !crate::region::exact_meta() || p.int.is_some() {
-            return None;
-        }
-        match p.r {
-            Ref::Sig(_) if p.at.is_none() && p.lit.is_none() => {}
-            _ if self.literal_part(p) => return Some(*p),
-            _ => return None,
-        }
-        let o = self.loc(words(p.full));
-        self.ops.push(Op::Other {
-            dst: o,
-            src: p.r,
-            len: p.full,
-            oth: Ref::Oth,
-        });
-        let oth = Part {
-            r: o,
-            fresh: true,
-            leaf: None,
-            ..*p
-        };
-        if self.p.trigger.is_none() {
-            // The second image's own value differs: the region's choice may not be the normal
-            // mode's, so the member's outputs take the region's values (`Lx::body`).
-            let (a, b) = (self.whole(*p), self.whole(oth));
-            let t = self.tmp(1);
-            self.ops.push(Op::VecEq {
-                dst: t.r,
-                a,
-                b,
-                len: p.len,
-                ne: true,
-            });
-            let u = match self.unsure {
-                Some(u) => u,
-                None => {
-                    let u = self.loc(1);
-                    *self.unsure.insert(u)
-                }
-            };
-            self.ops.push(Op::Gate {
-                g: Gate::Or,
-                dst: u,
-                a: u,
-                b: t.r,
-                len: 1,
-            });
-        }
-        Some(oth)
-    }
-
-    /// Every element the member drives, set to the region's value (`Op::Other`): on the second
-    /// image after a choice on an operand whose value there differs from the region's, the
-    /// region's choice may not be the normal mode's, and a `'U'` it would show can be one the
-    /// normal mode does not have (`y <= u when s = '0' else b`, `s` and `u` 'U').
-    fn collapse(&mut self) -> Vec<Op> {
-        let nets = &self.e.nets;
-        let mut masks: std::collections::BTreeMap<u32, (u32, Vec<u64>)> = Default::default();
-        for &l in &self.writes {
-            let (leaf, at) = (nets.leaf(l), nets.loc[l.index()]);
-            let n = nets.signal_len(at.signal);
-            let logic = leaf.ty.elem == yavs_kernel::Elem::Logic;
-            let full = if logic { n } else { 64 * n };
-            let m = masks
-                .entry(at.signal.0)
-                .or_insert_with(|| (full, vec![0; words(full) as usize]));
-            let (lo, len) = if logic {
-                (at.base, leaf.ty.len)
-            } else {
-                (0, full)
-            };
-            set_bits(&mut m.1, lo, len);
-        }
-        let mut ops = Vec::new();
-        for (k, (full, mask)) in masks {
-            let t = self.loc(words(full));
-            ops.push(Op::Other {
-                dst: t,
-                src: Ref::Sig(k),
-                len: full,
-                oth: Ref::Oth,
-            });
-            ops.push(Op::Blend {
-                dst: Ref::Sig(k),
-                src: t,
-                mask: mask.into(),
-            });
-        }
-        ops
-    }
-
-    /// The integer `i` as the region's image holds it ([`Lx::other`]): a signal's, or a literal.
-    fn other_int(&mut self, i: IntV) -> Option<IntV> {
-        if !crate::region::exact_meta() {
-            return None;
-        }
-        match i.r {
-            Ref::Sig(_) => {}
-            Ref::Loc(_)
-                if i.fresh
-                    && (self.ops.iter().rev().take(16))
-                        .any(|o| matches!(o, Op::IntLit { dst, .. } if *dst == i.r)) =>
-            {
-                return Some(i);
-            }
-            _ => return None,
-        }
-        let o = self.loc(1);
-        self.ops.push(Op::Other {
-            dst: o,
-            src: i.r,
-            len: 64,
-            oth: Ref::Oth,
-        });
-        Some(IntV {
-            r: o,
-            fresh: true,
-            leaf: None,
-            ..i
-        })
-    }
-
-    /// `v` as the region's image holds it ([`Lx::other`]), for a conversion that gives '0' for a
-    /// metavalue (`to_01`, `to_bit`, `??`): the region reads one as 0.
-    fn meta_zero(&mut self, v: Val) -> R<Val> {
-        let Val::Part(p) = v else {
-            return Ok(v);
-        };
-        Ok(Val::Part(match self.other(&p) {
-            // A boolean (`??`) so made is `sure`.
-            Some(o) if o.len == 1 && o.r != p.r => {
-                let r = self.whole(o);
-                self.sure.insert(r);
-                Part {
-                    dims: o.dims,
-                    ..part_of(r, 1)
-                }
-            }
-            Some(o) => o,
-            None => p,
-        }))
-    }
-
-    /// `p` is a temporary a literal was just written to (its one writer).
-    fn literal_part(&self, p: &Part) -> bool {
-        matches!(p.r, Ref::Loc(_))
-            && p.fresh
-            && p.at.is_none()
-            && (self.ops.iter().rev().take(16))
-                .any(|o| matches!(o, Op::Lit { dst, .. } if *dst == p.r))
     }
 
     /// `numeric_std` `/`, `rem` (1) and `mod` (2): vectors of at most 64 elements, computed in
@@ -7474,9 +7662,6 @@ impl Lx<'_> {
         use yavs_ir::ieee::Form;
         if form == Form::Vv {
             let (a, b, n) = self.num_operands(args, form, signed)?;
-            // The region's values on every image (`Lx::other`).
-            let o = self.other(&a).zip(self.other(&b));
-            let (a, b) = o.unwrap_or((a, b));
             let (ra, rb) = (self.whole(a), self.whole(b));
             let t = self.tmp(1);
             self.ops.push(Op::VCmp {
@@ -7487,9 +7672,6 @@ impl Lx<'_> {
                 b: rb,
                 len: n,
             });
-            if o.is_some() {
-                self.sure.insert(t.r);
-            }
             return Ok(Val::Part(t));
         }
         let [a, b] = args else {
@@ -7509,8 +7691,6 @@ impl Lx<'_> {
         if !signed {
             self.natural(i);
         }
-        let o = self.other(&v).zip(self.other_int(i));
-        let (v, i) = o.unwrap_or((v, i));
         if v.len > if signed { 64 } else { 63 } {
             // Both as vectors one wider than the vector (the integer fits in 64 elements).
             let n = v.len + 1;
@@ -7527,9 +7707,6 @@ impl Lx<'_> {
                 b: rq,
                 len: n,
             });
-            if o.is_some() {
-                self.sure.insert(t.r);
-            }
             return Ok(Val::Part(t));
         }
         let rv = self.whole(v);
@@ -7542,114 +7719,20 @@ impl Lx<'_> {
         });
         let (p, q) = if swap { (i, vi) } else { (vi, i) };
         let r = self.int_cmp(c, p, q);
-        if o.is_some() {
-            self.sure.insert(r);
+        if crate::region::exact_meta() {
+            // A metavalue in the vector: false (`/=`: true), not the integer 0's result.
+            let t = self.tmp(1);
+            self.ops.push(Op::Nine {
+                f: NineF::NumGuard { ne: c == Cmp::Ne },
+                dst: t.r,
+                a: rv,
+                b: r,
+                len: v.len,
+            });
+            return Ok(Val::Part(t));
         }
         Ok(Val::Part(part_of(r, 1)))
     }
-}
-
-/// `ops` with every `Op::Other` reading its own image.
-fn all_own(ops: Vec<Op>) -> Vec<Op> {
-    (ops.into_iter())
-        .map(|op| match op {
-            Op::Other { dst, src, len, .. } => Op::Copy { dst, src, len },
-            Op::If { cond, then, else_ } => Op::If {
-                cond,
-                then: all_own(then),
-                else_: all_own(else_),
-            },
-            op => op,
-        })
-        .collect()
-}
-
-/// The signals `ops` write.
-fn sig_writes(ops: &[Op], w: &mut HashSet<u32>) {
-    for op in ops {
-        match op {
-            Op::If { then, else_, .. } => {
-                sig_writes(then, w);
-                sig_writes(else_, w);
-            }
-            Op::Blend { dst, .. } | Op::Insert { dst, .. } | Op::IndexWrite { dst, .. } => {
-                if let Ref::Sig(k) = dst {
-                    w.insert(*k);
-                }
-            }
-            op => {
-                if let Some(Ref::Sig(k)) = op.clone().dst_mut() {
-                    w.insert(*k);
-                }
-            }
-        }
-    }
-}
-
-/// `ops` with every `Op::Other` of a signal of `w` reading its own image.
-fn own_sigs(ops: Vec<Op>, w: &HashSet<u32>) -> Vec<Op> {
-    (ops.into_iter())
-        .map(|op| match op {
-            Op::Other {
-                dst,
-                src: Ref::Sig(k),
-                len,
-                ..
-            } if w.contains(&k) => Op::Copy {
-                dst,
-                src: Ref::Sig(k),
-                len,
-            },
-            Op::If { cond, then, else_ } => Op::If {
-                cond,
-                then: own_sigs(then, w),
-                else_: own_sigs(else_, w),
-            },
-            op => op,
-        })
-        .collect()
-}
-
-/// Every condition of `ops` (an `If`'s, a boolean `Select`'s) follows the normal mode on every
-/// image of exact-meta (without `--two-state`): computed only from `sure` ones (`Lx::other`), literals and
-/// the edge word, through gates and copies, at the place it is read; else the second image may
-/// take another branch on a start value (`Body::keep`).
-fn conds_sure(ops: &[Op], sure: &HashSet<Ref>) -> bool {
-    fn walk(ops: &[Op], sure: &HashSet<Ref>, st: &mut HashMap<Ref, bool>) -> bool {
-        let ok = |st: &HashMap<Ref, bool>, r: &Ref| *r == Ref::Edge || st.get(r) == Some(&true);
-        let mut all = true;
-        for op in ops {
-            let (dst, s) = match op {
-                Op::If { cond, then, else_ } => {
-                    all &= ok(st, cond);
-                    all &= walk(then, sure, st);
-                    all &= walk(else_, sure, st);
-                    continue;
-                }
-                Op::Select { dst, c, a, b, len } => {
-                    all &= ok(st, c);
-                    (*dst, *len == 1 && ok(st, a) && ok(st, b))
-                }
-                Op::Lit { dst, .. } | Op::IntLit { dst, .. } => (*dst, true),
-                Op::Copy { dst, src, .. } => (*dst, ok(st, src)),
-                Op::Not { dst, a, .. } => (*dst, ok(st, a)),
-                Op::Gate { dst, a, b, .. } => (*dst, ok(st, a) && ok(st, b)),
-                Op::Blend { dst, .. } | Op::Insert { dst, .. } | Op::IndexWrite { dst, .. } => {
-                    (*dst, false)
-                }
-                op => match op.clone().dst_mut() {
-                    Some(d) => (*d, false),
-                    None => continue,
-                },
-            };
-            let s = s || sure.contains(&dst);
-            // A place written otherwise once stays unsure.
-            let e = st.entry(dst).or_insert(s);
-            *e &= s;
-        }
-        all
-    }
-    walk(ops, sure, &mut HashMap::new())
 }
 
 /// Subprogram calls: the callee's body inlined into the caller, its formals bound to the
@@ -7954,19 +8037,28 @@ impl Lx<'_> {
                     && !db.assigns_first(sp, p)
                     && let Bind::Val(v) = &b
                 {
-                    defaults.push(v.clone());
+                    defaults.push((v.clone(), self.two_valued(db.base(p.subtype))));
                 }
             }
             binds.insert(d, b);
         }
-        for v in defaults {
+        for (v, two) in defaults {
             if matches!(&v, Val::Part(p) if p.int.is_some()) {
                 return Err(format!(
                     "an `out` parameter of `{name}` that starts at its default value"
                 ));
             }
             let t = self.fresh_like(&v);
-            self.start(&t);
+            // BIT and BOOLEAN start at `'0'` (with nine values not the `'U'` of `start`).
+            match &t {
+                Val::Part(p) if two => {
+                    if let Ref::Loc(s) = p.r {
+                        self.two_locs.insert(s);
+                    }
+                    self.start(&t);
+                }
+                _ => self.start(&t),
+            }
             self.assign(&v, t)?;
         }
         Ok((binds, backs))
@@ -8339,6 +8431,7 @@ impl Lx<'_> {
                 }
                 let mut p = self.tmp(1);
                 (p.fresh, p.obj) = (false, Some(d));
+                self.mark_two(&p, t);
                 Ok(Val::Part(p))
             }
             TypeKind::Integer | TypeKind::Enum { .. } => {
@@ -8377,6 +8470,7 @@ impl Lx<'_> {
                 }
                 let mut p = self.tmp(n as u32);
                 (p.dims, p.fresh, p.obj) = (ds, false, Some(d));
+                self.mark_two(&p, t);
                 Ok(Val::Part(p))
             }
             TypeKind::Record { elems } => {
@@ -8442,9 +8536,20 @@ impl Lx<'_> {
                 "a vector of {n} elements (cycle mode takes 1 to 2**26)"
             ));
         }
-        let mut p = self.tmp(n as u32);
-        (p.dims, p.fresh, p.obj, p.int) = (ds, false, Some(d), int);
+        let mut p = self.tmp_for(n as u32, int);
+        (p.dims, p.fresh, p.obj) = (ds, false, Some(d));
+        self.mark_two(&p, t);
         Ok(Val::Part(p))
+    }
+
+    /// `p` was laid out for a value of type `t`: remember BIT and BOOLEAN slots (`two_locs`).
+    fn mark_two(&mut self, p: &Part, t: TypeId) {
+        if let Ref::Loc(s) = p.r
+            && p.int.is_none()
+            && self.two_valued(t)
+        {
+            self.two_locs.insert(s);
+        }
     }
 
     /// Every leaf of `v` at its start value: logic 0 (`'U'`, counted), an integer its `'left`.
@@ -8460,13 +8565,16 @@ impl Lx<'_> {
                         }
                     }
                     None => {
-                        self.uninit += u64::from(p.len);
-                        // `'U'`: ones on the second image of exact-meta (without `--two-state`).
-                        if crate::region::exact_meta() {
-                            self.ops.push(Op::Seed {
+                        let two = crate::region::exact_meta()
+                            && matches!(p.r, Ref::Loc(s) if self.two_locs.contains(&s));
+                        if !two {
+                            self.uninit += u64::from(p.len);
+                        }
+                        // Nine values: `'U'` is no plane set (BIT and BOOLEAN: `'0'`, below).
+                        if crate::region::exact_meta() && !two {
+                            self.ops.push(Op::Lit {
                                 dst: p.r,
-                                len: p.full,
-                                oth: Ref::Oth,
+                                val: vec![0; 4 * words(p.full) as usize].into(),
                             });
                             return;
                         }
@@ -8565,8 +8673,9 @@ impl Lx<'_> {
     fn fresh_like(&mut self, v: &Val) -> Val {
         match v {
             Val::Part(p) => {
-                let mut t = self.tmp(p.len);
-                (t.dims, t.fresh) = (p.dims, false);
+                // One word per element of an array of integers, also without `--two-state`.
+                let mut t = self.tmp_for(p.len, p.int);
+                (t.dims, t.fresh, t.int) = (p.dims, false, None);
                 Val::Part(t)
             }
             Val::Int(i) => Val::Int(IntV {

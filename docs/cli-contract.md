@@ -276,11 +276,10 @@ identical to a run without it, at any `--threads`.
   takes `--init-x` (`0` without it), `'L'` is `0` and `'H'` is `1`; signals and process variables without an
   initial value start at `--init-unset` (`0` without it), subprogram variables at `0`. The rest keeps the
   nine values. In cycle mode a region whose scope lies inside the two-state scope is two-state and no process stays
-  out for a metavalue. Without it (the default of `--cycle` and `--cycle-strict` alike) cycle mode keeps the
-  metavalue rules that hold processes out of the cycle region so the testbench sees the normal mode's metavalues,
-  follows the `'U'` start values on a second image for up to 1024 clock edges and drives `'U'` where the output
-  depends on them (owner decision A38, 2026-11-17); its end is a line of the summary on standard error starting
-  `cycle mode: 'U' start values` (an interim: cycle mode is to keep the normal mode's nine values, A66). It is part
+  out for a metavalue. Without it (the default of `--cycle` and `--cycle-strict` alike) the cycle region computes with the normal
+  mode's nine values for the whole run and differs from the normal mode only in the scheduling (A66, A77,
+  2026-11-24): no process stays out to show the testbench a metavalue, and no summary line counts metavalues read
+  as 0; cycle-based processes give no `ieee` library warnings (A33). It is part
   of the key of the lowering and of the cached analysis of cycle mode.
 - Scopes (user, 2026-11-23, A64 addenda): `--cycle=PATH`, `--cycle-strict=PATH` and `--two-state=PATH`, each
   repeatable, take dotted paths from the top-level unit (instances, blocks, generates, labelled processes; `tb.g` every iteration,

@@ -83,17 +83,12 @@ Analyze once, then run both ways:
     cycle mode: 3 of 5 processes run cycle-based, 2 in the event kernel (see --cycle-report)
     ** Note: 3016000000fs+0: 300 edges counted: 44
         Process tb_counter.main
-    cycle mode: 9 metavalue elements read as 0 (9 at initialisation, 0 at changes of the region's inputs)
-    cycle mode: 'U' start values followed on a second image: the images agreed after 16 clock edges
     ** Note: 3016000000fs+0: FINISH called with status 0
 
-The testbench's output is the same. The ``cycle mode`` lines go to standard error:
-
-* The first says how many processes joined. When no process joins, it says ``0 of N`` and the run is a normal run.
-* The second, printed only when it happened, counts the metavalue elements (``'U'``, ``'X'`` and so on) the region read
-  as ``0``: here the start values of signals without an initial value.
-* The third says that the region followed those start values on a second set of values until the two agreed
-  (:ref:`cycle-meta`). ``--two-state`` leaves that line out, and that work.
+The testbench's output is the same. The ``cycle mode`` line goes to standard error and says how many processes
+joined. When no process joins, it says ``0 of N`` and the run is a normal run. With ``--two-state`` a second line,
+printed only when it happened, counts the metavalue elements (``'U'``, ``'X'`` and so on) the region read as ``0``
+(:doc:`two-state`).
 
 ``yavs run`` has two cycle flags and a third that modifies them. ``--cycle`` and ``--cycle-strict`` are
 alternatives; both together are a usage error (exit status 2).
@@ -109,7 +104,7 @@ processes may join: ``--cycle=PATH`` names it; without PATH it is the whole desi
 design under test that yavs finds (:ref:`cycle-scope`).
 
 ``--two-state`` goes with either, or alone. With it the region computes on ``0`` and ``1`` only: more processes
-join and the run is faster. Without it plain ``--cycle`` keeps the metavalues the testbench would see (:ref:`cycle-meta`).
+join and the run is faster. Without it plain ``--cycle`` computes with the normal mode's nine values (:ref:`cycle-meta`).
 The values come from ``--two-state`` alone, the same for ``--cycle`` and ``--cycle-strict``; the rest of this page is
 about the scheduling, and ``--two-state`` is on :doc:`two-state`.
 
@@ -119,9 +114,8 @@ about the scheduling, and ``--two-state`` is on :doc:`two-state`.
 
 .. note::
 
-   **Changed after 0.21.** In 0.21 plain ``--cycle`` was two-state. Now plain ``--cycle`` and ``--cycle-strict`` keep
-   the metavalues (processes that would hide a metavalue from the testbench stay in the event kernel), and the option
-   of 0.21 that kept them is gone. To keep the results of 0.21, add ``--two-state`` (vunit-yavs: ``yavs.two_state``)
+   **Changed after 0.21.** In 0.21 plain ``--cycle`` was two-state. Now plain ``--cycle`` and ``--cycle-strict``
+   compute with the normal mode's nine values, and the option of 0.21 that kept metavalues is gone. To keep the results of 0.21, add ``--two-state`` (vunit-yavs: ``yavs.two_state``)
    where you gave plain ``--cycle``.
 
 ``--no-asserts`` is a flag of every run, not of cycle mode: it drops the design's own asserts, and is described with
@@ -273,8 +267,8 @@ cycle-based processes, this is the whole list of differences that come from the 
 * coverage, VHPI, activity counts, variable waveforms and the debugger are refused (:ref:`cycle-refused`).
 
 What the region computes with is not on this list, because it changes with ``--two-state`` and not with the
-scheduling: with ``--two-state`` metavalues read as ``0`` and ``1`` (:doc:`two-state`); without it plain ``--cycle`` keeps
-the metavalues the testbench would see, with the limits in :ref:`cycle-meta`.
+scheduling: with ``--two-state`` metavalues read as ``0`` and ``1`` (:doc:`two-state`); without it plain ``--cycle``
+computes with the normal mode's nine values (:ref:`cycle-meta`).
 
 Two-state values
 ~~~~~~~~~~~~~~~~
@@ -315,9 +309,7 @@ What can differ:
   cycle mode it runs once per wake on settled values: such a message is made once, with the settled values, or not at
   all when the settled values satisfy the assert.
 * **Values.** With ``--two-state`` an assert sees the region's values (:ref:`cycle-two-state`): one that fires only
-  because a value is still ``'U'`` does not fire. Without it a process of the cycle scope with an assert or
-  report that reads a signal the region does not drive alone stays in the event kernel (E4140), so it sees the
-  metavalues the rest of the design gives it.
+  because a value is still ``'U'`` does not fire. Without it an assert sees the nine values, as in the normal mode.
 * ``--assert-summary`` and ``--exit-severity`` count the messages of the region as those of the normal mode.
 * A design's own message from a function called with constant arguments (``log2(DEPTH)``, a check of a register
   map) appears once per process at 0 fs, instead of each time the statement runs, and also when the run never takes the
@@ -360,8 +352,7 @@ The normal mode: ``r`` has not caught up with ``q`` a delta after the edge.
         Process tb_delta.main
     ** Note: 26000000fs+0: FINISH called with status 0
 
-``--cycle --two-state`` (plain ``--cycle`` gives the same messages, and one more ``cycle mode`` line about the second
-image):
+``--cycle --two-state`` (plain ``--cycle`` gives the same messages, without the line about metavalues read as ``0``):
 
 .. code-block:: text
 
@@ -431,8 +422,8 @@ per time step, as far as the region allows:
   one value per time step in both modes, so this shows only for a signal that changes and changes back within a time
   step: the normal mode's file may write its value again at that time, this one writes nothing.
 * The values are the region's: with ``--two-state`` ``0`` and ``1``, so a signal without an initial value shows ``0``
-  where the normal mode shows ``'U'`` (:ref:`cycle-two-state`). Without it the second set of values gives ``'U'`` and
-  ``'X'`` where the testbench would read them, while it runs (:ref:`cycle-meta`).
+  where the normal mode shows ``'U'`` (:ref:`cycle-two-state`). Without it the normal mode's nine values
+  (:ref:`cycle-meta`).
 * Memories are recorded like other arrays (up to ``--wave-max-array`` elements), the words written at each edge
   exported. One kind cannot be exported and is left out of the file, with warning W0802 naming it: a signal whose
   elements are integers or enumerations (other than ``std_ulogic``, ``std_logic``, ``bit`` and ``boolean``), of more
@@ -493,10 +484,9 @@ Before you rely on cycle mode for a suite, compare it with the normal mode once:
 
 The usual causes of a difference:
 
-* The run ends with ``N metavalue elements read as 0``: a ``'U'``, ``'X'`` or a register without reset mattered
-  (:ref:`cycle-meta`, :ref:`cycle-two-state`). The summary line names inputs driven by nothing.
-* The testbench or a bus model that expects an ``'X'`` or ``'Z'`` from the design reads ``0`` with ``--two-state``, and
-  a process that would hide one stays in the event kernel without it (:ref:`cycle-meta`).
+* With ``--two-state``, the run ends with ``N metavalue elements read as 0``: a ``'U'``, ``'X'`` or a register without
+  reset mattered (:ref:`cycle-two-state`), or the testbench or a bus model expects an ``'X'`` or ``'Z'`` from the
+  design. Try plain ``--cycle`` (:ref:`cycle-meta`). The summary line names inputs driven by nothing.
 * A message of the design comes at another delta, once instead of twice, or not at all (:ref:`cycle-reports`).
 * The testbench samples a delta after an edge, depends on delta numbers, or the design reads a source register on a
   copied clock (:ref:`cycle-deltas`).
@@ -518,45 +508,30 @@ behavioural processes (:ref:`cycle-selection`) are never an error. The errors ar
 Metavalues without ``--two-state``
 ----------------------------------
 
-The aim is that plain ``--cycle`` computes with the normal mode's nine values and differs from it only in the
-scheduling. A region with those values is a later step and is not in this version. Until it exists, plain ``--cycle``
-keeps the metavalues the testbench would see with the mechanism and the limits below, and it is replaced when that
-region lands. ``--two-state`` (:doc:`two-state`) drops all of this and runs faster.
+Plain ``--cycle`` (and ``--cycle-strict``) computes with the normal mode's nine values, ``'U'``, ``'X'``, ``'0'``,
+``'1'``, ``'Z'``, ``'W'``, ``'L'``, ``'H'`` and ``'-'``, for the whole run: a register without a reset is ``'U'`` until
+it is first written, ``numeric_std`` arithmetic on a metavalue gives all ``'X'``, ``x = 'U'`` and ``case`` choices take
+the branch the normal mode takes, and a ``'Z'`` a process drives onto a bus stays a ``'Z'``. The only difference from
+the normal mode is the scheduling: the region evaluates the design at clock edges and settles each change at once,
+without delta cycles inside it (:ref:`cycle-deltas`). ``--two-state`` (:doc:`two-state`) gives up the metavalues for
+speed.
 
-Use plain ``--cycle`` when the testbench checks for ``'X'``, ``'U'`` or ``'Z'`` from the design, or checks reset state,
-and to see the values of a failed check (:ref:`cycle-checks`). It is not the normal mode: it is closer, and only for a
-while.
+Use plain ``--cycle`` when the testbench checks for ``'X'``, ``'U'`` or ``'Z'`` from the design, checks reset state,
+or when you want the values of a failed check (:ref:`cycle-checks`).
 
-* A process that assigns a metavalue literal (``(others => 'X')``) to a signal the testbench reads, or passes on a
-  ``'Z'`` from outside, stays in the event kernel (E4137), so the testbench sees the normal mode's value. So does a
-  process with a comparison with a metavalue literal (E4101).
-* Registers and signals without an initial value show the testbench ``'U'`` while their value depends on that start
-  value, for up to 1024 clock edges. To know which bits depend on it, yavs runs the region a second time with those
-  start values at ``1`` and compares the two. A bit fed only by ``'X'``, ``'Z'``, ``'W'`` or ``'-'`` shows ``'X'``.
-  The event from ``'U'`` to ``0`` at time 0 is gone, and a bit that does not depend on the start value is ``0`` or
-  ``1`` (``q and not q`` gives ``0`` where the normal mode gives ``'U'``).
-* Failed checks give their values, with the normal mode's message.
-* The asserts and reports of the region show ``'U'`` or ``'X'`` where the two runs differ, as the outputs do. A process
-  of the cycle scope with an assert or report that reads a signal the region does not drive alone stays in the
-  event kernel (E4140).
-* The price is speed: more processes stay out, and the region does more work at first.
-* ``--init-unset`` gives the start values a value from time 0, so no ``'U'`` start value is left to follow
-  (:doc:`start-values`).
+* Cycle-based processes give no warnings of the ``ieee`` libraries (``numeric_std`` metavalue warnings and the like).
+  This is the one difference that is not the scheduling's.
+* The event from ``'U'`` to ``'0'`` at time 0 that a combinational process makes in a delta cycle of the normal mode
+  is not there: the region settles at time 0 at once.
+* A process with an operation on ``std_ulogic`` values that the region does not compute with nine values stays in the
+  event kernel (E4101, named in the report): the matching relational operators (``?<`` and the others) and
+  ``std_ulogic'pos``.
+* The price is speed: each ``std_ulogic`` element is four bits of the region's state and each operation works on all
+  of them, so plain ``--cycle`` is slower than ``--cycle --two-state``.
+* ``--init-unset`` gives the start values a value from time 0 (:doc:`start-values`), so no ``'U'`` start is left.
 
-Known differences from the normal mode, with plain ``--cycle``:
-
-* The start values are followed for at most 1024 clock edges of any clock. After that an ``'X'`` or ``'U'`` that comes
-  in from outside the region arrives at the testbench as ``'0'``.
-* A choice (``if``, ``case``) on a ``'U'`` can take the branch for ``0``. A choice on a variable can show ``'U'`` where
-  the normal mode has a value.
-* A clocked process can keep a register's old value where only the run on start values of ``1`` changed it.
-* ``numeric_std`` arithmetic on a metavalue gives ``'U'`` or ``'X'`` only in the bits that depend on it, not all
-  ``'X'``.
-* A ``'U'`` that comes back to the region through a process outside reads as ``0``.
-
-With ``metavalue.vhd`` of :ref:`cycle-two-state`, plain ``--cycle`` keeps ``ticks`` at ``'U'`` as the normal mode does.
-``eq`` is ``1``, as with ``--two-state`` (the register kept its value, as in the third point), where the normal mode
-gives ``0``:
+With ``metavalue.vhd`` of :ref:`cycle-two-state`, plain ``--cycle`` gives the normal mode's values: ``ticks`` stays
+``'U'`` and the comparison with an ``'X'`` on ``a`` is false. Only the library warning is not there:
 
 .. code-block:: text
 
@@ -565,23 +540,9 @@ gives ``0``:
         Process tb_metavalue.main
     ** Note: 1000000fs+0: at 1 ns:  ticks=UUUU
         Process tb_metavalue.main
-    ** Note: 17000000fs+0: at 17 ns: eq=1 with 'X' on a
+    ** Note: 17000000fs+0: at 17 ns: eq=0 with 'X' on a
         Process tb_metavalue.main
-    cycle mode: 13 metavalue elements read as 0 (9 at initialisation, 4 at changes of the region's inputs)
-    cycle mode: 'U' start values followed on a second image: still followed when the run ended, after 2 clock edges
     ** Note: 17000000fs+0: FINISH called with status 0
-
-The extra summary line says how following the start values ended. The "second image" is that second run:
-
-* ``the images agreed after N clock edges``: nothing depends on a start value any more. yavs compares every 16
-  edges, so N is at least 16;
-* ``stopped at the cap of N clock edges``;
-* ``stopped after N clock edges: a check failed on it in ...``: a range or index check failed on the start values of
-  ``1`` only. It never stops the run;
-* ``still followed when the run ended, after N clock edges``.
-
-The rules of the second run, and why it differs where it does, are in the developer guide of the crate
-(`crates/yavs-cycle/AGENTS.md <https://github.com/ru551n/yavs/blob/main/crates/yavs-cycle/AGENTS.md>`__).
 
 .. _cycle-report:
 
@@ -694,8 +655,8 @@ The report and ``--cycle-strict`` give each reason a code. ``yavs --explain E411
      - The process
      - How to make it join
    * - E4101
-     - Uses a construct yavs does not implement yet (the message names it), such as a ``while`` loop; with
-       without ``--two-state`` also a comparison with a metavalue literal
+     - Uses a construct yavs does not implement yet (the message names it), such as a ``while`` loop; without
+       ``--two-state`` also an operation on ``std_ulogic`` values the region does not compute with nine values
      - Limitation. Write it another way.
    * - E4110
      - Has a wait other than a first ``wait until <edge>;``
@@ -784,8 +745,8 @@ The report and ``--cycle-strict`` give each reason a code. ``yavs --explain E411
      - Retired: processes outside the cycle scope never join, and those inside it follow one set of rules
      - Nothing to fix.
    * - E4137
-     - Without ``--two-state``: would hide a metavalue from the testbench
-     - Assign ``'0'`` or ``'1'``, or run with ``--two-state``.
+     - Retired: plain ``--cycle`` keeps the nine values, so no process stays out to show the testbench a metavalue
+     - Nothing to fix.
    * - E4138
      - Uses an external name
      - Limitation. Pass the signal through a port.
@@ -909,8 +870,9 @@ A warm run starts about as fast as a run without ``--cycle``. The test cases of 
 unless the design reads generics that differ between them when it is elaborated (a width, a depth).
 
 * The cycle part of the cache keeps at most 2 GiB per library directory. ``YAVS_CYCLE_CACHE_MIB`` changes the limit, in
-  MiB (a whole number of at least 1; anything else is E4104). At the limit nothing new is stored: the designs past it
-  compile again on every run. There is no message; it is only slower.
+  MiB (a whole number of at least 1; anything else is E4104). It also keeps at most 16384 entries, one per compiled
+  function of a region, and ``YAVS_CYCLE_CACHE_MIB`` does not change that. At either limit nothing new is stored: the
+  designs past it compile again on every run. There is no message; it is only slower.
 * ``yavs cache clean --work=NAME:PATH`` empties the library's cache, cycle part included. It also empties the shared
   ``std`` and ``ieee`` store (``YAVS_STD_CACHE``) unless you add ``--std-cache=off``.
 * ``--no-cache`` neither reads nor writes it: such a run compiles every time.

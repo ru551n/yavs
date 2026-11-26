@@ -7,6 +7,7 @@ mod codegen;
 mod dep;
 mod dut;
 mod lower;
+mod nine;
 mod region;
 mod rt;
 mod store;
@@ -105,7 +106,7 @@ pub mod codes {
     pub const PORT_SOURCE: &str = "E4135";
     /// An assert of the top-level unit reading a signal the region does not drive alone.
     pub const CHECK_OUTSIDE: &str = "E4136";
-    /// Without `--two-state`: a metavalue the testbench would see as '0' or '1'.
+    /// Retired (A77): without `--two-state` a metavalue the testbench would have seen as '0' or '1'.
     pub const META_OUT: &str = "E4137";
     /// An external name (a limitation).
     pub const EXTERNAL: &str = "E4138";
@@ -114,8 +115,7 @@ pub mod codes {
     pub const LOOP_BOUND: &str = "E4139";
     /// An assert or report region code cannot evaluate (A52): a message of another form, a
     /// severity known only at run time, the reset branch, a sensitivity list naming more than the
-    /// process reads (a limitation); without `--two-state` one reading a signal the region
-    /// does not drive alone.
+    /// process reads (a limitation).
     pub const ASSERT: &str = "E4140";
     /// A reason no design can reach (the analysis or an earlier check rules it out): a bug in
     /// yavs, kept as a reason so the process stays in the event kernel (`check::bug`, `lower::bug`).
@@ -335,13 +335,6 @@ pub mod codes {
             false,
         ),
         (
-            META_OUT,
-            "a metavalue the testbench would see as '0' or '1'",
-            "without `--two-state` the testbench must see the metavalues the event simulation gives it, and cycle-based code gives only '0' and '1'",
-            "run with `--two-state`, or assign '0' or '1' instead of the metavalue",
-            false,
-        ),
-        (
             EXTERNAL,
             "an external name",
             "yavs does not follow external names in cycle-based code yet",
@@ -442,11 +435,6 @@ pub struct Metas {
     pub inputs: AtomicU64,
     /// `YAVS_CYCLE_STATS=1`: the region's counts, printed with the summary.
     pub(crate) stats: std::sync::Mutex<Option<rt::Stats>>,
-    /// The second image (no `--two-state`) (`rt::Rail`): made, its clock edges, and how it
-    /// ended (none while it runs).
-    pub(crate) rail: std::sync::atomic::AtomicBool,
-    pub(crate) rail_edges: AtomicU64,
-    pub(crate) rail_end: std::sync::Mutex<Option<String>>,
 }
 
 impl Metas {
@@ -466,14 +454,6 @@ impl Metas {
                  changes of the region's inputs)\n",
                 i + n
             );
-        }
-        if self.rail.load(Ordering::Relaxed) {
-            let end = self.rail_end.lock().expect("not poisoned").clone();
-            let end = end.unwrap_or_else(|| {
-                let e = self.rail_edges.load(Ordering::Relaxed);
-                format!("still followed when the run ended, after {}", rt::edges(e))
-            });
-            s += &format!("cycle mode: 'U' start values followed on a second image: {end}\n");
         }
         (!s.is_empty()).then_some(s)
     }
@@ -591,7 +571,6 @@ fn reason_error(db: &Db, e: &Elaborated, r: &check::Reason, procs: &[usize]) -> 
 pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>> {
     codegen::skip_check().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
     region::exact_clocks().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
-    rt::rail_knob().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
     store::store_bytes().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
     rt::skip_knob().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
     let sel = match store::select(db, e)? {
@@ -646,8 +625,9 @@ pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>
     );
     // Inputs nothing drives that start with a metavalue: the normal mode reads that metavalue
     // for the whole run, the region 0. Counted on the summary line: a run that differs this way
-    // may never end.
+    // may never end. A nine-valued region reads it as it is.
     let undriven: Vec<LeafId> = (region::undriven_metas(e).intersection(&sel.inputs))
+        .filter(|_| region::two_state())
         .copied()
         .collect();
     let mut tail = Vec::new();
@@ -1092,9 +1072,16 @@ fn built(
         yavs_kernel::Elem::Logic => 0,
     };
     let logic = |k: u32| bytes(k) == 0;
+    // Without `--two-state` a logic signal's words are four planes of `pw` words each.
+    let nine = region::exact_meta();
+    let pw = |k: u32| codegen::words(nets.signal_len(yavs_kernel::SignalId(k)));
     let klen = |k: u32| {
         let n = nets.signal_len(yavs_kernel::SignalId(k));
-        if logic(k) { n } else { 64 * n }
+        match (logic(k), nine) {
+            (true, true) => 4 * 64 * pw(k),
+            (true, false) => n,
+            (false, _) => 64 * n,
+        }
     };
     // Memories clocked members write: their writes wait for the commit (`defer`), so they need no
     // next-state block (`region::ram_rule` kept only writes at run-time indices).
@@ -1174,11 +1161,6 @@ fn built(
     // One word per edge class: 1 when its clocked bodies run untracked (`rt::Adapt`).
     let mode_words: Vec<u32> = (0..sel.clocks.len() as u32).map(|k| n + k).collect();
     n += sel.clocks.len() as u32;
-    // Without `--two-state` the two words of `Ref::Oth` (`rt::Rail`).
-    let oth = n;
-    if region::exact_meta() {
-        n += 2;
-    }
     let mut state: Vec<(u32, u32)> = Vec::new();
     // Each function as pieces, a member's body each (`codegen::compile` cuts between them).
     // Each step with the member it runs (`codegen::compile`'s units; `u32::MAX`: none).
@@ -1226,16 +1208,8 @@ fn built(
     let mut init: Vec<(u32, u64)> = Vec::new();
     let mut checks: Vec<(lower::Check, Vec<yavs_diag::Span>, usize)> = Vec::new();
     let mut uninit = 0u64;
-    let mut useed: Vec<(u32, u32)> = Vec::new();
     let mut unset: Vec<(u32, u32, u64)> = Vec::new();
     let mut rands: Vec<(u32, u32, u64)> = Vec::new();
-    // The bits clocked members keep between edges (word, bits): their signals' elements, their
-    // variables and their memory writes' words; only of members whose comparisons the second
-    // image may decide otherwise than the normal mode (`Body::keep`).
-    let mut regs: BTreeMap<u32, u64> = BTreeMap::new();
-    let reg_words = |regs: &mut BTreeMap<u32, u64>, w: u32, c: u32| {
-        (w..w + c).for_each(|i| *regs.entry(i).or_default() = !0);
-    };
     // Each member's slots and resolution.
     let none = BTreeMap::new();
     let mut rs: Vec<Resolve> = Vec::new();
@@ -1258,9 +1232,6 @@ fn built(
             }
             // The writes' words hold state from the body to the commit.
             state.push((base + b.locs, at - b.locs));
-            if b.keep {
-                reg_words(&mut regs, base + b.locs, at - b.locs);
-            }
             n += at - b.locs;
             ops
         } else {
@@ -1299,25 +1270,6 @@ fn built(
         }
         // What a combinational member's notes compare with (`Body::fresh`).
         state.extend(b.snaps.iter().map(|&(w, c)| (base + w, c)));
-        // The second image's tables, only where it can run (the default keeps none).
-        if clocked && region::exact_meta() {
-            useed.extend(b.useed.iter().map(|&(w, c)| (base + w, c)));
-        }
-        if clocked && region::exact_meta() && b.keep {
-            for &(w, c) in &b.vars {
-                reg_words(&mut regs, base + w, c);
-            }
-            for &l in &b.writes {
-                let (k, at, len) = (ksig(l), nets.loc[l.index()].base, nets.leaf(l).ty.len);
-                if !logic(k) {
-                    reg_words(&mut regs, cur[&k], codegen::words(klen(k)));
-                    continue;
-                }
-                for i in at..at + len {
-                    *regs.entry(cur[&k] + i / 64).or_default() |= 1 << (i % 64);
-                }
-            }
-        }
         let class = b
             .clock
             .and_then(|c| sel.clocks.iter().position(|&k| k == c));
@@ -1326,8 +1278,6 @@ fn built(
             sites,
             clocked,
             edge: class.map_or(signal_words, |k| edge_words[k]),
-            oth,
-            rail: true,
             cur: &cur,
             next: &next,
             snap: &none,
@@ -1374,11 +1324,9 @@ fn built(
                 len: klen(s),
             })
             .collect();
-        // A loop group's member reads values of earlier passes: no `Op::Other` there.
         let r = Resolve {
             clocked: false,
             snap,
-            rail: !looped.contains(&k),
             ..rs[k]
         };
         if b.kind == Kind::Clocked {
@@ -1485,11 +1433,14 @@ fn built(
                 continue;
             };
             let base = nets.loc[l.index()].base;
-            v.push(if logic(s) {
-                (slot + base / 64, (base + len - 1) / 64 - base / 64 + 1)
-            } else {
-                (slot, codegen::words(klen(s)))
-            });
+            if !logic(s) {
+                v.push((slot, codegen::words(klen(s))));
+                continue;
+            }
+            let n = (base + len - 1) / 64 - base / 64 + 1;
+            for p in 0..if nine { 4 } else { 1 } {
+                v.push((slot + p * pw(s) + base / 64, n));
+            }
         }
         if let Some(b) = b {
             let listed: BTreeSet<u32> = b.reads.iter().chain(&b.writes).map(|&l| ksig(l)).collect();
@@ -1562,7 +1513,12 @@ fn built(
             return Some(g);
         }
         let b = &sel.members[k].1;
-        if !guard_all && (b.kind == Kind::Clocked || weight < GUARD_MIN) {
+        let min = if region::exact_meta() {
+            NINE_GUARD_MIN
+        } else {
+            GUARD_MIN
+        };
+        if !guard_all && (b.kind == Kind::Clocked || weight < min) {
             return None;
         }
         let ins = join(leaf_words(&b.reads, Some(b)), GUARD_GAP);
@@ -1867,7 +1823,6 @@ fn built(
     for &(w, c) in &state {
         keep[w as usize..(w + c) as usize].fill(true);
     }
-    state.push((0, signal_words));
     let top = (e.hier.scopes.iter())
         .position(|s| s.parent.is_none())
         .ok_or("the design has no top-level instance")?;
@@ -1891,7 +1846,6 @@ fn built(
                 Ref::Sig(k) => Ref::Loc(place(Block::Cur(k))),
                 Ref::Loc(s) => Ref::Loc(place(Block::Locals) + s),
                 Ref::Edge => Ref::Loc(place(Block::Edge)),
-                Ref::Oth => Ref::Loc(place(Block::Oth)),
             };
             let dst = |x: Ref| match x {
                 Ref::Sig(k) if r.clocked && next.contains_key(&k) => {
@@ -2145,6 +2099,7 @@ fn built(
             len: nets.signal_len(yavs_kernel::SignalId(k)),
             bytes: bytes(k),
             now: true,
+            pw: if nine && logic(k) { pw(k) } else { 0 },
         })
         .collect();
     // Inputs leaf by leaf (a kernel signal may also hold leaves the region drives), a leaf of
@@ -2175,6 +2130,7 @@ fn built(
                 len: part.len,
                 bytes: b,
                 now: now.contains(&l),
+                pw: if nine && b == 0 { pw(at.signal.0) } else { 0 },
             };
             chunks.push((read, nets.kpart(l, part).1, (l, part.offset, part.len)));
         }
@@ -2289,17 +2245,6 @@ fn built(
         .flat_map(|(pi, b)| b.reports.iter().map(|(s, t)| (*pi, *s, t.clone())))
         .collect();
     let sig_bytes: BTreeMap<u32, u32> = cur.keys().map(|&k| (k, bytes(k))).collect();
-    // The elements of `BIT` and `BOOLEAN` leaves of logic signals, which the kernel keeps as
-    // logic too: the second image drives no `'U'` there.
-    let two_valued: Vec<(u32, u32, u32)> = (cur.keys())
-        .filter(|&&k| logic(k) && region::exact_meta())
-        .flat_map(|&k| {
-            let (a, z) = nets.packs[k as usize];
-            (a.index()..z.index()).map(move |i| (k, LeafId(i as u32)))
-        })
-        .filter(|&(_, l)| two_valued_leaf(db, e, l))
-        .map(|(k, l)| (k, nets.loc[l.index()].base, nets.leaf(l).ty.len))
-        .collect();
     let sig_len: BTreeMap<u32, u32> = (cur.keys())
         .map(|&k| (k, nets.signal_len(yavs_kernel::SignalId(k))))
         .collect();
@@ -2352,7 +2297,6 @@ fn built(
         decls,
         cur,
         sig_bytes,
-        two_valued,
         sig_len,
         ram_writes,
         member_words,
@@ -2374,13 +2318,9 @@ fn built(
         log: (log as usize, notes as usize),
         reports,
         uninit,
-        useed,
         unset,
         rands,
-        state,
-        regs: reg_runs(regs),
-        oth: region::exact_meta().then_some(oth as usize),
-        seeds: (sel.members.iter()).any(|(_, b)| has_seed(&b.ops) || has_seed(&b.init_ops)),
+        nine,
         chunk_cone,
         chunk_at,
         class_names: (sel.clocks.iter())
@@ -2411,8 +2351,6 @@ pub(crate) struct Built {
     decls: Vec<LeafId>,
     cur: BTreeMap<u32, u32>,
     sig_bytes: BTreeMap<u32, u32>,
-    /// The `BIT` and `BOOLEAN` leaves of logic signals: signal, first element, elements.
-    two_valued: Vec<(u32, u32, u32)>,
     sig_len: BTreeMap<u32, u32>,
     ram_writes: BTreeMap<u32, Vec<rt::RamWrite>>,
     /// Per member: the image words it writes.
@@ -2438,21 +2376,14 @@ pub(crate) struct Built {
     log: (usize, usize),
     reports: Vec<(usize, u8, String)>,
     uninit: u64,
-    /// The words of clocked variables without an initial value (first, elements), and the
-    /// words that hold state (first, count): the second image (no `--two-state`).
-    useed: Vec<(u32, u32)>,
     /// The `std_ulogic` leaves of clocked variables without an initial value (`Body::unset`).
     #[serde(default)]
     unset: Vec<(u32, u32, u64)>,
     /// The slots of `--init-x=random` literal bits (`Body::rands`), filled when the run starts.
     #[serde(default)]
     rands: Vec<(u32, u32, u64)>,
-    state: Vec<(u32, u32)>,
-    /// The bits clocked members keep between edges: runs of words (first, count, bits).
-    regs: Vec<(u32, u32, u64)>,
-    /// Without `--two-state`: the word of `Ref::Oth`; whether the code has `Op::Seed`.
-    oth: Option<usize>,
-    seeds: bool,
+    /// Without `--two-state`: logic words are four planes (`nine.rs`).
+    nine: bool,
     chunk_cone: Vec<u32>,
     /// Per input chunk: its leaf and elements (the names of `YAVS_CYCLE_STATS`).
     chunk_at: Vec<(LeafId, u32, u32)>,
@@ -2517,13 +2448,8 @@ fn finish(
     let waits = rt::held_waits(&clocks, &b.waits);
     let (words, init, clocks_only, err, log, uninit) =
         (b.words, b.init, b.clocks_only, b.err, b.log, b.uninit);
-    let (useed, state, unset) = (Arc::new(b.useed), Arc::new(b.state), Arc::new(b.unset));
-    let rands = b.rands;
-    let two_valued = b.two_valued;
-    let regs = Arc::new(b.regs);
-    // The second image (no `--two-state`) ('U' at start, A38): its region process is the
-    // one with the rail's code; the default's has none of it.
-    let rail = region::exact_meta().then(rt::rail_knob);
+    let unset = Arc::new(b.unset);
+    let (rands, nine) = (b.rands, b.nine);
     let checks = Arc::new(sites);
     let reports = Arc::new(b.reports);
     let cones = Arc::new(b.cones);
@@ -2547,22 +2473,15 @@ fn finish(
                 range: d.range,
                 slot,
                 bytes: sig_bytes[&d.signal.0],
+                pw: if nine && sig_bytes[&d.signal.0] == 0 {
+                    codegen::words(sig_len[&d.signal.0])
+                } else {
+                    0
+                },
                 last: 0,
                 wide: Vec::new(),
                 ram: ram_writes.get(&d.signal.0).cloned().unwrap_or_default(),
             });
-        }
-        // Per driver, the elements of its range of `BIT` and `BOOLEAN` leaves (from its first).
-        let mut two: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
-        for d in ds.iter().filter(|d| outs.contains_key(&d.driver.0)) {
-            for &(_, base, len) in two_valued.iter().filter(|t| t.0 == d.signal.0) {
-                let (a, z) = (base.max(d.range.offset), (base + len).min(d.range.end()));
-                if a < z {
-                    two.entry(d.driver.0)
-                        .or_default()
-                        .push((a - d.range.offset, z - a));
-                }
-            }
         }
         let mut outs: Vec<rt::Out> = outs.into_values().collect();
         let (spans, shadow) = rt::spans(&mut outs);
@@ -2587,83 +2506,60 @@ fn finish(
         }
         // The seed is read here, at the start of each run, never compiled in (A68).
         if let Some(f) = yavs_logic::start::x() {
-            rt::fill(&mut img, &rands, f);
+            rt::fill(&mut img, &rands, f, nine);
         }
-        let rail_cfg = match &rail {
-            Some(Ok(c)) => *c,
-            Some(Err(m)) => {
-                return Err(SimError::new(yavs_kernel::ErrorKind::Internal(m.clone())));
-            }
-            None => None,
-        };
-        macro_rules! region_proc {
-            ($rail:literal) => {
-                Box::new(rt::RegionProc::<$rail> {
-                    code: code.clone(),
-                    img,
-                    leaves: all.clone(),
-                    seen: vec![0; chunks.len()],
-                    chunks: chunks.clone(),
-                    ins: ins.clone(),
-                    looked: false,
-                    check: import_check,
-                    exported: false,
-                    pending: false,
-                    outs,
-                    spans,
-                    shadow: vec![0; shadow],
-                    clocks: clocks.clone(),
-                    clocks_only,
-                    waits: waits.clone(),
-                    started: false,
-                    checks: checks.clone(),
-                    err,
-                    log,
-                    reporter: reporter.clone(),
-                    reports: reports.clone(),
-                    metas: metas.clone(),
-                    uninit,
-                    buf: Vec::new(),
-                    read_now: Vec::new(),
-                    idle: rt::Idle {
-                        on: words <= rt::IDLE_WORDS && clocks.len() <= 64,
-                        ..Default::default()
-                    },
-                    dirty: vec![!0; skip.always.len()],
-                    ored: (vec![0; skip.cones.len()], vec![0; skip.reach.len()], 0),
-                    adapt: vec![rt::Adapt::default(); skip.modes.len()],
-                    frozen: false,
-                    tracked: skip.modes.len(),
-                    go: vec![0; skip.always.len()],
-                    later: vec![0; skip.always.len()],
-                    in_edge: false,
-                    skip: skip.clone(),
-                    cones: cones.clone(),
-                    chunk_cone: chunk_cone.clone(),
-                    mark: vec![0; mark_words],
-                    class_cones: class_cones.clone(),
-                    touched: vec![0; touched],
-                    chunk_spans,
-                    class_spans,
-                    stats,
-                    ex: [0; rt::EX_N],
-                    rail: None,
-                    rail_cfg,
-                    useed: useed.clone(),
-                    unset: unset.clone(),
-                    state: state.clone(),
-                    two: two.clone(),
-                    regs: regs.clone(),
-                    oth: b.oth,
-                    seeds: b.seeds,
-                })
-            };
-        }
-        Ok(if rail_cfg.is_some() {
-            region_proc!(true) as Box<dyn yavs_kernel::Process>
-        } else {
-            region_proc!(false)
-        })
+        Ok(Box::new(rt::RegionProc {
+            code: code.clone(),
+            img,
+            leaves: all.clone(),
+            seen: vec![0; chunks.len()],
+            chunks: chunks.clone(),
+            ins: ins.clone(),
+            looked: false,
+            check: import_check,
+            exported: false,
+            pending: false,
+            outs,
+            spans,
+            shadow: vec![0; shadow],
+            clocks: clocks.clone(),
+            clocks_only,
+            waits: waits.clone(),
+            started: false,
+            checks: checks.clone(),
+            err,
+            log,
+            reporter: reporter.clone(),
+            reports: reports.clone(),
+            metas: metas.clone(),
+            uninit,
+            buf: Vec::new(),
+            read_now: Vec::new(),
+            idle: rt::Idle {
+                on: words <= rt::IDLE_WORDS && clocks.len() <= 64,
+                ..Default::default()
+            },
+            dirty: vec![!0; skip.always.len()],
+            ored: (vec![0; skip.cones.len()], vec![0; skip.reach.len()], 0),
+            adapt: vec![rt::Adapt::default(); skip.modes.len()],
+            frozen: false,
+            tracked: skip.modes.len(),
+            go: vec![0; skip.always.len()],
+            later: vec![0; skip.always.len()],
+            in_edge: false,
+            skip: skip.clone(),
+            cones: cones.clone(),
+            chunk_cone: chunk_cone.clone(),
+            mark: vec![0; mark_words],
+            class_cones: class_cones.clone(),
+            touched: vec![0; touched],
+            chunk_spans,
+            class_spans,
+            stats,
+            ex: [0; rt::EX_N],
+            unset: unset.clone(),
+            nine,
+        }) as Box<dyn yavs_kernel::Process>)
     });
     Region {
         name: b.name,
@@ -2672,40 +2568,6 @@ fn finish(
         quiet: b.quiet,
         make,
     }
-}
-
-/// Words with their bits as runs of adjacent words with the same bits (memories are one run).
-fn reg_runs(regs: BTreeMap<u32, u64>) -> Vec<(u32, u32, u64)> {
-    let mut v: Vec<(u32, u32, u64)> = Vec::new();
-    for (w, m) in regs {
-        match v.last_mut() {
-            Some(r) if r.0 + r.1 == w && r.2 == m => r.1 += 1,
-            _ => v.push((w, 1, m)),
-        }
-    }
-    v
-}
-
-/// Leaf `l` is of `BIT` or `BOOLEAN` (or an array of them): logic in the kernel, never `'U'`.
-/// (Logic subtypes with a range, `X01`, keep their processes out of the region.)
-fn two_valued_leaf(db: &Db, e: &Elaborated, l: LeafId) -> bool {
-    use yavs_elab::Shape;
-    let mut sh = &e.nets.obj(e.nets.leaf(l).obj).shape;
-    let mut path = e.nets.leaf(l).path.iter();
-    let ty = loop {
-        match sh {
-            Shape::Array { elem, .. } => sh = elem,
-            Shape::Record { fields, .. } => {
-                match path.next().and_then(|&f| fields.get(f as usize)) {
-                    Some((_, f)) => sh = f,
-                    None => return false,
-                }
-            }
-            Shape::Scalar { ty, .. } => break *ty,
-        }
-    };
-    let wk = &db.well_known;
-    Some(ty) == wk.bit || Some(ty) == wk.boolean
 }
 
 /// The steps of the settle and the members a change reaches, as bit sets.
@@ -2946,6 +2808,10 @@ type InChunk = (rt::Read, Range, (LeafId, u32, u32));
 /// to compare.
 const GUARD_MIN: usize = 64;
 
+/// [`GUARD_MIN`] without `--two-state`: nine-valued code has 3 to 4 times the operations, and a
+/// guarded member's functions are its own, so at 64 the region made about 7 times the functions.
+const NINE_GUARD_MIN: usize = 4 * GUARD_MIN;
+
 /// Input spans of a guard at most this many words apart are compared as one.
 const GUARD_GAP: u32 = 4;
 
@@ -3082,7 +2948,6 @@ enum Block {
     Next(u32),
     Locals,
     Edge,
-    Oth,
 }
 
 /// Blocks with their first word and length.
@@ -3128,7 +2993,6 @@ fn blocks(
             Ref::Sig(k) => Block::Cur(k),
             Ref::Loc(_) => Block::Locals,
             Ref::Edge => Block::Edge,
-            Ref::Oth => Block::Oth,
         });
         x
     };
@@ -3150,7 +3014,6 @@ fn blocks(
             Block::Next(k) => (x, r.next[&k], codegen::words(klen(k))),
             Block::Locals => (x, r.base, (b.locs + extra).max(1)),
             Block::Edge => (x, r.edge, 1),
-            Block::Oth => (x, r.oth, 2),
         })
         .collect()
 }
@@ -3191,9 +3054,6 @@ struct Resolve<'a> {
     sites: u32,
     clocked: bool,
     edge: u32,
-    oth: u32,
-    /// `Op::Other` reads the other image (false: its own, in a loop group).
-    rail: bool,
     cur: &'a BTreeMap<u32, u32>,
     next: &'a BTreeMap<u32, u32>,
     /// Signals read from a copy made at the piece's start (a loop group's piece reading what it
@@ -3215,34 +3075,11 @@ impl Resolve<'_> {
             Ref::Sig(k) => Ref::Loc(self.cur[&k]),
             Ref::Loc(s) => Ref::Loc(self.base + s),
             Ref::Edge => Ref::Loc(self.edge),
-            Ref::Oth => Ref::Loc(self.oth),
         }
     }
 
     fn op(&self, op: &Op) -> Op {
-        let o = op.map(&|r| self.src(r), &|r| self.dst(r), &|x| self.sites + x);
-        if self.rail { o } else { own_only(o) }
-    }
-}
-
-fn has_seed(ops: &[Op]) -> bool {
-    ops.iter().any(|op| match op {
-        Op::Seed { .. } => true,
-        Op::If { then, else_, .. } => has_seed(then) || has_seed(else_),
-        _ => false,
-    })
-}
-
-/// `op` with every `Op::Other` reading its own image.
-fn own_only(op: Op) -> Op {
-    match op {
-        Op::Other { dst, src, len, .. } => Op::Copy { dst, src, len },
-        Op::If { cond, then, else_ } => Op::If {
-            cond,
-            then: then.into_iter().map(own_only).collect(),
-            else_: else_.into_iter().map(own_only).collect(),
-        },
-        op => op,
+        op.map(&|r| self.src(r), &|r| self.dst(r), &|x| self.sites + x)
     }
 }
 

@@ -320,8 +320,8 @@ pub struct RunArgs {
     /// without it; `'L'` is `0`, `'H'` is `1`), and what it declares without an initial value
     /// starts at `--init-unset` (`0` without it). The rest keeps the nine values. A cycle region
     /// inside the scope is two-state too; the cycle scope must lie inside this scope or outside it
-    /// (E2123). Without this option cycle mode keeps the metavalues (for now a register without a
-    /// start value shows `'U'` for up to 1024 clock edges).
+    /// (E2123). Without this option cycle mode computes with the nine values, as the normal mode
+    /// does.
     #[arg(long, value_name = "PATH", num_args = 0..=1, require_equals = true)]
     two_state: Option<Vec<String>>,
     // The text names the tiers this build has, so it is built by `tier_help`.

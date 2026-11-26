@@ -29,7 +29,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, ModuleReloc};
 use yavs_cache::{Key, KeyBuilder, Store};
 
-use crate::lower::{Arith, Cmp, Gate, Op, Ref, ShiftK};
+use crate::lower::{Arith, Cmp, Gate, Op, P4F, Ref, ShiftK};
 
 /// One compiled trigger function: the address of the image's first word; 0, or the failed check's
 /// site plus one.
@@ -225,36 +225,6 @@ impl Code {
             return self.full(img, f, mark, state);
         }
         self.run_as(img, f, mark, true)
-    }
-
-    /// A run on the second image (no `--two-state`) (`rt::Rail`): no guards (its members
-    /// read the region's image too, which a guard does not compare) and never on a copy (its
-    /// `Ref::Oth` word is a distance from this image). Of `Fun::Edge` the edge's own steps
-    /// (`edge`), or the settle's after them.
-    pub(crate) fn run_rail(
-        &self,
-        img: &mut [u64],
-        f: Fun,
-        mark: Option<&[u64]>,
-        edge: bool,
-    ) -> Result<(), u32> {
-        assert!(
-            img.len() >= self.words,
-            "the image is smaller than the code's words"
-        );
-        match f {
-            Fun::Edge if edge => {
-                self.open(img);
-                for (ws, r, _, _) in &self.edge_parts {
-                    if ws.is_empty() || ws.iter().any(|&w| img[w as usize] != 0) {
-                        self.steps(img, &self.entries[1][r.clone()], None, false)?;
-                    }
-                }
-                Ok(())
-            }
-            Fun::Edge => self.run_as(img, Fun::Settle, mark, false),
-            f => self.run_as(img, f, mark, false),
-        }
     }
 
     /// The edge runs its own steps, then the settle's.
@@ -730,7 +700,7 @@ pub(crate) fn checks_on() -> bool {
 fn word(r: Ref) -> i32 {
     match r {
         Ref::Loc(s) => (s * 8) as i32,
-        Ref::Sig(_) | Ref::Edge | Ref::Oth => {
+        Ref::Sig(_) | Ref::Edge => {
             unreachable!("signal references are resolved to slots before code generation")
         }
     }
@@ -741,6 +711,10 @@ fn word(r: Ref) -> i32 {
 /// grows faster than the function: a member of 39 000 operations as one function took twice the
 /// cycles of the same member in parts, for the same instructions.
 const CHUNK: usize = 4000;
+
+/// [`CHUNK`] without `--two-state`, where code has 3 to 4 times the operations: on 26 tests of an
+/// accelerator 1937 cache entries and 25 s of compiling (4000: 2495, 24 s; 16000: 1662, 33 s).
+const NINE_CHUNK: usize = 8000;
 
 /// The operations of `ops`, nested ones included.
 fn weight(ops: &[Op]) -> usize {
@@ -755,16 +729,20 @@ pub(crate) fn weight_of(o: &Op) -> usize {
     }
 }
 
-/// Operations per function: [`CHUNK`], or `YAVS_CYCLE_CHUNK` (developers: a small value cuts every
-/// member into parts, to test the cut).
+/// Operations per function: [`CHUNK`] ([`NINE_CHUNK`] without `--two-state`), or
+/// `YAVS_CYCLE_CHUNK` (developers: a small value cuts every member into parts, to test the cut).
 fn chunk() -> usize {
-    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *N.get_or_init(|| {
+    static N: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    let env = *N.get_or_init(|| {
         std::env::var("YAVS_CYCLE_CHUNK")
             .ok()
             .and_then(|v| v.parse().ok())
             .filter(|&n| n > 0)
-            .unwrap_or(CHUNK)
+    });
+    env.unwrap_or(if crate::region::exact_meta() {
+        NINE_CHUNK
+    } else {
+        CHUNK
     })
 }
 
@@ -1000,11 +978,35 @@ fn reads(op: &Op, f: &mut impl FnMut(i32, u32)) {
         Op::If { cond, .. } => r(cond, 0, 1),
         // Its flag is not a word the operations read (`Gen::track_end`).
         Op::Track { .. } => {}
-        Op::Other { src, len, oth, .. } => {
-            r(src, 0, words(*len));
-            r(oth, 0, 1);
+        Op::Nine { .. } => unreachable!("nine-valued operations are expanded before codegen"),
+        Op::P4 {
+            f,
+            a,
+            aw,
+            b,
+            bw,
+            len,
+            ..
+        } => {
+            let n = words(*len);
+            for p in 0..4 {
+                r(&plane(*a, *aw, p), 0, n);
+                if matches!(f, P4F::Gate(_) | P4F::Eq { .. }) {
+                    r(&plane(*b, *bw, p), 0, n);
+                }
+                if *f == P4F::Codes {
+                    break;
+                }
+            }
         }
-        Op::Seed { oth, .. } => r(oth, 1, 1),
+    }
+}
+
+/// Plane `p` of a four-plane value at `r` whose planes are `w` words apart (`Op::P4`).
+fn plane(r: Ref, w: u32, p: u32) -> Ref {
+    match r {
+        Ref::Loc(s) => Ref::Loc(s + p * w),
+        r => r,
     }
 }
 
@@ -1338,8 +1340,9 @@ fn span(op: &Op) -> u32 {
         | Op::FromInt { len, .. }
         | Op::Splat { len, .. }
         | Op::Select { len, .. }
-        | Op::Other { len, .. }
-        | Op::Seed { len, .. } => words(*len),
+        | Op::Nine { len, .. } => words(*len),
+        Op::P4 { dw: 0, .. } => 1,
+        Op::P4 { dw, len, .. } => 3 * dw + words(*len),
         Op::Lit { val, .. } => val.len() as u32,
         Op::Blend { mask, .. } => mask.len() as u32,
         Op::Insert { lo, len, .. } => words(lo + len),
@@ -2640,6 +2643,121 @@ impl Gen<'_> {
         }
     }
 
+    /// `Op::P4`: the planes of `a` (and `b`) word by word into those of `dst` (`yavs_logic::planes`
+    /// formulas: classes `is_u`, `is0` (`0`, `L`), `is1` (`1`, `H`) of each element).
+    fn p4(&mut self, f: P4F, dst: Ref, dw: u32, a: (Ref, u32), b: (Ref, u32), len: u32) {
+        let n = words(len);
+        let mut eq = None;
+        for k in 0..n {
+            let m = mask((len - 64 * k).min(64));
+            let ld4 = |g: &mut Self, (r, w): (Ref, u32)| -> [Value; 4] {
+                [0, 1, 2, 3].map(|p| g.ld(plane(r, w, p), k))
+            };
+            if f == P4F::Codes {
+                let v = self.ld(a.0, k);
+                let one = self.konst(m);
+                let z = self.konst(0);
+                for (p, x) in [v, one, z, z].into_iter().enumerate() {
+                    self.st(plane(dst, dw, p as u32), k, x);
+                }
+                continue;
+            }
+            let x = ld4(self, a);
+            if let P4F::Eq { .. } = f {
+                let y = ld4(self, b);
+                let mut d = self.konst(0);
+                for p in 0..4 {
+                    let t = self.b.ins().bxor(x[p], y[p]);
+                    d = self.b.ins().bor(d, t);
+                }
+                eq = Some(match eq {
+                    None => d,
+                    Some(e) => self.b.ins().bor(e, d),
+                });
+                continue;
+            }
+            // Classes, masked to the elements.
+            let cls = |g: &mut Self, [p0, p1, p2, p3]: [Value; 4]| {
+                let o1 = g.b.ins().bor(p0, p1);
+                let o2 = g.b.ins().bor(p2, p3);
+                let o = g.b.ins().bor(o1, o2);
+                let u = g.b.ins().bnot(o);
+                let u = g.b.ins().band_imm_s(u, m as i64);
+                let k1 = g.b.ins().band_not(p1, p3);
+                let one = g.b.ins().band(k1, p0);
+                let zero = g.b.ins().band_not(k1, p0);
+                (u, zero, one)
+            };
+            let (ux, zx, ox) = cls(self, x);
+            let (r0, r1) = match f {
+                P4F::Not => {
+                    let a0 = self.b.ins().bor(ux, ox);
+                    let r0 = self.b.ins().bnot(a0);
+                    let r0 = self.b.ins().band_imm_s(r0, m as i64);
+                    (r0, self.b.ins().bor(zx, ox))
+                }
+                P4F::Gate(g) => {
+                    let y = ld4(self, b);
+                    let (uy, zy, oy) = cls(self, y);
+                    let u = self.b.ins().bor(ux, uy);
+                    let mm = self.konst(m);
+                    let nu = self.b.ins().band_not(mm, u);
+                    let (r0, r1) = match g {
+                        Gate::And | Gate::Nand => {
+                            let z = self.b.ins().bor(zx, zy);
+                            let one = self.b.ins().band(ox, oy);
+                            let r0 = self.b.ins().band_not(nu, z);
+                            (r0, self.b.ins().bor(z, one))
+                        }
+                        Gate::Or | Gate::Nor => {
+                            let o = self.b.ins().bor(ox, oy);
+                            let zz = self.b.ins().band(zx, zy);
+                            let a0 = self.b.ins().band_not(nu, zz);
+                            let b0 = self.b.ins().band(nu, zz);
+                            (self.b.ins().bor(o, a0), self.b.ins().bor(o, b0))
+                        }
+                        Gate::Xor | Gate::Xnor => {
+                            let kx = self.b.ins().bor(zx, ox);
+                            let ky = self.b.ins().bor(zy, oy);
+                            let kk = self.b.ins().band(kx, ky);
+                            let v = self.b.ins().bxor(ox, oy);
+                            let nk = self.b.ins().band_not(mm, kk);
+                            let a0 = self.b.ins().bor(nk, v);
+                            (self.b.ins().band(nu, a0), self.b.ins().band(nu, kk))
+                        }
+                    };
+                    if matches!(g, Gate::Nand | Gate::Nor | Gate::Xnor) {
+                        // IEEE `not` of codes 0 to 3: `U` stays, `X` stays, `0` and `1` swap.
+                        let known = r1;
+                        let nr0 = self.b.ins().band_not(known, r0);
+                        let xo = self.b.ins().band_not(r0, known);
+                        (self.b.ins().bor(nr0, xo), known)
+                    } else {
+                        (r0, r1)
+                    }
+                }
+                _ => unreachable!("handled above"),
+            };
+            let z = self.konst(0);
+            for (p, v) in [r0, r1, z, z].into_iter().enumerate() {
+                self.st(plane(dst, dw, p as u32), k, v);
+            }
+        }
+        if let (P4F::Eq { ne }, Some(e)) = (f, eq) {
+            let c = if ne { IntCC::NotEqual } else { IntCC::Equal };
+            let r = self.b.ins().icmp_imm_s(c, e, 0);
+            let r = self.bool_of(r);
+            self.st(dst, 0, r);
+            if dw != 0 {
+                let one = self.konst(1);
+                let z = self.konst(0);
+                for (p, v) in [one, z, z].into_iter().enumerate() {
+                    self.st(plane(dst, dw, p as u32 + 1), 0, v);
+                }
+            }
+        }
+    }
+
     fn konst(&mut self, v: u64) -> Value {
         let x = self.b.ins().iconst(I64, v as i64);
         self.zeros.insert(x, !v);
@@ -3647,27 +3765,6 @@ impl Gen<'_> {
                 self.top(&mut v, *len);
                 self.sts(*dst, &v);
             }
-            Op::Other { dst, src, len, oth } => {
-                // `src` of the image `oth` bytes away; its own (in a register) where that is 0.
-                let d = self.ld(*oth, 0);
-                let own = self.b.ins().icmp_imm_s(IntCC::Equal, d, 0);
-                let mut v = Vec::new();
-                for k in 0..words(*len) {
-                    let x = self.ld(*src, k);
-                    let (a, o) = self.at(word(*src) + k as i32 * 8);
-                    let a = self.b.ins().iadd(a, d);
-                    let y = self.b.ins().load(I64, MemFlagsData::trusted(), a, o);
-                    v.push(self.b.ins().select(own, x, y));
-                }
-                self.sts(*dst, &v);
-            }
-            Op::Seed { dst, len, oth } => {
-                // The word after the distance: all ones where `'U'` starts at 1.
-                let s = self.ld(*oth, 1);
-                let mut v = vec![s; words(*len) as usize];
-                self.top(&mut v, *len);
-                self.sts(*dst, &v);
-            }
             Op::Track { flag, first } => {
                 self.track_end();
                 let var = self.b.declare_var(I64);
@@ -3675,6 +3772,17 @@ impl Gen<'_> {
                 self.b.def_var(var, zero);
                 self.track = Some((word(*flag), *first, var));
             }
+            Op::Nine { .. } => unreachable!("nine-valued operations are expanded before codegen"),
+            Op::P4 {
+                f,
+                dst,
+                dw,
+                a,
+                aw,
+                b,
+                bw,
+                len,
+            } => self.p4(*f, *dst, *dw, (*a, *aw), (*b, *bw), *len),
             // Only in a member's last run, which has the exits of its checks.
             Op::Note { .. } if !self.exits => {}
             Op::Note { site, args } => {

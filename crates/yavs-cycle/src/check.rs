@@ -2214,7 +2214,8 @@ impl Cx<'_> {
 
     /// A folded value of a logic type holding `'Z'`.
     fn no_z(&self, x: ExprId, v: &ConstValue) -> R<()> {
-        if holds_z(self.db, x, v) {
+        // Without `--two-state` the region keeps `'Z'` (nine values, A66).
+        if holds_z(self.db, x, v) && crate::region::two_state() {
             return out(codes::HIGH_Z, self.db.exprs[x].span, "the value `'Z'`");
         }
         Ok(())

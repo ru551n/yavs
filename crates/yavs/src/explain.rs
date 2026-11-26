@@ -684,7 +684,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E4137",
-        "Without `--two-state`, a process assigns a metavalue literal (`'U'`, `'X'`, ...) to a signal the testbench reads, or passes on a `'Z'` from a process outside to such a signal. The testbench must then see the metavalue the event simulation gives it, and cycle-based code gives only '0' and '1'. Run with `--two-state` (two-state values at the boundary), or assign '0' or '1' instead.",
+        "Retired: cycle mode no longer gives this code. Without `--two-state` it kept out a process that assigned a metavalue literal to a signal the testbench reads, or passed on a `'Z'` to one, because cycle-based code gave only '0' and '1' then. Plain `--cycle` now computes with the nine values of `std_ulogic`, so such a process joins.",
     ),
     (
         "E4138",

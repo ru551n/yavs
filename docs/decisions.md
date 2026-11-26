@@ -18096,6 +18096,31 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
   both modes (`start::lit_salt`). Owner, same day: a literal's bits stay per source site (one for every instance);
   subprogram, protected, shared and allocated variables stay outside `--init-unset`.
 
+## A nine-valued cycle region (yavs-cycle; user decisions A66, A77, 2026-11-23 and 2026-11-24)
+
+- **Plain `--cycle` keeps the nine values.** Without `--two-state` the region computes with the normal mode's
+  `std_ulogic` values for the whole run; only the scheduling differs (A66: "--cycle should run full metavalues as
+  normal; it should really only evaluate the design on clock edges"). It replaces the interim of the A57 addendum: the
+  second image of the `'U'` start values, its cap of 1024 clock edges, `YAVS_CYCLE_RAIL`, and the rules that kept
+  processes out to show the testbench a metavalue (E4137, the E4140 reason of an assert reading a signal the region does
+  not drive alone below the top-level unit, a comparison with a metavalue literal, a `'Z'` literal, any force in the
+  design). E4137 stays reserved (A77); E4140 keeps its other reasons (an assert or report of a form the region does
+  not evaluate).
+- **Representation**: the kernel's four planes per 64 elements, plane-major per value (plane `p` at word
+  `p * words(n)`), BIT and BOOLEAN as the codes of `'0'` and `'1'`; integers one word. The lowering makes the
+  operations it makes for two-state values on four-plane slots, and `yavs-cycle` `nine.rs` expands them into plane
+  operations; the code generator is unchanged, and `--cycle --two-state` makes the operations it made before. An
+  operation mixing a four-plane and a one-word logic value keeps its process out (never a guess).
+- **Library warnings** of members stay dropped (A33, kept by A77): the one difference from the normal mode that is
+  not the scheduling's. **Forced signals** are inputs like any other (A77).
+- **Fewer, larger functions without `--two-state`.** Nine-valued code has 3 to 4 times the operations, and the
+  region made about 7 times the cycle cache's entries (12147 against 1645 on 26 tests of an accelerator's suite), so
+  a large suite went past the 16384 entries the cache keeps and later runs compiled again. The entry limit stays
+  (user, 2026-11-25). The functions came mostly from guards (a guarded member's code is in functions of its own),
+  so a guard needs 256 operations without `--two-state` (`lib.rs` `NINE_GUARD_MIN`, 64 with it; accepted by the user
+  2026-11-25), about the members guarded with it; and functions hold 8000 operations (`codegen.rs` `NINE_CHUNK`,
+  4000 with it). On those 26 tests: 1937 entries and 25 s of compiling (30 s before); 60 such tests stay warm.
+
 ## `--two-state` decoupled from `--cycle` (yavs, yavs-cycle, vunit-yavs; user decisions A53 (2), A57, 2026-11-21)
 
 - **`--two-state` is a flag of its own.** Value semantics come from it alone, the same for `--cycle`,

@@ -681,7 +681,7 @@ Cycle mode (E4 and W4)
    * - _`E4136`
      - An assert or report of the top-level unit reads a signal the region does not drive alone.
    * - _`E4137`
-     - Without ``--two-state``, a process assigns a metavalue literal (``'U'``, ``'X'``, ...) to a signal the testbench reads, or passes on a ``'Z'`` from a process outside to such a signal.
+     - Retired: cycle mode no longer gives this code.
    * - _`E4138`
      - An external name (``<<signal .tb.dut.x : std_logic>>``) in the process.
    * - _`E4139`

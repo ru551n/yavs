@@ -336,6 +336,25 @@ fn a_memoised_decoder_and_whole_record_reads_map_as_the_elements_do() {
             .args(&args);
         let plain = c.output().expect("run yavs");
         assert_eq!(plain.stdout, o.stdout, "{t:?}: the memo changed the output");
+        // Plain cycle mode (nine values) prints what the normal mode prints.
+        let mut normal = vec!["run", "--work=work:lib"];
+        normal.extend(&t);
+        normal.push("twomemo");
+        let n = yavs(&dir, &normal);
+        let mut cyc = normal.clone();
+        cyc.insert(2, "--cycle");
+        let c = yavs(&dir, &cyc);
+        assert!(
+            c.status.success(),
+            "{t:?}: {}",
+            String::from_utf8_lossy(&c.stderr)
+        );
+        assert_eq!(
+            c.stdout,
+            n.stdout,
+            "{t:?}: {}",
+            String::from_utf8_lossy(&c.stderr)
+        );
     }
 }
 

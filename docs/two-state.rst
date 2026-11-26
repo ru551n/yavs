@@ -27,13 +27,13 @@ Two ways to use it
   metavalue, and its start-up does not follow the ``'U'`` start values (:ref:`cycle-meta`).
 * ``--two-state`` alone, in the normal mode, is a diagnostic mode. It changes the values only, so it tells apart a
   difference that comes from metavalues from one that comes from the scheduling (:ref:`two-state-split`).
-* Plain ``--cycle`` does not use two-state values: it keeps the metavalues the testbench would see, with the limits
-  listed in :ref:`cycle-meta`.
+* Plain ``--cycle`` does not use two-state values: it computes with the normal mode's nine values
+  (:ref:`cycle-meta`).
 
 .. note::
 
-   **Changed after 0.21.** In 0.21 plain ``--cycle`` was two-state. Now it keeps the metavalues, and the option of 0.21
-   that kept them is gone. To keep the results of 0.21, add ``--two-state`` (vunit-yavs: ``yavs.two_state``) where you
+   **Changed after 0.21.** In 0.21 plain ``--cycle`` was two-state. Now it computes with the nine values, and the
+   option of 0.21 that kept metavalues is gone. To keep the results of 0.21, add ``--two-state`` (vunit-yavs: ``yavs.two_state``) where you
    gave plain ``--cycle``.
 
 In the normal mode ``--two-state`` aims to run as fast as the default; today it is slower. Most unit tests run within a

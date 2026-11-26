@@ -1202,8 +1202,10 @@ fn two_map(
             let (lay, _) =
                 Ty::layout(&rt.prog.types, &rt.prog.consts, ty, &desc).map_err(layout_err)?;
             let mut p = Vec::new();
-            two_plan(&rt.prog, ty, &desc, 0, &mut p)?;
-            let p: std::sync::Arc<[TwoLeaf]> = p.into();
+            let (types, consts) = (&rt.prog.types, &rt.prog.consts);
+            Ty::two_leaves(types, consts, (ty, &desc, 0), usize::MAX, &mut p)
+                .map_err(layout_err)?;
+            let p: std::sync::Arc<[yavs_ir::TwoLeaf]> = p.into();
             // ponytail: a linear list per type; a map if one type is seen with many descriptors.
             if let Some(e) = m.two_plans[k].as_mut() {
                 e.plans.push((desc, lay.size, p.clone()));
@@ -1217,12 +1219,12 @@ fn two_map(
     let v = m.wr(data, size)?;
     for &leaf in plan.iter() {
         match leaf {
-            TwoLeaf::Byte(off) => {
+            yavs_ir::TwoLeaf::Byte(off) => {
                 let b = (v.get_mut(off as usize))
                     .ok_or_else(|| ice("a two-state leaf outside its value"))?;
                 *b = if *b & 3 == 3 { 3 } else { 2 };
             }
-            TwoLeaf::Planes(off, n) => {
+            yavs_ir::TwoLeaf::Planes(off, n) => {
                 let (o, len) = (off as usize, n.div_ceil(64) as usize * 32);
                 let v = (v.get_mut(o..o + len))
                     .ok_or_else(|| ice("a two-state leaf outside its value"))?;
@@ -1251,65 +1253,7 @@ pub(crate) struct TwoPlans {
 }
 
 /// A descriptor, the size of a value under it and its logic leaves.
-type TwoPlan = (Box<[u8]>, u64, std::sync::Arc<[TwoLeaf]>);
-
-/// A logic leaf `yavs.two.map` maps: a `std_ulogic` byte, or `n` elements in planes, at a
-/// byte offset into the value.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum TwoLeaf {
-    Byte(u64),
-    Planes(u64, u64),
-}
-
-/// The leaves `yavs.two.map` maps in a value of type `ty` at offset `at`, in its order.
-fn two_plan(
-    prog: &yavs_ir::Program,
-    ty: TyId,
-    desc: &[u8],
-    at: u64,
-    out: &mut Vec<TwoLeaf>,
-) -> R<()> {
-    let (types, consts) = (&prog.types, &prog.consts);
-    if !Ty::has_std_ulogic(types, ty) {
-        return Ok(());
-    }
-    let (lay, _) = Ty::layout(types, consts, ty, desc).map_err(layout_err)?;
-    match types.get(ty) {
-        Some(Ty::Enum { .. }) => out.push(TwoLeaf::Byte(at)),
-        Some(_) if Ty::logic_leaf(types, ty).is_some() => out.push(TwoLeaf::Planes(at, lay.count)),
-        Some(Ty::Record { fields }) => {
-            let mut used = 0;
-            for (f, &off) in fields.iter().zip(&lay.offsets) {
-                let fdesc = match f.desc {
-                    Some(c) => const_bytes(prog, c)?,
-                    None => {
-                        let n = Ty::desc_size(types, f.ty)
-                            .ok_or_else(|| ice("record field type"))?
-                            as usize;
-                        used += n;
-                        desc.get(used - n..used).unwrap_or(&[]).to_vec()
-                    }
-                };
-                two_plan(prog, f.ty, &fdesc, at + off, out)?;
-            }
-        }
-        Some(Ty::Array {
-            elem,
-            elem_desc,
-            dims,
-        }) => {
-            let edesc = match elem_desc {
-                Some(c) => const_bytes(prog, *c)?,
-                None => desc.get(usize::from(*dims) * 24..).unwrap_or(&[]).to_vec(),
-            };
-            for k in 0..lay.count {
-                two_plan(prog, *elem, &edesc, at + k * lay.stride, out)?;
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
+type TwoPlan = (Box<[u8]>, u64, std::sync::Arc<[yavs_ir::TwoLeaf]>);
 
 /// `yavs.prot.name_set (object, path, instance)`: the names of a protected object (#916).
 fn prot_name_set(

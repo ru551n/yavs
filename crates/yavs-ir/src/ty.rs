@@ -160,6 +160,14 @@ pub struct Layout {
     pub offsets: Vec<u64>,
 }
 
+/// A logic leaf of a value for the `--two-state` map ([`Ty::two_leaves`]): a `std_ulogic`
+/// byte, or `n` elements in planes, at a byte offset into the value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TwoLeaf {
+    Byte(u64),
+    Planes(u64, u64),
+}
+
 /// Why a layout cannot be computed: a malformed descriptor or type table (an ICE), or a size
 /// beyond 64 bits (a runtime error).
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -280,6 +288,73 @@ impl Ty {
             Ty::Enum { .. } => CType::U32,
             _ => return None,
         })
+    }
+
+    /// The logic leaves of a value of `ty` under `desc` at byte offset `at`, in their order, as
+    /// the `--two-state` map (`yavs.two.map`) maps them; more than `cap` is `TooLarge`.
+    pub fn two_leaves(
+        types: &Types,
+        consts: &Consts,
+        (ty, desc, at): (TyId, &[u8], u64),
+        cap: usize,
+        out: &mut Vec<TwoLeaf>,
+    ) -> Result<(), LayoutError> {
+        if !Ty::has_std_ulogic(types, ty) {
+            return Ok(());
+        }
+        if out.len() >= cap {
+            return Err(LayoutError::TooLarge);
+        }
+        let bytes = |c: ConstId| match consts.get(c) {
+            Some(ConstData::Bytes(b)) => Ok(b.clone()),
+            _ => Err(LayoutError::Malformed(format!(
+                "descriptor {c} is not a byte constant"
+            ))),
+        };
+        let (lay, _) = Ty::layout(types, consts, ty, desc)?;
+        match types.get(ty) {
+            Some(Ty::Enum { .. }) => out.push(TwoLeaf::Byte(at)),
+            Some(_) if Ty::logic_leaf(types, ty).is_some() => {
+                out.push(TwoLeaf::Planes(at, lay.count))
+            }
+            Some(Ty::Record { fields }) => {
+                let mut used = 0;
+                for (f, &off) in fields.iter().zip(&lay.offsets) {
+                    let fdesc = match f.desc {
+                        Some(c) => bytes(c)?,
+                        None => {
+                            let n = Ty::desc_size(types, f.ty)
+                                .ok_or_else(|| LayoutError::Malformed("record field type".into()))?
+                                as usize;
+                            used += n;
+                            desc.get(used - n..used).unwrap_or(&[]).to_vec()
+                        }
+                    };
+                    Ty::two_leaves(types, consts, (f.ty, &fdesc, at + off), cap, out)?;
+                }
+            }
+            Some(Ty::Array {
+                elem,
+                elem_desc,
+                dims,
+            }) => {
+                let edesc = match elem_desc {
+                    Some(c) => bytes(*c)?,
+                    None => desc.get(usize::from(*dims) * 24..).unwrap_or(&[]).to_vec(),
+                };
+                for k in 0..lay.count {
+                    Ty::two_leaves(
+                        types,
+                        consts,
+                        (*elem, &edesc, at + k * lay.stride),
+                        cap,
+                        out,
+                    )?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     /// The logic kind of the scalar leaf when `ty` is a (possibly nested) logic array.

@@ -353,6 +353,50 @@ impl<'a> Fx<'a, '_> {
         }
     }
 
+    /// `--two-state`: maps the logic leaves of the value of `tid` at `at` in place, as
+    /// `yavs.two.map` does, when its layout needs no descriptor and it has at most `INLINE_LEAVES`
+    /// leaves: compiled code then does it without a call.
+    fn two_inline(&mut self, tid: TyId, at: Reg) -> bool {
+        const INLINE_LEAVES: usize = 32;
+        let prog = self.fb.program();
+        if Ty::desc_size(prog.types(), tid) != Some(0) {
+            return false;
+        }
+        let mut leaves = Vec::new();
+        let (types, consts) = (prog.types(), prog.consts());
+        if Ty::two_leaves(types, consts, (tid, &[], 0), INLINE_LEAVES, &mut leaves).is_err()
+            || leaves.iter().any(|l| match *l {
+                yavs_ir::TwoLeaf::Byte(o) | yavs_ir::TwoLeaf::Planes(o, _) => {
+                    o > u64::from(u32::MAX)
+                }
+            })
+        {
+            return false;
+        }
+        for l in leaves {
+            match l {
+                yavs_ir::TwoLeaf::Byte(off) => {
+                    let a = self.offset(at, off as u32);
+                    let c = self.load(a, Width::B1, RegTy::I64);
+                    let m = self.two_code(c);
+                    self.store(a, m, Width::B1);
+                }
+                yavs_ir::TwoLeaf::Planes(off, n) => {
+                    let a = self.offset(at, off as u32);
+                    let n = self.int(n as i64);
+                    self.emit(Inst::LogicOp {
+                        op: LOp::To01,
+                        dst: a,
+                        a,
+                        b: a,
+                        n,
+                    });
+                }
+            }
+        }
+        true
+    }
+
     /// The value of `prefix` for an element, slice or field of it. Under `--two-state` a prefix
     /// read from outside (`two_source`) is not mapped as a whole when analysis did not fold it:
     /// the part read maps the same values. A folded prefix keeps its literal map (`--init-x`).
@@ -489,7 +533,9 @@ impl<'a> Fx<'a, '_> {
                     src: data,
                     bytes: size,
                 });
-                self.native("yavs.two.map", Some(tid), &[dst, desc], None, span)?;
+                if !self.two_inline(tid, dst) {
+                    self.native("yavs.two.map", Some(tid), &[dst, desc], None, span)?;
+                }
                 V::A(dst, desc)
             }
             (V::A(data, desc), Some(tid)) => {

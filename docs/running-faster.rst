@@ -199,7 +199,7 @@ option.
   under test leaves out models that wait for time), and pull-ups and open-drain buses in the scope break.
 * **What it costs.** In the normal mode it aims to run as fast as the default; today it is slower: most unit tests
   run within a few percent of the default, some up to about half again as long, and large designs such as processor
-  cores take up to about one and a half times as long. Bringing it to parity is planned.
+  cores take up to about a tenth longer. Bringing it to parity is planned.
 * **When to try it.** With ``--cycle``, for speed (:ref:`cycle-check`). Alone, to check that a design does not depend on metavalues
   (with ``--init-unset`` and ``--init-x`` set to ``0``, ``1`` and ``random``, :doc:`start-values`), or to split a
   difference between cycle mode and the normal mode (:doc:`two-state`).

@@ -184,6 +184,13 @@ macro_rules! case {
     };
 }
 
+// `--two-state`: signals only two-state processes drive are read without a map.
+case!(
+    two_state_clean,
+    "sum=2282",
+    &["--two-state"],
+    [("ops", Max(39200))]
+);
 // `--two-state`: the decoder's calls come from the memo of pure calls, which its two-state literal
 // maps no longer keep out.
 case!(

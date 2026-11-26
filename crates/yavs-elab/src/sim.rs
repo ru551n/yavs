@@ -493,7 +493,8 @@ impl Elaborated {
             .start
             .take()
             .filter(|s| !opts.any_coverage() && s.pkgs == packages && !s.lowerer.externals_early());
-        let key = self.lowering_key(db, &opts, &packages, &archs, session.as_ref());
+        let clean = self.two_clean(db, &opts, &archs);
+        let key = self.lowering_key(db, &opts, &packages, &archs, &clean, session.as_ref());
         let (mut program, rest, start, learn, lib) =
             match key.as_ref().and_then(|k| k.get().map(|l| (k, l))) {
                 Some((k, lw)) => {
@@ -797,6 +798,7 @@ impl Elaborated {
         if captured {
             l.forget_free_objects();
         }
+        let clean = self.two_clean(db, &opts, archs);
         let mut idx = Vec::new();
         // The functions lowered for each architecture: their `SigVal`s index its signals.
         let mut of_arch = Vec::new();
@@ -810,12 +812,18 @@ impl Elaborated {
             l.drop_asserts(opts.no_asserts && a != self.top.arch);
             // `--two-state`: its variant of an architecture, for what is in its scope.
             l.two_state(two);
+            l.two_clean(if two {
+                clean.get(&a).cloned().unwrap_or_default()
+            } else {
+                Default::default()
+            });
             let u = l.architecture(a)?;
             idx.push(u);
             of_arch.push((first..l.funcs(), u));
         }
         l.drop_asserts(false);
         l.two_state(false);
+        l.two_clean(Default::default());
         let var_slots = l.var_slots()?;
         let mut resolvers = Vec::new();
         let mut res_types = Vec::new();
@@ -850,6 +858,107 @@ impl Elaborated {
         Ok((lowered.program, rest, lib))
     }
 
+    /// `--two-state`: per architecture of a two-state variant, the signals and ports declared in
+    /// it that hold only `0` and `1` in every instance of that variant, so two-state code reads
+    /// them without a map. Per leaf: unresolved, unguarded, not implicit, a start without a
+    /// metavalue (`--two-state` starts one without an initial value at `0`), not forced or
+    /// released, no source-less value, every driver a process of the two-state scope (which
+    /// drives only `0` and `1` onto an unresolved signal) with no start of its own, and through
+    /// port edges without conversion the leaf it takes its value from clean too (an `inout`
+    /// edge never is). Nothing when a debugger or VHPI plugin can deposit a value
+    /// (`LowerOptions::two_clean`) or a force names an unknown target.
+    fn two_clean(
+        &self,
+        db: &Db,
+        opts: &LowerOptions,
+        archs: &[(UnitId, bool)],
+    ) -> HashMap<UnitId, std::collections::HashSet<yavs_sem::DeclId>> {
+        use crate::hier::ObjKind;
+        use yavs_kernel::{PortMode, Value};
+        use yavs_logic::StdULogic;
+        let mut out = HashMap::new();
+        if !opts.two_state || !opts.two_clean || !archs.iter().any(|a| a.1) {
+            return out;
+        }
+        let Some(forced) = crate::collapse::forced(db, &self.sigs, &self.procs) else {
+            return out;
+        };
+        let n = &self.nets;
+        let clean_init = |v: &Value| match v {
+            Value::Logic(v) => v
+                .iter()
+                .all(|c| matches!(c, StdULogic::Zero | StdULogic::One)),
+            Value::Bytes(_) => true,
+        };
+        let mut ok: Vec<bool> = (n.leaves.iter())
+            .map(|l| {
+                l.resolution.is_none()
+                    && l.guard.is_none()
+                    && l.implicit.is_none()
+                    && clean_init(&l.init)
+            })
+            .collect();
+        for &o in &forced {
+            let o = n.obj(o);
+            for l in o.leaves.0.0..o.leaves.1.0 {
+                ok[l as usize] = false;
+            }
+        }
+        for &(l, _, _) in &n.consts {
+            ok[l.index()] = false;
+        }
+        for d in &n.drivers {
+            if d.init.is_some() || !self.two_in(self.procs[d.proc.index()].scope) {
+                ok[d.leaf.index()] = false;
+            }
+        }
+        for cp in &n.conv_ports {
+            for &(l, _) in cp.formal.iter().chain(&cp.actual) {
+                ok[l.index()] = false;
+            }
+        }
+        // A leaf is clean when what it takes its value from is: to a fixed point.
+        loop {
+            let mut changed = false;
+            for pe in &n.ports {
+                let (f, a) = (pe.formal.0.index(), pe.actual.0.index());
+                let (nf, na) = match pe.mode {
+                    PortMode::In => (ok[f] && ok[a] && pe.to_formal.is_none(), ok[a]),
+                    PortMode::Out | PortMode::Buffer => {
+                        (ok[f], ok[a] && ok[f] && pe.to_actual.is_none())
+                    }
+                    PortMode::Inout => (false, false),
+                };
+                if (nf, na) != (ok[f], ok[a]) {
+                    (ok[f], ok[a]) = (nf, na);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let mut seen: HashMap<(UnitId, yavs_sem::DeclId), bool> = HashMap::new();
+        for o in &n.objs {
+            if matches!(o.kind, ObjKind::Implicit) || !self.two_in(o.scope) {
+                continue;
+            }
+            let Some((a, true)) = self.unit_key(o.scope) else {
+                continue;
+            };
+            let clean = (o.leaves.0.0..o.leaves.1.0).all(|l| ok[l as usize]);
+            *seen.entry((a, o.decl)).or_insert(true) &= clean;
+        }
+        for ((a, d), clean) in seen {
+            if clean {
+                out.entry(a)
+                    .or_insert_with(std::collections::HashSet::new)
+                    .insert(d);
+            }
+        }
+        out
+    }
+
     /// Where the result of [`Elaborated::lower_cold`] is kept (#479): the stage cache of the
     /// analysis, for a `Db` that has not grown since, with a key part naming everything the
     /// lowering was asked for. `None`: no cache, coverage counters, or constants that make
@@ -860,6 +969,7 @@ impl Elaborated {
         opts: &LowerOptions,
         packages: &[UnitId],
         archs: &[(UnitId, bool)],
+        clean: &HashMap<UnitId, std::collections::HashSet<yavs_sem::DeclId>>,
         session: Option<&crate::pkgcall::Start>,
     ) -> Option<LoweringKey> {
         use yavs_sem::Id;
@@ -943,13 +1053,20 @@ impl Elaborated {
             }),
         );
         ids(&mut p, b'h', &mut archs.iter().map(|&(u, _)| u.index()));
-        // The `--two-state` variants among them, by position.
+        // The `--two-state` variants among them, by position, and their clean signals.
         if archs.iter().any(|a| a.1) {
             ids(
                 &mut p,
                 b'w',
                 &mut (archs.iter().enumerate()).filter_map(|(i, a)| a.1.then_some(i)),
             );
+            for &(a, two) in archs {
+                let mut c: Vec<usize> = (clean.get(&a).filter(|_| two).into_iter().flatten())
+                    .map(|d| d.index())
+                    .collect();
+                c.sort_unstable();
+                ids(&mut p, b'k', &mut c.into_iter());
+            }
         }
         Some(LoweringKey {
             cache,

@@ -75,6 +75,11 @@ pub struct LowerOptions {
     pub init_x: bool,
     /// `--two-state`: the architectures [`Lowerer::two_state`] names are lowered two-state.
     pub two_state: bool,
+    /// `--two-state`: no debugger or VHPI plugin can force or deposit a signal, so the signals
+    /// elaboration finds clean ([`Lowerer::two_clean`]) are read without a map. Not part of
+    /// stored keys: what it changes is keyed by the clean sets themselves.
+    #[serde(skip)]
+    pub two_clean: bool,
 }
 
 impl LowerOptions {
@@ -104,6 +109,7 @@ impl Default for LowerOptions {
             init_unset: false,
             init_x: false,
             two_state: false,
+            two_clean: false,
         }
     }
 }
@@ -454,6 +460,10 @@ pub(crate) struct Cx {
     /// `--two-state` for what is lowered from here on ([`Lowerer::two_state`]).
     #[serde(skip)]
     pub two_state: bool,
+    /// `--two-state`: the signals of the architecture being lowered that hold only `0` and `1`
+    /// in every instance of its two-state variant ([`Lowerer::two_clean`]).
+    #[serde(skip)]
+    pub two_clean: std::collections::HashSet<DeclId>,
     /// `--two-state`: the subprograms declared two-state (`func_of` decides when it declares one:
     /// `two_state` and not a package's), which their callers need not map.
     #[serde(skip)]
@@ -906,6 +916,7 @@ impl<'a> Lowerer<'a> {
                 drop_asserts: false,
                 two_state: false,
                 two_subs: Default::default(),
+                two_clean: Default::default(),
                 x_sites: Default::default(),
                 tys: HashMap::default(),
                 natives: HashMap::default(),
@@ -1040,6 +1051,12 @@ impl<'a> Lowerer<'a> {
     /// (`LOp::To01`), metavalue literals take `--init-x`, variables start at `--init-unset`.
     pub fn two_state(&mut self, on: bool) {
         self.cx.two_state = on;
+    }
+
+    /// `--two-state`: the signals of the architecture lowered next that hold only `0` and `1`
+    /// (elaboration's proof): their reads need no map.
+    pub fn two_clean(&mut self, clean: std::collections::HashSet<DeclId>) {
+        self.cx.two_clean = clean;
     }
 
     /// Forget the subprograms declared in architecture `unit` or its entity (those of its

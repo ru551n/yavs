@@ -1,0 +1,1 @@
+Under `--two-state`, signals and ports that only two-state code drives are read as they are, without mapping them to two-state values on every read, so the event kernel's part of a two-state run comes close to the speed of a normal run.

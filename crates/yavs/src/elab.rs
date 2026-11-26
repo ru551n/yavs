@@ -1684,6 +1684,8 @@ fn prepare(
         init_unset: a.init_unset.is_some(),
         init_x: a.init_x.is_some(),
         two_state: a.two_state.is_some(),
+        // A debugger or VHPI plugin may deposit metavalues into any signal.
+        two_clean: !a.debugged() && a.vhpi.is_empty(),
         ..yavs_elab::LowerOptions::default()
     };
     // Read by elaboration, the lowering's natives and cycle mode.

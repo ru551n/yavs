@@ -685,15 +685,16 @@ impl<'a> Fx<'a, '_> {
         }
     }
 
-    /// `--two-state`: reading object `d` can give values two-state code has not made: a signal,
-    /// a generic, a constant outside processes and subprograms. Variables are left alone (an
-    /// `inout` actual is passed by reference).
+    /// `--two-state`: reading object `d` can give values two-state code has not made: a signal
+    /// (but a clean one), a generic, a constant outside processes and subprograms. Variables are
+    /// left alone (an `inout` actual is passed by reference).
     fn two_source(&self, d: DeclId) -> bool {
         let db = self.db;
         let decl = &db.decls[d];
         match &decl.kind {
             DeclKind::Object(o) => match o.class {
-                ObjClass::Signal => true,
+                // A signal elaboration proved holds only `0` and `1` here (`Cx::two_clean`).
+                ObjClass::Signal => !self.cx.two_clean.contains(&d),
                 ObjClass::Constant => {
                     o.role == ObjRole::Generic
                         || !matches!(

@@ -379,3 +379,35 @@ fn parts_of_constants_and_signals_read_the_bits_their_literals_took() {
         );
     }
 }
+
+/// Signals that only two-state processes drive are read without a map (elaboration's proof);
+/// one forced or driven from the testbench, starting with a metavalue, resolved and driven
+/// `'Z'`, behind an `inout` port or a port the testbench feeds still maps: its metavalues read as
+/// `0` (hand-checked counts of the elements read as 1 and as 0), every operand of two-state code
+/// stays `0` or `1` (`YAVS_TWO_CHECK`).
+#[test]
+fn only_signals_two_state_code_drives_are_read_without_a_map() {
+    let dir = tempdir("twostate-clean");
+    analyze(&dir, "cleansig.vhd");
+    for t in tiers() {
+        for x in [None, Some("--init-x=1")] {
+            for cycle in [None, Some("--cycle")] {
+                let mut args = vec!["run", "--work=work:lib", "--two-state"];
+                args.extend(&t);
+                args.extend(x);
+                args.extend(cycle);
+                args.push("cleansig");
+                let o = yavs(&dir, &args);
+                let out = String::from_utf8_lossy(&o.stdout);
+                assert!(
+                    o.status.success()
+                        && out.contains(
+                            "ok=808 forced=808 tb=808 init=808 res=808 port=1204 pin=808"
+                        ),
+                    "{args:?}: {out}{}",
+                    String::from_utf8_lossy(&o.stderr)
+                );
+            }
+        }
+    }
+}

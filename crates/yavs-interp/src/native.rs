@@ -127,6 +127,7 @@ fn implemented(symbol: &str, family: Option<&str>, attr: Option<&str>) -> Option
         ("yavs.two.lit", _, _) => two_lit,
         ("yavs.two.lit_code", _, _) => two_lit_code,
         ("yavs.two.map", _, _) => two_map,
+        ("yavs.two.lit_rec", _, _) => two_lit_rec,
         ("yavs.prot.name_get", _, _) => prot_name_get,
         ("yavs.env.getenv.string.r_string", _, _) => getenv_string,
         ("yavs.env.getenv.string.r_line", _, _) => getenv_line,
@@ -1163,6 +1164,55 @@ fn two_lit_code(
     a: &[u64],
 ) -> R<Option<u64>> {
     Ok(Some(two_code(targ(a, 0)?, targ(a, 1)?, 0, targ(a, 2)?)))
+}
+
+/// `yavs.two.lit_rec (data, desc, salt, mode)` of type `ty`: [`two_code`] on every logic
+/// element of the composite literal value at `data` (a record, an array of records), each
+/// numbered as cycle mode's region numbers the elements of that literal (`Ty::two_lit_leaves`).
+fn two_lit_rec(
+    m: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    ty: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    let ty = ty.ok_or_else(|| ice("yavs.two.lit_rec without a type"))?;
+    let (data, dp, salt, mode) = (targ(a, 0)?, targ(a, 1)?, targ(a, 2)?, targ(a, 3)?);
+    let rt = m.rt.clone();
+    let (types, consts) = (&rt.prog.types, &rt.prog.consts);
+    let n = Ty::desc_size(types, ty).ok_or_else(|| ice("descriptor size"))?;
+    let desc = if n == 0 {
+        Vec::new()
+    } else {
+        m.rd(dp, n)?.to_vec()
+    };
+    let (lay, _) = Ty::layout(types, consts, ty, &desc).map_err(layout_err)?;
+    // ponytail: leaves made per call; a literal is read where it is written, cache them if hot.
+    let mut leaves = Vec::new();
+    Ty::two_lit_leaves(types, consts, (ty, &desc, 0), usize::MAX, &mut leaves)
+        .map_err(layout_err)?;
+    let v = m.wr(data, lay.size)?;
+    for (leaf, first) in leaves {
+        match leaf {
+            yavs_ir::TwoLeaf::Byte(off) => {
+                let b = (v.get_mut(off as usize))
+                    .ok_or_else(|| ice("a two-state leaf outside its value"))?;
+                *b = two_code(u64::from(*b), salt, first, mode) as u8;
+            }
+            yavs_ir::TwoLeaf::Planes(off, n) => {
+                let (o, len) = (off as usize, n.div_ceil(64) as usize * 32);
+                let p = (v.get_mut(o..o + len))
+                    .ok_or_else(|| ice("a two-state leaf outside its value"))?;
+                for i in 0..n {
+                    let c = plane_get(p, i);
+                    let t = two_code(c, salt, first + i, mode);
+                    if t != c {
+                        plane_set(p, i, t);
+                    }
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// `yavs.two.map (data, desc)` of type `ty`: every `std_ulogic` element of the composite at

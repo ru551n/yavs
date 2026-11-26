@@ -64,7 +64,8 @@ partly inside it is an error (E2123).
   ``'H'`` as ``'1'`` and every other value as ``'0'``. A port the testbench drives with ``'X'`` reads as ``'0'``. The
   subprograms of packages themselves keep the nine values: their callers map what they give back.
 * A metavalue literal it assigns (``'U'``, ``'X'``, ``'Z'``, ``'W'``, ``'-'``) takes the ``--init-x`` value, ``'0'``
-  without the option. ``'L'`` is ``'0'`` and ``'H'`` is ``'1'``.
+  without the option. ``'L'`` is ``'0'`` and ``'H'`` is ``'1'``. So does the literal of a constant, a record or an
+  array of records too, wherever a part of it is read.
 * A metavalue literal it compares with keeps its meaning: a ``0`` or ``1`` never equals ``'U'``, ``'X'``, ``'Z'`` or
   ``'W'``. So ``x = 'X'`` is false, ``x /= 'U'`` is true (an ``assert clk /= 'U'`` "is it connected" check holds),
   ``x ?= 'X'`` is ``'0'``, and a ``case`` choice ``when "0X"`` is never taken. A ``'-'`` in ``std_match``, ``?=``,

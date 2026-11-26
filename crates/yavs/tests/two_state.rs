@@ -359,7 +359,7 @@ fn parts_of_constants_and_signals_read_the_bits_their_literals_took() {
     );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     for t in tiers() {
-        for (x, want) in [(None, "n=1002111"), (Some("--init-x=1"), "n=1002133")] {
+        for (x, want) in [(None, "n=1002111"), (Some("--init-x=1"), "n=1102333")] {
             let mut args = vec!["run", "--work=work:lib", "--two-state"];
             args.extend(&t);
             args.extend(x);
@@ -407,6 +407,56 @@ fn only_signals_two_state_code_drives_are_read_without_a_map() {
                     "{args:?}: {out}{}",
                     String::from_utf8_lossy(&o.stderr)
                 );
+            }
+        }
+    }
+}
+
+/// #1203: the metavalues of a record constant's literal take their `--init-x` bits under
+/// `--two-state`, as a vector constant's do: read whole, by field, by element in a loop, by a
+/// scalar field, of a record and of an array of records, the same bits in both modes on every
+/// tier (`random` from the same seed); without `--two-state` they stay what they are.
+#[test]
+fn record_constants_take_their_init_x_bits_in_both_modes() {
+    let dir = tempdir("twostate-recx");
+    analyze(&dir, "recx.vhd");
+    let cases = [
+        (
+            "cycle_recx",
+            "v=X1U0UUUXXX-1W0Z0",
+            [
+                "v=0100000000010000",
+                "v=1110111111111010",
+                "v=0110111010111010",
+            ],
+        ),
+        (
+            "cycle_recx2",
+            "v=X1U0X1U0UXUX",
+            ["v=010001000000", "v=111011101111", "v=110011101111"],
+        ),
+    ];
+    for t in tiers() {
+        for (top, four, two) in cases {
+            for cycle in [None, Some("--cycle")] {
+                let mut args = vec!["run", "--work=work:lib"];
+                args.extend(&t);
+                args.extend(cycle);
+                args.push(top);
+                let out = String::from_utf8_lossy(&yavs(&dir, &args).stdout).into_owned();
+                assert!(out.contains(four), "{args:?}: {out}");
+                for (x, want) in ["--init-x=0", "--init-x=1", "--init-x=random:5"]
+                    .iter()
+                    .zip(two)
+                {
+                    let mut args = vec!["run", "--work=work:lib", "--two-state", x];
+                    args.extend(&t);
+                    args.extend(cycle);
+                    args.push(top);
+                    let o = yavs(&dir, &args);
+                    let out = String::from_utf8_lossy(&o.stdout);
+                    assert!(o.status.success() && out.contains(want), "{args:?}: {out}");
+                }
             }
         }
     }

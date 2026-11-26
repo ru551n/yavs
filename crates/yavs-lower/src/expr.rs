@@ -398,12 +398,17 @@ impl<'a> Fx<'a, '_> {
     }
 
     /// The value of `prefix` for an element, slice or field of it. Under `--two-state` a prefix
-    /// read from outside (`two_source`) is not mapped as a whole when analysis did not fold it:
-    /// the part read maps the same values. A folded prefix keeps its literal map (`--init-x`).
+    /// read from outside (`two_source`) is not mapped as a whole when analysis did not fold it,
+    /// nor a constant's: the part read maps the same values (a constant's as its literal).
     pub(crate) fn prefix_value(&mut self, prefix: ExprId) -> R<V> {
         let e = &self.db.exprs[prefix];
         let folded = e.value.is_some() || matches!(e.kind, ExprKind::Const(_));
-        if !self.two || folded || !self.root_obj(prefix).is_none_or(|d| self.two_source(d)) {
+        let root = self.root_obj(prefix);
+        // A constant's part reads its literal's bits there (#1203): its prefix is not mapped,
+        // folded or not; anything else read from outside maps its part only when not folded.
+        let skip = root.is_some_and(|d| self.two_constant(d))
+            || (!folded && root.is_none_or(|d| self.two_source(d)));
+        if !self.two || !skip {
             return self.expr(prefix);
         }
         let fresh = self.two_raw.insert(prefix);
@@ -466,6 +471,10 @@ impl<'a> Fx<'a, '_> {
         if folded.is_some_and(clean01) {
             return Ok(v);
         }
+        // A constant read in part (or, not folded, whole) reads the bits its literal takes there,
+        // as a literal written at that place (#1203); cycle mode's region folds it to one.
+        let constant = self.root_obj(id).is_some_and(|d| self.two_constant(d));
+        let from_outside = from_outside && !constant;
         // `?=` with a metavalue operand gives `'0'`, `?/=` gives `'1'`: never equal (A74).
         if let (ExprKind::Call { callee, .. }, V::S(code)) = (&e.kind, v)
             && folded.is_none()
@@ -486,7 +495,7 @@ impl<'a> Fx<'a, '_> {
         }
         // A literal, or a value read from outside for a matching comparison (a generic mask):
         // `yavs.two.lit` keeps its `'-'` (mode bit 0), a read maps metavalues to `0` (bit 1).
-        if folded.is_some() || splat || (from_outside && dash) {
+        if folded.is_some() || splat || constant || (from_outside && dash) {
             // The literal's source site, as `x_value` and cycle mode's region draw from (A68).
             let (file, line, col) = db.sources.get(span.file).site(span.start);
             let salt = self.int(yavs_logic::start::lit_salt(file, line, col) as i64);
@@ -504,8 +513,24 @@ impl<'a> Fx<'a, '_> {
                     Some(v @ V::S(_)) => Ok(v),
                     _ => Err(self.cx.ice(span, "a two-state literal that is no scalar")),
                 },
-                // ponytail: a composite literal of records keeps its metavalues.
-                (V::A(..), _) if !flat => Ok(v),
+                // A literal of records: every logic element, numbered as the region numbers it.
+                (V::A(data, desc), Some(tid)) if !flat => {
+                    let (size, _) = self.layout(tid, desc);
+                    let copy = self.alloc_val(size, tid, Some(desc));
+                    self.emit(Inst::Copy {
+                        dst: copy,
+                        src: data,
+                        bytes: size,
+                    });
+                    self.native(
+                        "yavs.two.lit_rec",
+                        Some(tid),
+                        &[copy, desc, salt, mode],
+                        None,
+                        span,
+                    )?;
+                    Ok(V::A(copy, desc))
+                }
                 (V::A(data, desc), Some(tid)) => {
                     let (size, count) = self.layout(tid, desc);
                     let copy = self.alloc_val(size, tid, Some(desc));
@@ -707,6 +732,13 @@ impl<'a> Fx<'a, '_> {
             DeclKind::Alias(_) => true,
             _ => false,
         }
+    }
+
+    /// `--two-state`: `d` is a declared constant (not a generic or a formal), whose metavalues
+    /// are its literal's.
+    fn two_constant(&self, d: DeclId) -> bool {
+        matches!(&self.db.decls[d].kind, DeclKind::Object(o)
+            if o.class == ObjClass::Constant && matches!(o.role, ObjRole::Plain | ObjRole::Deferred))
     }
 
     /// `--two-state`: a call of `callee` gives two-state values: a subprogram declared outside

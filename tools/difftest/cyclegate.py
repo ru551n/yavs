@@ -83,6 +83,8 @@ CYCLE_TESTS = {
     "consts.vhd": [("cycle_consts", "", None)],
     "dashpat.vhd": [("cycle_dash", "", lambda s, w=w: dash(s, w)) for w in (1, 64, 65)],
     "dashtab.vhd": [("cycle_dashtab", "", None)],
+    "recx.vhd": [(t, f, None) for t in ("cycle_recx", "cycle_recx2")
+                 for f in ("--init-x=0", "--init-x=1", "--init-x=random:5")],
     "constcall.vhd": [("cycle_constcall", "", None)],
     "constelem.vhd": [("cycle_constelem", "", lambda s, w=w: pats(s, w)) for w in (1, 64, 65)],
     "elempart.vhd": [("cycle_elempart", "", lambda s, w=w: W.sub(str(w), s)) for w in (64, 65, 128)],

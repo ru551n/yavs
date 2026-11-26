@@ -160,6 +160,77 @@ pub struct Layout {
     pub offsets: Vec<u64>,
 }
 
+/// The walk of [`Ty::two_lit_leaves`]: `scale` counts the outer arrays' elements to the right
+/// of this one, a leaf of `n` elements then starts at element `scale * n`.
+fn lit_leaves(
+    types: &Types,
+    consts: &Consts,
+    (ty, desc, at): (TyId, &[u8], u64),
+    scale: u64,
+    cap: usize,
+    out: &mut Vec<(TwoLeaf, u64)>,
+) -> Result<(), LayoutError> {
+    if !Ty::has_std_ulogic(types, ty) {
+        return Ok(());
+    }
+    if out.len() >= cap {
+        return Err(LayoutError::TooLarge);
+    }
+    let bytes = |c: ConstId| match consts.get(c) {
+        Some(ConstData::Bytes(b)) => Ok(b.clone()),
+        _ => Err(LayoutError::Malformed(format!(
+            "descriptor {c} is not a byte constant"
+        ))),
+    };
+    let (lay, _) = Ty::layout(types, consts, ty, desc)?;
+    match types.get(ty) {
+        Some(Ty::Enum { .. }) => out.push((TwoLeaf::Byte(at), scale)),
+        Some(_) if Ty::logic_leaf(types, ty).is_some() => {
+            out.push((TwoLeaf::Planes(at, lay.count), scale * lay.count))
+        }
+        Some(Ty::Record { fields }) => {
+            let mut used = 0;
+            for (f, &off) in fields.iter().zip(&lay.offsets) {
+                let fdesc = match f.desc {
+                    Some(c) => bytes(c)?,
+                    None => {
+                        let n = Ty::desc_size(types, f.ty)
+                            .ok_or_else(|| LayoutError::Malformed("record field type".into()))?
+                            as usize;
+                        used += n;
+                        desc.get(used - n..used).unwrap_or(&[]).to_vec()
+                    }
+                };
+                lit_leaves(types, consts, (f.ty, &fdesc, at + off), scale, cap, out)?;
+            }
+        }
+        Some(Ty::Array {
+            elem,
+            elem_desc,
+            dims,
+        }) => {
+            let edesc = match elem_desc {
+                Some(c) => bytes(*c)?,
+                None => desc.get(usize::from(*dims) * 24..).unwrap_or(&[]).to_vec(),
+            };
+            let n = lay.count;
+            for k in 0..n {
+                let s = scale * n + (n - 1 - k);
+                lit_leaves(
+                    types,
+                    consts,
+                    (*elem, &edesc, at + k * lay.stride),
+                    s,
+                    cap,
+                    out,
+                )?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// A logic leaf of a value for the `--two-state` map ([`Ty::two_leaves`]): a `std_ulogic`
 /// byte, or `n` elements in planes, at a byte offset into the value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -295,66 +366,28 @@ impl Ty {
     pub fn two_leaves(
         types: &Types,
         consts: &Consts,
-        (ty, desc, at): (TyId, &[u8], u64),
+        at: (TyId, &[u8], u64),
         cap: usize,
         out: &mut Vec<TwoLeaf>,
     ) -> Result<(), LayoutError> {
-        if !Ty::has_std_ulogic(types, ty) {
-            return Ok(());
-        }
-        if out.len() >= cap {
-            return Err(LayoutError::TooLarge);
-        }
-        let bytes = |c: ConstId| match consts.get(c) {
-            Some(ConstData::Bytes(b)) => Ok(b.clone()),
-            _ => Err(LayoutError::Malformed(format!(
-                "descriptor {c} is not a byte constant"
-            ))),
-        };
-        let (lay, _) = Ty::layout(types, consts, ty, desc)?;
-        match types.get(ty) {
-            Some(Ty::Enum { .. }) => out.push(TwoLeaf::Byte(at)),
-            Some(_) if Ty::logic_leaf(types, ty).is_some() => {
-                out.push(TwoLeaf::Planes(at, lay.count))
-            }
-            Some(Ty::Record { fields }) => {
-                let mut used = 0;
-                for (f, &off) in fields.iter().zip(&lay.offsets) {
-                    let fdesc = match f.desc {
-                        Some(c) => bytes(c)?,
-                        None => {
-                            let n = Ty::desc_size(types, f.ty)
-                                .ok_or_else(|| LayoutError::Malformed("record field type".into()))?
-                                as usize;
-                            used += n;
-                            desc.get(used - n..used).unwrap_or(&[]).to_vec()
-                        }
-                    };
-                    Ty::two_leaves(types, consts, (f.ty, &fdesc, at + off), cap, out)?;
-                }
-            }
-            Some(Ty::Array {
-                elem,
-                elem_desc,
-                dims,
-            }) => {
-                let edesc = match elem_desc {
-                    Some(c) => bytes(*c)?,
-                    None => desc.get(usize::from(*dims) * 24..).unwrap_or(&[]).to_vec(),
-                };
-                for k in 0..lay.count {
-                    Ty::two_leaves(
-                        types,
-                        consts,
-                        (*elem, &edesc, at + k * lay.stride),
-                        cap,
-                        out,
-                    )?;
-                }
-            }
-            _ => {}
-        }
+        let mut with = Vec::new();
+        Ty::two_lit_leaves(types, consts, at, cap, &mut with)?;
+        out.extend(with.into_iter().map(|(l, _)| l));
         Ok(())
+    }
+
+    /// [`Ty::two_leaves`], each leaf with the number of its first element among the elements of
+    /// a literal of the value as cycle mode's region lays one out (a record's fields each a
+    /// literal of their own, an array of records one per field over the array, its first element
+    /// leftmost): the index `--init-x=random` draws an element's bit by (#1203).
+    pub fn two_lit_leaves(
+        types: &Types,
+        consts: &Consts,
+        at: (TyId, &[u8], u64),
+        cap: usize,
+        out: &mut Vec<(TwoLeaf, u64)>,
+    ) -> Result<(), LayoutError> {
+        lit_leaves(types, consts, at, 0, cap, out)
     }
 
     /// The logic kind of the scalar leaf when `ty` is a (possibly nested) logic array.

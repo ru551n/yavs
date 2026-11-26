@@ -3396,8 +3396,11 @@ impl Lx<'_> {
                 } else {
                     v
                 };
+                let two = self.meta_joins();
+                let (lits, vals) = (&mut self.lits, &mut self.lit_vals);
                 at_each(v, b, &mut |mut p| {
                     let ew = p.dims.elem_len();
+                    let was = (p.lo, p.len);
                     match ix {
                         Ok(el) => {
                             p.lo += el * ew;
@@ -3409,6 +3412,7 @@ impl Lx<'_> {
                     }
                     p.len = ew;
                     p.dims = p.dims.rest();
+                    narrow_lit(lits, vals, &mut p, was, two);
                     p
                 })
             }
@@ -3432,14 +3436,18 @@ impl Lx<'_> {
                 // The slice's rightmost element is its element 0.
                 let lo = elem_of(b, sb.right).ok_or("a slice outside its array's range")?;
                 elem_of(b, sb.left).ok_or("a slice outside its array's range")?;
+                let two = self.meta_joins();
+                let (lits, vals) = (&mut self.lits, &mut self.lit_vals);
                 at_each(v, b, &mut |mut p| {
                     let ew = p.dims.elem_len();
+                    let was = (p.lo, p.len);
                     p.lo += lo * ew;
                     if let Some(at) = &mut p.at {
                         at.3 += lo * ew;
                     }
                     p.len = n * ew;
                     p.dims = p.dims.with_first(sb);
+                    narrow_lit(lits, vals, &mut p, was, two);
                     p
                 })
             }
@@ -3584,8 +3592,11 @@ impl Lx<'_> {
             hi: d,
             site,
         });
+        let was = (p.lo, p.len);
         p.at = Some((r.r, b, ew, 0, Some(self.db.exprs[*left].subtype)));
         p.len = (d as u32 + 1) * ew;
+        let two = self.meta_joins();
+        narrow_lit(&mut self.lits, &mut self.lit_vals, &mut p, was, two);
         // Its index range is the bounds' at run time: no index or slice of it is taken.
         p.dims = Dims::NONE;
         Ok(Val::Part(p))
@@ -4434,6 +4445,14 @@ impl Lx<'_> {
         let db = self.db;
         if let Some(c) = db.exprs[x].value {
             return Some(db.consts[c].clone());
+        }
+        // In a two-state region a metavalue argument holds its `--init-x` bits, as the normal
+        // mode maps it: a call elaboration evaluated on the metavalue itself is not its value.
+        if self.meta_joins()
+            && let ExprKind::Call { args, .. } = &db.exprs[x].kind
+            && args.iter().any(|a| self.meta_arg(a))
+        {
+            return None;
         }
         // A globally static call elaboration evaluated for this process (outside an inlined
         // call, whose formals the call's arguments may name).
@@ -5689,6 +5708,42 @@ impl Lx<'_> {
         Ok(Val::Part(t))
     }
 
+    /// Whether argument `a` folds to a logic value holding a metavalue.
+    fn meta_arg(&self, a: &yavs_sem::hir::Arg) -> bool {
+        let Actual::Expr(x) = a.actual else {
+            return false;
+        };
+        let t = self.db.base(self.db.exprs[x].subtype);
+        if !self.nine_valued(t) {
+            return false;
+        }
+        // A probe: the argument's own reports stay the call's (`loud`).
+        let was = self.probing.replace(true);
+        let meta = self.fold(x).is_some_and(|c| {
+            self.codes(t, &c)
+                .is_ok_and(|(cs, _)| cs.iter().any(|c| matches!(c, 0 | 1 | 4 | 5 | 8)))
+        });
+        self.probing.set(was);
+        meta
+    }
+
+    /// Operands `a`, `b` of `=` or `/=` (`args`): in a two-state region a metavalue literal keeps
+    /// its meaning only where the operand is a literal, an aggregate or a qualified value (A74, as
+    /// the normal mode); a formal, an element chosen in a loop or a call compares by its bits.
+    fn cmp_view(&self, args: &[yavs_sem::hir::Arg], a: Val, b: Val) -> (Val, Val) {
+        if !self.meta_joins() {
+            return (a, b);
+        }
+        let db = self.db;
+        let lit = |k: usize| {
+            matches!(args.get(k).map(|a| &a.actual), Some(&Actual::Expr(x))
+                if db.exprs[x].value.is_some() || matches!(db.exprs[x].kind,
+                    ExprKind::Const(_) | ExprKind::Aggregate { .. } | ExprKind::Qualified { .. }))
+        };
+        let view = |k: usize, v: Val| if lit(k) { v } else { no_lit(v) };
+        (view(0, a), view(1, b))
+    }
+
     fn arg(&mut self, a: &yavs_sem::hir::Arg) -> R<Val> {
         let Actual::Expr(x) = a.actual else {
             return Err("a call with a default or converted actual".into());
@@ -6331,6 +6386,7 @@ impl Lx<'_> {
                         if matches!(db.types[ty].kind, TypeKind::Record { .. }) =>
                     {
                         let (a, b) = two(self)?;
+                        let (a, b) = self.cmp_view(args, a, b);
                         let mut pairs = Vec::new();
                         flatten(&a, b, &mut pairs)?;
                         let mut all: Option<Val> = None;
@@ -6358,6 +6414,11 @@ impl Lx<'_> {
                     }
                     Family::Eq | Family::Neq | Family::MEq | Family::MNeq => {
                         let (a, b) = two(self)?;
+                        let (a, b) = if matches!(fam, Family::Eq | Family::Neq) {
+                            self.cmp_view(args, a, b)
+                        } else {
+                            (a, b)
+                        };
                         let ne = matches!(fam, Family::Neq | Family::MNeq);
                         // `?=` gives `'U'` or `'X'` on a metavalue, not false: not forced.
                         let nine =
@@ -6866,6 +6927,52 @@ fn at_each(v: Val, b: Bounds, f: &mut dyn FnMut(Part) -> Part) -> R<Val> {
             .collect::<R<Vec<_>>>()
             .map(Val::Rec),
         _ => Err("an index or slice of a value with no index range".into()),
+    }
+}
+
+/// The literal codes of `p` after an index or slice narrowed it from elements `was` (lo, len):
+/// those of its own elements, none when they hold no metavalue. An element chosen at run time,
+/// or a literal with `--init-x=random` bits, has no codes known here: in a two-state region its
+/// bits decide (as a materialised element), else `LIT_MIXED` keeps a comparison with it out.
+fn narrow_lit(
+    lits: &mut Vec<Vec<u8>>,
+    vals: &mut Vec<Bits>,
+    p: &mut Part,
+    was: (u32, u32),
+    two: bool,
+) {
+    let Some(k) = p.lit.filter(|&k| k != LIT_MIXED) else {
+        return;
+    };
+    let (codes, bits) = (&lits[k as usize], &vals[k as usize]);
+    let (lo, len) = (p.lo - was.0, p.len);
+    if p.at.is_some() || bits.1.is_some() || codes.len() != was.1 as usize || lo + len > was.1 {
+        p.lit = if two { None } else { Some(LIT_MIXED) };
+        return;
+    }
+    // Codes run from the left: element `e` (from the right) is code `n - 1 - e`.
+    let n = was.1 as usize;
+    let own = codes[n - (lo + len) as usize..n - lo as usize].to_vec();
+    if !own.iter().any(|c| matches!(c, 0 | 1 | 4 | 5 | 8)) {
+        p.lit = None;
+        return;
+    }
+    let mut val = vec![0u64; words(len) as usize];
+    for e in 0..len {
+        let b = lo + e;
+        val[(e / 64) as usize] |= (bits.0[(b / 64) as usize] >> (b % 64) & 1) << (e % 64);
+    }
+    lits.push(own);
+    vals.push((val.into(), None));
+    p.lit = Some(lits.len() as u32 - 1);
+}
+
+/// `v` without literal codes: the bits it holds are its value.
+fn no_lit(v: Val) -> Val {
+    match v {
+        Val::Part(p) => Val::Part(Part { lit: None, ..p }),
+        Val::Rec(fs) => Val::Rec(fs.into_iter().map(no_lit).collect()),
+        v => v,
     }
 }
 

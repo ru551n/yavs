@@ -1627,6 +1627,38 @@ fn two_state_operations_equal_the_normal_mode_at_widths_around_a_word() {
     }
 }
 
+/// #1200: an element of a pattern holding `'-'` (a literal, a constant, a record-constant field
+/// passed to a function, or indexed in a loop) compared with `'0'` or `'1'`: the region read it
+/// against the codes of the whole literal, so a don't-care matcher matched every input.
+#[test]
+fn a_pattern_with_dont_cares_compares_by_element_as_the_normal_mode() {
+    let dir = tempdir("cycle-dashpat");
+    for w in [1u32, 4, 63, 64, 65, 128] {
+        let h = w / 2;
+        let pat = "-".repeat((w - h) as usize) + &"1".repeat(h as usize);
+        let text = include_str!("cycle/dashpat.vhd")
+            .replace("PAT", &pat)
+            .replace("WM1", &(w - 1).to_string())
+            .replace("MOD", &(1u32 << w.min(4)).to_string())
+            .replace("WIDTH", &w.to_string());
+        analyze(&dir, &format!("dashpat{w}.vhd"), &text);
+        for t in tiers() {
+            for two in [&[][..], &["--two-state"][..]] {
+                let (normal, _) = run(&dir, &[&t[..], two].concat(), "cycle_dash");
+                assert_eq!(normal.len(), 12, "{w} {t:?} {normal:?}");
+                let (cycle, err) = run(&dir, &[&t[..], two, &["--cycle"]].concat(), "cycle_dash");
+                assert_eq!(cycle, normal, "width {w} {t:?} {two:?}\n{err}");
+                // Under `--two-state` the matcher joins; plain cycle mode keeps it out (`'-'`).
+                let members = if two.is_empty() { "0 of 2" } else { "1 of 2" };
+                assert!(
+                    err.contains(&format!("cycle mode: {members} processes")),
+                    "{w} {two:?}: {err}"
+                );
+            }
+        }
+    }
+}
+
 /// All nine values at a region input, a metavalue literal and registers without an initial
 /// value: two-state reads `'1'` and `'H'` as 1 and everything else as 0, the outputs go back as
 /// `'0'` and `'1'`, and the metavalues read as 0 are counted (hand-checked).

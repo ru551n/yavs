@@ -305,7 +305,7 @@ impl<'a> Fx<'a, '_> {
         if self.cx.opts.init_x && !self.two && self.cx.x_sites.contains(&id) {
             v = self.x_value(id, v)?;
         }
-        if self.two {
+        if self.two && !self.two_raw.contains(&id) {
             v = self.two_value(id, v)?;
         }
         if spine.iter().any(|x| self.ahead.remove(x).is_some()) {
@@ -351,6 +351,23 @@ impl<'a> Fx<'a, '_> {
                 Ok(V::A(copy, desc))
             }
         }
+    }
+
+    /// The value of `prefix` for an element, slice or field of it. Under `--two-state` a prefix
+    /// read from outside (`two_source`) is not mapped as a whole when analysis did not fold it:
+    /// the part read maps the same values. A folded prefix keeps its literal map (`--init-x`).
+    pub(crate) fn prefix_value(&mut self, prefix: ExprId) -> R<V> {
+        let e = &self.db.exprs[prefix];
+        let folded = e.value.is_some() || matches!(e.kind, ExprKind::Const(_));
+        if !self.two || folded || !self.root_obj(prefix).is_none_or(|d| self.two_source(d)) {
+            return self.expr(prefix);
+        }
+        let fresh = self.two_raw.insert(prefix);
+        let v = self.expr(prefix);
+        if fresh {
+            self.two_raw.remove(&prefix);
+        }
+        v
     }
 
     /// `--two-state`: the value `v` of `id` with every logic element `0` or `1` (`Fx::two`): a
@@ -6801,7 +6818,7 @@ impl<'a> Fx<'a, '_> {
                 .cx
                 .ice(span, "view of a variable array is not an array"));
         }
-        let v = self.expr(prefix)?;
+        let v = self.prefix_value(prefix)?;
         let (data, dope) = self.arr(v, span)?;
         let pos = self.flat_pos(dope, indices, &what)?;
         let tid = self.ty(t, span)?;
@@ -6862,7 +6879,7 @@ impl<'a> Fx<'a, '_> {
         }
         let (tid, logic, w) = self.elem_facts(t, span)?;
         let what = self.prefix_name(prefix);
-        let v = self.expr(prefix)?;
+        let v = self.prefix_value(prefix)?;
         let (data, dope) = self.arr(v, span)?;
         let (p, n, nd) = self.slice_of(dope, range, &what, span)?;
         if logic {

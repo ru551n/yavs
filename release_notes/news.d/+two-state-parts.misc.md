@@ -1,0 +1,1 @@
+Under `--two-state`, reading an element, slice or field of a signal or constant maps only the part read to two-state values, not the whole object first, so record and array reads in the event kernel run faster.

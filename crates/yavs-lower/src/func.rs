@@ -361,6 +361,9 @@ pub(crate) struct Fx<'a, 'b> {
     pub two_zkeep: std::collections::HashSet<ExprId>,
     /// `--two-state`: the operands of comparisons, whose literals keep their meaning (A74).
     pub two_cmp: std::collections::HashSet<ExprId>,
+    /// `--two-state`: prefixes lowered for an element, slice or field that maps itself
+    /// (`Fx::prefix_value`).
+    pub two_raw: std::collections::HashSet<ExprId>,
     /// The `GUARD` signal of the enclosing guarded block (guarded assignments).
     pub guard: Option<DeclId>,
     /// Copy-out after the call being lowered: (frame slot of the temporary, the actual's
@@ -443,6 +446,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             two_splat: Default::default(),
             two_zkeep: Default::default(),
             two_cmp: Default::default(),
+            two_raw: Default::default(),
             guard: None,
             writeback: Vec::new(),
             writeback_parts: Vec::new(),

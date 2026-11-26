@@ -338,3 +338,44 @@ fn a_memoised_decoder_and_whole_record_reads_map_as_the_elements_do() {
         assert_eq!(plain.stdout, o.stdout, "{t:?}: the memo changed the output");
     }
 }
+
+/// The prefix of an element, slice or field read is not mapped as a whole when the part is: a
+/// constant's literal still takes `--init-x` (architecture and process constants alike), and a
+/// process constant indexed in a loop still maps (the guard of `ieee/user_reduce_idiom.vhd`).
+#[test]
+fn parts_of_constants_and_signals_read_the_bits_their_literals_took() {
+    let dir = tempdir("twostate-prefix");
+    analyze(&dir, "prefixmap.vhd");
+    let corpus =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus/ieee/user_reduce_idiom.vhd");
+    let o = yavs(
+        &dir,
+        &[
+            "analyze",
+            "--std=2008",
+            "--work=work:lib",
+            corpus.to_str().unwrap(),
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    for t in tiers() {
+        for (x, want) in [(None, "n=1002111"), (Some("--init-x=1"), "n=1002133")] {
+            let mut args = vec!["run", "--work=work:lib", "--two-state"];
+            args.extend(&t);
+            args.extend(x);
+            args.push("prefixmap");
+            let o = yavs(&dir, &args);
+            let out = String::from_utf8_lossy(&o.stdout);
+            assert!(o.status.success() && out.contains(want), "{args:?}: {out}");
+        }
+        let mut args = vec!["run", "--work=work:lib", "--two-state"];
+        args.extend(&t);
+        args.push("user_reduce_idiom");
+        let o = yavs(&dir, &args);
+        let out = String::from_utf8_lossy(&o.stdout);
+        assert!(
+            o.status.success() && out.contains("vectors checked 1549"),
+            "{t:?}: {out}"
+        );
+    }
+}

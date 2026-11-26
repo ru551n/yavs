@@ -676,7 +676,7 @@ impl Fx<'_, '_> {
 
     pub fn field(&mut self, prefix: ExprId, n: u32, span: Span) -> R<V> {
         let (t, tid) = self.record_of(prefix, span)?;
-        let v = self.expr(prefix)?;
+        let v = self.prefix_value(prefix)?;
         let (base, desc) = self.arr(v, span)?;
         let (a, d) = self.field_addr(tid, base, desc, n, span)?;
         let st = self.field_subtype(t, n)?;
@@ -731,7 +731,7 @@ impl Fx<'_, '_> {
         let t = db.base(db.exprs[prefix].subtype);
         let tid = self.ty(t, span)?;
         let what = self.prefix_name(prefix);
-        let v = self.expr(prefix)?;
+        let v = self.prefix_value(prefix)?;
         let (data, dope) = self.arr(v, span)?;
         let pos = self.flat_pos(dope, indices, &what)?;
         let (etid, ed) = self.elem_desc(tid, dope)?;
@@ -833,7 +833,7 @@ impl Fx<'_, '_> {
         let t = db.base(db.exprs[prefix].subtype);
         let tid = self.ty(t, span)?;
         let what = self.prefix_name(prefix);
-        let v = self.expr(prefix)?;
+        let v = self.prefix_value(prefix)?;
         let (data, dope) = self.arr(v, span)?;
         let (p, n, nd) = self.slice_of(dope, range, &what, span)?;
         let d = self.slice_desc(tid, dope, nd);

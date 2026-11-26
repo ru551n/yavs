@@ -94,6 +94,7 @@ def private_libs(todo, root, std, keep=False):
     copies = dict(old)
     for e in todo:
         own = e.get("dir", "").rstrip("/")
+        maps = gone = 0
         for i, x in enumerate(e["argv"]):
             if x.startswith("--std-cache=") and x != "--std-cache=off":
                 e["argv"][i] = f"--std-cache={std}"
@@ -104,13 +105,19 @@ def private_libs(todo, root, std, keep=False):
             if not m or (own and (m.group(2) + "/").startswith(own + "/")):
                 continue
             src = m.group(2).rstrip("/")
-            if not Path(src).is_dir():
-                continue  # a mapped library the run may not use: nothing to write into
+            maps += x.startswith("--map=")
+            if src not in copies and not Path(src).is_dir():
+                if x.startswith("--work="):  # a run on no library passes vacuously: fail
+                    sys.exit(f"cyclereplay: {e['name']}: the work library {m.group(1)[7:-1]} is missing: {src} (deleted? record the run again)")
+                gone += 1  # one mapped library may be empty (VUnit makes no directory for it): nothing to write into
+                continue
             if src not in copies:
                 copies[src] = dst = root / f"{len(copies)}_{Path(src).name}"
                 shutil.rmtree(dst, ignore_errors=True)  # a kept copy whose entry was dropped
                 shutil.copytree(src, dst, symlinks=True, ignore=shutil.ignore_patterns("yavs-cache"))
             e["argv"][i] = m.group(1) + str(copies[src])
+        if maps and gone == maps:
+            sys.exit(f"cyclereplay: {e['name']}: none of its {maps} mapped libraries exists (deleted? record the run again)")
     if keep:
         root.mkdir(parents=True, exist_ok=True)
         man.write_text(json.dumps({k: str(v) for k, v in copies.items()}))
@@ -411,6 +418,8 @@ def one(e, a):
                 res.update(bucket=b, why=[w])
             if G.CRASH.search(cerr + rerr):
                 res.update(bucket="differs", why=["cycle mode crashed or failed internally"] + cerr.splitlines()[-10:])
+            if w := vacuous(res):
+                res.update(bucket="differs", why=[w])
             if res["bucket"] == "identical" and (nout, nerr) != tuple(strip_records(t, hr, mr) for t in (nout, nerr)):
                 res.update(bucket="documented", why=["reports and library warnings of cycle-based processes"])
             h = res["hits"] = a.hits.get(e["name"], {})
@@ -427,6 +436,12 @@ def one(e, a):
         return res
     except Exception as ex:  # report, never hide
         return {**res, "bucket": "differs", "why": [f"harness error: {ex!r}"], "dir": str(base)}
+
+
+def vacuous(res):
+    """Why a compared test is no test: its design report lists no process at all (the libraries were not loaded)."""
+    if res["bucket"] not in ("skipped", "timeout", "differs") and res["procs"] == 0:
+        return "no process in the design: the run loaded no library, so nothing was compared"
 
 
 def count_text(r):
@@ -516,8 +531,20 @@ def selftest():
         e3 = [{"name": "t", "argv": ["yavs", "run", f"--work=w:{d}/L", f"--map=n:{t}"]}]
         assert private_libs(e3, d / "keep", d / "std", keep=True) == {} and e3[0]["argv"] == e2[0]["argv"]
         assert (d / "keep" / "0_L" / "yavs-cache").is_dir()
-        private_libs(e3, d / "keep", d / "std")  # not kept: copied afresh
+        private_libs([{"name": "t", "argv": ["yavs", "run", f"--work=w:{d}/L", f"--map=n:{t}"]}], d / "keep", d / "std")  # not kept: copied afresh
         assert not (d / "keep" / "0_L" / "yavs-cache").exists()
+    with tempfile.TemporaryDirectory(dir=D.CACHE.parent if D.CACHE.parent.is_dir() else None) as d:
+        (Path(d) / "L").mkdir()
+        mk = lambda *a: [{"name": "t", "argv": ["yavs", "run", *a]}]
+        for argv, what in ((f"--work=w:{d}/gone", "work library w is missing"), (f"--map=a:{d}/gone", "none of its 1 mapped")):
+            try:
+                private_libs(mk(argv), Path(d) / "x", Path(d) / "std")
+                raise AssertionError(argv)
+            except SystemExit as ex:
+                assert what in str(ex.code), ex.code
+        private_libs(mk(f"--work=w:{d}/L", f"--map=a:{d}/gone"), Path(d) / "x", Path(d) / "std")  # one empty map is fine
+    r = {"bucket": "identical", "procs": 0}
+    assert vacuous(r) and not vacuous({**r, "procs": 3}) and not vacuous({**r, "bucket": "skipped"})
     err = ("x\ncycle stats: analysis from the cache\ncycle stats: region from the cache\ncycle stats: f: 3 operations, 9 us\n"
            "cycle stats: 4 functions in 2 ms, 3 from the cache\ny\n")
     assert cache_hits(err) == ("x\ny\n", {"analysis": 1, "region": 1, "achecked": 0, "checked": 0, "funs": 4, "fhits": 3}), cache_hits(err)

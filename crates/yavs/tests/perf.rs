@@ -184,6 +184,14 @@ macro_rules! case {
     };
 }
 
+// `--two-state`: the decoder's calls come from the memo of pure calls, which its two-state literal
+// maps no longer keep out.
+case!(
+    two_state_memo,
+    "sum=169",
+    &["--two-state"],
+    [("calls", Max(44)), ("ops", Max(1510000))]
+);
 // The record variable is in the frame: the count is what its statements do without an object lookup.
 case!(
     frame_vars,

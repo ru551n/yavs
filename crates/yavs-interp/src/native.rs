@@ -12,13 +12,13 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-use yavs_ir::{Ty, TyId};
+use yavs_ir::{Id, Ty, TyId};
 use yavs_kernel::Ctx;
 use yavs_std::image;
 use yavs_std::types::{EnumLit, PhysicalType};
 
 use crate::exec::{Fault, Machine, R, add_addr, ice, rt_err};
-use crate::reflect::{const_bytes, layout_err, le, logic_pos, plane_get, plane_set};
+use crate::reflect::{const_bytes, layout_err, le, logic_pos, plane_get, plane_set, rd64};
 
 pub(crate) type NativeFn =
     fn(&mut Machine, &mut Option<&mut Ctx<'_>>, Option<TyId>, &[u64]) -> R<Option<u64>>;
@@ -1176,34 +1176,107 @@ fn two_map(
     let ty = ty.ok_or_else(|| ice("yavs.two.map without a type"))?;
     let (data, dp) = (targ(a, 0)?, targ(a, 1)?);
     let rt = m.rt.clone();
-    let n = Ty::desc_size(&rt.prog.types, ty).ok_or_else(|| ice("descriptor size"))?;
-    let desc = if n == 0 {
-        Vec::new()
+    let k = ty.index();
+    if m.two_plans.len() <= k {
+        m.two_plans.resize_with(k + 1, || None);
+    }
+    if m.two_plans[k].is_none() {
+        let n = Ty::desc_size(&rt.prog.types, ty).ok_or_else(|| ice("descriptor size"))?;
+        m.two_plans[k] = Some(Box::new(TwoPlans {
+            desc: n,
+            plans: Vec::new(),
+        }));
+    }
+    let n = m.two_plans[k].as_ref().map_or(0, |p| p.desc);
+    let desc: Box<[u8]> = if n == 0 {
+        Box::default()
     } else {
-        m.rd(dp, n)?.to_vec()
+        m.rd(dp, n)?.into()
     };
-    two_walk(m, &rt.prog, ty, &desc, data)?;
+    let known = (m.two_plans[k].as_ref())
+        .and_then(|p| p.plans.iter().find(|x| x.0 == desc))
+        .map(|(_, size, plan)| (*size, plan.clone()));
+    let (size, plan) = match known {
+        Some(x) => x,
+        None => {
+            let (lay, _) =
+                Ty::layout(&rt.prog.types, &rt.prog.consts, ty, &desc).map_err(layout_err)?;
+            let mut p = Vec::new();
+            two_plan(&rt.prog, ty, &desc, 0, &mut p)?;
+            let p: std::sync::Arc<[TwoLeaf]> = p.into();
+            // ponytail: a linear list per type; a map if one type is seen with many descriptors.
+            if let Some(e) = m.two_plans[k].as_mut() {
+                e.plans.push((desc, lay.size, p.clone()));
+            }
+            (lay.size, p)
+        }
+    };
+    if plan.is_empty() {
+        return Ok(None);
+    }
+    let v = m.wr(data, size)?;
+    for &leaf in plan.iter() {
+        match leaf {
+            TwoLeaf::Byte(off) => {
+                let b = (v.get_mut(off as usize))
+                    .ok_or_else(|| ice("a two-state leaf outside its value"))?;
+                *b = if *b & 3 == 3 { 3 } else { 2 };
+            }
+            TwoLeaf::Planes(off, n) => {
+                let (o, len) = (off as usize, n.div_ceil(64) as usize * 32);
+                let v = (v.get_mut(o..o + len))
+                    .ok_or_else(|| ice("a two-state leaf outside its value"))?;
+                for (k, b) in v.as_chunks_mut::<32>().0.iter_mut().enumerate() {
+                    let left = n - 64 * k as u64;
+                    let lanes = if left >= 64 { !0 } else { (1u64 << left) - 1 };
+                    let w: [u64; 4] = std::array::from_fn(|i| rd64(&b[..], 8 * i));
+                    // `1` and `H` (both low code bits, not bit 3) become `1`, anything else `0`.
+                    let new = [!w[3] & w[1] & w[0], !0, 0, 0];
+                    for (i, x) in new.into_iter().enumerate() {
+                        let y = (w[i] & !lanes) | (x & lanes);
+                        b[8 * i..8 * i + 8].copy_from_slice(&y.to_le_bytes());
+                    }
+                }
+            }
+        }
+    }
     Ok(None)
 }
 
-fn two_walk(m: &mut Machine, prog: &yavs_ir::Program, ty: TyId, desc: &[u8], at: u64) -> R<()> {
+/// The plans of `yavs.two.map` for one type: its descriptor size, and per descriptor the value's
+/// size and its logic leaves.
+pub(crate) struct TwoPlans {
+    desc: u64,
+    plans: Vec<TwoPlan>,
+}
+
+/// A descriptor, the size of a value under it and its logic leaves.
+type TwoPlan = (Box<[u8]>, u64, std::sync::Arc<[TwoLeaf]>);
+
+/// A logic leaf `yavs.two.map` maps: a `std_ulogic` byte, or `n` elements in planes, at a
+/// byte offset into the value.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum TwoLeaf {
+    Byte(u64),
+    Planes(u64, u64),
+}
+
+/// The leaves `yavs.two.map` maps in a value of type `ty` at offset `at`, in its order.
+fn two_plan(
+    prog: &yavs_ir::Program,
+    ty: TyId,
+    desc: &[u8],
+    at: u64,
+    out: &mut Vec<TwoLeaf>,
+) -> R<()> {
     let (types, consts) = (&prog.types, &prog.consts);
     if !Ty::has_std_ulogic(types, ty) {
         return Ok(());
     }
     let (lay, _) = Ty::layout(types, consts, ty, desc).map_err(layout_err)?;
     match types.get(ty) {
-        Some(Ty::Enum { .. }) => {
-            let v = m.wr(at, lay.size)?;
-            v[0] = if v[0] & 3 == 3 { 3 } else { 2 };
-        }
-        Some(_) if Ty::logic_leaf(types, ty).is_some() => {
-            let v = m.wr(at, lay.count.div_ceil(64) * 32)?;
-            for i in 0..lay.count {
-                let c = plane_get(v, i);
-                plane_set(v, i, if c & 3 == 3 { 3 } else { 2 });
-            }
-        }
+        Some(Ty::Enum { .. }) => out.push(TwoLeaf::Byte(at)),
+        Some(_) if Ty::logic_leaf(types, ty).is_some() => out.push(TwoLeaf::Planes(at, lay.count)),
         Some(Ty::Record { fields }) => {
             let mut used = 0;
             for (f, &off) in fields.iter().zip(&lay.offsets) {
@@ -1217,7 +1290,7 @@ fn two_walk(m: &mut Machine, prog: &yavs_ir::Program, ty: TyId, desc: &[u8], at:
                         desc.get(used - n..used).unwrap_or(&[]).to_vec()
                     }
                 };
-                two_walk(m, prog, f.ty, &fdesc, at + off)?;
+                two_plan(prog, f.ty, &fdesc, at + off, out)?;
             }
         }
         Some(Ty::Array {
@@ -1230,7 +1303,7 @@ fn two_walk(m: &mut Machine, prog: &yavs_ir::Program, ty: TyId, desc: &[u8], at:
                 None => desc.get(usize::from(*dims) * 24..).unwrap_or(&[]).to_vec(),
             };
             for k in 0..lay.count {
-                two_walk(m, prog, *elem, &edesc, at + k * lay.stride)?;
+                two_plan(prog, *elem, &edesc, at + k * lay.stride, out)?;
             }
         }
         _ => {}

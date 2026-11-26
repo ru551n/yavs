@@ -124,7 +124,9 @@ fn inst_ok(prog: &Program, i: &Inst, calls: &mut Vec<FuncId>, reads: bool) -> bo
             true
         }
         Inst::CallNative { native, .. } => prog.natives.get(native).is_some_and(|n| {
-            crate::native_is_pure(&n.symbol) || reads && n.symbol.starts_with("yavs.standard.now.")
+            crate::native_is_pure(&n.symbol)
+                || memo_pure(&n.symbol)
+                || reads && n.symbol.starts_with("yavs.standard.now.")
         }),
         Inst::New { shared, .. } | Inst::NewFill { shared, .. } => !shared,
         Inst::Const { .. }
@@ -461,6 +463,13 @@ impl Program {
             dear,
         }))
     }
+}
+
+/// The two-state and start-value maps of `--two-state` and `--init-x`: they compute from their
+/// arguments and the run's `--init-x` setting, so a call repeats within a run, but a package's
+/// stored state must not keep what one run's setting gave.
+fn memo_pure(symbol: &str) -> bool {
+    symbol.starts_with("yavs.two.") || symbol == "yavs.init.x"
 }
 
 /// Whether the native `symbol` only computes from its arguments and the heap: package

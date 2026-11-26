@@ -799,6 +799,8 @@ pub(crate) struct Machine {
     pub(crate) spec: Option<Arc<[(u32, u32)]>>,
     /// The memo of pure calls this process keeps (`pmemo.rs`), made at its first memoised call.
     pub(crate) pm: Option<Box<crate::pmemo::State>>,
+    /// The logic leaves of the types `yavs.two.map` mapped, by type and descriptor.
+    pub(crate) two_plans: Vec<Option<Box<crate::native::TwoPlans>>>,
     /// Jumps back of a process that never suspends, to bound the activation (#583).
     spin: u64,
     /// The bounds of the array the last function with `Func::ret_flat` returned.
@@ -1585,6 +1587,7 @@ impl Machine {
             quick_fault: None,
             spec: None,
             pm: None,
+            two_plans: Default::default(),
             spec_at: u32::MAX,
             hot: false,
             rscratch: heap::Refs::default(),

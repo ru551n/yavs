@@ -37,8 +37,8 @@ Two ways to use it
    gave plain ``--cycle``.
 
 In the normal mode ``--two-state`` aims to run as fast as the default; today it is slower. Most unit tests run within a
-few percent of the default, some up to about half again as long, and large designs such as processor cores take about
-one and a half to four times as long. Bringing it to parity is planned.
+few percent of the default, some up to about half again as long, and large designs such as processor cores take up to
+about one and a half times as long. Bringing it to parity is planned.
 
 .. _two-state-normal:
 

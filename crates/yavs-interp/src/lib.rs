@@ -718,6 +718,9 @@ pub enum NativeCall {
 /// simulation time.
 pub fn direct_native(symbol: &str) -> bool {
     native::pure(symbol)
+        // The maps of `--two-state` and `--init-x` work on the value in place.
+        || symbol.starts_with("yavs.two.")
+        || symbol == "yavs.init.x"
         || symbol.starts_with("yavs.standard.now.")
         || symbol.starts_with("yavs.textio.writeline.")
         || symbol.starts_with("yavs.implicit.file_open.")

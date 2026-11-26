@@ -282,3 +282,59 @@ fn two_state_keeps_the_bounds_of_subtypes() {
         }
     }
 }
+
+/// A decoder function with `'-'` patterns, answered from the memo of pure calls under
+/// `--two-state` too, and records of fields of 1, 63, 64, 65 and 128 elements read whole from a
+/// signal: each element `'1'` or `'H'` becomes 1, every other value 0 (hand-checked counts), the
+/// same on every tier and without the memo.
+#[test]
+fn a_memoised_decoder_and_whole_record_reads_map_as_the_elements_do() {
+    let dir = tempdir("twostate-memo");
+    analyze(&dir, "twomemo.vhd");
+    let want: Vec<String> = (0..3u32)
+        .map(|j| {
+            let ones = |n: u32| {
+                (0..n)
+                    .filter(|k| matches!((k + 4 * j + 3) % 9, 3 | 7))
+                    .count()
+            };
+            let s = if j == 0 { '1' } else { '0' };
+            format!(
+                "rec{j} a={} b={} c={} d={} e={} s='{s}' sum=169",
+                ones(1),
+                ones(63),
+                ones(64),
+                ones(65),
+                ones(128)
+            )
+        })
+        .collect();
+    let last = |o: &Output| -> Vec<String> {
+        let out = String::from_utf8_lossy(&o.stdout);
+        let l: Vec<String> = out
+            .lines()
+            .filter_map(|l| l.split_once(": rec").map(|(_, r)| format!("rec{r}")))
+            .collect();
+        l[l.len() - 3..].to_vec()
+    };
+    for t in tiers() {
+        let mut args = vec!["run", "--work=work:lib", "--two-state"];
+        args.extend(&t);
+        args.push("twomemo");
+        let o = yavs(&dir, &args);
+        assert!(
+            o.status.success(),
+            "{t:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert_eq!(last(&o), want, "{t:?}");
+        let mut c = Command::new(env!("CARGO_BIN_EXE_yavs"));
+        c.current_dir(&dir)
+            .env("YAVS_STD_CACHE", "off")
+            .env("YAVS_NO_PMEMO", "1")
+            .args(["--color", "never"])
+            .args(&args);
+        let plain = c.output().expect("run yavs");
+        assert_eq!(plain.stdout, o.stdout, "{t:?}: the memo changed the output");
+    }
+}

@@ -1,0 +1,1 @@
+`--two-state` runs faster in the event kernel: pure functions that hold metavalue literals, such as instruction decoders written with `'-'` patterns, are answered from the memo of repeated calls again, and records read whole from signals or constants are mapped to two-state values in one pass.

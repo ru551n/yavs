@@ -217,7 +217,7 @@ identical, documented (a lost failure of a cycle-based process may end the norma
 compared), differs (any other difference, with the first differing line and both end times; exit status 1),
 timeout (the cycle run does not finish in `--timeout` while the normal one does: not compared, listed) and
 skipped (the normal run does not finish). Each test shows `[members/processes in the region]` and the summary
-counts the tests with a member, so a pass is not vacuous. A missing work library (or every mapped library of a run missing) stops the
+counts the tests with a member, so a pass is not vacuous. A missing work library (or every library of a run missing) stops the
 replay with an error naming it, and a compared test whose design report lists no process at all is `differs`: a replay of deleted libraries cannot pass. `--jobs` (default 2), `--filter`, `--budget SECONDS` (start no further test after that), `--mask REGEX` (text that differs between runs by itself, such as the name of a temporary directory a test makes), `--env K=V`,
 `--subst OLD=NEW`, `--libs DIR`, `--warm`, `--prefix` (a command before every run, such as `tools/claim core --`), `--timeout`, `--memory`,
 `--json FILE`, `-v`, `--selftest`. A command file is JSON lines, `{"name", "cwd", "dir", "argv", "env"}`;

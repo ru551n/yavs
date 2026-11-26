@@ -105,7 +105,7 @@ def private_libs(todo, root, std, keep=False):
             if not m or (own and (m.group(2) + "/").startswith(own + "/")):
                 continue
             src = m.group(2).rstrip("/")
-            maps += x.startswith("--map=")
+            maps += 1
             if src not in copies and not Path(src).is_dir():
                 if x.startswith("--work="):  # a run on no library passes vacuously: fail
                     sys.exit(f"cyclereplay: {e['name']}: the work library {m.group(1)[7:-1]} is missing: {src} (deleted? record the run again)")
@@ -117,7 +117,7 @@ def private_libs(todo, root, std, keep=False):
                 shutil.copytree(src, dst, symlinks=True, ignore=shutil.ignore_patterns("yavs-cache"))
             e["argv"][i] = m.group(1) + str(copies[src])
         if maps and gone == maps:
-            sys.exit(f"cyclereplay: {e['name']}: none of its {maps} mapped libraries exists (deleted? record the run again)")
+            sys.exit(f"cyclereplay: {e['name']}: none of its {maps} libraries exists (deleted? record the run again)")
     if keep:
         root.mkdir(parents=True, exist_ok=True)
         man.write_text(json.dumps({k: str(v) for k, v in copies.items()}))
@@ -536,7 +536,7 @@ def selftest():
     with tempfile.TemporaryDirectory(dir=D.CACHE.parent if D.CACHE.parent.is_dir() else None) as d:
         (Path(d) / "L").mkdir()
         mk = lambda *a: [{"name": "t", "argv": ["yavs", "run", *a]}]
-        for argv, what in ((f"--work=w:{d}/gone", "work library w is missing"), (f"--map=a:{d}/gone", "none of its 1 mapped")):
+        for argv, what in ((f"--work=w:{d}/gone", "work library w is missing"), (f"--map=a:{d}/gone", "none of its 1 libraries")):
             try:
                 private_libs(mk(argv), Path(d) / "x", Path(d) / "std")
                 raise AssertionError(argv)

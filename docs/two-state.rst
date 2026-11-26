@@ -70,6 +70,12 @@ partly inside it is an error (E2123).
   ``'W'``. So ``x = 'X'`` is false, ``x /= 'U'`` is true (an ``assert clk /= 'U'`` "is it connected" check holds),
   ``x ?= 'X'`` is ``'0'``, and a ``case`` choice ``when "0X"`` is never taken. A ``'-'`` in ``std_match``, ``?=``,
   ``?/=`` or a ``case?`` choice matches anything. The region does the same.
+  Only a literal or constant the comparison names itself keeps its meaning: a pattern passed to a subprogram (as
+  ``match_f(insn, table(i).pattern)``) or copied into a variable or signal has taken its ``--init-x`` bits by the
+  time the subprogram compares it. A matcher of its own that tests ``p(i) = '1' or p(i) = '0'`` to skip the ``'-'``
+  positions then compares every position, so an instruction decoder written that way stops matching (a tracer prints
+  no mnemonic). Write such a test with ``std_match`` or ``?=`` on the table entry itself, which keeps the ``'-'``, or
+  leave the decoder outside the scope.
 * A ``'Z'`` literal or constant driven onto a resolved signal (``std_logic``, ``std_logic_vector``) stays ``'Z'``, so
   tri-state buses and the event signals of verification components in the scope work. Reading the bus back gives
   ``'0'`` while nothing drives it.

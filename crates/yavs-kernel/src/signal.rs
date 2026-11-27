@@ -1050,6 +1050,22 @@ fn note_cells(changed: &mut Vec<Range>, nruns: &mut u64, cuts: &[u32], base: usi
     *nruns += runs.saturating_sub((changed.len() - before) as u64);
 }
 
+/// Elements `m` of the block at element `base` changed, on a signal whose waiters wait for parts
+/// (`Signal::fine`) or that lists cells: its cells (`note_cells`), else each run.
+#[inline(always)]
+fn note_word(changed: &mut Vec<Range>, nruns: &mut u64, cuts: &[u32], base: usize, m: u64) {
+    if !cuts.is_empty() {
+        return note_cells(changed, nruns, cuts, base, m);
+    }
+    let mut v = m;
+    while v != 0 {
+        let s = v.trailing_zeros();
+        let run = (v >> s).trailing_ones();
+        note_run(changed, nruns, true, true, base + s as usize, run);
+        v &= !(nmask(run as usize) << s);
+    }
+}
+
 /// The fewest plane words of a bus that `commit_whole` takes: its set-up (a fill and a list of
 /// every word) costs more than the entry loop on narrower ones.
 const WHOLE_MIN: usize = 4;
@@ -2777,12 +2793,29 @@ impl Signal {
         let (cur, drv, last): (&mut [Block], &[Block], &mut [Block]) = (cur, drv, last);
         let t = stamp(now);
         // All of a bus nothing asks the history of: one compare and one copy, as for a byte.
-        if *bare_whole
-            && !(*watched && *fine)
-            && words.len() == cur.len()
-            && all_pending(pend, ty.len as usize)
-        {
+        if *bare_whole && words.len() == cur.len() && all_pending(pend, ty.len as usize) {
             pend.fill(0);
+            // Waiters of parts: the changes of each word noted in element order, so they need
+            // no sort after.
+            if *watched && *fine {
+                let mut any = false;
+                for (w, (x, y)) in cur.iter_mut().zip(drv).enumerate() {
+                    let m = block_diff(x, y);
+                    if m != 0 {
+                        debug_assert!(
+                            w * 64 + 64 - m.leading_zeros() as usize <= ty.len as usize,
+                            "planes past the end of the signal"
+                        );
+                        any = true;
+                        *x = *y;
+                        note_word(changed, nruns, cuts, w * 64, m);
+                    }
+                }
+                if any {
+                    *bare_last = (cycle, t);
+                }
+                return any;
+            }
             let Some(a) = cur.iter().zip(drv).position(|(x, y)| x != y) else {
                 return false;
             };
@@ -2832,16 +2865,8 @@ impl Signal {
             }
             any = true;
             let base = w * 64;
-            if *watched && !cuts.is_empty() {
-                note_cells(changed, nruns, cuts, base, m);
-            } else if *watched && *fine {
-                let mut v = m;
-                while v != 0 {
-                    let s = v.trailing_zeros();
-                    let run = (v >> s).trailing_ones();
-                    note_run(changed, nruns, true, true, base + s as usize, run);
-                    v &= !(nmask(run as usize) << s);
-                }
+            if *watched && (*fine || !cuts.is_empty()) {
+                note_word(changed, nruns, cuts, base, m);
             } else {
                 runs += u64::from((m & !(m << 1)).count_ones());
                 lo = lo.min(base + m.trailing_zeros() as usize);
@@ -4510,6 +4535,13 @@ mod tests {
     /// the reports read of the whole signal stays.
     #[test]
     fn a_bus_with_no_history_updates_as_one_that_keeps_it() {
+        // Waiters of the whole bus, of parts listed per run, of parts listed per cell.
+        for part in 0..3 {
+            bus_with_no_history_against_history(part);
+        }
+    }
+
+    fn bus_with_no_history_against_history(part: u8) {
         let mk = |bare: bool, whole: bool| {
             let ty = SignalType::logic(200);
             let mut s = Signal::new("s".into(), ty, Buf::zeroed(ty.elem, 200), None);
@@ -4517,6 +4549,10 @@ mod tests {
             s.set_no_codes();
             s.inactive = true;
             s.watched = true;
+            if part > 0 {
+                s.watch_part(Range::new(10, 90), part == 2);
+                s.watch_part(Range::new(130, 3), part == 2);
+            }
             if bare {
                 s.set_no_history();
             }
@@ -4576,8 +4612,8 @@ mod tests {
                 }
                 res.push((any, ch));
             }
-            assert_eq!(res[0], res[1], "cycle {c}");
-            assert_eq!(res[0], res[2], "cycle {c}");
+            assert_eq!(res[0], res[1], "part {part} cycle {c}");
+            assert_eq!(res[0], res[2], "part {part} cycle {c}");
             let (a, b) = (sigs[0].cur.to_value(), sigs[2].cur.to_value());
             assert_eq!(a, b, "cycle {c}");
             let (a, b) = (sigs[0].cur.to_value(), sigs[1].cur.to_value());

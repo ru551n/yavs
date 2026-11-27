@@ -4956,6 +4956,56 @@ pub fn hold_ups(prog: &Program, f: &Func) -> Vec<(u8, bool)> {
     out
 }
 
+/// The package data a native frame holds the region of for the whole activation, as
+/// `hold_addrs` does for parameters (`Gen::hold_resolve`; packages stay where they are), with
+/// whether it writes there: those reached through `AddrOf Pkg` registers (and what `Index`,
+/// `Field` and `Move` make of them) three times or more, or twice in a stable activation.
+pub fn hold_pkgs(f: &Func) -> Vec<(u32, bool)> {
+    let n = f.reg_ty.len();
+    let mut pkg: Vec<Option<u32>> = vec![None; n + 1];
+    for _ in 0..2 {
+        for i in &f.code {
+            let (dst, k) = match *i {
+                Inst::AddrOf {
+                    dst,
+                    space: AddrSpace::Pkg(k),
+                    ..
+                } => (dst, Some(k)),
+                Inst::Index { dst, base: src, .. }
+                | Inst::Field { dst, base: src, .. }
+                | Inst::Move { dst, src } => (dst, pkg.get(src.0 as usize).copied().flatten()),
+                _ => continue,
+            };
+            if let (Some(k), Some(x)) = (k, pkg.get_mut(dst.0 as usize)) {
+                *x = Some(k);
+            }
+        }
+    }
+    let mut count: Vec<(u32, u32, bool)> = Vec::new();
+    for i in &f.code {
+        let (reads, writes) = addr_uses(i);
+        for (rs, w) in [(&reads[..], false), (&writes[..], true)] {
+            for r in rs {
+                if let Some(Some(k)) = pkg.get(r.0 as usize).copied() {
+                    match count.iter_mut().find(|c| c.0 == k) {
+                        Some(c) => {
+                            c.1 += 1;
+                            c.2 |= w;
+                        }
+                        None => count.push((k, 1, w)),
+                    }
+                }
+            }
+        }
+    }
+    let least = if stable_activation(f) { 2 } else { 3 };
+    count
+        .into_iter()
+        .filter(|c| c.1 >= least)
+        .map(|c| (c.0, c.2))
+        .collect()
+}
+
 /// An element operand of a native call read where it is (#1122): `Alloc` of `tmp` at `alloc`
 /// (or, a temporary in the process's frame, `Zero` of its bytes there), `LCopy` of `n` (1 to 64,
 /// known) plane elements of `src` at `off` to its start at `copy`, and `tmp` is dead after the

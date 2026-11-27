@@ -398,3 +398,104 @@ fn a_hold_not_asked_again_is_caught() {
         assert!(got.1.contains("is stale"), "bad {bad}: {got:?}");
     }
 }
+
+/// A function of a package that reaches the package's protected object three times, with calls
+/// between that allocate and free (`rt::hold_pkgs`): the package data is held over them, and every
+/// tier reads the same.
+const PKG: &str = r#"package pk is
+  impure function three (n : natural) return integer;
+end package;
+package body pk is
+  type prot_t is protected
+    impure function grow (n : natural) return integer;
+    impure function total return integer;
+  end protected;
+  type prot_t is protected body
+    type ints_t is array (natural range <>) of integer;
+    type ptr_t is access ints_t;
+    variable p : ptr_t := new ints_t'(0 => 1);
+    variable s : integer := 0;
+    impure function grow (n : natural) return integer is
+      variable old : ptr_t := p;
+    begin
+      p := new ints_t(0 to old'length mod 7);
+      for i in p'range loop
+        p(i) := old(i mod old'length) + n;
+      end loop;
+      deallocate(old);
+      s := (s + p(p'high)) mod 100003;
+      return p'length;
+    end function;
+    impure function total return integer is
+    begin
+      return s;
+    end function;
+  end protected body;
+  shared variable st : prot_t;
+  impure function three (n : natural) return integer is
+    variable a, b, c : integer;
+  begin
+    a := st.grow(n);
+    b := st.grow(n + 1);
+    c := st.total;
+    return a + b + c;
+  end function;
+end package body;
+use work.pk.all;
+entity pkhold is end;
+architecture a of pkhold is
+begin
+  process
+    variable t : integer := 0;
+  begin
+    for i in 1 to 300 loop
+      t := (t + three(i)) mod 1000003;
+    end loop;
+    report "total " & integer'image(t);
+    wait;
+  end process;
+end;
+"#;
+
+#[test]
+fn package_data_held_over_calls_matches_the_interpreter() {
+    let dir = tempdir("clift_hold_pkg");
+    std::fs::write(dir.join("pk.vhd"), PKG).expect("write");
+    let a = yavs(
+        &dir,
+        &["analyze", "--std=2008", "--work=work:work", "pk.vhd"],
+        &[],
+    );
+    assert!(a.status.success(), "{a:?}");
+    let go = |flags: &[&str], env: &[(&str, &str)]| {
+        let mut args = vec!["run", "--std=2008", "--work=work:work"];
+        args.extend_from_slice(flags);
+        args.push("pkhold");
+        let o = yavs(&dir, &args, env);
+        let err = String::from_utf8_lossy(&o.stderr).into_owned();
+        (
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            err,
+            o.status.code(),
+        )
+    };
+    let want = go(&["--tier=interp"], &[]);
+    assert!(want.0.contains("total "), "{want:?}");
+    for flags in [
+        &["--tier=clift"][..],
+        &["--tier=auto", "--tier-heat=1,0,0"],
+        &["--tier=auto", "--tier-heat=1,0,0", "--threads=4"],
+    ] {
+        assert_eq!(go(flags, &[]), want, "{flags:?}");
+    }
+    // Debug builds check every held access against the lookup: the package's are among them.
+    if cfg!(debug_assertions) {
+        let (_, err, _) = go(&["--tier=clift"], &[("YAVS_COUNTERS", "1")]);
+        let n: u64 = err
+            .lines()
+            .find_map(|l| l.strip_prefix("counters: hold_checked="))
+            .and_then(|n| n.trim().parse().ok())
+            .unwrap_or(0);
+        assert!(n >= 900, "held accesses checked: {n}");
+    }
+}

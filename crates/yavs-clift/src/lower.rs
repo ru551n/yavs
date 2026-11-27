@@ -2392,6 +2392,9 @@ struct Gen<'a> {
     /// The region of the frame one and two static links up held as `pres[k]` (`hold_ups`): what
     /// `Known::Up` addresses of a native frame are tested against.
     ups: [Option<u16>; 2],
+    /// The package data held as `pres[k]` (`hold_pkgs`), by package: what `Known::Param` of an
+    /// `AddrOf Pkg` register names.
+    pkgs: Vec<(u32, u16)>,
     /// Where the heaps' generation the regions were resolved at is kept.
     hold_gen: Option<StackSlot>,
     /// The frame's size in bytes (`Func::frame`): the slots of every frame of the function.
@@ -3241,6 +3244,7 @@ fn gen_func(
         code_new: None,
         pres: Vec::new(),
         ups: [None; 2],
+        pkgs: Vec::new(),
         hold_gen: None,
         frame_len: u64::from(f.frame),
         objs: f
@@ -3331,6 +3335,16 @@ fn gen_func(
             let r = pa.reg.0 as usize;
             if r < base_known.len() && k < g.pres.len() {
                 base_known[r] = Some(Known::Param(k as u16));
+                g.known[r] = base_known[r];
+            }
+        }
+        // So are the registers of the held packages' addresses (`AddrOf` defined once).
+        for (r, d) in pdef.iter().enumerate() {
+            if let Some((_, Some((AddrSpace::Pkg(k), _)), _)) = d
+                && let Some(&(_, idx)) = g.pkgs.iter().find(|p| p.0 == *k)
+                && r < base_known.len()
+            {
+                base_known[r] = Some(Known::Param(idx));
                 g.known[r] = base_known[r];
             }
         }
@@ -6039,6 +6053,28 @@ impl Gen<'_> {
             self.ups[usize::from(d - 1)] = Some(self.pres.len() as u16);
             self.pres.push(Held { val, ..held });
         }
+        // Package data, by its first byte's address (it never moves).
+        for (k, write) in hold_pkgs(f) {
+            let Some(at) = addr_const(AddrSpace::Pkg(k), 0) else {
+                continue;
+            };
+            let a = self.c64(at as i64);
+            let ss = self.b.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                16,
+                3,
+            ));
+            let held = Held {
+                ss,
+                val: None,
+                write,
+                addr: a,
+                flags: u32::from(write) | u32::from(stable) << 1 | 8,
+            };
+            let val = self.hold_table(held, at >> 32, stable, depth);
+            self.pkgs.push((k, self.pres.len() as u16));
+            self.pres.push(Held { val, ..held });
+        }
         if !self.pres.is_empty() && !stable {
             let ss = self.b.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
@@ -6178,6 +6214,59 @@ impl Gen<'_> {
             let (ptr, len) = (self.mem_ld(MEM_INST), self.mem_ld(MEM_INST_LEN));
             self.hold_store(h, ptr, len, done);
         }
+        self.b.switch_to_block(call);
+        self.hold_call(h, depth);
+        if stable {
+            let ptr = self.b.ins().stack_load(I64, I64, h.ss, 0);
+            let len = self.b.ins().stack_load(I64, I64, h.ss, 8);
+            self.b
+                .ins()
+                .jump(done, &[BlockArg::Value(ptr), BlockArg::Value(len)]);
+        } else {
+            self.b.ins().jump(done, &[]);
+        }
+        self.b.switch_to_block(done);
+        val
+    }
+
+    /// `hold_resolve` of an object of the table at the constant high half `hi` (package data):
+    /// its entry inline, else `yavs_rt_region`.
+    fn hold_table(
+        &mut self,
+        h: Held,
+        hi: u64,
+        stable: bool,
+        depth: Value,
+    ) -> Option<(Value, Value)> {
+        let done = self.b.create_block();
+        let val = stable.then(|| {
+            (
+                self.b.append_block_param(done, I64),
+                self.b.append_block_param(done, I64),
+            )
+        });
+        let (obj, call) = (self.b.create_block(), self.b.create_block());
+        self.b.set_cold_block(call);
+        let key = (hi ^ (hi >> KEY_SHIFT_ADDR & KEY_FLAG)) & (OBJS as u64 - 1);
+        let hv = self.c64(hi as i64);
+        let (tk, mx) = self.obj_tag(Some(hv));
+        let eo = self.b.ins().bxor_imm_s(mx, (key << OBJ_SHIFT) as i64);
+        let ent = self.b.ins().iadd(self.mem, eo);
+        let ehi = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
+        let want = self.b.ins().bor_imm_s(tk, hi as i64);
+        let mut hit = self.b.ins().icmp(IntCC::Equal, ehi, want);
+        if h.write {
+            let w = self
+                .b
+                .ins()
+                .load(I64, self.mf, ent, (MEM_OBJS + OBJ_W) as i32);
+            let w = self.b.ins().icmp_imm_s(IntCC::NotEqual, w, 0);
+            hit = self.b.ins().band(hit, w);
+        }
+        self.brif_split(hit, obj, call);
+        self.b.switch_to_block(obj);
+        let (ptr, len) = self.ent_obj(ent);
+        self.hold_store(h, ptr, len, done);
         self.b.switch_to_block(call);
         self.hold_call(h, depth);
         if stable {
@@ -7957,7 +8046,8 @@ impl Gen<'_> {
         // A held enclosing frame misses only where its region could not be resolved (the root
         // frame's slots elsewhere): its miss is the runtime's lookup, not the inline chain.
         let (held, up) = match reg.and_then(|r| self.known.get(r.0 as usize)) {
-            Some(Some(Known::Param(k))) => (Some(*k), false),
+            // Package data always resolves: its miss is the runtime's lookup too.
+            Some(Some(Known::Param(k))) => (Some(*k), self.pkgs.iter().any(|p| p.1 == *k)),
             Some(Some(Known::Up(d))) => {
                 (self.ups.get(usize::from(*d) - 1).copied().flatten(), true)
             }

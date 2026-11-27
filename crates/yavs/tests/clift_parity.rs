@@ -589,6 +589,100 @@ fn element_access_in_compiled_code_matches_the_interpreter() {
     }
 }
 
+/// A protected table of records and vectors on the heap, read and written through a run-time
+/// position at a constant offset of each object (the pointer tables of a test runner's queues):
+/// `bad` reads past a record table and past a vector.
+const PROT_TABLE: &str = r#"entity prot_table is
+  generic (bad : integer := 0);
+end;
+architecture a of prot_table is
+  type rec_t is record
+    id   : integer;
+    mode : boolean;
+    len  : integer;
+  end record;
+  type rec_v is array (natural range <>) of rec_t;
+  type rec_a is access rec_v;
+  type int_v is array (natural range <>) of integer;
+  type int_a is access int_v;
+  type ptr_v is array (natural range <>) of int_a;
+  type ptr_a is access ptr_v;
+  type store_t is record
+    idxs : rec_a;
+    ptrs : ptr_a;
+  end record;
+  type prot_t is protected
+    procedure init (n : natural);
+    impure function get (ref : natural; index : natural) return integer;
+    procedure set (ref : natural; index : natural; v : integer);
+  end protected;
+  type prot_t is protected body
+    variable st : store_t;
+    procedure init (n : natural) is
+    begin
+      st.idxs := new rec_v(0 to n - 1);
+      st.ptrs := new ptr_v(0 to n - 1);
+      for k in 0 to n - 1 loop
+        st.idxs(k) := (n - 1 - k, true, 4 + k);
+        st.ptrs(n - 1 - k) := new int_v(0 to 3 + k);
+      end loop;
+    end procedure;
+    impure function get (ref : natural; index : natural) return integer is
+      variable s : rec_t := st.idxs(ref);
+    begin
+      if s.mode then
+        return st.ptrs(s.id)(index);
+      end if;
+      return -1;
+    end function;
+    procedure set (ref : natural; index : natural; v : integer) is
+      variable s : rec_t := st.idxs(ref);
+    begin
+      st.ptrs(s.id)(index) := v;
+    end procedure;
+  end protected body;
+  shared variable pt : prot_t;
+begin
+  process
+    variable sum : integer := 0;
+  begin
+    pt.init(5);
+    for r in 0 to 4 loop
+      for i in 0 to 3 + r loop
+        pt.set(r, i, r * 100 + i);
+      end loop;
+    end loop;
+    for k in 1 to 20 loop
+      for r in 0 to 4 loop
+        for i in 0 to 3 + r loop
+          sum := sum + pt.get(r, i);
+        end loop;
+      end loop;
+    end loop;
+    report "sum " & integer'image(sum);
+    case bad is
+      when 1 => sum := pt.get(5, 0);
+      when 2 => sum := pt.get(0, 4);
+      when 3 => sum := pt.get(4, 8);
+      when 4 => pt.set(2, 6, 1);
+      when others => null;
+    end case;
+    report "end " & integer'image(sum);
+    wait;
+  end process;
+end;
+"#;
+#[test]
+fn heap_tables_at_run_time_positions_match_the_interpreter() {
+    let dir = design("clift_prot_table", PROT_TABLE);
+    for bad in 0..=4 {
+        let g = format!("-gbad={bad}");
+        let (want, _) = parity(&dir, "prot_table", &[&g]);
+        assert!(want.out.contains("sum "), "{want:?}");
+        assert_eq!(want.code == Some(0), bad == 0, "bad {bad}: {want:?}");
+    }
+}
+
 const NATIVES: &str = r#"library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;

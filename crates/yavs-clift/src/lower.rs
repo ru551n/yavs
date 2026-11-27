@@ -493,6 +493,10 @@ fn hold_mutant() -> bool {
 }
 
 /// `YAVS_CLIFT_NO_PROOFS=1`: arithmetic keeps its overflow tests where intervals prove them away.
+/// The largest object offset an `Index` with a run-time position lets through when its base's
+/// offset is a constant: one test of the position, and room for constant offsets after it.
+const IDX_LIMIT: u64 = 0xffff_ffff - 0xffff;
+
 fn no_proofs() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("YAVS_CLIFT_NO_PROOFS").is_some())
@@ -2359,6 +2363,9 @@ struct Gen<'a> {
     /// The object the instruction being generated found for its result register: entered in
     /// `known` once `track` has run for it (`ObjRef`).
     objnew: Option<(Reg, ObjRef<Value>)>,
+    /// An upper bound of an object offset an `Index` tested (`IDX_LIMIT`): a constant offset
+    /// past it needs no test of its own.
+    vmax: HashMap<Value, u64>,
     /// The element operands of the native call being generated that are read where they are
     /// (`in_place_operands`): their temporaries are made only on the call's rare way.
     inplace: Vec<InPlace>,
@@ -3223,6 +3230,7 @@ fn gen_func(
         iv: vec![None; f.reg_ty.len()],
         iv_next: None,
         objnew: None,
+        vmax: HashMap::new(),
         inplace: Vec::new(),
         redirect: HashMap::new(),
         results: HashMap::new(),
@@ -3423,6 +3431,7 @@ fn gen_func(
     // of the operand, and that `Index` tests the sum only (`fused_mul`, its pc).
     let imuls = index_muls(f, &fixed);
     let mut fused_mul: Option<usize> = None;
+    let mut tight_mul: Option<u64> = None;
     let mut fused_to: Option<usize> = None;
     let always: Vec<usize> = (0..base_known.len())
         .filter(|&r| base_known[r].is_some())
@@ -3819,15 +3828,22 @@ fn gen_func(
                 && !leader[i + 1] =>
             {
                 // The operand is at most `max`, or the interpreter multiplies and indexes; the
-                // product is then under 2^32.
+                // product is then under 2^32. With the base's offset a constant, the bound covers
+                // the sum too and the `Index` has no test (`tight_mul`).
+                let c = match f.code[i + 1] {
+                    Inst::Index { base, .. } if base != dst => g.index_base_const(base),
+                    _ => None,
+                };
+                let max = c.map_or(0xffff_ffff, |c| IDX_LIMIT - c);
                 let x = g.ld(r);
                 let bad =
                     g.b.ins()
-                        .icmp_imm_s(IntCC::UnsignedGreaterThan, x, (0xffff_ffff / m) as i64);
+                        .icmp_imm_s(IntCC::UnsignedGreaterThan, x, (max / m) as i64);
                 g.exit_if(bad, pc);
                 let v = g.b.ins().imul_imm_s(x, m as i64);
                 g.st(dst, v);
                 fused_mul = Some(i + 1);
+                tight_mul = c;
             }
             Inst::Bin { op, dst, a, b } => {
                 let (x, y) = (g.ld(a), g.ld(b));
@@ -4057,28 +4073,49 @@ fn gen_func(
                 // error. With the sum under 2^32 the high half is untouched: the result is the
                 // base plus the offset.
                 let a = g.ld(base);
-                let (base_off, base_obj) = match g.known.get(base.0 as usize) {
-                    Some(Some(Known::Frame(o) | Known::Const(_, o) | Known::Inst(o))) => {
-                        (Some(*o), None)
-                    }
-                    Some(Some(Known::Heap(Some(o)))) => (None, Some(*o)),
-                    _ => (None, None),
+                let base_obj = match g.known.get(base.0 as usize) {
+                    Some(Some(Known::Heap(Some(o)))) => Some(*o),
+                    _ => None,
                 };
+                // The base's offset when it is a constant, else a bound an `Index` before
+                // tested (`vmax`).
+                let c_base = g.index_base_const(base);
+                let base_max = c_base.or_else(|| {
+                    base_obj
+                        .filter(|_| !no_proofs())
+                        .and_then(|o| g.vmax.get(&o.off).copied())
+                });
                 // The offset of the base in its 4 GiB window.
-                let lo_of = |g: &mut Gen| match base_obj {
-                    Some(o) => o.off,
-                    None => g.lo32(a),
+                let lo_of = |g: &mut Gen| match (base_obj, c_base) {
+                    (Some(_), Some(c)) => g.c64(c as i64),
+                    (Some(o), None) => o.off,
+                    (None, _) => g.lo32(a),
                 };
                 let mut sum_out = None;
                 let v = match g.kint(pos) {
                     Some(p) => match (p as u64).checked_mul(u64::from(stride)) {
                         Some(off) if off <= 0xffff_ffff => {
-                            if base_off.is_none_or(|o| o + off > 0xffff_ffff) {
-                                let lo = lo_of(&mut g);
-                                let sum = g.b.ins().iadd_imm_s(lo, off as i64);
-                                let big = g.b.ins().ushr_imm_s(sum, 32);
-                                g.exit_if(big, pc);
-                                sum_out = Some(sum);
+                            match base_max.filter(|m| m + off <= 0xffff_ffff) {
+                                Some(m) => {
+                                    if base_obj.is_some() {
+                                        let sum = match c_base {
+                                            Some(c) => g.c64((c + off) as i64),
+                                            None => {
+                                                let lo = lo_of(&mut g);
+                                                g.b.ins().iadd_imm_s(lo, off as i64)
+                                            }
+                                        };
+                                        g.vmax.insert(sum, m + off);
+                                        sum_out = Some(sum);
+                                    }
+                                }
+                                None => {
+                                    let lo = lo_of(&mut g);
+                                    let sum = g.b.ins().iadd_imm_s(lo, off as i64);
+                                    let big = g.b.ins().ushr_imm_s(sum, 32);
+                                    g.exit_if(big, pc);
+                                    sum_out = Some(sum);
+                                }
                             }
                             g.b.ins().iadd_imm_s(a, off as i64)
                         }
@@ -4101,18 +4138,39 @@ fn gen_func(
                             } else {
                                 g.b.ins().imul_imm_s(p, i64::from(stride))
                             };
-                            // Both under 2^32 (the position and the stride are): no wrap.
-                            let lo = lo_of(&mut g);
-                            let sum = g.b.ins().iadd(lo, off);
-                            // A position the multiplication before tested is under 2^32.
-                            let wide = if fused_mul == Some(i) {
-                                sum
+                            if let Some(c) = c_base.filter(|&c| c <= IDX_LIMIT) {
+                                // One unsigned test of the position bounds the sum below
+                                // `IDX_LIMIT` (the interpreter takes anything above, as it
+                                // takes a sum of 2^32 and up), so constant offsets past it need
+                                // no test; a multiplication before tested it already.
+                                let pmax = (IDX_LIMIT - c) / u64::from(stride);
+                                let (lo, hi) = g.iv_of(pos);
+                                let proved = !no_proofs() && lo >= 0 && hi as u64 <= pmax;
+                                if !proved && !(fused_mul == Some(i) && tight_mul == Some(c)) {
+                                    let bad = g.b.ins().icmp_imm_s(
+                                        IntCC::UnsignedGreaterThan,
+                                        p,
+                                        pmax as i64,
+                                    );
+                                    g.exit_if(bad, pc);
+                                }
+                                let sum = g.b.ins().iadd_imm_s(off, c as i64);
+                                g.vmax.insert(sum, IDX_LIMIT);
+                                sum_out = Some(sum);
                             } else {
-                                g.b.ins().bor(p, sum)
-                            };
-                            let big = g.b.ins().ushr_imm_s(wide, 32);
-                            g.exit_if(big, pc);
-                            sum_out = Some(sum);
+                                // Both under 2^32 (the position and the stride are): no wrap.
+                                let lo = lo_of(&mut g);
+                                let sum = g.b.ins().iadd(lo, off);
+                                // A position the multiplication before tested is under 2^32.
+                                let wide = if fused_mul == Some(i) {
+                                    sum
+                                } else {
+                                    g.b.ins().bor(p, sum)
+                                };
+                                let big = g.b.ins().ushr_imm_s(wide, 32);
+                                g.exit_if(big, pc);
+                                sum_out = Some(sum);
+                            }
                             g.b.ins().iadd(a, off)
                         }
                     }
@@ -5726,6 +5784,17 @@ impl Gen<'_> {
             },
             _ => None,
         }
+    }
+
+    /// The offset in its 4 GiB window of the address in `base` when it is a constant the
+    /// generator knows (a frame, constant or instance offset; a held object's offset).
+    fn index_base_const(&self, base: Reg) -> Option<u64> {
+        match self.known.get(base.0 as usize) {
+            Some(Some(Known::Frame(o) | Known::Const(_, o) | Known::Inst(o))) => Some(*o),
+            Some(Some(Known::Heap(Some(o)))) => self.const_of(o.off).map(|k| k as u64),
+            _ => None,
+        }
+        .filter(|&c| c <= 0xffff_ffff)
     }
 
     /// The low 32 bits of `a`, as an i64.

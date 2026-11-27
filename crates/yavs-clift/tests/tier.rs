@@ -408,6 +408,45 @@ fn loads_and_stores_match_the_interpreter() {
         load(fb, hi, Width::B8)
     });
     check(prog, f, &["Load", "Store"], &EDGE);
+    // local[b * 8 + 8] and local[b * 4 + 4]: the position's one test bounds the sum, so the
+    // constant offset after it has none of its own (`IDX_LIMIT`).
+    for fused in [true, false] {
+        let (prog, f) = two(|fb, a, b, l| {
+            let at = fb.reg(RegTy::Ptr);
+            let k = if fused {
+                let (eight, m) = (fb.int(8), fb.reg(RegTy::I64));
+                fb.emit(Inst::Bin {
+                    op: IntOp::Mul,
+                    dst: m,
+                    a: b,
+                    b: eight,
+                });
+                fb.emit(Inst::Index {
+                    dst: at,
+                    base: l,
+                    pos: m,
+                    stride: 1,
+                });
+                eight
+            } else {
+                fb.emit(Inst::Index {
+                    dst: at,
+                    base: l,
+                    pos: b,
+                    stride: 4,
+                });
+                fb.int(4)
+            };
+            let at = index(fb, at, k);
+            fb.emit(Inst::Store {
+                addr: at,
+                src: a,
+                w: Width::B4,
+            });
+            load(fb, at, Width::B4)
+        });
+        check(prog, f, &["Load", "Store"], &EDGE);
+    }
     // Reads of the instance data and a constant (through the object cache) at a + b.
     for space in [AddrSpace::Inst, AddrSpace::Const(ConstId(0))] {
         for w in [Width::B1, Width::B4, Width::B8] {

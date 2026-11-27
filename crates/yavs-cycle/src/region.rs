@@ -2701,15 +2701,22 @@ pub(crate) fn proc_reads(
             r => r,
         };
         match root {
-            ObjRoot::Decl(d) => {
+            // An implicit signal (`'transaction`, `'stable`, ...) is read with the signals it
+            // follows: its value comes from their events or transactions.
+            ObjRoot::Decl(d) | ObjRoot::ImplicitSignal(d) => {
                 let (a, z) = e.nets.obj(e.signal(p.scope, d)?).leaves;
-                let leaves = (a.0..z.0).map(LeafId);
+                let mut leaves: Vec<LeafId> = (a.0..z.0).map(LeafId).collect();
+                for k in a.0..z.0 {
+                    let leaf = e.nets.leaf(LeafId(k));
+                    leaves.extend(leaf.implicit.map(|x| x.1));
+                    leaves.extend(leaf.implicit_more.iter().map(|x| x.0));
+                }
                 if wait {
-                    waited.extend(leaves.clone());
+                    waited.extend(leaves.iter().copied());
                 }
                 seen.extend(leaves);
             }
-            ObjRoot::External(_) | ObjRoot::ImplicitSignal(_) => {}
+            ObjRoot::External(_) => {}
         }
     }
     Some((seen, waited))

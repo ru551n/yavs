@@ -720,7 +720,8 @@ The report and ``--cycle-strict`` give each reason a code. ``yavs --explain E411
      - Feeds a process outside the region that depends on delta cycles (the message names it). A delayed
        assignment (``after``, ``transport``, ``reject``) in the cycle scope is such a process: a one-delta
        glitch in the normal mode removes or adds its pending value, so it stays out, and so does the logic
-       feeding it
+       feeding it. A read of ``'transaction``, ``'stable``, ``'quiet`` or ``'delayed`` counts as a read of the
+       signal itself
      - Let that reader join too (complete sensitivity list, no latch), or make it clocked. For a delayed
        assignment, compute the delayed value from registered signals, or move the delay to the testbench.
    * - E4130

@@ -7488,6 +7488,36 @@ fn logic_feeding_a_process_that_counts_its_runs_stays_out() {
     }
 }
 
+/// A process outside the region counting the transactions (`'transaction`) or the events
+/// (`'stable`) of a signal made by logic from a register (#1205): the logic stays in the event
+/// kernel with the reason, the register joins; against the normal mode at widths 1 to 128, both
+/// contracts (with the logic in the region the counts were half).
+#[test]
+fn logic_feeding_an_implicit_signal_a_counter_reads_stays_out() {
+    let dir = tempdir("cycle-txcount");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("txcount{w}.vhd"),
+            &with_width(include_str!("cycle/txcount.vhd"), w),
+        );
+        for t in tiers() {
+            for two in [&[][..], &["--two-state"][..]] {
+                let (normal, _) = run(&dir, &[&t[..], two].concat(), "cycle_txcount");
+                let (cycle, err) =
+                    run(&dir, &[&t[..], &["--cycle"], two].concat(), "cycle_txcount");
+                assert_eq!(normal.len(), 8, "{w} {t:?} {normal:?}");
+                assert_eq!(cycle, normal, "width {w} {t:?} {two:?}\n{err}");
+                assert_eq!(row(&err, "cycle_txcount.reg").0, "cycle-based:", "{err}");
+                for m in ["c", "a"] {
+                    let r = row(&err, &format!("cycle_txcount.{m} <= ...")).1;
+                    assert!(r.contains("E4129"), "{m}: {err}");
+                }
+            }
+        }
+    }
+}
+
 /// Concurrent assignments with a delay below the top (inertial, a reject limit, transport with a
 /// delay per alternative) depend on one-delta glitches of their inputs: their logic stays in the
 /// event kernel, and that of an assignment without a delay joins; against the normal mode at

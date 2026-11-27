@@ -824,23 +824,141 @@ impl Db {
     /// into nested statements. Targets rooted at a parameter are driven by the
     /// caller's actual, so they are skipped.
     pub fn collect_drivers(&self, body: &[StmtId], out: &mut Vec<Lsp>) {
+        self.drivers_in(body, out, Pick::All);
+    }
+
+    /// [`Db::collect_drivers`] of the statements `pick` names.
+    fn drivers_in(&self, body: &[StmtId], out: &mut Vec<Lsp>, pick: Pick) {
         for &s in body {
             match &self.stmts[s].kind {
-                StmtKind::SignalAssign { target, .. }
-                | StmtKind::ConcSignalAssign { target, .. } => {
+                StmtKind::SignalAssign { target, rhs, .. }
+                | StmtKind::ConcSignalAssign { target, rhs, .. }
+                    if pick == Pick::All
+                        || (pick == Pick::Z
+                            && self.resolved_target(target.expr)
+                            && self.may_drive_z(rhs)) =>
+                {
                     for l in target.lsps.iter() {
                         if !self.is_param(l.root) {
                             push_unique(self, out, l.clone());
                         }
                     }
                 }
-                StmtKind::ProcCall(c) | StmtKind::ConcProcCall { call: c, .. } => {
+                StmtKind::ProcCall(c) | StmtKind::ConcProcCall { call: c, .. }
+                    if pick != Pick::Z =>
+                {
                     self.call_drivers(c, out)
                 }
                 _ => {}
             }
-            self.collect_drivers(&self.stmt_children(s), out);
+            self.drivers_in(&self.stmt_children(s), out, pick);
         }
+    }
+
+    /// `--two-state`: the drivers of process or concurrent statement `s` (as its
+    /// `ProcessInfo::drivers`), those of them through procedure calls, and those of a waveform
+    /// that may hold `'Z'`, which two-state code keeps on a resolved signal (A71). `None` for
+    /// another statement.
+    pub fn two_drivers(&self, s: StmtId) -> Option<[Vec<Lsp>; 3]> {
+        let mut out: [Vec<Lsp>; 3] = Default::default();
+        for (o, pick) in out.iter_mut().zip([Pick::All, Pick::Calls, Pick::Z]) {
+            match &self.stmts[s].kind {
+                StmtKind::Process { scope, body, .. } => {
+                    self.drivers_in(body, o, pick);
+                    self.scope_subprogram_drivers(*scope, o, pick);
+                    let mut seq_scopes = Vec::new();
+                    self.seq_block_scopes(body, &mut seq_scopes);
+                    for sc in seq_scopes {
+                        self.scope_subprogram_drivers(sc, o, pick);
+                    }
+                }
+                StmtKind::ConcSignalAssign { .. } | StmtKind::ConcProcCall { .. } => {
+                    self.drivers_in(&[s], o, pick)
+                }
+                _ => return None,
+            }
+        }
+        Some(out)
+    }
+
+    /// Whether target `x` or a prefix of it has a resolved subtype: two-state code keeps the
+    /// `'Z'` it drives there (the lowering's test, which an alias can give an unresolved signal).
+    fn resolved_target(&self, mut x: ExprId) -> bool {
+        loop {
+            if self.is_resolved(self.exprs[x].subtype) {
+                return true;
+            }
+            match &self.exprs[x].kind {
+                ExprKind::Index { prefix, .. }
+                | ExprKind::Slice { prefix, .. }
+                | ExprKind::Field { prefix, .. } => x = *prefix,
+                _ => return false,
+            }
+        }
+    }
+
+    /// Whether two-state code driving `rhs` onto a resolved signal may drive `'Z'`: a value
+    /// whose `'Z'` it keeps (`two_keep_z` in the lowering: a folded value, a constant, the
+    /// elements of an aggregate, qualified or conditional value) holds one, or may.
+    fn may_drive_z(&self, rhs: &Rhs<Waveform>) -> bool {
+        let wave = |w: &Waveform| match w {
+            Waveform::Elements(es) => es.iter().any(|e| e.value.is_none_or(|x| self.may_be_z(x))),
+            Waveform::Unaffected => false,
+        };
+        match rhs {
+            Rhs::Simple(w) => wave(w),
+            Rhs::Conditional(c) => c.iter().any(|(w, _)| wave(w)),
+            Rhs::Selected { alts, .. } => alts.iter().any(|(w, _)| wave(w)),
+        }
+    }
+
+    fn may_be_z(&self, x: ExprId) -> bool {
+        let mut todo = vec![x];
+        while let Some(x) = todo.pop() {
+            let e = &self.exprs[x];
+            if let Some(c) = e.value {
+                if holds_z(&self.consts[c]) {
+                    return true;
+                }
+                continue;
+            }
+            match &e.kind {
+                ExprKind::Const(c) if holds_z(&self.consts[*c]) => return true,
+                ExprKind::Const(_) => {}
+                ExprKind::Aggregate { assocs, .. } => todo.extend(assocs.iter().map(|a| a.value)),
+                ExprKind::Qualified { operand, .. } => todo.push(*operand),
+                ExprKind::Conditional { alts } => todo.extend(alts.iter().map(|a| a.0)),
+                // Values two-state code computed, or read from outside and mapped.
+                ExprKind::Call { .. }
+                | ExprKind::Conv { .. }
+                | ExprKind::ImplicitConv { .. }
+                | ExprKind::Attr { .. }
+                | ExprKind::Deref { .. } => {}
+                ExprKind::Obj(_)
+                | ExprKind::Index { .. }
+                | ExprKind::Slice { .. }
+                | ExprKind::Field { .. } => {
+                    let mut p = x;
+                    while let ExprKind::Index { prefix, .. }
+                    | ExprKind::Slice { prefix, .. }
+                    | ExprKind::Field { prefix, .. } = &self.exprs[p].kind
+                    {
+                        p = *prefix;
+                    }
+                    // A constant keeps its literal's `'Z'`; signals and variables hold 0/1.
+                    match &self.exprs[p].kind {
+                        ExprKind::Obj(d) => match &self.decls[*d].kind {
+                            DeclKind::Object(o) if o.class != ObjClass::Constant => {}
+                            _ => return true,
+                        },
+                        ExprKind::Call { .. } | ExprKind::Deref { .. } => {}
+                        _ => return true,
+                    }
+                }
+                _ => return true,
+            }
+        }
+        false
     }
 
     fn call_drivers(&self, c: &Call, out: &mut Vec<Lsp>) {
@@ -888,7 +1006,7 @@ impl Db {
     /// Drivers in the bodies of subprograms declared in `scope` (and in their
     /// nested regions): a process drives what procedures declared inside it
     /// assign (14.7.2).
-    fn scope_subprogram_drivers(&self, scope: ScopeId, out: &mut Vec<Lsp>) {
+    fn scope_subprogram_drivers(&self, scope: ScopeId, out: &mut Vec<Lsp>, pick: Pick) {
         for &d in &self.scopes[scope].order {
             // With the methods of a protected type; without uninstantiated subprograms, which
             // never run (#1096, #1097).
@@ -897,11 +1015,11 @@ impl Db {
                     && let crate::decl::Body::Hir { scope, stmts } = &sp.body
                 {
                     let mut ls = Vec::new();
-                    self.collect_drivers(stmts, &mut ls);
+                    self.drivers_in(stmts, &mut ls, pick);
                     for l in ls {
                         push_unique(self, out, self.cut_at_subprogram_values(l));
                     }
-                    self.scope_subprogram_drivers(*scope, out);
+                    self.scope_subprogram_drivers(*scope, out, pick);
                 }
             }
         }
@@ -946,11 +1064,11 @@ impl Db {
     pub fn process_info(&self, scope: ScopeId, body: &[StmtId], all: bool) -> ProcessInfo {
         let mut drivers = Vec::new();
         self.collect_drivers(body, &mut drivers);
-        self.scope_subprogram_drivers(scope, &mut drivers);
+        self.scope_subprogram_drivers(scope, &mut drivers, Pick::All);
         let mut seq_scopes = Vec::new();
         self.seq_block_scopes(body, &mut seq_scopes);
         for s in seq_scopes {
-            self.scope_subprogram_drivers(s, &mut drivers);
+            self.scope_subprogram_drivers(s, &mut drivers, Pick::All);
         }
         let reads_all = all.then(|| {
             let mut r = Vec::new();
@@ -2043,6 +2161,30 @@ type ExprEach<'a, T> = dyn FnMut(&T, &mut dyn FnMut(ExprId, Use)) + 'a;
 struct Source {
     lsp: Lsp,
     stmt: StmtId,
+}
+
+/// Which statements [`Db::drivers_in`] takes drivers from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pick {
+    All,
+    /// Procedure calls only.
+    Calls,
+    /// Signal assignments that may drive `'Z'` (`Db::may_drive_z`) only.
+    Z,
+}
+
+/// Whether constant `c` holds a `'Z'` (position 4; of another enumeration type too).
+fn holds_z(c: &crate::stat::ConstValue) -> bool {
+    use crate::stat::{ConstValue, Elems};
+    match c {
+        ConstValue::Enum(p) => *p == 4,
+        ConstValue::Array(a) => match &a.elems {
+            Elems::Bytes(b) => b.contains(&4),
+            Elems::Runs(r) => r.iter().any(|(_, v)| holds_z(v)),
+        },
+        ConstValue::Record(f) => f.iter().any(holds_z),
+        _ => false,
+    }
 }
 
 fn push_unique(db: &Db, out: &mut Vec<Lsp>, l: Lsp) {

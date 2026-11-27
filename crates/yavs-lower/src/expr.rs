@@ -646,6 +646,7 @@ impl<'a> Fx<'a, '_> {
             return Ok(());
         }
         for a in args {
+            // ponytail: an individual or converted actual keeps what the procedure wrote.
             let (Actual::Expr(e), Some(p)) = (&a.actual, sp.params.get(a.formal as usize)) else {
                 continue;
             };
@@ -690,7 +691,59 @@ impl<'a> Fx<'a, '_> {
                         n: count,
                     });
                 }
-                // ponytail: a slice actual or a record keeps what the procedure wrote.
+                // A record (or an array of them) with logic elements, mapped in place.
+                Place::Array {
+                    data,
+                    dope,
+                    off: None,
+                    tid,
+                    ..
+                } if Ty::has_std_ulogic(self.fb.program().types(), tid)
+                    && !self.two_inline(tid, data) =>
+                {
+                    self.native(
+                        "yavs.two.map",
+                        Some(tid),
+                        &[data, dope],
+                        None,
+                        db.exprs[*e].span,
+                    )?;
+                }
+                // A slice of a logic array: mapped through a copy (`LogicOp` has no offset).
+                Place::Array {
+                    data,
+                    dope,
+                    off: Some(off),
+                    tid,
+                    ..
+                } if Ty::logic_leaf(self.fb.program().types(), tid)
+                    == Some(yavs_ir::LogicKind::StdULogic) =>
+                {
+                    let (size, count) = self.layout(tid, dope);
+                    let tmp = self.alloc_val(size, tid, Some(dope));
+                    let z = self.int(0);
+                    self.emit(Inst::LCopy {
+                        dst: tmp,
+                        dst_off: z,
+                        src: data,
+                        src_off: off,
+                        n: count,
+                    });
+                    self.emit(Inst::LogicOp {
+                        op: LOp::To01,
+                        dst: tmp,
+                        a: tmp,
+                        b: tmp,
+                        n: count,
+                    });
+                    self.emit(Inst::LCopy {
+                        dst: data,
+                        dst_off: off,
+                        src: tmp,
+                        src_off: z,
+                        n: count,
+                    });
+                }
                 _ => {}
             }
         }

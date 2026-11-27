@@ -431,6 +431,44 @@ fn only_signals_two_state_code_drives_are_read_without_a_map() {
     }
 }
 
+/// #1204: a signal four-state code drives (a package's procedure through a signal `out` or
+/// `inout` parameter, from a process or a concurrent call; a record or slice variable it
+/// wrote) or that may hold a driven `'Z'` (a literal, an aggregate, a constant, through an alias
+/// of an unresolved signal) is read with a map, as are resolved ones with two drivers, forced,
+/// or behind a port whose source does not qualify (hand-checked counts as above).
+#[test]
+fn signals_four_state_code_drives_are_read_with_a_map() {
+    let dir = tempdir("twostate-cleanres");
+    analyze(&dir, "cleanres.vhd");
+    // The scope found leaves the processes that assign a `'Z'` out (A78), a named one does not.
+    for (t, scope) in tiers()
+        .into_iter()
+        .flat_map(|t| [(t.clone(), "--two-state"), (t, "--two-state=cleanres.dut")])
+    {
+        for x in [None, Some("--init-x=1")] {
+            for cycle in [None, Some("--cycle")] {
+                let mut args = vec!["run", "--work=work:lib", scope];
+                args.extend(&t);
+                args.extend(x);
+                args.extend(cycle);
+                args.push("cleanres");
+                let o = yavs(&dir, &args);
+                let out = String::from_utf8_lossy(&o.stdout);
+                assert!(
+                    o.status.success()
+                        && out.contains(
+                            "ok=808 unsigned=808 two=1204 z=808 agg=412 const=1204 forced=808 \
+                             pkg=808 upkg=808 port=214 pin=808 io=808 cc=808 rec=808 var=2408 \
+                             alias=808"
+                        ),
+                    "{args:?}: {out}{}",
+                    String::from_utf8_lossy(&o.stderr)
+                );
+            }
+        }
+    }
+}
+
 /// #1203: the metavalues of a record constant's literal take their `--init-x` bits under
 /// `--two-state`, as a vector constant's do: read whole, by field, by element in a loop, by a
 /// scalar field, of a record and of an array of records, the same bits in both modes on every

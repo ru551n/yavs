@@ -863,9 +863,11 @@ impl Elaborated {
     /// them without a map. Per leaf: unresolved, unguarded, not implicit, a start without a
     /// metavalue (`--two-state` starts one without an initial value at `0`), not forced or
     /// released, no source-less value, every driver a process of the two-state scope (which
-    /// drives only `0` and `1` onto an unresolved signal) with no start of its own, and through
-    /// port edges without conversion the leaf it takes its value from clean too (an `inout`
-    /// edge never is). Nothing when a debugger or VHPI plugin can deposit a value
+    /// drives only `0` and `1` onto an unresolved signal) with no start of its own, not through
+    /// a procedure call (a package's is four-state, #1204) and not of a value that may hold
+    /// `'Z'` onto a resolved target (an alias of the signal, A71), and through port edges
+    /// without conversion the leaf it takes its value from clean too (an `inout` edge never
+    /// is). Nothing when a debugger or VHPI plugin can deposit a value
     /// (`LowerOptions::two_clean`) or a force names an unknown target.
     fn two_clean(
         &self,
@@ -876,6 +878,7 @@ impl Elaborated {
         use crate::hier::ObjKind;
         use yavs_kernel::{PortMode, Value};
         use yavs_logic::StdULogic;
+        use yavs_sem::hir::{ObjRoot, StmtKind};
         let mut out = HashMap::new();
         if !opts.two_state || !opts.two_clean || !archs.iter().any(|a| a.1) {
             return out;
@@ -907,8 +910,44 @@ impl Elaborated {
         for &(l, _, _) in &n.consts {
             ok[l.index()] = false;
         }
-        for d in &n.drivers {
-            if d.init.is_some() || !self.two_in(self.procs[d.proc.index()].scope) {
+        // Per driver: named by a static name of its process that is clean: one of the process's
+        // drivers, not through a procedure call (a package's is four-state, #1204), not of a
+        // value that may hold `'Z'` onto a resolved target (A71).
+        let mut named = vec![false; n.drivers.len()];
+        let mut dirty = vec![false; n.drivers.len()];
+        let mut lsps: HashMap<yavs_sem::StmtId, Option<[Vec<ObjRoot>; 3]>> = HashMap::new();
+        for p in &self.procs {
+            let info = match &db.stmts[p.stmt].kind {
+                StmtKind::Process { info, .. }
+                | StmtKind::ConcSignalAssign { info, .. }
+                | StmtKind::ConcProcCall { info, .. } => info,
+                _ => continue,
+            };
+            if p.drivers.is_empty() || info.drivers.len() != p.lsps.len() {
+                continue;
+            }
+            let roots = lsps.entry(p.stmt).or_insert_with(|| {
+                let ls = db.two_drivers(p.stmt)?;
+                Some(ls.map(|v| v.into_iter().map(|l| l.root).collect()))
+            });
+            let Some([all, calls, z]) = roots else {
+                continue;
+            };
+            for (l, ds) in info.drivers.iter().zip(&p.lsps) {
+                let clean =
+                    all.contains(&l.root) && !calls.contains(&l.root) && !z.contains(&l.root);
+                for &(i, _, _) in ds {
+                    named[i] = true;
+                    dirty[i] |= !clean;
+                }
+            }
+        }
+        for (i, d) in n.drivers.iter().enumerate() {
+            if d.init.is_some()
+                || !self.two_in(self.procs[d.proc.index()].scope)
+                || !named[i]
+                || dirty[i]
+            {
                 ok[d.leaf.index()] = false;
             }
         }

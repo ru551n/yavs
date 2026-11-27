@@ -142,7 +142,7 @@ impl Out {
     fn driven(&self, img: &[u64]) -> bool {
         let (slot, lo, len) = (self.slot as usize, self.range.offset, self.range.len);
         if self.pw != 0 {
-            return self.planes(img) == self.wide;
+            return self.same_planes(img);
         }
         if self.bytes != 0 {
             return match &img[slot..][..len as usize] {
@@ -158,15 +158,32 @@ impl Out {
             .all(|j| self.wide[j] == word_at(w, lo + 64 * j as u32, len - 64 * j as u32))
     }
 
-    /// Without `--two-state`: its elements' planes, each `words(len)` words from element 0.
-    fn planes(&self, img: &[u64]) -> Vec<u64> {
-        let (lo, len, nw) = (self.range.offset, self.range.len, words(self.range.len));
-        let mut v = Vec::with_capacity(4 * nw as usize);
+    /// Without `--two-state`: word `j` of plane `p` of its elements.
+    #[inline(always)]
+    fn plane_word(&self, img: &[u64], p: u32, j: u32) -> u64 {
+        let w = &img[self.slot as usize + (p * self.pw) as usize..];
+        word_at(w, self.range.offset + 64 * j, self.range.len - 64 * j)
+    }
+
+    /// Without `--two-state`: `wide` holds its elements' planes as they are (each `words(len)`
+    /// words from element 0), compared in place.
+    fn same_planes(&self, img: &[u64]) -> bool {
+        let nw = words(self.range.len);
+        self.wide.len() == 4 * nw as usize
+            && (0..4).all(|p| {
+                (0..nw).all(|j| self.wide[(p * nw + j) as usize] == self.plane_word(img, p, j))
+            })
+    }
+
+    /// Without `--two-state`: its elements' planes into `wide`.
+    fn take_planes(&mut self, img: &[u64]) {
+        let nw = words(self.range.len);
+        self.wide.resize(4 * nw as usize, 0);
         for p in 0..4 {
-            let w = &img[self.slot as usize + (p * self.pw) as usize..];
-            v.extend((0..nw).map(|j| word_at(w, lo + 64 * j, len - 64 * j)));
+            for j in 0..nw {
+                self.wide[(p * nw + j) as usize] = self.plane_word(img, p, j);
+            }
         }
-        v
     }
 
     /// The image words its elements are in.
@@ -1062,11 +1079,10 @@ impl RegionProc {
         let (lo, len) = (o.range.offset, o.range.len);
         if o.pw != 0 {
             // Nine values: the planes as they are, against those driven last.
-            let p = o.planes(img);
-            if !all && p == o.wide {
+            if !all && o.same_planes(img) {
                 return Ok(());
             }
-            o.wide = p;
+            o.take_planes(img);
             let nw = words(len) as usize;
             if nw == 1 {
                 let p = [o.wide[0], o.wide[1], o.wide[2], o.wide[3]];

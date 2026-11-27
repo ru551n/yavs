@@ -354,7 +354,7 @@ impl Code {
             Run::Save(g) => {
                 let (ws, mut at) = (&self.groups[g].0, self.groups[g].1 as usize);
                 for &(w, c) in ws {
-                    img.copy_within(w as usize..(w + c) as usize, at);
+                    copy_in(img, w as usize, at, c as usize);
                     at += c as usize;
                 }
             }
@@ -367,14 +367,14 @@ impl Code {
             }
             Run::Copy(c) => {
                 for &(d, s, n) in &self.copies[c] {
-                    img.copy_within(s as usize..(s + n) as usize, d as usize);
+                    copy_in(img, s as usize, d as usize, n as usize);
                 }
             }
             Run::Same(g) => {
                 let (ws, mut at) = (&self.groups[g].0, self.groups[g].1 as usize);
                 for &(w, c) in ws {
                     let (w, c) = (w as usize, c as usize);
-                    if img[w..w + c] != img[at..at + c] {
+                    if !same(&img[w..w + c], &img[at..at + c]) {
                         return Err(UNSETTLED);
                     }
                     at += c;
@@ -444,13 +444,7 @@ impl Code {
             let j = wrap(hint + i, n);
             let (w, c) = (gd.ins[j].0 as usize, gd.ins[j].1 as usize);
             let at = gd.copy as usize + gd.at[j] as usize;
-            if c <= 8 {
-                for k in 0..c {
-                    img[at + k] = img[w + k];
-                }
-            } else {
-                img.copy_within(w..w + c, at);
-            }
+            copy_in(img, w, at, c);
         }
         img[flag] = need | (first as u64) << 8 | (misses + 1) << 32;
         false
@@ -521,6 +515,19 @@ fn same(a: &[u64], b: &[u64]) -> bool {
         a.iter().zip(b).all(|(x, y)| x == y)
     } else {
         a == b
+    }
+}
+
+/// Words `from .. from + n` of `img` to `to` on, a loop for a few words (no call of `memmove`;
+/// the ranges never overlap).
+#[inline(always)]
+fn copy_in(img: &mut [u64], from: usize, to: usize, n: usize) {
+    if n <= 8 {
+        for k in 0..n {
+            img[to + k] = img[from + k];
+        }
+    } else {
+        img.copy_within(from..from + n, to);
     }
 }
 

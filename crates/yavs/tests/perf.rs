@@ -2766,3 +2766,27 @@ begin
   end process;
 end architecture;
 "#;
+
+/// A81 (`YAVS_CYCLE_CLEAN=on`, plain `--cycle`): once the reset has run, every member of
+/// `perf/cycle_clean.vhd` runs its plane-0 body; the nine-valued ones run only before (each
+/// member's first run reads values the reset has not made yet). A lost plane-0 body, or dirty
+/// bits a writer leaves set, runs the nine-valued body at every edge.
+#[test]
+fn cycle_clean() {
+    let d = tempdir("cycle_clean");
+    let r = run_design_env(
+        &d,
+        "cycle_clean",
+        include_str!("perf/cycle_clean.vhd"),
+        "interp",
+        &["--cycle"],
+        &[("YAVS_CYCLE_CLEAN", "on")],
+    );
+    assert_eq!(r.code, 0, "{}", r.all());
+    assert!(r.all().contains("acc=F752"), "{}", r.all());
+    check_bounds(
+        "cycle_clean",
+        &r,
+        &[("cycle_variants", Min(3)), ("cycle_nine_runs", Max(4))],
+    );
+}

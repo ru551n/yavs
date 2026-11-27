@@ -9578,3 +9578,105 @@ fn waves_under_cycle_do_not_take_a_region_cached_without_them() {
     assert_eq!(run(true), waved);
     assert_eq!(run(false), cold);
 }
+
+/// The value of counter `name` in a `YAVS_COUNTERS` run's standard error.
+fn counter(err: &str, name: &str) -> u64 {
+    let key = format!("counters: {name}=");
+    (err.lines())
+        .find_map(|l| l.strip_prefix(&key))
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no counter {name}: {err}"))
+}
+
+/// A81 (`YAVS_CYCLE_CLEAN`): the dirty bits of each logic value follow every kind of writer a
+/// member's values have (`cycle/cleanflag.vhd`), so members run their plane-0 bodies only on
+/// `'0'` and `'1'` and give the normal mode's values. `check` also runs the nine-valued body
+/// after each plane-0 one and compares, and checks every dirty bit after each run.
+#[test]
+fn dirty_bits_follow_every_writer_and_give_the_normal_mode() {
+    let dir = tempdir("cycle-cleanflag");
+    analyze(&dir, "cleanflag.vhd", include_str!("cycle/cleanflag.vhd"));
+    for t in tiers() {
+        let (normal, _) = run(&dir, &t, "cycle_cleanflag");
+        assert_eq!(normal.len(), 40, "{t:?} {normal:?}");
+        for clean in ["off", "on", "check"] {
+            let env = [("YAVS_CYCLE_CLEAN", clean), ("YAVS_COUNTERS", "1")];
+            let (cycle, err) = run_vars(
+                &dir,
+                &[&t[..], &["--cycle"]].concat(),
+                "cycle_cleanflag",
+                &env,
+            );
+            assert_eq!(cycle, normal, "{t:?} {clean}\n{err}");
+            assert!(
+                err.contains("cycle mode: 35 of 44 processes run cycle-based"),
+                "{t:?} {clean}: {err}"
+            );
+            let (variants, runs) = (
+                counter(&err, "cycle_variants"),
+                counter(&err, "cycle_nine_runs"),
+            );
+            if clean == "off" {
+                assert_eq!((variants, runs), (0, 0), "{err}");
+            } else {
+                // Members with a plane-0 body, and values that hold metavalues at times.
+                assert!(variants >= 20 && runs > 0, "{t:?} {clean}: {err}");
+            }
+        }
+    }
+}
+
+/// The knob is part of what the region is stored by: a warm run after one with another value
+/// builds its own (`YAVS_CYCLE_CLEAN` off, on, check and off again on one library).
+#[test]
+fn the_clean_knob_keys_the_stored_region() {
+    let dir = tempdir("cycle-cleankey");
+    analyze(&dir, "cleanflag.vhd", include_str!("cycle/cleanflag.vhd"));
+    let run = |clean: &str| {
+        let o = yavs_env(
+            &dir,
+            &["run", "--work=work:lib", "--cycle", "cycle_cleanflag"],
+            &[("YAVS_CYCLE_CLEAN", clean), ("YAVS_COUNTERS", "1")],
+        );
+        let err = String::from_utf8_lossy(&o.stderr).into_owned();
+        assert!(o.status.success(), "{clean}: {err}");
+        (
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            counter(&err, "cycle_variants"),
+        )
+    };
+    let off = run("off");
+    assert_eq!(off.1, 0);
+    for clean in ["on", "check", "on"] {
+        let (out, variants) = run(clean);
+        assert_eq!(out, off.0, "{clean}");
+        assert!(variants > 0, "{clean}");
+    }
+    assert_eq!(run("off"), off);
+}
+
+/// Cycle mode still refuses what would read or change the region's values from outside, with
+/// the dirty bits on: a debug session and VHPI (their puts and deposits never reach the image).
+#[test]
+fn the_clean_knob_keeps_debug_sessions_and_vhpi_out() {
+    let dir = tempdir("cycle-cleanout");
+    analyze(&dir, "cleanflag.vhd", include_str!("cycle/cleanflag.vhd"));
+    for (opt, name) in [
+        ("--vhpi=nothing", "`--vhpi`"),
+        ("--interactive", "a debug session"),
+    ] {
+        let o = yavs_env(
+            &dir,
+            &["run", "--work=work:lib", "--cycle", opt, "cycle_cleanflag"],
+            &[("YAVS_CYCLE_CLEAN", "check")],
+        );
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(2), "{opt}: {err}");
+        assert!(
+            err.contains(&format!(
+                "error[E4102]: `--cycle` cannot be used with {name}"
+            )),
+            "{opt}: {err}"
+        );
+    }
+}

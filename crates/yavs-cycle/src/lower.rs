@@ -157,6 +157,9 @@ pub(crate) enum Check {
     /// Not a check: an assert or report of a top-level member that fired (A19); its site is a
     /// check's, so a site names the member.
     Note(Box<Note>),
+    /// Not a check of the design: under `YAVS_CYCLE_CLEAN=check` a member's plane-0 body gave
+    /// other values than its nine-valued body (A81), an internal error.
+    Clean,
 }
 
 /// An assert or report of a process of the top-level unit, evaluated in region code (user
@@ -430,6 +433,7 @@ impl Check {
                 )
             }
             Check::Note(_) => "an assert or report fired".into(),
+            Check::Clean => "a member's plane-0 body gave other values than its nine-valued body (YAVS_CYCLE_CLEAN=check)".into(),
         }
     }
 
@@ -484,6 +488,7 @@ impl Check {
                 )
             }
             Check::Note(_) => "an assert or report fired".into(),
+            Check::Clean => "a member's plane-0 body gave other values than its nine-valued body (YAVS_CYCLE_CLEAN=check)".into(),
         }
     }
 }
@@ -720,6 +725,33 @@ pub(crate) enum Op {
         flag: Ref,
         first: bool,
     },
+    /// First in an `If` branch: the branch is rarely taken, its code laid out after the rest.
+    Cold,
+    /// Word `at` plus one (`reset`: 0), straight in memory: a count that is no change of state
+    /// to the skip of clocked bodies (`Op::Track`), A81.
+    Tally {
+        at: Ref,
+        reset: bool,
+    },
+    /// `Extract` of what a member wrote, `src` where its writes go (a clocked member's next-state
+    /// words; `YAVS_CYCLE_CLEAN=check`, A81).
+    Peek {
+        dst: Ref,
+        src: Ref,
+        lo: u32,
+        len: u32,
+        full: u32,
+    },
+    /// A81 (`YAVS_CYCLE_CLEAN`): words `lo .. lo + n` of the dirty plane of the nine-valued
+    /// value at `dst` (planes `pw` words apart, `len` elements; the dirty plane is plane 4) made
+    /// from its planes: a bit is set where its element is not `'0'` or `'1'`.
+    Dirty {
+        dst: Ref,
+        pw: u32,
+        lo: u32,
+        n: u32,
+        len: u32,
+    },
     /// Without `--two-state` (made by `nine::expand`): a function of the four planes of `a` and
     /// `b` (plane `p` of a value `x` at word `x + p * xw`) into the four planes of `dst`, or for a
     /// boolean result (`dw` 0) into the one word `dst`.
@@ -757,6 +789,7 @@ impl Op {
             | Op::Gate { dst, .. }
             | Op::Not { dst, .. }
             | Op::Extract { dst, .. }
+            | Op::Peek { dst, .. }
             | Op::Cat { dst, .. }
             | Op::Add { dst, .. }
             | Op::Mul { dst, .. }
@@ -783,6 +816,9 @@ impl Op {
             | Op::Range { .. }
             | Op::Note { .. }
             | Op::Track { .. }
+            | Op::Cold
+            | Op::Tally { .. }
+            | Op::Dirty { .. }
             | Op::If { .. } => None,
         }
     }
@@ -817,6 +853,11 @@ impl Op {
                 *src = s(*src);
             }
             Op::Lit { dst, .. } | Op::IntLit { dst, .. } => *dst = d(*dst),
+            // Read where the writes go.
+            Op::Peek { dst, src, .. } => {
+                *dst = d(*dst);
+                *src = d(*src);
+            }
             Op::Gate { dst, a, b, .. }
             | Op::Add { dst, a, b, .. }
             | Op::Mul { dst, a, b, .. }
@@ -892,6 +933,11 @@ impl Op {
                 *b = s(*b);
             }
             Op::Track { flag, .. } => *flag = d(*flag),
+            Op::Cold => {}
+            Op::Tally { at, .. } => *at = d(*at),
+            // The value as written: a clocked member's next-state words.
+            // Read through `d` too: a clocked member's next-state words.
+            Op::Dirty { dst, .. } => *dst = d(*dst),
             Op::Note { site: x, args } => {
                 *x = site(*x);
                 for a in args {
@@ -957,6 +1003,12 @@ pub(crate) struct Body {
     /// The words of the variables (first, count): in a clocked process, state kept from one
     /// edge to the next.
     pub vars: Vec<(u32, u32)>,
+    /// A81: the variables whose clean flag is kept (first slot, words of a plane, elements).
+    #[serde(default)]
+    pub flag_vars: Vec<(u32, u32, u32)>,
+    /// A81: a member with a plane-0 body: the slot counting the runs of its nine-valued one.
+    #[serde(default)]
+    pub nine_runs: Option<u32>,
     /// Asserts and reports left out (not evaluated in cycle mode).
     pub dropped: u32,
     /// The statements of those, once each (an unrolled loop or inlined call drops one many
@@ -1592,6 +1644,8 @@ impl Lx<'_> {
         clock: Option<Clock>,
         reset: Option<(LeafId, u32, u8)>,
     ) -> R<Body> {
+        let mut nine_runs = None;
+        let mut flag_vars = Vec::new();
         // Without `--two-state`: the operations on the planes of nine-valued values.
         if crate::region::exact_meta() {
             let nets = &self.e.nets;
@@ -1601,10 +1655,141 @@ impl Lx<'_> {
                     .then(|| nets.signal_len(s))
             };
             self.allocs.sort_unstable();
-            for ops in [&mut self.ops, &mut self.init_ops] {
-                *ops =
-                    crate::nine::expand(std::mem::take(ops), &self.allocs, &sig, &mut self.locs)?;
-            }
+            let on = crate::nine::clean() != crate::nine::Clean::Off;
+            let check = (on && crate::nine::clean() == crate::nine::Clean::Check)
+                .then(|| self.site(Check::Clean));
+            let ops = std::mem::take(&mut self.ops);
+            let nine = crate::nine::expand(ops.clone(), &self.allocs, &sig, &mut self.locs)?;
+            self.init_ops = crate::nine::expand(
+                std::mem::take(&mut self.init_ops),
+                &self.allocs,
+                &sig,
+                &mut self.locs,
+            )?;
+            self.ops = if on {
+                // A81: the dirty bits of a clocked member's variables made again where its run ends
+                // (a signal's follow each write, `nine::Nine::op`); not a variable's of more than
+                // `FLAG_MAX` words, whose bits stay set.
+                // A clocked member's variables hold state; a combinational one's are scratch,
+                // assigned before they are read: temporaries for the plane-0 body.
+                let vars: Vec<(u32, u32)> = if kind == Kind::Clocked {
+                    self.var_words.clone()
+                } else {
+                    Vec::new()
+                };
+                // The variables the plane-0 body reads or writes on plane 0 (not those it takes on
+                // the planes, or of more than `FLAG_MAX` words): their dirty bits made again where
+                // a nine-valued run ends.
+                let allocs = self.allocs.clone();
+                let tail_of = |v: &crate::nine::Variant| -> (Vec<Op>, Vec<(u32, u32, u32)>) {
+                    let fl: Vec<(u32, u32, u32)> = (vars.iter())
+                        .filter_map(|&(w, _)| allocs.iter().find(|a| a.0 == w).copied())
+                        .filter(|a| a.1 <= crate::nine::FLAG_MAX && !v.dvar.contains(&a.0))
+                        .collect();
+                    let tail = (fl.iter())
+                        .map(|&(s, pw, len)| Op::Dirty {
+                            dst: Ref::Loc(s),
+                            pw,
+                            lo: 0,
+                            n: pw,
+                            len,
+                        })
+                        .collect();
+                    (tail, fl)
+                };
+                match ops.split_last() {
+                    // A clocked member with an asynchronous reset (`region::reset_piece`'s shape):
+                    // its edge body has the variant, its reset branch and the condition's
+                    // operations are nine-valued.
+                    Some((Op::If { cond, then, else_ }, head))
+                        if kind == Kind::Clocked
+                            && matches!(&else_[..], [Op::If { cond: Ref::Edge, else_: e, .. }] if e.is_empty()) =>
+                    {
+                        let [Op::If { then: at_edge, .. }] = &else_[..] else {
+                            unreachable!()
+                        };
+                        let mut out =
+                            crate::nine::expand(head.to_vec(), &self.allocs, &sig, &mut self.locs)?;
+                        let mut reset =
+                            crate::nine::expand(then.clone(), &self.allocs, &sig, &mut self.locs)?;
+                        // Temporaries the condition's operations wrote: nine-valued.
+                        let outer = std::cell::RefCell::new(std::collections::BTreeSet::new());
+                        for o in &out {
+                            o.map(
+                                &|r| r,
+                                &|r| {
+                                    if let Ref::Loc(s) = r
+                                        && let Some(a) = self.allocs.iter().rev().find(|a| a.0 <= s)
+                                        && s < a.0 + 5 * a.1
+                                    {
+                                        outer.borrow_mut().insert(a.0);
+                                    }
+                                    r
+                                },
+                                &|x| x,
+                            );
+                        }
+                        let outer = outer.into_inner();
+                        let v = crate::nine::expand_fast(
+                            check,
+                            at_edge.clone(),
+                            &self.allocs,
+                            &sig,
+                            &vars,
+                            &outer,
+                            &mut self.locs,
+                        )?;
+                        let edge = match v {
+                            Some(v) => {
+                                let (tail, fl) = tail_of(&v);
+                                reset.extend(tail.iter().cloned());
+                                flag_vars = fl;
+                                nine_runs = Some(self.locs);
+                                self.locs += crate::nine::COUNT_SLOTS;
+                                v.assemble(&tail, self.locs - crate::nine::COUNT_SLOTS)
+                            }
+                            None => crate::nine::expand(
+                                at_edge.clone(),
+                                &self.allocs,
+                                &sig,
+                                &mut self.locs,
+                            )?,
+                        };
+                        out.push(Op::If {
+                            cond: *cond,
+                            then: reset,
+                            else_: vec![Op::If {
+                                cond: Ref::Edge,
+                                then: edge,
+                                else_: Vec::new(),
+                            }],
+                        });
+                        out
+                    }
+                    // Another shape of a member with a reset: no variant (`reset_piece`).
+                    _ if reset.is_some() => nine,
+                    _ => match crate::nine::expand_fast(
+                        check,
+                        ops,
+                        &self.allocs,
+                        &sig,
+                        &vars,
+                        &Default::default(),
+                        &mut self.locs,
+                    )? {
+                        Some(v) => {
+                            let (tail, fl) = tail_of(&v);
+                            flag_vars = fl;
+                            nine_runs = Some(self.locs);
+                            self.locs += crate::nine::COUNT_SLOTS;
+                            v.assemble(&tail, self.locs - crate::nine::COUNT_SLOTS)
+                        }
+                        None => nine,
+                    },
+                }
+            } else {
+                nine
+            };
         }
         let reports = (self.loud.borrow().iter())
             .filter_map(|&x| self.e.region_calls.get(&(self.p.scope, x)))
@@ -1622,6 +1807,8 @@ impl Lx<'_> {
             rparts: self.rparts,
             locs: self.locs,
             init: self.init,
+            nine_runs,
+            flag_vars,
             vars: self.var_words,
             dropped: self.dropped,
             drops: self.drops,
@@ -4213,9 +4400,19 @@ impl Lx<'_> {
                 } else {
                     self.loc(words(p.full))
                 };
+                let flag = nine && crate::nine::clean() != crate::nine::Clean::Off;
                 if let Ref::Loc(w) = p.r {
                     let nw = words(p.full);
-                    self.var_words.push((w, if nine { 4 * nw } else { nw }));
+                    // A81: its dirty plane, every element set until made.
+                    if flag {
+                        self.locs += nw;
+                        for k in 0..nw {
+                            let m = crate::codegen::mask((p.full - 64 * k).min(64));
+                            self.init.push((w + 4 * nw + k, m));
+                        }
+                    }
+                    self.var_words
+                        .push((w, if nine { (4 + u32::from(flag)) * nw } else { nw }));
                     if two {
                         self.two_locs.insert(w);
                     }

@@ -920,7 +920,9 @@ fn reads(op: &Op, f: &mut impl FnMut(i32, u32)) {
             r(b, 0, words(*len));
         }
         Op::Not { a, len, .. } | Op::Reduce { a, len, .. } => r(a, 0, words(*len)),
-        Op::Extract { src, lo, len, .. } => r(src, lo / 64, (lo + len - 1) / 64 - lo / 64 + 1),
+        Op::Extract { src, lo, len, .. } | Op::Peek { src, lo, len, .. } => {
+            r(src, lo / 64, (lo + len - 1) / 64 - lo / 64 + 1)
+        }
         Op::Insert { dst, src, lo, len } => {
             r(src, 0, words(*len));
             r(dst, lo / 64, (lo + len - 1) / 64 - lo / 64 + 1);
@@ -984,7 +986,13 @@ fn reads(op: &Op, f: &mut impl FnMut(i32, u32)) {
         }
         Op::If { cond, .. } => r(cond, 0, 1),
         // Its flag is not a word the operations read (`Gen::track_end`).
-        Op::Track { .. } => {}
+        Op::Track { .. } | Op::Cold => {}
+        Op::Tally { at, .. } => r(at, 0, 1),
+        Op::Dirty { dst, pw, lo, n, .. } => {
+            for p in 1..4 {
+                r(dst, p * pw + lo, *n);
+            }
+        }
         Op::Nine { .. } => unreachable!("nine-valued operations are expanded before codegen"),
         Op::P4 {
             f,
@@ -1042,11 +1050,16 @@ fn cut(ops: &[Op], max: usize) -> Vec<Vec<Op>> {
                     w = 0;
                 }
                 let (t, e) = (cut(then, max), cut(else_, max));
+                let cold = matches!(else_.first(), Some(Op::Cold));
                 for k in 0..t.len().max(e.len()) {
+                    let mut else_ = e.get(k).cloned().unwrap_or_default();
+                    if cold && k > 0 {
+                        else_.insert(0, Op::Cold);
+                    }
                     out.push(vec![Op::If {
                         cond: *cond,
                         then: t.get(k).cloned().unwrap_or_default(),
-                        else_: e.get(k).cloned().unwrap_or_default(),
+                        else_,
                     }]);
                 }
             }
@@ -1339,6 +1352,7 @@ fn span(op: &Op) -> u32 {
         | Op::Gate { len, .. }
         | Op::Not { len, .. }
         | Op::Extract { len, .. }
+        | Op::Peek { len, .. }
         | Op::Cat { len, .. }
         | Op::Add { len, .. }
         | Op::Mul { len, .. }
@@ -1364,7 +1378,13 @@ fn span(op: &Op) -> u32 {
         | Op::Int { .. }
         | Op::Reduce { .. }
         | Op::ToInt { .. } => 1,
-        Op::Range { .. } | Op::If { .. } | Op::Note { .. } | Op::Track { .. } => 0,
+        Op::Dirty { pw, .. } => 5 * pw,
+        Op::Range { .. }
+        | Op::If { .. }
+        | Op::Note { .. }
+        | Op::Track { .. }
+        | Op::Cold
+        | Op::Tally { .. } => 0,
     }
 }
 
@@ -2068,6 +2088,7 @@ impl Env<'_> {
                 }
             }
             let mut g = Gen {
+                cold: false,
                 b,
                 base,
                 err: self.err as i32 * 8,
@@ -2099,12 +2120,7 @@ impl Env<'_> {
             // A piece starts from memory and the words the piece before left in registers that
             // it reads (memory holds them too): one function runs its pieces one after the other.
             for (p, more) in ops {
-                g.cap = if weight(p) > BIG {
-                    CACHE_BIG
-                } else {
-                    CACHE_MAX
-                }
-                .min(cache_cap());
+                g.cap = cap_for(cap_weight(p));
                 g.live_in(p, more.clone());
                 let reads = &g.last;
                 g.cache.retain(|off, _| reads.contains_key(off));
@@ -2362,6 +2378,26 @@ enum Pend {
 /// `BIG` operations: in a large piece the register allocator's work grows with the values live at
 /// once, while a small piece with many words (a record copied whole) runs faster with them all.
 const CACHE_MAX: usize = 256;
+
+/// The register cap of code of `w` operations ([`cap_weight`]).
+fn cap_for(w: usize) -> usize {
+    if w > BIG { CACHE_BIG } else { CACHE_MAX }.min(cache_cap())
+}
+
+/// The operations of `ops` that run together: of an `If` whose `else` is cold (`Op::Cold`, a
+/// member's nine-valued body next to its plane-0 one) the larger branch; each branch has the cap
+/// of its own.
+fn cap_weight(ops: &[Op]) -> usize {
+    (ops.iter())
+        .map(|o| match o {
+            Op::If { then, else_, .. } if matches!(else_.first(), Some(Op::Cold)) => {
+                1 + cap_weight(then).max(cap_weight(else_))
+            }
+            Op::If { then, else_, .. } => 1 + cap_weight(then) + cap_weight(else_),
+            _ => 1,
+        })
+        .sum()
+}
 /// Most pieces a value in a register is handed on through: the register allocator's work grows
 /// with the length of what is live (rtl_ff, 4096 one-bit members reading the words of one
 /// vector: 64 pieces cost 8 percent more compile than 16, which reload a word every 16 members).
@@ -2371,6 +2407,8 @@ const BIG: usize = 500;
 
 struct Gen<'a> {
     b: FunctionBuilder<'a>,
+    /// In a cold branch (`Op::Cold`): new blocks are cold.
+    cold: bool,
     base: Value,
     /// Byte offset of the first error word.
     err: i32,
@@ -2928,9 +2966,18 @@ impl Gen<'_> {
         self.b.ins().select(fail, one, y)
     }
 
+    /// A new block, cold in a cold branch (`Op::Cold`).
+    fn block(&mut self) -> CBlock {
+        let b = self.b.create_block();
+        if self.cold {
+            self.b.set_cold_block(b);
+        }
+        b
+    }
+
     fn check(&mut self, fail: Value, site: u32, vals: &[Value]) {
         let bad = self.b.create_block();
-        let ok = self.b.create_block();
+        let ok = self.block();
         self.b.set_cold_block(bad);
         self.b.ins().brif(fail, bad, &[], ok, &[]);
         self.b.switch_to_block(bad);
@@ -3331,6 +3378,13 @@ impl Gen<'_> {
                 self.sts(*dst, &v);
             }
             Op::Extract {
+                dst,
+                src,
+                lo,
+                len,
+                full,
+            }
+            | Op::Peek {
                 dst,
                 src,
                 lo,
@@ -3772,6 +3826,41 @@ impl Gen<'_> {
                 self.top(&mut v, *len);
                 self.sts(*dst, &v);
             }
+            Op::Dirty {
+                dst,
+                pw,
+                lo,
+                n,
+                len,
+            } => {
+                // An element whose plane 1 is clear or plane 2 or 3 set.
+                for j in *lo..lo + n {
+                    let (p1, p2, p3) = (
+                        self.ld(*dst, pw + j),
+                        self.ld(*dst, 2 * pw + j),
+                        self.ld(*dst, 3 * pw + j),
+                    );
+                    let n1 = self.b.ins().bnot(p1);
+                    let o = self.b.ins().bor(p2, p3);
+                    let x = self.b.ins().bor(n1, o);
+                    let m = mask((len - 64 * j).min(64));
+                    let x = self.b.ins().band_imm_s(x, m as i64);
+                    self.st(*dst, 4 * pw + j, x);
+                }
+            }
+            Op::Cold => {}
+            Op::Tally { at, reset } => {
+                let off = word(*at);
+                let (a, o) = self.at(off);
+                let v = if *reset {
+                    self.konst(0)
+                } else {
+                    let v = self.b.ins().load(I64, MemFlagsData::trusted(), a, o);
+                    self.b.ins().iadd_imm_s(v, 1)
+                };
+                self.b.ins().store(MemFlagsData::trusted(), v, a, o);
+                self.cache.remove(&off);
+            }
             Op::Track { flag, first } => {
                 self.track_end();
                 let var = self.b.declare_var(I64);
@@ -3828,11 +3917,12 @@ impl Gen<'_> {
                 if self.last.get(&w) == Some(&self.pos) && !self.state(w) {
                     self.drop_dead(w);
                 }
-                let (t, e, j): (CBlock, CBlock, CBlock) = (
-                    self.b.create_block(),
-                    self.b.create_block(),
-                    self.b.create_block(),
-                );
+                let (t, e, j): (CBlock, CBlock, CBlock) =
+                    (self.block(), self.block(), self.block());
+                let cold_else = matches!(else_.first(), Some(Op::Cold));
+                if cold_else {
+                    self.b.set_cold_block(e);
+                }
                 // Memory holds every word before the branches; each starts from the words in
                 // registers, stores what it changed before the join, and the join reads those
                 // from memory again. (Dead words are not in registers: see `Gen::op`.)
@@ -3853,7 +3943,13 @@ impl Gen<'_> {
                     self.b.switch_to_block(blk);
                     self.b.seal_block(blk);
                     self.cache = before.clone();
+                    let was = (self.cold, self.cap);
+                    self.cold |= cold_else && blk == e;
+                    if cold_else {
+                        self.cap = cap_for(cap_weight(body));
+                    }
                     self.ops(body);
+                    (self.cold, self.cap) = was;
                     let made: Vec<(i32, Value, bool)> = (self.cache.iter())
                         .filter(|(off, x)| before.get(off) != Some(x))
                         .map(|(&off, &(v, d))| (off, v, d))

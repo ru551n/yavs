@@ -68,6 +68,9 @@ pub(crate) struct Read {
     /// apart); 0: one plane.
     #[serde(default)]
     pub pw: u32,
+    /// A81: the word of the signal's clean flag (0: none), made again after a read.
+    #[serde(default)]
+    pub flag: u32,
 }
 
 /// The input chunks of a group of kernel signals, `RegionProc::chunks[at .. at + n]`, and the
@@ -424,6 +427,19 @@ pub(crate) struct RegionProc {
     pub unset: Arc<Vec<(u32, u32, u64)>>,
     /// Without `--two-state`: logic words are four planes ([`Read::pw`]).
     pub nine: bool,
+    /// A81: the clean flags of the logic signals (`Built::sig_flags`), and `YAVS_CYCLE_CLEAN`.
+    pub flags: Arc<Vec<(u32, u32, u32, u32)>>,
+    pub clean: crate::nine::Clean,
+    /// `YAVS_CYCLE_CLEAN=check`: the dirty bits are checked after every this many runs (more
+    /// than one for a large image), counted in `flag_runs`.
+    pub flag_every: u64,
+    pub flag_runs: u64,
+    /// A81: the words counting nine-valued runs (`Built::nine_runs`), summed into [`NINE_RUNS`]
+    /// after each run under `YAVS_COUNTERS`.
+    pub nine_runs: Arc<Vec<(u32, u32)>>,
+    pub counters: bool,
+    /// With `YAVS_CYCLE_STATS`: the names of those members, printed with their counts at the end.
+    pub nine_names: Vec<String>,
 }
 
 /// Images of at most this many words take part in the idle rule ([`Idle`]).
@@ -628,6 +644,26 @@ impl Drop for Stats {
         for (name, n) in &self.classes {
             eprintln!("cycle stats: edge class {name}: {n} edges");
         }
+        if let Ok(g) = NINE_STATS.lock()
+            && !g.0.is_empty()
+        {
+            let w = |s: &str| {
+                s.split('\t')
+                    .next()
+                    .and_then(|w| w.parse::<u64>().ok())
+                    .unwrap_or(0)
+            };
+            let mut v: Vec<(u64, &String)> = g.1.iter().copied().zip(&g.0).collect();
+            v.sort_by_key(|x| std::cmp::Reverse(x.0 * w(x.1)));
+            eprintln!(
+                "cycle stats: {} members with a plane-0 body (YAVS_CYCLE_CLEAN), their nine-valued bodies ran {} times",
+                g.0.len(),
+                g.1.iter().sum::<u64>()
+            );
+            for (n, name) in v.into_iter().take(40).filter(|x| x.0 > 0) {
+                eprintln!("cycle stats:   nine-valued {n} {name}");
+            }
+        }
         for (name, n) in EX_NAMES.iter().zip(self.ex) {
             eprintln!("cycle stats: {name}: {n}");
         }
@@ -711,6 +747,10 @@ impl RegionProc {
                 for p in 0..4 {
                     put(slot + p * rd.pw as usize, w(p) & m);
                 }
+                // A81: the dirty bits of what was read.
+                if rd.flag != 0 {
+                    put(slot + 4 * rd.pw as usize, (!w(1) | w(2) | w(3)) & m);
+                }
                 continue;
             }
             // A known element is `0`, `1`, `L` or `H`: plane 1 set; plane 0 is then its value.
@@ -790,6 +830,26 @@ impl RegionProc {
             self.check_import(ctx)?;
         }
         Ok((any, now))
+    }
+
+    /// A81, `YAVS_CYCLE_CLEAN=check`: every dirty plane holds the bits its planes give.
+    #[cold]
+    fn check_flags(&self, ctx: &Ctx<'_>) -> Result<(), SimError> {
+        for &(f, first, pw, len) in self.flags.iter().filter(|x| x.3 > 0) {
+            for j in 0..pw {
+                let (want, got) = (
+                    dirty(&self.img, first, pw, len, j),
+                    self.img[(f + j) as usize],
+                );
+                if want != got {
+                    return Err(ctx.error(ErrorKind::Internal(format!(
+                        "cycle mode: word {j} of the dirty plane of the value at word {first} ({len} \
+                         elements) holds {got:#x}, its planes give {want:#x} (YAVS_CYCLE_CLEAN=check)"
+                    ))));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Every input chunk read again: the image must hold what the kernel holds.
@@ -888,6 +948,12 @@ impl RegionProc {
         }
         for &w in &s.modes {
             self.idle.snap[w as usize] = self.img[w as usize];
+        }
+        // A81: the counts of nine-valued runs.
+        for &(w, _) in self.nine_runs.iter() {
+            for w in [w, w + 2] {
+                self.idle.snap[w as usize] = self.img[w as usize];
+            }
         }
         let same = !std::mem::take(&mut self.idle.noted) && self.idle.snap == self.img;
         if known && !same {
@@ -1212,6 +1278,12 @@ impl RegionProc {
                 "cycle mode: check {site} failed, which the region does not have"
             )));
         };
+        if matches!(check, crate::lower::Check::Clean) {
+            return ctx.error(ErrorKind::Internal(format!(
+                "cycle mode: {}",
+                check.message(None)
+            )));
+        }
         let vals = crate::region::exact_meta().then_some((a, b));
         let mut e = ctx.error(ErrorKind::Runtime(check.message(vals)));
         e.process = Some((ProcId(*pi as u32), name.clone()));
@@ -1389,10 +1461,39 @@ impl RegionProc {
             if let Some(f) = unset {
                 self.unset_vars(f);
             }
+            // A81: every dirty plane made from the values the start made.
+            for &(f, first, pw, len) in self.flags.iter().filter(|x| x.3 > 0) {
+                for j in 0..pw {
+                    self.img[(f + j) as usize] = dirty(&self.img, first, pw, len, j);
+                }
+            }
             // A reset that holds at time 0 applies (its branch is in the settle), as when the
             // normal mode runs every process once.
             self.run_code(ctx, Fun::Settle)?;
             self.export(ctx)?;
+            if self.clean == crate::nine::Clean::Check {
+                self.check_flags(ctx)?;
+            }
+            if self.counters {
+                let n = self
+                    .nine_runs
+                    .iter()
+                    .map(|&(w, _)| self.img[w as usize])
+                    .sum();
+                NINE_RUNS.store(n, Ordering::Relaxed);
+            }
+            if !self.nine_names.is_empty()
+                && let Ok(mut g) = NINE_STATS.lock()
+            {
+                if g.0.is_empty() {
+                    g.0 = self.nine_names.clone();
+                }
+                g.1 = self
+                    .nine_runs
+                    .iter()
+                    .map(|&(w, _)| self.img[w as usize])
+                    .collect();
+            }
             self.wait_all(ctx)?;
             self.started = true;
             return Ok(());
@@ -1538,6 +1639,32 @@ impl RegionProc {
             }
             self.mark.fill(0);
             self.export(ctx)?;
+            self.flag_runs += 1;
+            if self.clean == crate::nine::Clean::Check
+                && self.flag_runs.is_multiple_of(self.flag_every)
+            {
+                self.check_flags(ctx)?;
+            }
+            if self.counters {
+                let n = self
+                    .nine_runs
+                    .iter()
+                    .map(|&(w, _)| self.img[w as usize])
+                    .sum();
+                NINE_RUNS.store(n, Ordering::Relaxed);
+            }
+            if !self.nine_names.is_empty()
+                && let Ok(mut g) = NINE_STATS.lock()
+            {
+                if g.0.is_empty() {
+                    g.0 = self.nine_names.clone();
+                }
+                g.1 = self
+                    .nine_runs
+                    .iter()
+                    .map(|&(w, _)| self.img[w as usize])
+                    .collect();
+            }
             if let Some((m, known)) = probe {
                 self.idle_end(ctx, m, known)?;
             }
@@ -1824,4 +1951,22 @@ pub(crate) fn held_waits(
             (*w, k)
         })
         .collect()
+}
+
+/// A81, `YAVS_CYCLE_STATS`: the names of the members with a plane-0 body and the runs of their
+/// nine-valued bodies, as of the region's last run.
+pub(crate) static NINE_STATS: std::sync::Mutex<(Vec<String>, Vec<u64>)> =
+    std::sync::Mutex::new((Vec::new(), Vec::new()));
+
+/// A81, `YAVS_COUNTERS`: the members with a plane-0 body, and the runs of their nine-valued
+/// bodies so far.
+pub(crate) static VARIANTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) static NINE_RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A81: word `j` of the dirty plane of the logic value at `first` (planes `pw` words apart, `len`
+/// elements): a bit set where the element is not `'0'` or `'1'`.
+pub(crate) fn dirty(img: &[u64], first: u32, pw: u32, len: u32, j: u32) -> u64 {
+    let (f, pw, j) = (first as usize, pw as usize, j as usize);
+    let m = mask((len - 64 * j as u32).min(64));
+    (!img[f + pw + j] | img[f + 2 * pw + j] | img[f + 3 * pw + j]) & m
 }

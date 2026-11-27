@@ -1,0 +1,1 @@
+Plain `--cycle` has a developer setting, `YAVS_CYCLE_CLEAN` (off by default), that keeps a dirty bit for each element of the region's logic values and runs a process as two-state code while what it reads and writes holds only `0` and `1`; `check` also compares that code with the nine-valued code after every run.

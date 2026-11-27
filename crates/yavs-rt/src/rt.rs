@@ -4224,6 +4224,7 @@ pub fn batch_pure(prog: &Program, f: &Func, i: &Inst) -> bool {
                 | Inst::FCheck { .. }
                 | Inst::Index { .. }
                 | Inst::Pos { .. }
+                | Inst::DopeLen { .. }
                 | Inst::AddrOf { .. }
                 | Inst::Load { .. }
                 | Inst::Store { .. }

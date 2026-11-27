@@ -2185,6 +2185,14 @@ mod clift {
         "q=",
         [("cb_drive", Max(158)), ("direct_codes", Max(107))]
     );
+    // The same with the bounds from a generic: the descriptor reads (`Pos`, `DopeLen`) between
+    // the drives keep the batch, so an activation is one kernel call.
+    clift_case!(
+        batch_dope,
+        "clift_batch_dope",
+        "q=",
+        [("cb_drive", Max(315))]
+    );
     // Element loops of native frames planned in the code (#757). The fills call out; the row
     // copies (one plane block each side) are inline: a copy that calls out again raises it.
     clift_case!(

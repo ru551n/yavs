@@ -15,6 +15,7 @@ gc-stress = []
 op-census = []
 
 [dependencies]
+rustc-hash.workspace = true
 yavs-diag.workspace = true
 yavs-ffi = { path = "../yavs-ffi" }
 yavs-ir = { path = "../yavs-ir" }

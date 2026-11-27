@@ -158,6 +158,22 @@ pub(crate) fn implicit_elems(n: u64) {
     }
 }
 
+static LIT_REC_MAPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A value `yavs.two.lit_rec` mapped (not taken from its cache), counted under `YAVS_COUNTERS`:
+/// the work counter `two_lit_rec_mapped`.
+#[inline]
+pub(crate) fn lit_rec_mapped() {
+    if ieee_on() {
+        LIT_REC_MAPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The values [`lit_rec_mapped`] counted so far.
+pub fn lit_rec_mapped_total() -> u64 {
+    LIT_REC_MAPPED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The elements [`implicit_elems`] counted so far.
 pub fn implicit_elems_total() -> u64 {
     IMPLICIT_ELEMS.load(std::sync::atomic::Ordering::Relaxed)

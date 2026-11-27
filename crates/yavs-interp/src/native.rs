@@ -1179,18 +1179,49 @@ fn two_lit_rec(
     let (data, dp, salt, mode) = (targ(a, 0)?, targ(a, 1)?, targ(a, 2)?, targ(a, 3)?);
     let rt = m.rt.clone();
     let (types, consts) = (&rt.prog.types, &rt.prog.consts);
-    let n = Ty::desc_size(types, ty).ok_or_else(|| ice("descriptor size"))?;
+    // A constant is read where it is used, often in every run of a process: each value maps
+    // once (its bytes, type, site and mode the key), later reads copy what it gave; the
+    // descriptor's and the value's sizes are kept per type and descriptor.
+    let n = match LIT_DESC.with_borrow(|c| c.get(&ty).copied()) {
+        Some(n) => n,
+        None => {
+            let n = Ty::desc_size(types, ty).ok_or_else(|| ice("descriptor size"))?;
+            LIT_DESC.with_borrow_mut(|c| c.insert(ty, n));
+            n
+        }
+    };
     let desc = if n == 0 {
         Vec::new()
     } else {
         m.rd(dp, n)?.to_vec()
     };
-    let (lay, _) = Ty::layout(types, consts, ty, &desc).map_err(layout_err)?;
-    // ponytail: leaves made per call; a literal is read where it is written, cache them if hot.
+    let size = match LIT_SIZE.with_borrow(|c| c.get(&(ty, desc.clone())).copied()) {
+        Some(z) => z,
+        None => {
+            let (lay, _) = Ty::layout(types, consts, ty, &desc).map_err(layout_err)?;
+            LIT_SIZE.with_borrow_mut(|c| c.insert((ty, desc.clone()), lay.size));
+            lay.size
+        }
+    };
+    let fill = yavs_logic::start::x();
+    let key = (ty, salt, mode, desc, m.rd(data, size)?.to_vec());
+    let hit = LIT_REC.with_borrow_mut(|(f, c)| {
+        if *f != fill {
+            *f = fill;
+            c.clear();
+        }
+        c.get(&key).cloned()
+    });
+    if let Some(b) = hit {
+        m.wr(data, size)?.copy_from_slice(&b);
+        return Ok(None);
+    }
+    crate::census::lit_rec_mapped();
+    let desc = &key.3;
     let mut leaves = Vec::new();
-    Ty::two_lit_leaves(types, consts, (ty, &desc, 0), usize::MAX, &mut leaves)
+    Ty::two_lit_leaves(types, consts, (ty, desc, 0), usize::MAX, &mut leaves)
         .map_err(layout_err)?;
-    let v = m.wr(data, lay.size)?;
+    let v = m.wr(data, size)?;
     for (leaf, first) in leaves {
         match leaf {
             yavs_ir::TwoLeaf::Byte(off) => {
@@ -1212,7 +1243,36 @@ fn two_lit_rec(
             }
         }
     }
+    let out = v.to_vec().into_boxed_slice();
+    LIT_REC.with_borrow_mut(|(_, c)| {
+        // ponytail: forgets everything past the cap; an LRU if many distinct values are hot.
+        if c.len() >= LIT_REC_MAX {
+            c.clear();
+        }
+        c.insert(key, out);
+    });
     Ok(None)
+}
+
+/// [`two_lit_rec`]'s values mapped, at most this many.
+const LIT_REC_MAX: usize = 4096;
+
+type LitRecKey = (TyId, u64, u64, Vec<u8>, Vec<u8>);
+
+/// [`LIT_REC`]: the fill its values were mapped under, and per value its bytes mapped.
+type LitRecs = (
+    Option<yavs_logic::start::Fill>,
+    rustc_hash::FxHashMap<LitRecKey, Box<[u8]>>,
+);
+
+thread_local! {
+    /// [`two_lit_rec`]: the `--init-x` fill they were mapped under, and per value its bytes mapped.
+    static LIT_REC: std::cell::RefCell<LitRecs> =
+        std::cell::RefCell::new((None, rustc_hash::FxHashMap::default()));
+    static LIT_DESC: std::cell::RefCell<rustc_hash::FxHashMap<TyId, u64>> =
+        std::cell::RefCell::new(rustc_hash::FxHashMap::default());
+    static LIT_SIZE: std::cell::RefCell<rustc_hash::FxHashMap<(TyId, Vec<u8>), u64>> =
+        std::cell::RefCell::new(rustc_hash::FxHashMap::default());
 }
 
 /// `yavs.two.map (data, desc)` of type `ty`: every `std_ulogic` element of the composite at

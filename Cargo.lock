@@ -2082,6 +2082,7 @@ name = "yavs-interp"
 version = "0.21.2"
 dependencies = [
  "postcard",
+ "rustc-hash",
  "serde",
  "yavs-diag",
  "yavs-ffi",

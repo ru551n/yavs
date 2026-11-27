@@ -431,6 +431,19 @@ fn name_elems(
     let mut at = x;
     loop {
         match &db.exprs[at].kind {
+            // An alias (`alias j : t is s`) names its target; a subtype of its own may renumber
+            // the indices, so only fields are taken through it.
+            ExprKind::Obj(d)
+                if let yavs_sem::decl::DeclKind::Alias(yavs_sem::decl::Alias::Object {
+                    target,
+                    ..
+                }) = &db.decls[*d].kind =>
+            {
+                if (sels.iter().chain(more)).any(|s| !matches!(s, yavs_elab::Sel::Field(_))) {
+                    return None;
+                }
+                at = *target;
+            }
             ExprKind::Obj(d) => {
                 let o = e.signal(e.procs[pi].scope, *d)?;
                 let obj = e.nets.obj(o);
@@ -468,6 +481,10 @@ fn name_elems(
                     .map(|&i| int_of(db, e, pi, i))
                     .collect::<Option<Vec<i64>>>()?;
                 sels.push(yavs_elab::Sel::Index(v));
+                at = *prefix;
+            }
+            ExprKind::Field { prefix, elem } => {
+                sels.push(yavs_elab::Sel::Field(*elem));
                 at = *prefix;
             }
             _ => return None,
@@ -523,27 +540,32 @@ fn copy_chain(
     made: &BTreeSet<LeafId>,
     c: Clock,
 ) -> Vec<(LeafId, u32)> {
+    let mut chain = vec![(c.leaf, c.elem)];
+    while chain.len() < 64 {
+        let at = chain[chain.len() - 1];
+        let Some(&src) = copies.get(&at) else { break };
+        if spurious(e, &c, at, src) || made.contains(&src.0) || chain.contains(&src) {
+            break;
+        }
+        chain.push(src);
+    }
+    chain
+}
+
+/// Whether copy `at` of `src` may have an edge of clock `c` at time 0 that `src` does not have
+/// (`'event and c = '1'` sees one from any other start, `rising_edge` only from `'0'` or `'L'`).
+fn spurious(e: &Elaborated, c: &Clock, at: (LeafId, u32), src: (LeafId, u32)) -> bool {
     let init = |(l, i): (LeafId, u32)| start_char(e, l, i);
     let (on, off) = if c.rising {
         (['1', 'H'], ['0', 'L'])
     } else {
         (['0', 'L'], ['1', 'H'])
     };
-    let mut chain = vec![(c.leaf, c.elem)];
-    while chain.len() < 64 {
-        let at = chain[chain.len() - 1];
-        let Some(&src) = copies.get(&at) else { break };
-        let spurious = match (init(at), init(src)) {
-            (Some(a), Some(b)) if c.legacy => a != b && b == on[0],
-            (Some(a), Some(b)) => off.contains(&a) && on.contains(&b),
-            _ => true,
-        };
-        if spurious || made.contains(&src.0) || chain.contains(&src) {
-            break;
-        }
-        chain.push(src);
+    match (init(at), init(src)) {
+        (Some(a), Some(b)) if c.legacy => a != b && b == on[0],
+        (Some(a), Some(b)) => off.contains(&a) && on.contains(&b),
+        _ => true,
     }
-    chain
 }
 
 /// The clocks of `taken` as their sources (A32): the last element of each copy chain whose
@@ -1080,13 +1102,15 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
     let t0 = std::time::Instant::now();
     let (fits, mut out, groups, checked) = subset(db, e);
     let forced = forced(db, e);
-    let mut copies = if exact_clocks().unwrap_or(true) {
+    // A forced element is no copy of its source (A32). The copies tell the deltas of clock
+    // edges (`delta_key`) also where the copies keep their own clocks.
+    let mut chains = clock_copies(db, e);
+    chains.retain(|k, _| !forced.has(k.0));
+    let copies = if exact_clocks().unwrap_or(true) {
         Copies::new()
     } else {
-        clock_copies(db, e)
+        chains.clone()
     };
-    // A forced element is no copy of its source (A32).
-    copies.retain(|k, _| !forced.has(k.0));
     stat(|| format!("select: subset done {} ms", t0.elapsed().as_millis()));
     let mut nfits = fits.len();
     // What each driven leaf of a combinational process depends on, for the run-count cone.
@@ -1373,7 +1397,7 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
             gone = pulse_rule(db, e, &taken);
         }
         if gone.is_empty() {
-            gone = cross_delta(db, e, &taken, &out, &forced);
+            gone = cross_delta(db, e, &taken, &out, &forced, &chains);
         }
         stat(|| format!("select: cross {} ms", t0.elapsed().as_millis()));
         if gone.is_empty() {
@@ -1554,37 +1578,76 @@ fn out_reads(f: &Fit) -> impl Iterator<Item = LeafId> + '_ {
 }
 
 /// The delta class of a clock with its edges in the first delta of their time step (every
-/// assignment to it made with a delay above zero) and of one with its edges in the second (made
-/// by clock models that wait for a time above zero and assign without delay).
+/// assignment to it made with a delay above zero), of one with its edges in the second (made
+/// by clock models that wait for a time above zero and assign without delay), and `DELTA0 - n`
+/// for the `n`th delta (`n` below 64: copies of those).
 const DELTA0: usize = usize::MAX;
 const DELTA1: usize = usize::MAX - 1;
 
 /// When the edges of `c`'s element come within a time step: in a delta class (`DELTA0`,
-/// `DELTA1`) when every driver's process makes them there, else the clock's element alone.
-fn delta_key(db: &Db, e: &Elaborated, c: &Clock, forced: &Forced) -> (bool, usize, u32) {
+/// `DELTA1`, ...) when every driver's process makes them there or the element is a copy
+/// (`copies`) of one in a class, else the clock's element alone.
+fn delta_key(
+    db: &Db,
+    e: &Elaborated,
+    c: &Clock,
+    forced: &Forced,
+    copies: &Copies,
+) -> (bool, usize, u32) {
+    let mut at = (c.leaf, c.elem);
+    // The deltas the copies from `at` back to its source add: one a copying process (a member
+    // too: the region drives what it makes one delta after its wake), none an `in` port.
+    let mut n = 0;
+    loop {
+        let k = own_delta_key(db, e, at, forced);
+        let Some(&src) = copies.get(&at).filter(|_| !k.0 && n < 64) else {
+            return match k {
+                (true, k, _) if k > DELTA0 - 64 && n > 0 => match DELTA0 - k + n {
+                    d if d < 64 => (true, DELTA0 - d, 0),
+                    _ => (false, c.leaf.index(), c.elem),
+                },
+                _ if n > 0 => (false, c.leaf.index(), c.elem),
+                k => k,
+            };
+        };
+        if spurious(e, c, at, src) || forced.has(src.0) {
+            return (false, c.leaf.index(), c.elem);
+        }
+        n += usize::from(e.nets.drivers.iter().any(|d| d.leaf == at.0));
+        at = src;
+    }
+}
+
+/// [`delta_key`] of element `(leaf, elem)` from its drivers alone.
+fn own_delta_key(
+    db: &Db,
+    e: &Elaborated,
+    (leaf, elem): (LeafId, u32),
+    forced: &Forced,
+) -> (bool, usize, u32) {
     // A force gives a clock edges in deltas its drivers do not tell.
-    if forced.has(c.leaf) {
-        return (false, c.leaf.index(), c.elem);
+    if forced.has(leaf) {
+        return (false, leaf.index(), elem);
     }
     let ps: BTreeSet<usize> = (e.nets.drivers.iter())
-        .filter(|d| d.leaf == c.leaf && d.range.offset <= c.elem && c.elem < d.range.end())
+        .filter(|d| d.leaf == leaf && d.range.offset <= elem && elem < d.range.end())
         .map(|d| d.proc.index())
         .collect();
     if !ps.is_empty() && ps.iter().all(|&p| delayed_only(db, e, p)) {
         return (true, DELTA0, 0);
     }
     if let [p] = ps.iter().copied().collect::<Vec<_>>()[..]
-        && let Some(timeout) = one_step(db, e, p)
+        && let Some(ts) = one_step(db, e, p)
     {
         // A wait of 0 ns would resume it in a later delta: then only its own clocks share it.
-        let k = if positive_time(db, e, p, timeout) {
-            DELTA1
-        } else {
-            p
-        };
-        return (true, k, 0);
+        if ts.iter().all(|&t| positive_time(db, e, p, t)) {
+            return (true, DELTA1, 0);
+        }
+        if ts.len() == 1 {
+            return (true, p, 0);
+        }
     }
-    (false, c.leaf.index(), c.elem)
+    (false, leaf.index(), elem)
 }
 
 /// The delta of its time step a clock of key `k` (`delta_key`) has its edges in: at the earliest,
@@ -1592,8 +1655,7 @@ fn delta_key(db: &Db, e: &Elaborated, c: &Clock, forced: &Forced) -> (bool, usiz
 /// first delta (above zero) or later (zero), so its edges come in the second or later.
 fn first_delta(k: (bool, usize, u32)) -> (u8, Option<u8>) {
     match k {
-        (true, DELTA0, _) => (0, Some(0)),
-        (true, DELTA1, _) => (1, Some(1)),
+        (true, k, _) if k > DELTA0 - 64 => ((DELTA0 - k) as u8, Some((DELTA0 - k) as u8)),
         (true, _, _) => (1, None),
         _ => (0, None),
     }
@@ -1669,10 +1731,46 @@ fn waveforms(rhs: &yavs_sem::hir::Rhs<yavs_sem::hir::Waveform>) -> Vec<&yavs_sem
 }
 
 /// Every activation of process `pi` starts at the first delta of a time step and assigns
-/// without delay: one `wait for` (beside any `wait;`), no procedure call (it might wait), no
-/// `after`; its timeout.
-fn one_step(db: &Db, e: &Elaborated, pi: usize) -> Option<ExprId> {
+/// without delay: only `wait for` (beside any `wait;`), no `after`, in its body and in the
+/// procedures it calls (a foreign one without signal formals neither waits nor assigns); the
+/// timeouts.
+fn one_step(db: &Db, e: &Elaborated, pi: usize) -> Option<Vec<ExprId>> {
+    use yavs_sem::decl::{Body as B, ObjClass};
     use yavs_sem::hir::{Delay, Waveform};
+    fn walk(db: &Db, body: &[StmtId], depth: u32, waits: &mut Vec<ExprId>) -> Option<()> {
+        let mut all = Vec::new();
+        deep(db, body, &mut all);
+        for s in all {
+            match &db.stmts[s].kind {
+                StmtKind::Wait {
+                    on,
+                    until: None,
+                    timeout,
+                } if on.is_empty() => waits.extend(*timeout),
+                StmtKind::Wait { .. } => return None,
+                StmtKind::ProcCall(c) => {
+                    let sp = db.decls[c.callee].kind.subprogram()?;
+                    match &sp.body {
+                        B::Hir { stmts, .. } if depth < 16 => walk(db, stmts, depth + 1, waits)?,
+                        B::Foreign(_) | B::Native(_)
+                            if sp.params.iter().all(|p| p.class != ObjClass::Signal) => {}
+                        _ => return None,
+                    }
+                }
+                StmtKind::SignalAssign { delay, rhs, .. } => {
+                    let timed = waveforms(rhs).iter().any(|w| match w {
+                        Waveform::Elements(els) => els.len() != 1 || els[0].after.is_some(),
+                        Waveform::Unaffected => false,
+                    });
+                    if !matches!(delay, Delay::Default) || timed {
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some(())
+    }
     let p = &e.procs[pi];
     if p.actual.is_some() {
         return None;
@@ -1685,34 +1783,9 @@ fn one_step(db: &Db, e: &Elaborated, pi: usize) -> Option<ExprId> {
     else {
         return None;
     };
-    let mut all = Vec::new();
-    deep(db, body, &mut all);
     let mut waits = Vec::new();
-    for s in all {
-        match &db.stmts[s].kind {
-            StmtKind::Wait {
-                on,
-                until: None,
-                timeout,
-            } if on.is_empty() => waits.extend(*timeout),
-            StmtKind::Wait { .. } => return None,
-            StmtKind::ProcCall(_) => return None,
-            StmtKind::SignalAssign { delay, rhs, .. } => {
-                let timed = waveforms(rhs).iter().any(|w| match w {
-                    Waveform::Elements(els) => els.len() != 1 || els[0].after.is_some(),
-                    Waveform::Unaffected => false,
-                });
-                if !matches!(delay, Delay::Default) || timed {
-                    return None;
-                }
-            }
-            _ => {}
-        }
-    }
-    match waits[..] {
-        [t] => Some(t),
-        _ => None,
-    }
+    walk(db, body, 0, &mut waits)?;
+    (!waits.is_empty()).then_some(waits)
 }
 
 /// Members that would hand the region's settled value where the normal mode samples one that
@@ -1792,6 +1865,7 @@ fn cross_delta(
     taken: &BTreeMap<usize, (Fit, Body)>,
     out: &[(usize, Why)],
     forced: &Forced,
+    copies: &Copies,
 ) -> Vec<(usize, Reason)> {
     let behavioural: BTreeSet<usize> = (out.iter())
         .filter(|(_, w)| matches!(w, Why::Behavioural(_)))
@@ -1840,7 +1914,7 @@ fn cross_delta(
     let mut bit: BTreeMap<(LeafId, u32), u64> = BTreeMap::new();
     for c in clocks {
         bit.entry((c.leaf, c.elem)).or_insert_with(|| {
-            let k = delta_key(db, e, &c, forced);
+            let k = delta_key(db, e, &c, forced, copies);
             let g = keys.iter().position(|x| *x == k).unwrap_or_else(|| {
                 keys.push(k);
                 names.push(c);

@@ -375,7 +375,9 @@ connected to) is the same clock as its source in cycle mode. Registers on the co
 values from before that edge, as the hardware does. In the normal mode the copy changes one delta later, so a
 register on the copy that reads a register of the source directly gets the source's *new* value there. A design that
 relies on that delta can give other values in cycle mode. A computed clock (``not clk``, a gated clock, a divider) is
-not a copy: it keeps its own edges.
+not a copy: it keeps its own edges. A copy that keeps its own edges (a process in the event kernel runs on it) has
+them one delta cycle after its source per copy, and logic its registers feed may join when the other clock's edges
+come earlier in the time step.
 
 .. _cycle-checks:
 

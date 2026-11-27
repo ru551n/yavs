@@ -318,6 +318,11 @@ behavioural, or E4136 when it reads a signal the region does not drive alone.
   edges come in the second delta cycle or later) feed and registers of the first or second kind sample. The path
   counts whatever lies on it: processes outside the region for any reason (a testbench process excepted), registers
   outside the region, ports. Logic that computes a clock from what the region drives is E4131.
+  A copy (`clock_copies`: through aliases and record fields too) that keeps its own edges has them one delta cycle
+  after its source per copying process, member or not, and in the source's delta through an `in` port: `delta_key`
+  adds them to the source's class (`DELTA0 - n`), also under YAVS_CYCLE_EXACT_CLOCKS=1. The waits of the procedures
+  a clock process calls count as its own (`one_step`; a foreign procedure without signal formals neither waits nor
+  assigns).
 - E4132: the normal mode can change such a register at the edge and again a delta later, and that pulse resets or
   clocks the other process; the region computes the edge and the reset together and would not show the pulse.
 

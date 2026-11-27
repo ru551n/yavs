@@ -3494,15 +3494,16 @@ fn clocks_copied_by_assignment_are_their_source() {
         );
         assert_eq!(cycle, normal, "{t:?}\n{err}");
         assert!(
-            err.contains("cycle mode: 18 of 36 processes run cycle-based"),
+            err.contains("cycle mode: 20 of 36 processes run cycle-based"),
             "{err}"
         );
-        for out in [
-            "cycle_clkcopy.m <= ...",
-            "dist.s <= ...",
-            "cycle_clkcopy.v <= ...",
-        ] {
-            assert!(err.contains(out), "{out}: {err}");
+        // The copies keep their own edges, each in a delta yavs knows: siblings share it.
+        assert!(
+            row(&err, "cycle_clkcopy.m <= ...").1.contains("E4130 "),
+            "{err}"
+        );
+        for p in ["cycle_clkcopy.dist.s <= ...", "cycle_clkcopy.v <= ..."] {
+            assert_eq!(row(&err, p).0, "cycle-based:", "{p}: {err}");
         }
     }
     let o = yavs_env(
@@ -7328,6 +7329,84 @@ fn clocks_of_a_known_delta_share_their_logic() {
                     && l.ends_with("combinational")
             ),
         "{err}"
+    );
+}
+
+/// A clock copied in the kernel has its edges a delta after its source per copy, and a clock
+/// process waiting only in a procedure has them in the second delta: logic between the two
+/// clocks joins in the direction the deltas allow. Widths 1 to 128, both contracts.
+#[test]
+fn a_copied_clock_has_its_edges_a_delta_after_its_source() {
+    let dir = tempdir("cycle-copydelta");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("copydelta{w}.vhd"),
+            &with_width(include_str!("cycle/copydelta.vhd"), w),
+        );
+        for t in tiers() {
+            let k = |v: Vec<String>| -> Vec<String> {
+                v.into_iter().filter(|l| l.contains("k=")).collect()
+            };
+            for two in [&[][..], &["--two-state"]] {
+                let (normal, _) = run(&dir, &[&t[..], two].concat(), "cycle_copydelta");
+                let (cycle, err) = run(
+                    &dir,
+                    &[&t[..], two, &["--cycle"]].concat(),
+                    "cycle_copydelta",
+                );
+                let (normal, cycle) = (k(normal), k(cycle));
+                assert_eq!(normal.len(), 20, "{w} {t:?} {two:?} {normal:?}");
+                assert_eq!(cycle, normal, "width {w} {t:?} {two:?}\n{err}");
+                assert!(
+                    err.contains("cycle mode: 5 of 11 processes run cycle-based"),
+                    "{w} {two:?}: {err}"
+                );
+            }
+        }
+    }
+    // Two member copies in a row (one stays out), waits for a time elaboration does not know, and
+    // ports kept apart (the copy through the `out` port is not followed: the logic stays out).
+    for (top, more, members) in [
+        ("cycle_copydelta2", &[][..], "5 of 12"),
+        ("cycle_copydelta3", &[], "4 of 11"),
+        ("cycle_copydelta", &["--no-collapse-ports"], "3 of 11"),
+    ] {
+        for two in [more.to_vec(), [&["--two-state"][..], more].concat()] {
+            let two = &two[..];
+            let k = |v: Vec<String>| -> Vec<String> {
+                v.into_iter().filter(|l| l.contains("k=")).collect()
+            };
+            let (normal, _) = run(&dir, two, top);
+            let (cycle, err) = run(&dir, &[two, &["--cycle"]].concat(), top);
+            let (normal, cycle) = (k(normal), k(cycle));
+            assert_eq!(normal.len(), 20, "{top} {two:?} {normal:?}");
+            assert_eq!(cycle, normal, "{top} {two:?}\n{err}");
+            let m = format!("cycle mode: {members} processes run cycle-based");
+            assert!(err.contains(&m), "{top} {two:?}: {err}");
+        }
+    }
+    let report = verdicts(&dir, "cycle_copydelta2");
+    assert!(
+        row(&report, "cycle_copydelta2.t2 <= ...")
+            .1
+            .contains("E4131 "),
+        "{report}"
+    );
+    let report = verdicts(&dir, "cycle_copydelta3");
+    assert!(
+        row(&report, "cycle_copydelta3.xj <= ...")
+            .1
+            .contains("E4130 "),
+        "{report}"
+    );
+    let report = verdicts(&dir, "cycle_copydelta");
+    let (s, r) = row(&report, "cycle_copydelta.xj <= ...");
+    assert_eq!(s, "cycle-based:", "{r}");
+    let (_, r) = row(&report, "cycle_copydelta.xc <= ...");
+    assert!(
+        r.contains("E4130 ") && r.contains("a register on cycle_copydelta.jc samples it"),
+        "{r}"
     );
 }
 

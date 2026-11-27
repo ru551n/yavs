@@ -42,7 +42,7 @@ MEMBERS = re.compile(r"(\d+) of (\d+) processes")
 # 233 -> 258 (nine-valued region, A66): that rule is gone, the members' notes see the nine values.
 GATE = {
     "neorv32_dual_full": dict(stop=None, normal=None, cycle=None, members="3801 of 3910"),
-    "microwatt_coremark_short": dict(stop="1369us", normal=1, cycle=1, members="351 of 418"),
+    "microwatt_coremark_short": dict(stop="1369us", normal=1, cycle=1, members="378 of 418"),
 }
 
 

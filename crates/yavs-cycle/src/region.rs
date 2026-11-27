@@ -1089,6 +1089,11 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
     copies.retain(|k, _| !forced.has(k.0));
     stat(|| format!("select: subset done {} ms", t0.elapsed().as_millis()));
     let mut nfits = fits.len();
+    // What each driven leaf of a combinational process depends on, for the run-count cone.
+    let comb_deps: BTreeMap<usize, Vec<crate::dep::Out>> = (fits.iter())
+        .filter(|(_, f)| f.form == check::Form::Comb)
+        .map(|(&pi, f)| (pi, f.outs.clone()))
+        .collect();
     let mut taken: BTreeMap<usize, (Fit, Body)> = BTreeMap::new();
     let pspan = |pi: usize| db.stmts[e.procs[pi].stmt].span;
     for (pi, f) in fits {
@@ -1181,6 +1186,18 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
         .filter_map(|(&pi, (_, b))| Some((pi, b.clock?.leaf)))
         .collect();
     let mut moved = same_clocks(e, &copies, &mut taken);
+    // The history processes read (A10), and the sources of implicit signals.
+    let mut memo = BTreeMap::new();
+    let hist: Vec<Vec<Hist>> = (0..e.procs.len())
+        .map(|pi| history_reads(db, e, pi, &mut memo))
+        .collect();
+    let mut implicit: BTreeSet<LeafId> = BTreeSet::new();
+    for l in &e.nets.leaves {
+        if let Some((_, src, _)) = l.implicit {
+            implicit.insert(src);
+        }
+        implicit.extend(l.implicit_more.iter().map(|x| x.0));
+    }
     // Combinational logic feeding a process outside whose result depends on how often it runs.
     let seeds = delta_seeds(db, e, &out, &checked);
     // Developers (`YAVS_CYCLE_SEEDS=FILE`): the signals those processes drive, one leaf a line,
@@ -1200,22 +1217,22 @@ pub(crate) fn select(db: &Db, e: &Elaborated) -> Selection {
     // Developers (`YAVS_CYCLE_RUNCOUNT=off`): no cone, to show what the rule protects (wrong
     // results) and what it costs.
     let off = std::env::var_os("YAVS_CYCLE_RUNCOUNT").is_some_and(|v| v == "off");
-    for (pi, r) in run_count_cone(db, e, &out, if off { &[] } else { &seeds }) {
+    // Leaves whose transactions someone may see (`'active`, `'transaction`, ...): a kernel
+    // process of the cone must run in the normal mode's deltas, so its walk takes all it reads.
+    let seen_tx: Option<BTreeSet<LeafId>> = (hist.iter().flatten())
+        .map(|h| h.0.clone())
+        .collect::<Option<Vec<Vec<LeafId>>>>()
+        .map(|v| {
+            v.into_iter()
+                .flatten()
+                .chain(implicit.iter().copied())
+                .collect()
+        });
+    let cone = if off { &[][..] } else { &seeds[..] };
+    for (pi, r) in run_count_cone(db, e, &out, cone, &comb_deps, seen_tx.as_ref()) {
         if taken.remove(&pi).is_some() {
             out.push((pi, Why::NotYet(r)));
         }
-    }
-    // The history processes read (A10), and the sources of implicit signals.
-    let mut memo = BTreeMap::new();
-    let hist: Vec<Vec<Hist>> = (0..e.procs.len())
-        .map(|pi| history_reads(db, e, pi, &mut memo))
-        .collect();
-    let mut implicit: BTreeSet<LeafId> = BTreeSet::new();
-    for l in &e.nets.leaves {
-        if let Some((_, src, _)) = l.implicit {
-            implicit.insert(src);
-        }
-        implicit.extend(l.implicit_more.iter().map(|x| x.0));
     }
     stat(|| format!("select: history {} ms", t0.elapsed().as_millis()));
     // Leave out what the set as a whole does not allow yet, until nothing changes.
@@ -2781,6 +2798,8 @@ fn run_count_cone(
     e: &Elaborated,
     out: &[(usize, Why)],
     sensitive: &[(usize, &str)],
+    comb_deps: &BTreeMap<usize, Vec<crate::dep::Out>>,
+    seen_tx: Option<&BTreeSet<LeafId>>,
 ) -> Vec<(usize, Reason)> {
     if sensitive.is_empty() {
         return Vec::new();
@@ -2811,7 +2830,19 @@ fn run_count_cone(
             continue;
         }
         for &d in drivers.get(&l).into_iter().flatten() {
-            if edge_only(db, e, d) || behavioural.contains(&d) || !procs.insert(d) {
+            if edge_only(db, e, d) || behavioural.contains(&d) {
+                continue;
+            }
+            // A combinational process the checker fitted changes `l` only when what `l`
+            // depends on changes: the walk goes on through those leaves alone.
+            let narrow = (seen_tx.is_some_and(|t| !t.contains(&l)))
+                .then(|| comb_deps.get(&d).and_then(|o| leaf_deps(e, d, o, l)))
+                .flatten();
+            let narrowed = narrow.is_some();
+            if let Some(dep) = narrow {
+                work.extend(dep.into_iter().map(|x| (x, q)));
+            }
+            if !procs.insert(d) {
                 continue;
             }
             let reader = e.proc_label(&e.procs[sensitive[q].0]);
@@ -2839,6 +2870,9 @@ fn run_count_cone(
             // A register's data comes at the edge in both modes: only what its list waits on
             // (the reset; its reset branch reads no more where the checker fitted it) is logic.
             let reg = e.procs[d].trigger.is_some();
+            if narrowed {
+                continue;
+            }
             match proc_reads(db, e, d, &mut memo) {
                 Some((_, w)) if reg => work.extend(w.into_iter().map(|x| (x, q))),
                 Some((r, _)) => work.extend(r.into_iter().map(|x| (x, q))),
@@ -2847,6 +2881,40 @@ fn run_count_cone(
         }
     }
     gone
+}
+
+/// The signal leaves the runs of leaf `l` in `outs` of process `pi` depend on; `None` when the
+/// runs do not cover every element `pi` drives of `l` or one depends on a variable.
+fn leaf_deps(
+    e: &Elaborated,
+    pi: usize,
+    outs: &[crate::dep::Out],
+    l: LeafId,
+) -> Option<BTreeSet<LeafId>> {
+    let mut have = crate::dep::ESet::default();
+    for o in outs.iter().filter(|o| o.leaf == l.0 as u64) {
+        have.add(o.leaf, o.lo, o.hi);
+    }
+    for &d in &e.procs[pi].drivers {
+        let d = &e.nets.drivers[d];
+        if d.leaf == l
+            && have
+                .first_missing(l.0 as u64, d.range.offset, d.range.end())
+                .is_some()
+        {
+            return None;
+        }
+    }
+    let mut r = BTreeSet::new();
+    for o in outs.iter().filter(|o| o.leaf == l.0 as u64) {
+        for k in (o.dep.set.iter().map(|x| x.0)).chain(o.dep.ident.map(|x| x.0)) {
+            if k & crate::dep::VAR != 0 {
+                return None;
+            }
+            r.insert(LeafId(k as u32));
+        }
+    }
+    Some(r)
 }
 
 /// Whether process `pi` acts only at clock edges, as a register does: an edge trigger without an

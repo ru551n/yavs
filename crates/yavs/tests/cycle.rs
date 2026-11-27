@@ -7488,6 +7488,42 @@ fn logic_feeding_a_process_that_counts_its_runs_stays_out() {
     }
 }
 
+/// The run-count rule follows a combinational process only through what each signal it drives
+/// depends on: the logic of a signal a stateful process outside reads stays out, the logic of
+/// another signal of the same process joins; where a process outside counts the transactions of
+/// such a signal, all the logic of its maker stays out; against the normal mode at widths 1 to
+/// 128, both contracts.
+#[test]
+fn the_run_count_rule_follows_each_driven_signal_alone() {
+    let dir = tempdir("cycle-runleaf");
+    for w in [1, 63, 64, 65, 128] {
+        analyze(
+            &dir,
+            &format!("runleaf{w}.vhd"),
+            &with_width(include_str!("cycle/runleaf.vhd"), w),
+        );
+        for t in tiers() {
+            for two in [&[][..], &["--two-state"][..]] {
+                let (normal, _) = run(&dir, &[&t[..], two].concat(), "cycle_runleaf");
+                let (cycle, err) =
+                    run(&dir, &[&t[..], &["--cycle"], two].concat(), "cycle_runleaf");
+                assert_eq!(normal.len(), 10, "{w} {t:?} {normal:?}");
+                assert_eq!(cycle, normal, "width {w} {t:?} {two:?}\n{err}");
+                for m in ["cycle_runleaf.reg", "cycle_runleaf.cb <= ..."] {
+                    assert_eq!(row(&err, m).0, "cycle-based:", "{m}: {err}");
+                }
+                for m in ["ca", "mux", "ca2", "cb2a", "cb2b", "cb2", "mux2"] {
+                    let label = match m {
+                        "mux" | "mux2" => format!("cycle_runleaf.{m}"),
+                        _ => format!("cycle_runleaf.{m} <= ..."),
+                    };
+                    assert!(row(&err, &label).1.contains("E4129"), "{m}: {err}");
+                }
+            }
+        }
+    }
+}
+
 /// A process outside the region counting the transactions (`'transaction`) or the events
 /// (`'stable`) of a signal made by logic from a register (#1205): the logic stays in the event
 /// kernel with the reason, the register joins; against the normal mode at widths 1 to 128, both

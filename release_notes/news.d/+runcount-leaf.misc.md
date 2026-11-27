@@ -1,0 +1,1 @@
+Cycle mode lets more combinational logic join the region next to a process that depends on delta cycles: only the logic that feeds the signals that process actually reads stays in the event simulation, so designs such as CPU pipelines run more of their logic cycle-based.

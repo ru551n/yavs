@@ -184,12 +184,13 @@ macro_rules! case {
     };
 }
 
-// `--two-state`: signals only two-state processes drive are read without a map.
+// `--two-state`: signals only two-state processes drive are read without a map, the resolved
+// `unsigned` ones with one driver too.
 case!(
     two_state_clean,
     "sum=2282",
     &["--two-state"],
-    [("ops", Max(39200))]
+    [("ops", Max(32000))]
 );
 // `--two-state`: a record constant with metavalues read at every edge maps each value once (a map
 // per read cost Microwatt three quarters more instructions).

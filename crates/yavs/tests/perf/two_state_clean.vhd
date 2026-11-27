@@ -1,5 +1,5 @@
 -- `--two-state` below the top: signals that only two-state processes drive (a counter, its
--- copy, a record) are read without a map (`ops`).
+-- copy, both resolved `unsigned` with one driver, a record) are read without a map (`ops`).
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;

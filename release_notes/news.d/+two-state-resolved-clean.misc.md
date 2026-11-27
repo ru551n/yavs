@@ -1,0 +1,1 @@
+Under `--two-state`, resolved signals of the design under test (`std_logic_vector`, `unsigned`, `signed` and the like) that one two-state process drives without a `'Z'` are read as they are too, without mapping them to two-state values on every read.

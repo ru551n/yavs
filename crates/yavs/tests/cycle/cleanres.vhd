@@ -1,10 +1,11 @@
 -- --two-state: resolved signals (std_logic_vector, numeric_std's unsigned) with one driver that
 -- drives only 0 and 1 are read without a map; one with two drivers, a driver that can drive 'Z'
 -- (a literal, an aggregate, a constant, through an alias of an unresolved signal), forced, fed
--- through a port by a source that does not qualify, or driven by four-state code (a package's
--- procedure through a signal out or inout parameter, in a process or a concurrent call; a record
--- or slice variable it wrote) is still mapped ('1' and 'H' are 1, anything else 0). `ones`
--- counts the elements read as 1, and those read as 0 in hundreds.
+-- through a port by a source that does not qualify or by an out port besides its own driver, or
+-- driven by four-state code (a package's procedure through a signal out or inout parameter, in a
+-- process or a concurrent call; a record or slice variable it wrote) is still mapped ('1' and 'H'
+-- are 1, anything else 0), as is one of an inout port (of the design under test, of an instance
+-- in it). `ones` counts the elements read as 1, and those read as 0 in hundreds.
 library ieee;
 use ieee.std_logic_1164.all;
 
@@ -65,6 +66,27 @@ end architecture;
 
 library ieee;
 use ieee.std_logic_1164.all;
+
+entity cleanres_io is
+  port (
+    clk : in std_ulogic;
+    p : inout std_logic_vector(3 downto 0);
+    o : out std_logic_vector(3 downto 0));
+end entity;
+
+architecture rtl of cleanres_io is
+begin
+  process (clk)
+  begin
+    if falling_edge(clk) then
+      p <= "1110";
+      o <= "0011";
+    end if;
+  end process;
+end architecture;
+
+library ieee;
+use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 use work.cleanres_pkg.all;
 
@@ -72,7 +94,8 @@ entity cleanres_dut is
   port (
     clk : in std_ulogic;
     pin : in std_logic_vector(3 downto 0);
-    n : out integer_vector(0 to 15));
+    bio : inout std_logic_vector(3 downto 0);
+    n : out integer_vector(0 to 18));
 end entity;
 
 architecture rtl of cleanres_dut is
@@ -81,6 +104,8 @@ architecture rtl of cleanres_dut is
   signal u_ok : unsigned(3 downto 0);
   signal r_two, r_z, r_agg, r_c, r_pkg, r_pout : std_logic_vector(3 downto 0);
   signal r_forced : std_logic_vector(3 downto 0) := "0000";
+  signal r_io : std_logic_vector(3 downto 0) := "1111";
+  signal r_mix : std_logic_vector(3 downto 0);
   signal u_pkg, u_io, u_cc, u_rec, u_al : std_ulogic_vector(3 downto 0);
   signal u_var : std_ulogic_vector(7 downto 0);
   alias a_al : std_logic_vector(3 downto 0) is u_al;
@@ -98,6 +123,7 @@ architecture rtl of cleanres_dut is
   end function;
 begin
   sub : entity work.cleanres_sub port map (clk, r_pout);
+  io : entity work.cleanres_io port map (clk, r_io, r_mix);
   r_two <= "0011";
   r_two <= "0101";
   r_z <= "Z1Z1";
@@ -119,8 +145,13 @@ begin
     wait;
   end process;
   process (clk)
-    variable c : integer_vector(0 to 15) := (others => 0);
+    variable c : integer_vector(0 to 18) := (others => 0);
   begin
+    if falling_edge(clk) then
+      bio <= "1100";
+      r_mix <= "0101";
+      r_forced <= "0110";
+    end if;
     if rising_edge(clk) then
       r_ok <= not r_ok;
       u_ok <= u_ok + 5;
@@ -130,7 +161,9 @@ begin
         c(6) + ones(std_ulogic_vector(r_forced)), c(7) + ones(std_ulogic_vector(r_pkg)),
         c(8) + ones(u_pkg), c(9) + ones(std_ulogic_vector(r_pout)),
         c(10) + ones(std_ulogic_vector(pin)), c(11) + ones(u_io), c(12) + ones(u_cc),
-        c(13) + ones(u_rec), c(14) + ones(u_var), c(15) + ones(u_al));
+        c(13) + ones(u_rec), c(14) + ones(u_var), c(15) + ones(u_al),
+        c(16) + ones(std_ulogic_vector(bio)), c(17) + ones(std_ulogic_vector(r_io)),
+        c(18) + ones(std_ulogic_vector(r_mix)));
       n <= c;
     end if;
   end process;
@@ -144,13 +177,14 @@ end entity;
 
 architecture tb of cleanres is
   signal clk : std_ulogic := '0';
-  signal n : integer_vector(0 to 15);
+  signal n : integer_vector(0 to 18);
   signal x : std_logic_vector(3 downto 0) := "X1U1";
   signal y : std_logic_vector(3 downto 0);
+  signal b : std_logic_vector(3 downto 0) := "1111";
 begin
   -- A resolved port the testbench feeds through a concurrent copy.
   y <= x;
-  dut : entity work.cleanres_dut port map (clk, y, n);
+  dut : entity work.cleanres_dut port map (clk, y, b, n);
   process
   begin
     << signal .cleanres.dut.r_forced : std_logic_vector(3 downto 0) >> <= force "1UX1";
@@ -166,7 +200,8 @@ begin
       & integer'image(n(7)) & " upkg=" & integer'image(n(8)) & " port=" & integer'image(n(9))
       & " pin=" & integer'image(n(10)) & " io=" & integer'image(n(11)) & " cc="
       & integer'image(n(12)) & " rec=" & integer'image(n(13)) & " var=" & integer'image(n(14))
-      & " alias=" & integer'image(n(15));
+      & " alias=" & integer'image(n(15)) & " inout=" & integer'image(n(16)) & " subio="
+      & integer'image(n(17)) & " mix=" & integer'image(n(18));
     wait;
   end process;
 end architecture;

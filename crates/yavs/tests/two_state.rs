@@ -435,7 +435,8 @@ fn only_signals_two_state_code_drives_are_read_without_a_map() {
 /// `inout` parameter, from a process or a concurrent call; a record or slice variable it
 /// wrote) or that may hold a driven `'Z'` (a literal, an aggregate, a constant, through an alias
 /// of an unresolved signal) is read with a map, as are resolved ones with two drivers, forced,
-/// or behind a port whose source does not qualify (hand-checked counts as above).
+/// behind a port whose source does not qualify, fed by an out port besides their own driver, or
+/// of an inout port (hand-checked counts as above).
 #[test]
 fn signals_four_state_code_drives_are_read_with_a_map() {
     let dir = tempdir("twostate-cleanres");
@@ -459,7 +460,7 @@ fn signals_four_state_code_drives_are_read_with_a_map() {
                         && out.contains(
                             "ok=808 unsigned=808 two=1204 z=808 agg=412 const=1204 forced=808 \
                              pkg=808 upkg=808 port=214 pin=808 io=808 cc=808 rec=808 var=2408 \
-                             alias=808"
+                             alias=808 inout=1006 subio=709 mix=1303"
                         ),
                     "{args:?}: {out}{}",
                     String::from_utf8_lossy(&o.stderr)

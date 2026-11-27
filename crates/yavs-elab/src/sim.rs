@@ -860,10 +860,11 @@ impl Elaborated {
 
     /// `--two-state`: per architecture of a two-state variant, the signals and ports declared in
     /// it that hold only `0` and `1` in every instance of that variant, so two-state code reads
-    /// them without a map. Per leaf: unresolved, unguarded, not implicit, a start without a
-    /// metavalue (`--two-state` starts one without an initial value at `0`), not forced or
-    /// released, no source-less value, every driver a process of the two-state scope (which
-    /// drives only `0` and `1` onto an unresolved signal) with no start of its own, not through
+    /// them without a map. Per leaf: unresolved, or resolved by `resolved` with one driver of
+    /// all its elements and no port edge feeding it; unguarded, not implicit, not an `inout`
+    /// port's, a start without a metavalue (`--two-state` starts one without an initial value
+    /// at `0`), not forced or released, no source-less value, every driver a process of the
+    /// two-state scope (which drives only `0` and `1`) with no start of its own, not through
     /// a procedure call (a package's is four-state, #1204) and not of a value that may hold
     /// `'Z'` onto a resolved target (an alias of the signal, A71), and through port edges
     /// without conversion the leaf it takes its value from clean too (an `inout` edge never
@@ -893,14 +894,41 @@ impl Elaborated {
                 .all(|c| matches!(c, StdULogic::Zero | StdULogic::One)),
             Value::Bytes(_) => true,
         };
-        let mut ok: Vec<bool> = (n.leaves.iter())
-            .map(|l| {
-                l.resolution.is_none()
-                    && l.guard.is_none()
-                    && l.implicit.is_none()
-                    && clean_init(&l.init)
+        // Per leaf: 1 for one driver of all its elements and no port edge feeding it.
+        let mut one = vec![0u8; n.leaves.len()];
+        for d in &n.drivers {
+            let l = d.leaf.index();
+            let all = d.range.offset == 0 && d.range.len == n.leaves[l].ty.len;
+            one[l] = one[l].saturating_add(if all { 1 } else { 2 });
+        }
+        for pe in &n.ports {
+            one[pe.formal.0.index()] = 2;
+            if pe.mode != PortMode::In {
+                one[pe.actual.0.index()] = 2;
+            }
+        }
+        let mut ok: Vec<bool> = (n.leaves.iter().zip(&one))
+            .map(|(l, &one)| {
+                // `resolved` of one value is that value.
+                let res = match l.resolution {
+                    None => true,
+                    Some(LeafRes::StdLogic) => one == 1,
+                    Some(_) => false,
+                };
+                res && l.guard.is_none() && l.implicit.is_none() && clean_init(&l.init)
             })
             .collect();
+        // A collapsed `inout` formal shares its actual's leaves.
+        for o in &n.objs {
+            if matches!(
+                o.kind,
+                ObjKind::Port(PortMode::Inout) | ObjKind::ComponentPort(PortMode::Inout)
+            ) {
+                for l in o.leaves.0.0..o.leaves.1.0 {
+                    ok[l as usize] = false;
+                }
+            }
+        }
         for &o in &forced {
             let o = n.obj(o);
             for l in o.leaves.0.0..o.leaves.1.0 {

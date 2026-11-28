@@ -296,7 +296,8 @@ impl<'a> Fx<'a, '_> {
             && let [a] = &assocs[..]
             && matches!(&a.choices[..], [Choice::Others])
             && !a.slice_piece
-            && self.db.exprs[a.value].value.is_some()
+            && let Some(c) = self.db.exprs[a.value].value
+            && !clean01(&self.db.consts[c])
         {
             self.two_splat.insert(a.value);
         }
@@ -510,7 +511,8 @@ impl<'a> Fx<'a, '_> {
                 return Ok(V::A(k, desc));
             }
         }
-        if lit {
+        // Without `--init-x` a literal's metavalues are `0`: mapped as a read from outside is.
+        if lit && (self.cx.opts.init_x || mode != 0) {
             let (file, line, col) = db.sources.get(span.file).site(span.start);
             let salt = self.int(yavs_logic::start::lit_salt(file, line, col) as i64);
             let mode = self.int(i64::from(mode));
@@ -557,7 +559,7 @@ impl<'a> Fx<'a, '_> {
                 (V::A(..), None) => Err(self.cx.ice(span, "a two-state array without a type")),
             };
         }
-        if !from_outside {
+        if !from_outside && !lit {
             return Ok(v);
         }
         Ok(match (v, tid) {

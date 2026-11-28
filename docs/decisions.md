@@ -18186,7 +18186,9 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
   A68 (values per mode and tier), so it is not built. What it would have saved is taken without changing a value: a
   folded composite literal or constant read under `--two-state` becomes a constant of its own that the run maps once
   when it starts, under its `--init-x` (`ConstData::TwoLit`; the fill never enters compiled code), per read site as
-  before. A part of a constant read by a run-time index with `--init-x` given keeps its call (its cache
+  before; without `--init-x` a literal map with no mode bit is the map of a read from outside (`To01`), with no call;
+  an `(others => '0')` of a run-time length is not mapped at all, and the native maps 64 elements at a time under
+  `--init-x=0` or `1`. A part of a constant read by a run-time index with `--init-x` given keeps its call (its cache
   of 82cefca25 the fallback).
 - **The comparison tools** (`tools/difftest` cycle tools) call their contracts `exact` (plain `--cycle`) and
   `two-state` (`--cycle --two-state`); the reviewed entries of the second start with `two-state contract:`.

@@ -201,6 +201,14 @@ case!(
     &["--two-state", "--init-x=1"],
     [("two_lit_rec_mapped", Max(8)), ("two_lit_calls", Max(310))]
 );
+// `--two-state --init-x=1`: constants read whole map once per run, a `(others => '0')` of a run-time
+// length not at all: no literal map is called at a read (A87; 1200 calls before).
+case!(
+    two_state_litonce,
+    "acc=2100",
+    &["--two-state", "--init-x=1"],
+    [("two_lit_calls", Max(0)), ("two_lit_rec_mapped", Max(0))]
+);
 // `--two-state`: the decoder's calls come from the memo of pure calls, which its two-state literal
 // maps no longer keep out.
 case!(

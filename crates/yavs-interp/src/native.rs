@@ -1164,7 +1164,8 @@ fn two_lit(
     Ok(None)
 }
 
-/// [`two_code_in`] under `fill` on the `n` plane elements at `p`, numbered from `first`.
+/// [`two_code_in`] under `fill` on the `n` plane elements at `p`, numbered from `first`. A fill
+/// of `0` or `1` gives every element its code whatever its number: mapped 64 at a time.
 fn two_planes(
     p: &mut [u8],
     n: u64,
@@ -1173,11 +1174,36 @@ fn two_planes(
     mode: u64,
     fill: yavs_logic::start::Fill,
 ) {
-    for i in 0..n {
-        let c = plane_get(p, i);
-        let t = two_code_in(c, salt, first + i, mode, fill);
-        if t != c {
-            plane_set(p, i, t);
+    if matches!(fill, yavs_logic::start::Fill::Random(_)) {
+        for i in 0..n {
+            let c = plane_get(p, i);
+            let t = two_code_in(c, salt, first + i, mode, fill);
+            if t != c {
+                plane_set(p, i, t);
+            }
+        }
+        return;
+    }
+    let to: [u64; 9] = std::array::from_fn(|c| two_code_in(c as u64, salt, 0, mode, fill));
+    for (b, blk) in p.as_chunks_mut::<32>().0.iter_mut().enumerate() {
+        let left = n - (b as u64 * 64).min(n);
+        let live = if left >= 64 { !0 } else { (1u64 << left) - 1 };
+        let mut w: [u64; 4] = std::array::from_fn(|k| rd64(blk, k * 8));
+        let old = w;
+        for (c, &t) in to.iter().enumerate() {
+            if t == c as u64 {
+                continue;
+            }
+            // The elements holding code `c`, set to code `t`.
+            let hit = (0..4).fold(live, |m, k| {
+                m & if c >> k & 1 == 1 { old[k] } else { !old[k] }
+            });
+            for (k, x) in w.iter_mut().enumerate() {
+                *x = if t >> k & 1 == 1 { *x | hit } else { *x & !hit };
+            }
+        }
+        for (k, x) in w.iter().enumerate() {
+            blk[k * 8..k * 8 + 8].copy_from_slice(&x.to_le_bytes());
         }
     }
 }
@@ -1680,6 +1706,43 @@ status_natives! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `two_planes` 64 elements at a time gives what the map of each element gives: every code
+    /// and mode, fills 0 and 1, widths around a block, the bits past the last element untouched.
+    #[test]
+    fn two_planes_maps_as_each_element() {
+        use yavs_logic::start::Fill;
+        for n in [1u64, 63, 64, 65, 128, 130] {
+            let blocks = n.div_ceil(64) as usize;
+            let mut v = vec![0u8; blocks * 32];
+            for i in 0..n {
+                plane_set(&mut v, i, (i * 7 + i / 9) % 9);
+            }
+            // Bits past the last element set, which no map may touch.
+            if n % 64 != 0 {
+                let last = (blocks - 1) * 32;
+                for k in 0..4 {
+                    let w = rd64(&v, last + k * 8) | !0 << (n % 64);
+                    v[last + k * 8..last + k * 8 + 8].copy_from_slice(&w.to_le_bytes());
+                }
+            }
+            for mode in 0..8 {
+                for fill in [Fill::Zero, Fill::One] {
+                    let mut got = v.clone();
+                    two_planes(&mut got, n, 9, 3, mode, fill);
+                    let mut want = v.clone();
+                    for i in 0..n {
+                        plane_set(
+                            &mut want,
+                            i,
+                            two_code_in(plane_get(&v, i), 9, 3 + i, mode, fill),
+                        );
+                    }
+                    assert_eq!(got, want, "n {n} mode {mode} {fill:?}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn symbols() {

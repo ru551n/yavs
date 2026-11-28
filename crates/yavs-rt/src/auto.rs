@@ -5815,8 +5815,9 @@ mod tests {
     }
 
     /// `YAVS_AUTO_CHECK_CALLS` stops at a caller with code that was never optimised: the map would
-    /// not know it.
+    /// not know it. (The check runs in debug builds only.)
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "was not optimised")]
     fn the_callers_check_stops_at_a_caller_the_map_cannot_know() {
         let (prog, caller, callee) = caller_callee();

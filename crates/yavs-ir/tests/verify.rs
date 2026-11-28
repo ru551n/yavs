@@ -14,8 +14,13 @@ fn errors(kind: FuncKind, body: impl FnOnce(&mut FuncBuilder<'_>)) -> Vec<String
     let mut fb = pb.define(f);
     body(&mut fb);
     fb.finish();
-    match pb.finish() {
-        Ok(_) => Vec::new(),
+    messages(pb)
+}
+
+/// Finish `pb` and verify every function: release builds verify lazily on first use (#479).
+fn messages(pb: ProgramBuilder) -> Vec<String> {
+    match pb.finish().and_then(|mut p| p.verify_pending()) {
+        Ok(()) => Vec::new(),
         Err(e) => e.into_iter().map(|e| e.msg).collect(),
     }
 }
@@ -137,12 +142,7 @@ fn calls_are_checked() {
     let z = fb.int(0);
     fb.emit(Inst::Ret { v: Some(z) });
     fb.finish();
-    let e: Vec<String> = pb
-        .finish()
-        .unwrap_err()
-        .into_iter()
-        .map(|e| e.msg)
-        .collect();
+    let e = messages(pb);
     assert!(
         e.iter().any(|m| m.contains("takes 1 arguments, 0 given")),
         "{e:#?}"

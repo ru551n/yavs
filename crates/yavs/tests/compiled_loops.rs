@@ -119,8 +119,9 @@ fn the_old_name_of_the_helper_switch_still_works() {
         helper_calls(&new).unwrap_or(0),
         helper_calls(&old).unwrap_or(0),
     );
+    // (`cb_eloop` is counted in debug and `op-census` builds only.)
     assert!(
-        new_n > planned_n,
+        new_n > planned_n || !cfg!(any(debug_assertions, feature = "op-census")),
         "helper calls: {new_n} against {planned_n} planned"
     );
     assert_eq!(old_n, new_n, "the old name must act as the new one");

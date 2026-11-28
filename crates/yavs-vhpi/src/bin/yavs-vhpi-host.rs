@@ -12,6 +12,8 @@ use yavs_vhpi::sys::{vhpiCbEndOfSimulation, vhpiCbStartOfSimulation};
 use yavs_vhpi::{Control, PluginSpec};
 
 fn main() -> ExitCode {
+    // Without a reference an optimised link drops the C entry points (`vhpi_assert`, ...).
+    yavs_vhpi::keep_exports();
     let mut top = "top".to_owned();
     let mut plugins = Vec::new();
     let mut args = std::env::args().skip(1);

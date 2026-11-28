@@ -1385,6 +1385,9 @@ fn yavs(dir: &Path, env: &[(&str, &str)], args: &[&str]) -> (i32, String, String
     )
 }
 
+/// Builds that count `drive_src_held` (`yavs_rt::census::COUNTING`).
+const COUNTING: bool = cfg!(any(debug_assertions, feature = "op-census"));
+
 /// Runs `text` at every tier against the interpreter; the number of skips the check saw on one thread.
 fn against_interp(name: &str, text: &str) -> u64 {
     against_interp_after(name, text, "2")
@@ -1434,7 +1437,9 @@ fn against_interp_after(name: &str, text: &str, after: &str) -> u64 {
     let counters = ("YAVS_COUNTERS", "1");
     let (_, _, e) = run(&[spec, check, counters], &heat, "1");
     assert!(
-        e.contains("counters: gate_checked=") || e.contains("counters: drive_src_held="),
+        e.contains("counters: gate_checked=")
+            || e.contains("counters: drive_src_held=")
+            || !COUNTING,
         "a warm run skipped nothing: {e}"
     );
     let (_, _, e) = run(&[spec, check, counters], &cold, "1");
@@ -1488,7 +1493,10 @@ fn drives_kept_for_other_kernel_drivers_do_not_stop_a_skip() {
 fn held_values_in_code_that_is_no_copy() {
     against_interp_after("compiled_gate_shared", SHARED_FORMS, "1000000");
     let held = held_first("compiled_gate_shared_n", SHARED_FORMS, "1000000");
-    assert!(held > 100, "only {held} held drives taken first");
+    assert!(
+        held > 100 || !COUNTING,
+        "only {held} held drives taken first"
+    );
 }
 
 /// The fused whole-value drives of `text` on `--tier=clift` that the runtime found held before the
@@ -1527,7 +1535,10 @@ fn held_first(name: &str, text: &str, after: &str) -> u64 {
 fn drives_kept_and_handed_over_leave_the_others_open() {
     against_interp("compiled_gate_kept_then_held", KEPT_THEN_HELD);
     let held = held_first("compiled_gate_kept_then_held_n", KEPT_THEN_HELD, "2");
-    assert!(held > 100, "only {held} held drives taken first");
+    assert!(
+        held > 100 || !COUNTING,
+        "only {held} held drives taken first"
+    );
 }
 
 #[test]

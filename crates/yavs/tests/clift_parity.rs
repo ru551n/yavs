@@ -103,6 +103,9 @@ fn calls(r: &Run, pat: &str) -> u64 {
         .sum()
 }
 
+/// Builds that count the callbacks of compiled code (`yavs_rt::callback_counts`, `cb_new`...).
+const COUNTING: bool = cfg!(any(debug_assertions, feature = "op-census"));
+
 /// A debug build counts the calls of compiled code; a release build counts none.
 fn counted(r: &Run) -> bool {
     !cfg!(debug_assertions) || !r.census.is_empty()
@@ -1357,7 +1360,7 @@ fn deallocations_in_compiled_code_match_the_interpreter() {
     assert!(want.out.contains("s="), "{want:?}");
     if counted(&got[0]) {
         assert!(
-            calls(&got[0], "counters: cb_free=") > 0,
+            !COUNTING || calls(&got[0], "counters: cb_free=") > 0,
             "{:?}",
             got[0].census
         );
@@ -1490,7 +1493,7 @@ fn allocations_in_compiled_code_match_the_interpreter() {
     assert!(want.out.contains("s="), "{want:?}");
     if counted(&got[0]) {
         assert!(
-            calls(&got[0], "counters: cb_new=") > 0,
+            !COUNTING || calls(&got[0], "counters: cb_new=") > 0,
             "{:?}",
             got[0].census
         );

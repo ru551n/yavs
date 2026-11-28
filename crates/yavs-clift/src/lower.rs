@@ -2559,6 +2559,7 @@ fn quiet(i: &Inst) -> bool {
                 | Inst::Copy { .. }
                 | Inst::Zero { .. }
                 | Inst::DopeLen { .. }
+                | Inst::Pos { .. }
                 | Inst::BoundsLen { .. }
                 | Inst::BoundsPos { .. }
                 | Inst::BoundsSlice { .. }
@@ -3736,9 +3737,15 @@ fn gen_func(
             Inst::SigReadScalar { sig, .. } => g.sig_read_run(sig),
             _ => false,
         };
+        // A `std_ulogic` table native steps only on its slow path, as a `Pos` does.
+        let table = matches!(
+            inst,
+            Inst::CallNative { native, args, dst }
+                if matches!(native_kind(prog, f, native, args, dst), Some(NativeKind::Table(..)))
+        );
         g.defer = g.nat.is_none()
             && g.live.is_some()
-            && (quiet(&inst) || fixed.is_some() || run_read)
+            && (quiet(&inst) || fixed.is_some() || run_read || table)
             && (g.batch.is_none() || batch_pure(prog, f, &inst));
         if g.nat.is_none() && !g.defer {
             // A branch only reads its condition: stored only if a block it leads to reads it too.

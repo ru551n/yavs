@@ -18212,3 +18212,9 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
   `--cycle-strict` its errors come first.
 - Consequence (A75): verification components below the top (MDIO, I2C, QSPI flash models) wait for time, so the
   design under test leaves them out and they keep the nine values under `--two-state`.
+
+## Frame-mode loop registers as block parameters: measured, not kept (yavs-clift, 2026-11-28, agent)
+
+- **Tried:** the registers of a small innermost loop of frame-mode process code (no call, wait, `Case` or return; at most 32 blocks and 24 registers live at a block start) passed from block to block as Cranelift block parameters, stored only at the loop's exits and where the frame is looked at; the entry switch loaded them. The loop-only form the 2026-11-02 entry ("Registers of process code as Cranelift variables") left open.
+- **Measured** (forced compiled whole runs, the same binary with and without it): `hdlm_lfsr` 0.997, `sc5_fifo_repack` 1.025, Microwatt and `neorv32_single_cache` 1.004, a streaming verification testbench 1.003. Passing the registers the loop does not define as stored, and the interpreter's preloads too, made `hdlm_lfsr` 1.10. A block start takes every register the loop defines as not stored yet, so a loop with one instruction that looks at the frame stores them again at every iteration.
+- **Kept from it:** `Pos` and the `std_ulogic` table natives defer their stores (they leave only on a slow path).

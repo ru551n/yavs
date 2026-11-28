@@ -683,6 +683,55 @@ fn heap_tables_at_run_time_positions_match_the_interpreter() {
     }
 }
 
+/// A process indexing an array and a `std_ulogic` table at positions computed just before (their
+/// registers are deferred, not yet in the frame): `bad` makes one position fall outside, and the
+/// interpreter's message must name the computed value.
+const QUIET_POS: &str = r#"library ieee;
+use ieee.std_logic_1164.all;
+entity quiet_pos is
+  generic (bad : integer := 0);
+end;
+architecture a of quiet_pos is
+  type ints_t is array (3 to 18) of integer;
+  signal clk : std_logic := '0';
+  signal s : std_logic_vector(15 downto 0) := x"a5c3";
+begin
+  clk <= not clk after 5 ns;
+  process (clk)
+    variable t : ints_t := (others => 1);
+    variable acc : integer := 0;
+    variable k, i : integer;
+    variable b : std_logic := '0';
+  begin
+    if rising_edge(clk) then
+      for n in 0 to 15 loop
+        k := (n * 7 + acc) mod 16;
+        i := k + 3 + bad * (n / 15) * 40;
+        t(i) := t(i) + n;
+        b := b xor (s(k) and s((k + 5) mod 16));
+        acc := (acc + t(i)) mod 1000;
+      end loop;
+      if acc > 900 or now > 200 ns then
+        report "acc " & integer'image(acc) & " b " & std_logic'image(b) severity failure;
+      end if;
+    end if;
+  end process;
+end;
+"#;
+#[test]
+fn positions_computed_just_before_match_the_interpreter() {
+    let dir = design("clift_quiet_pos", QUIET_POS);
+    for bad in 0..=1 {
+        let g = format!("-gbad={bad}");
+        let (want, _) = parity(&dir, "quiet_pos", &[&g]);
+        assert!(
+            bad == 1 || format!("{}{}", want.out, want.err).contains("acc "),
+            "{want:?}"
+        );
+        assert!(want.code != Some(0), "{want:?}");
+    }
+}
+
 const NATIVES: &str = r#"library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;

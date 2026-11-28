@@ -18240,3 +18240,30 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
 - **Tried:** the registers of a small innermost loop of frame-mode process code (no call, wait, `Case` or return; at most 32 blocks and 24 registers live at a block start) passed from block to block as Cranelift block parameters, stored only at the loop's exits and where the frame is looked at; the entry switch loaded them. The loop-only form the 2026-11-02 entry ("Registers of process code as Cranelift variables") left open.
 - **Measured** (forced compiled whole runs, the same binary with and without it): `hdlm_lfsr` 0.997, `sc5_fifo_repack` 1.025, Microwatt and `neorv32_single_cache` 1.004, a streaming verification testbench 1.003. Passing the registers the loop does not define as stored, and the interpreter's preloads too, made `hdlm_lfsr` 1.10. A block start takes every register the loop defines as not stored yet, so a loop with one instruction that looks at the frame stores them again at every iteration.
 - **Kept from it:** `Pos` and the `std_ulogic` table natives defer their stores (they leave only on a slow path).
+
+## A `Deref` hit in fewer instructions: one word per space and per handle tag byte (yavs-clift, yavs-rt, 2026-11-28, agent)
+
+- **What it was:** a `Deref` hit in compiled code took 21 instructions: the index from the access value, the
+  shared-heap flag moved from bit 57 to bit 3 of the index (four), the heap's mix and tag as two loads, the entry's
+  value and tag as two loads and compares, the address as the entry's key shifted. The verification-library pointer
+  tables (`get`, `set`, `length` of the vector storage: four `Deref`s of four objects each, no call between) made
+  most of them: 333 thousand hits, 7 million instructions of a 39 million window of the window generator testbench.
+- **Now:** `Mem::keys` holds one word per address space (`key_word`: the tag in the high half, the entry offset in
+  the low half, with bit 3 of the index flipped for the odd spaces, as `obj_at` did) and, from `KEY_HANDLE`, one per
+  tag byte of an access value (the private and the shared heap's words). A `Deref` reads the word of its handle's
+  tag byte (`h >> 56`), xors it into the scaled index and compares the entry's value and its `Obj::tm` (the word of
+  its space, which `put_obj` stores) with the handle and the word; the address is `Obj::a`. 17 instructions a hit.
+  An address lookup (`Gen::obj_key`: `obj_try`, `hold_resolve`) reads its space's word once instead of the tag and
+  the mix, with no flag. The slots are the same as before, so hit rates do not change.
+- **Rules:** the null tag byte's word is `NO_HKEY` (no entry has it); other bytes of no heap stay 0, which is safe
+  because no entry holds a handle with such a byte. `Mem::set` writes the handle words with the space words; a new
+  heap tag byte needs its word there. `deref_finds_heap_objects_by_handle` (yavs-rt) keeps the two ways to the
+  entry equal; the perf case `deref_heaps` counts the misses of a private and a shared object of the same index.
+- **Measured** (instructions, forced compiled, against main): window generator 0.966, stepped window 39.1 to
+  37.7 M; Microwatt 0.997, LEON3 0.996, a wide AXI writer 0.995, `hdlm_lfsr` 0.999, `neorv32_single_cache`
+  0.9995, `sc5_fifo_repack` 0.9997. A first form that kept the separate tag and mix arrays and added the handle
+  words cost 0.03 % on RTL designs (two more stores at every heap tag switch in `Mem::begin`); one word per space
+  makes `set` cheaper instead.
+- **Not done:** a handle table per heap (slot index straight from the handle, no tag) would need a bounds test and
+  a selection of the private or shared table, about the same count, plus its own invalidation: not worth it.
+  Cranelift does not fold these loads into the compares, nor emit `rorx`, so the copies of the access value stay.

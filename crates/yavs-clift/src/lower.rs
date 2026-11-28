@@ -6192,16 +6192,8 @@ impl Gen<'_> {
             self.b.switch_to_block(tab);
             view
         });
-        let flag = self.b.ins().ushr_imm_s(a, 32 + i64::from(KEY_SHIFT_ADDR));
-        let flag = self.b.ins().band_imm_s(flag, KEY_FLAG as i64);
-        let key = self.b.ins().bxor(hi, flag);
-        let key = self.b.ins().band_imm_s(key, OBJS as i64 - 1);
-        let eo = self.b.ins().ishl_imm_s(key, i64::from(OBJ_SHIFT));
-        let (tk, mx) = self.obj_tag(Some(hi));
-        let eo = self.b.ins().bxor(eo, mx);
-        let ent = self.b.ins().iadd(self.mem, eo);
+        let (ent, want) = self.obj_key(hi);
         let ehi = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
-        let want = self.b.ins().bor(hi, tk);
         let mut hit = self.b.ins().icmp(IntCC::Equal, ehi, want);
         if h.write {
             let w = self
@@ -6254,12 +6246,12 @@ impl Gen<'_> {
         });
         let (obj, call) = (self.b.create_block(), self.b.create_block());
         self.b.set_cold_block(call);
-        let key = (hi ^ (hi >> KEY_SHIFT_ADDR & KEY_FLAG)) & (OBJS as u64 - 1);
-        let hv = self.c64(hi as i64);
-        let (tk, mx) = self.obj_tag(Some(hv));
-        let eo = self.b.ins().bxor_imm_s(mx, (key << OBJ_SHIFT) as i64);
+        let w = self.mem_ld(MEM_KEYS + 8 * (hi >> 29 & 7));
+        let eo = self.b.ins().bxor_imm_s(w, (hi << OBJ_SHIFT) as i64);
+        let eo = self.b.ins().band_imm_s(eo, KEY_OFF as i64);
         let ent = self.b.ins().iadd(self.mem, eo);
         let ehi = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
+        let tk = self.b.ins().band_imm_s(w, !KEY_OFF as i64);
         let want = self.b.ins().bor_imm_s(tk, hi as i64);
         let mut hit = self.b.ins().icmp(IntCC::Equal, ehi, want);
         if h.write {
@@ -8153,7 +8145,7 @@ impl Gen<'_> {
             self.frame_object_try(hi, off, nv, done, slow);
             let miss = self.b.create_block();
             self.b.set_cold_block(miss);
-            self.obj_try(a, hi, off, nv, write, true, done, miss);
+            self.obj_try(hi, off, nv, write, done, miss);
             self.b.switch_to_block(miss);
             self.host_call(a, ev, nv, write, done, slow);
             self.b.switch_to_block(done);
@@ -8289,7 +8281,7 @@ impl Gen<'_> {
                 let off = self.b.ins().iadd(lo, extra);
                 let miss = self.b.create_block();
                 self.b.set_cold_block(miss);
-                self.obj_try(a, hi, off, n, write, false, done, miss);
+                self.obj_try(hi, off, n, write, done, miss);
                 self.b.switch_to_block(miss);
             }
             self.host_call(a, extra, n, write, done, slow);
@@ -8373,7 +8365,7 @@ impl Gen<'_> {
         }
         self.b.switch_to_block(objb);
         let miss = self.b.create_block();
-        self.obj_try(a, hi, off, n, write, false, done, miss);
+        self.obj_try(hi, off, n, write, done, miss);
         self.b.switch_to_block(miss);
         self.b.set_cold_block(miss);
         self.host_call(a, extra, n, write, done, slow);
@@ -8488,30 +8480,10 @@ impl Gen<'_> {
 
     /// The object table's entry for the access (the objects found before: heap objects a `Deref`
     /// found, a process's heap variables): one load and compare, as the LLVM generator does. Jumps
-    /// to `done` with the host pointer on a hit, to `miss` otherwise. `heap`: the address is a heap
-    /// object's (or guessed to be), whose key has the heap tag.
-    #[allow(clippy::too_many_arguments)]
-    fn obj_try(
-        &mut self,
-        a: Value,
-        hi: Value,
-        off: Value,
-        n: Value,
-        write: bool,
-        heap: bool,
-        done: Block,
-        miss: Block,
-    ) {
-        let flag = self.b.ins().ushr_imm_s(a, 32 + i64::from(KEY_SHIFT_ADDR));
-        let flag = self.b.ins().band_imm_s(flag, KEY_FLAG as i64);
-        let key = self.b.ins().bxor(hi, flag);
-        let key = self.b.ins().band_imm_s(key, OBJS as i64 - 1);
-        let eo = self.b.ins().ishl_imm_s(key, i64::from(OBJ_SHIFT));
-        let (tk, mx) = self.obj_tag((!heap).then_some(hi));
-        let eo = self.b.ins().bxor(eo, mx);
-        let ent = self.b.ins().iadd(self.mem, eo);
+    /// to `done` with the host pointer on a hit, to `miss` otherwise.
+    fn obj_try(&mut self, hi: Value, off: Value, n: Value, write: bool, done: Block, miss: Block) {
+        let (ent, want) = self.obj_key(hi);
         let ehi = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
-        let want = self.b.ins().bor(hi, tk);
         let mut hit = self.b.ins().icmp(IntCC::Equal, ehi, want);
         if write {
             let w = self
@@ -8538,20 +8510,24 @@ impl Gen<'_> {
         self.b.ins().jump(done, &[BlockArg::Value(p3)]);
     }
 
-    /// The tag bits and the scaled entry offset of the keys `Mem::slot` gives an object
-    /// (`MEM_TAGS`, `MEM_MIXES`, by space): of a heap object, or of the space of high half `hi`.
-    fn obj_tag(&mut self, hi: Option<Value>) -> (Value, Value) {
-        let Some(hi) = hi else {
-            let k = 8 * u64::from(space::HEAP);
-            return (self.mem_ld(MEM_TAGS + k), self.mem_ld(MEM_MIXES + k));
-        };
+    /// The entry `Mem::slot` gives the object of high half `hi` and the key it has there: from the
+    /// word of its space (`Mem::keys`), the tag in the high half, the entry offset in the low.
+    fn obj_key(&mut self, hi: Value) -> (Value, Value) {
         let sp = self.b.ins().ushr_imm_s(hi, 29);
         let k = self.b.ins().ishl_imm_s(sp, 3);
         let p = self.b.ins().iadd(self.mem, k);
-        (
-            self.b.ins().load(I64, self.mf, p, MEM_TAGS as i32),
-            self.b.ins().load(I64, self.mf, p, MEM_MIXES as i32),
-        )
+        let w = self.b.ins().load(I64, self.mf, p, MEM_KEYS as i32);
+        let at = self.b.ins().ishl_imm_s(hi, i64::from(OBJ_SHIFT));
+        let eo = self.b.ins().bxor(at, w);
+        let eo = self.b.ins().band_imm_s(eo, KEY_OFF as i64);
+        let tk = self.b.ins().band_imm_s(w, !KEY_OFF as i64);
+        (self.b.ins().iadd(self.mem, eo), self.b.ins().bor(hi, tk))
+    }
+
+    /// The tag of the heaps' objects, in the high half (`Mem::keys`).
+    fn heap_tag(&mut self) -> Value {
+        let w = self.mem_ld(MEM_KEYS + 8 * u64::from(space::HEAP));
+        self.b.ins().band_imm_s(w, !KEY_OFF as i64)
     }
 
     /// The host pointer and length of the object in table entry `ent`.
@@ -13494,44 +13470,46 @@ impl Gen<'_> {
     fn deref(&mut self, pc: u32, i: &Inst, dst: Reg, handle: Reg) {
         let (slow, join) = self.slow_path(pc, i);
         let h = self.ld(handle);
-        // `obj_at` of `h >> 32`, scaled: the index and the shared flag each in one shift and mask.
-        let scale = 32 - i64::from(OBJ_SHIFT);
-        let at = self.b.ins().ushr_imm_s(h, scale);
-        let at = self.b.ins().band_imm_s(at, (OBJS as i64 - 1) << OBJ_SHIFT);
-        let flag = self
+        // The heap's word by the handle's tag byte (`Mem::keys`): its low half moves the scaled
+        // index to the entry as `Mem::slot` does, the whole word is the entry's `tm`.
+        let tb = self.b.ins().ushr_imm_s(h, 56);
+        let tb = self.b.ins().ishl_imm_s(tb, 3);
+        let hp = self.b.ins().iadd(self.mem, tb);
+        let hk = self
             .b
             .ins()
-            .ushr_imm_s(h, scale + i64::from(KEY_SHIFT_HANDLE));
-        let flag = self
-            .b
-            .ins()
-            .band_imm_s(flag, (KEY_FLAG as i64) << OBJ_SHIFT);
-        let eo = self.b.ins().bxor(at, flag);
-        let k = 8 * u64::from(space::HEAP);
-        let mx = self.mem_ld(MEM_MIXES + k);
-        let eo = self.b.ins().bxor(eo, mx);
+            .load(I64, self.mf, hp, (MEM_KEYS + 8 * KEY_HANDLE as u64) as i32);
+        let at = self.b.ins().ushr_imm_s(h, 32 - i64::from(OBJ_SHIFT));
+        let eo = self.b.ins().bxor(at, hk);
+        let eo = self.b.ins().band_imm_s(eo, (OBJS as i64 - 1) << OBJ_SHIFT);
         let ent = self.b.ins().iadd(self.mem, eo);
-        // An entry with an access value is writable, and a null handle is no entry's value; the
-        // key's tag says the entry is this machine's (another instance holds the same values). The
-        // tag is the key's high half, compared as 32 bits (no mask).
+        // An entry with an access value is writable, and a null handle is no entry's value (its
+        // word is `NO_HKEY`); the word says the entry is this machine's (another instance holds
+        // the same values).
+        let (fast, miss, mid) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        self.b.set_cold_block(miss);
         let eh = self
             .b
             .ins()
             .load(I64, self.mf, ent, (MEM_OBJS + OBJ_H) as i32);
-        let tk = self
+        let same_h = self.b.ins().icmp(IntCC::Equal, eh, h);
+        self.b.ins().brif(same_h, mid, &[], miss, &[]);
+        self.b.switch_to_block(mid);
+        let et = self
             .b
             .ins()
-            .load(I32, self.mf, self.mem, (MEM_TAGS + k + 4) as i32);
-        let ek = self.b.ins().load(I32, self.mf, ent, (MEM_OBJS + 4) as i32);
-        let same_h = self.b.ins().icmp(IntCC::Equal, eh, h);
-        let same_t = self.b.ins().icmp(IntCC::Equal, ek, tk);
-        let hit = self.b.ins().band(same_h, same_t);
-        let (fast, miss) = (self.b.create_block(), self.b.create_block());
-        self.b.set_cold_block(miss);
-        self.branch(hit, fast, miss);
+            .load(I64, self.mf, ent, (MEM_OBJS + OBJ_TM) as i32);
+        let same_t = self.b.ins().icmp(IntCC::Equal, et, hk);
+        self.b.ins().brif(same_t, fast, &[], miss, &[]);
         self.start(fast);
-        let ehi = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
-        let v = self.b.ins().ishl_imm_s(ehi, 32);
+        let v = self
+            .b
+            .ins()
+            .load(I64, self.mf, ent, (MEM_OBJS + OBJ_A) as i32);
         self.st(dst, v);
         // Frame mode: the object goes on in hand through `cont` (pointer, length, value); a way
         // that cannot vouch for the entry passes length 0, so every access takes its slow path.
@@ -13586,7 +13564,7 @@ impl Gen<'_> {
             // The callback may have found the address and failed to enter the object: the entry
             // must hold what the result points into.
             let at = self.b.ins().ushr_imm_s(v, 32);
-            let tk = self.obj_tag(None).0;
+            let tk = self.heap_tag();
             let at = self.b.ins().bor(at, tk);
             let found = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
             let same = self.b.ins().icmp(IntCC::Equal, found, at);
@@ -13600,7 +13578,7 @@ impl Gen<'_> {
             // As for a variant: the callback may not have entered the object.
             let v = self.ld(dst);
             let at = self.b.ins().ushr_imm_s(v, 32);
-            let tk = self.obj_tag(None).0;
+            let tk = self.heap_tag();
             let at = self.b.ins().bor(at, tk);
             let found = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
             let same = self.b.ins().icmp(IntCC::Equal, found, at);

@@ -126,15 +126,17 @@ pub const KEEP: u32 = 1 << 31;
 pub struct Mem {
     pub fr: TierFrame,
     pub objs: [Obj; OBJS],
-    /// Per address space (bits 29 to 31 of the high half), the tag of its objects shifted to
-    /// bits 32 and up (an entry's key is the high half of the object's addresses or-ed with it),
-    /// and the entry offset, scaled by the entry size, its keys are moved by, so the objects of
-    /// two instances of one process do not share entries (#679). Instance data, package data and
-    /// shared variables have the machine's tag, heap objects the machine's at its heap epoch,
-    /// constants the runtime's, frame and temporary objects the activation's. Generated code
-    /// reads both (`MEM_TAGS`, `MEM_MIXES`).
-    pub tags: [u64; 8],
-    pub mixes: [u64; 8],
+    /// Per address space (bits 29 to 31 of the high half), a word (`key_word`): the tag of its
+    /// objects in bits 32 and up (an entry's key is the high half of the object's addresses or-ed
+    /// with it) and in the low half the entry offset, scaled by the entry size, its keys are moved
+    /// by, so the objects of two instances of one process do not share entries (#679). Instance
+    /// data, package data and shared variables have the machine's tag, heap objects the machine's
+    /// at its heap epoch, constants the runtime's, frame and temporary objects the activation's.
+    /// Then by the tag byte of an access value (`KEY_HANDLE + (h >> 56)`), the word of its heap
+    /// for a `Deref`; `NO_HKEY` for the null byte, 0 for bytes of no heap (no entry holds a
+    /// handle with one). An entry holds the word of its space (`Obj::tm`). Generated code reads
+    /// them (`MEM_KEYS`).
+    pub keys: [u64; KEY_HANDLE + 256],
     /// The next tag to issue; at `TAG_END` the table is emptied and this `Mem` gets a new `id`
     /// (`wipe`), so no record of a process names a tag twice.
     next_tag: u64,
@@ -176,7 +178,7 @@ pub struct Mem {
     /// The check mode of `lean` activations (debug builds, feature `table-check`): set while one
     /// runs, with the machine and heap tags it replaced by `POISON` (`begin_lean`, `end_lean`).
     lean: bool,
-    saved: [u64; 8],
+    saved: [u64; KEY_HANDLE],
 }
 
 /// The slots of a native frame, registered at its entry in `Mem::nslots`.
@@ -253,7 +255,8 @@ pub fn nslots_grow(depth: usize) -> *mut NSlot {
 /// space, `Mem::slot`; tag 0: no object), start, length, whether it was found for writing, and
 /// the access value a `Deref` found it for (`NO_H`: none; its address is `hi << 32`). An entry
 /// with an access value is writable (`yavs_rt_obj` keeps the permission of an entry it replaces
-/// for the same object), so a `Deref` compares the value and the tag only.
+/// for the same object), so a `Deref` compares the value and the tag only. `put_obj` sets the
+/// last two: the `Mem::keys` word of its space, and its address.
 #[derive(Clone, Copy)]
 #[repr(C, align(64))]
 pub struct Obj {
@@ -262,6 +265,8 @@ pub struct Obj {
     pub len: u64,
     pub w: u64,
     pub h: u64,
+    pub tm: u64,
+    pub a: u64,
 }
 
 /// An entry is one cache line, so generated code scales the key by a shift.
@@ -269,7 +274,7 @@ pub const OBJ_SHIFT: u32 = 6;
 const _: () = assert!(std::mem::size_of::<Obj>() == 1 << OBJ_SHIFT);
 
 /// Entries of `Mem::objs`, a power of two. ponytail: direct-mapped by the low bits of the
-/// object index xor its space (`obj_at`: a private and a shared heap object of the same index
+/// object index xor its space (`key_word`: a private and a shared heap object of the same index
 /// are two objects of one protected-type library function) xor the tag's offset (`mix`): two
 /// objects whose slots agree evict each other. 16 entries missed three heap objects in four on
 /// a test runner's queue code (95 million `Deref` callbacks in a 16 s run, 12 million at 256);
@@ -306,27 +311,37 @@ pub fn mix(t: u64) -> u64 {
 
 const _: () = assert!(OBJS.is_power_of_two() && OBJS >= 64 && OBJS <= 1 << 24);
 
-/// The entry of `Mem::objs` for the object whose addresses have high half `hi`, before the tag's
-/// offset (`Mem::slot`): the low bits of its index, bit 3 flipped for a shared heap (space 7, bit 29 of `hi`; private is 4). The
-/// access value of a heap object has the same index in bits 32 to 55 and, as its tag, a shared
-/// flag in bit 57 (`handle_at`, and `obj_entry` in the generated code, which must agree with
-/// both: `obj_keys_agree`).
+/// The entry of `Mem::objs` for the object whose addresses have high half `hi`, before the
+/// offset of its space's word (`Mem::slot`): the low bits of its index. The access value of a heap
+/// object has the same index in bits 32 to 55; a `Deref` finds the entry through the word of its
+/// tag byte (`deref_at` in the tests, which must agree with `Gen::deref`).
 #[inline(always)]
 pub fn obj_at(hi: u64) -> usize {
-    (hi ^ (hi >> KEY_SHIFT_ADDR & KEY_FLAG)) as usize & (OBJS - 1)
+    hi as usize & (OBJS - 1)
 }
 
-/// `obj_at` from the high half of an access value (`handle >> 32`).
-#[cfg(test)]
-pub fn handle_at(hi: u64) -> usize {
-    (hi ^ (hi >> KEY_SHIFT_HANDLE & KEY_FLAG)) as usize & (OBJS - 1)
+/// The word of `Mem::keys` of space `sp` at tag `t`: bit 3 of the index flipped for the odd spaces
+/// (a private and a shared heap object of one index, spaces 4 and 7, do not evict each other).
+#[inline(always)]
+fn key_word(sp: u8, t: u64) -> u64 {
+    t << 32 | (mix(t) ^ u64::from(sp & 1) << (3 + OBJ_SHIFT))
 }
 
-/// The shared-heap flag of the key, as bit 3: shifted down from bit 29 of an address's high half
-/// and from bit 25 of an access value's.
-pub const KEY_FLAG: u64 = 8;
-pub const KEY_SHIFT_ADDR: u32 = 26;
-pub const KEY_SHIFT_HANDLE: u32 = 22;
+/// Where the words of the access values' tag bytes start in `Mem::keys`.
+pub const KEY_HANDLE: usize = 8;
+
+/// The low half of a word of `Mem::keys`: the entry offset (the tag is the high half).
+pub const KEY_OFF: u64 = (OBJS as u64 - 1) << OBJ_SHIFT;
+
+/// The tag byte of the access values of heap space `sp` (`Mem::keys`).
+#[inline(always)]
+fn heap_byte(sp: u8) -> Option<usize> {
+    match sp {
+        space::HEAP => Some(usize::from(yavs_interp::PRIVATE_TAG)),
+        space::SHARED_HEAP => Some(usize::from(yavs_interp::SHARED_TAG)),
+        _ => None,
+    }
+}
 
 /// The access value of an entry no `Deref` found: no handle (not null either: a null handle
 /// must miss).
@@ -339,7 +354,12 @@ pub const NO_OBJ: Obj = Obj {
     len: 0,
     w: 0,
     h: 0,
+    tm: 0,
+    a: 0,
 };
+
+/// The `Mem::keys` word of the null tag byte: no entry's `tm`.
+pub const NO_HKEY: u64 = u64::MAX;
 
 pub const MEM_SLOTS: u64 = std::mem::offset_of!(Mem, fr.slots) as u64;
 pub const MEM_SLOTS_LEN: u64 = std::mem::offset_of!(Mem, fr.slots_len) as u64;
@@ -382,13 +402,14 @@ pub const MEM_RET_BOUNDS: u64 = std::mem::offset_of!(Mem, fr.ret_bounds) as u64;
 
 pub const MEM_COV_LEN: u64 = std::mem::offset_of!(Mem, fr.cov_len) as u64;
 pub const MEM_OBJS: u64 = std::mem::offset_of!(Mem, objs) as u64;
-pub const MEM_TAGS: u64 = std::mem::offset_of!(Mem, tags) as u64;
-pub const MEM_MIXES: u64 = std::mem::offset_of!(Mem, mixes) as u64;
+pub const MEM_KEYS: u64 = std::mem::offset_of!(Mem, keys) as u64;
 
 pub const OBJ_PTR: u64 = std::mem::offset_of!(Obj, ptr) as u64;
 pub const OBJ_LEN: u64 = std::mem::offset_of!(Obj, len) as u64;
 pub const OBJ_W: u64 = std::mem::offset_of!(Obj, w) as u64;
 pub const OBJ_H: u64 = std::mem::offset_of!(Obj, h) as u64;
+pub const OBJ_TM: u64 = std::mem::offset_of!(Obj, tm) as u64;
+pub const OBJ_A: u64 = std::mem::offset_of!(Obj, a) as u64;
 
 /// Bytes of a `TierSig` and the offsets of its fields.
 pub const SIG_ENT: i64 = std::mem::size_of::<yavs_interp::TierSig>() as i64;
@@ -404,7 +425,7 @@ pub const SIG_BYTES: i64 = std::mem::offset_of!(yavs_interp::TierSig, bytes) as 
 pub const SIG_ES: i64 = std::mem::offset_of!(yavs_interp::TierSig, es) as i64;
 pub const SIG_OFF: i64 = std::mem::offset_of!(yavs_interp::TierSig, off) as i64;
 
-/// The address spaces of each kind of tag (`Mem::tags`).
+/// The address spaces of each kind of tag (`Mem::keys`).
 const MACHINE_SPACES: [u8; 3] = [space::INST, space::PKG, space::SHARED];
 const HEAP_SPACES: [u8; 2] = [space::HEAP, space::SHARED_HEAP];
 const VOLATILE_SPACES: [u8; 2] = [space::FRAME, space::TEMP];
@@ -453,10 +474,10 @@ impl Mem {
     /// The entry of `objs` for the object of high half `hi` and its key there.
     #[inline(always)]
     pub fn slot(&self, hi: u64) -> (usize, u64) {
-        let sp = (hi >> 29) as usize & 7;
+        let w = self.keys[(hi >> 29) as usize & 7];
         (
-            obj_at(hi) ^ (self.mixes[sp] >> OBJ_SHIFT) as usize,
-            hi | self.tags[sp],
+            obj_at(hi) ^ ((w & KEY_OFF) >> OBJ_SHIFT) as usize,
+            hi | w & !TAG_MASK,
         )
     }
 
@@ -469,12 +490,21 @@ impl Mem {
         (o.hi == k).then_some(o)
     }
 
+    /// The tag of the objects of space `sp`.
+    #[inline(always)]
+    fn tag(&self, sp: u8) -> u64 {
+        self.keys[sp as usize] >> 32
+    }
+
     /// Tag `t` for the objects of `spaces`.
     #[inline(always)]
     fn set(&mut self, spaces: &[u8], t: u64) {
         for &sp in spaces {
-            self.tags[sp as usize] = t << 32;
-            self.mixes[sp as usize] = mix(t);
+            let w = key_word(sp, t);
+            self.keys[sp as usize] = w;
+            if let Some(b) = heap_byte(sp) {
+                self.keys[KEY_HANDLE + b] = w;
+            }
         }
     }
 
@@ -502,9 +532,7 @@ impl Mem {
         let kept = !stamps
             && match rec {
                 Some(st) => self.keep_heap(st.words[2] & TAG_MASK, [st.words[1], st.words[3]]),
-                None => {
-                    same && self.keep_heap(self.tags[space::HEAP as usize] >> 32, self.cur_epochs)
-                }
+                None => same && self.keep_heap(self.tag(space::HEAP), self.cur_epochs),
             };
         if !kept {
             let t = self.issue();
@@ -519,7 +547,7 @@ impl Mem {
     #[inline(always)]
     fn keep_heap(&mut self, t: u64, from: [u64; 2]) -> bool {
         let to = [self.fr.heap_epoch, self.fr.shared_epoch];
-        if self.tags[space::HEAP as usize] != t << 32 {
+        if self.tag(space::HEAP) != t {
             self.set(&HEAP_SPACES, t);
         }
         // Word by word: the array compare went through the stack.
@@ -583,6 +611,7 @@ impl Mem {
     fn restart(&mut self) {
         self.id = MEM_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.transient = false;
+        self.keys[KEY_HANDLE] = NO_HKEY;
         self.set(&[space::CONST], 1);
         self.set(&MACHINE_SPACES, 2);
         self.set(&HEAP_SPACES, 3);
@@ -603,7 +632,7 @@ impl Mem {
         cb(Cb::Lean);
         if LEAN_CHECK {
             self.lean = true;
-            self.saved = self.tags;
+            self.saved.copy_from_slice(&self.keys[..KEY_HANDLE]);
             self.set(&MACHINE_SPACES, POISON >> 32);
             self.set(&HEAP_SPACES, POISON >> 32);
         }
@@ -632,7 +661,7 @@ impl Mem {
     /// Keep the machine's tags in the process's record for its next activation.
     #[inline(always)]
     pub fn save_tag(&self, st: &mut yavs_interp::TierState) {
-        let t = |sp: u8| self.tags[sp as usize] >> 32;
+        let t = |sp: u8| self.tag(sp);
         // Tags are below `TAG_END`: the heap's and the machine's share a word.
         st.words = [
             self.id,
@@ -659,6 +688,8 @@ impl Mem {
         self.check_lean(o.hi);
         let (at, k) = self.slot(o.hi);
         self.transient |= life(o.hi) == Life::Volatile;
+        o.tm = self.keys[(o.hi >> 29) as usize & 7];
+        o.a = o.hi << 32;
         o.hi = k;
         self.objs[at] = o;
     }
@@ -2539,6 +2570,7 @@ pub unsafe extern "C" fn yavs_rt_new(
                 len: obj[2],
                 w: 1,
                 h,
+                ..NO_OBJ
             });
         }
         h
@@ -3344,6 +3376,7 @@ pub unsafe extern "C" fn yavs_rt_fast(
                             len: len as u64,
                             w: 1,
                             h: a,
+                            ..NO_OBJ
                         });
                     }
                     1
@@ -3392,6 +3425,7 @@ pub unsafe fn yavs_rt_obj(env: *mut c_void, mem: *mut Mem, addr: u64, write: u32
                 len: len as u64,
                 w,
                 h,
+                ..NO_OBJ
             });
             1
         }
@@ -5733,7 +5767,54 @@ mod tests {
             len: 8,
             w: 0,
             h: NO_H,
+            ..NO_OBJ
         }
+    }
+
+    /// The entry a `Deref` of handle `h` reads and whether it hits there, as `Gen::deref` does.
+    fn deref_at(m: &Mem, h: u64) -> Option<&Obj> {
+        let hk = m.keys[KEY_HANDLE + (h >> 56) as usize];
+        let e = &m.objs[((((h >> 26) ^ hk) as usize) & ((OBJS - 1) << OBJ_SHIFT)) >> OBJ_SHIFT];
+        (e.h == h && e.tm == hk).then_some(e)
+    }
+
+    /// A `Deref` finds a private and a shared heap object of the same index in their own entries
+    /// (where `put_obj` put them), with their addresses; not another machine's, not for a null
+    /// handle, not after the heap tag changed.
+    #[test]
+    fn deref_finds_heap_objects_by_handle() {
+        let mut m = Mem::new(TierFrame::default());
+        let mut r1 = TierState::default();
+        activate(&mut m, rt(1, 1), 0, &mut r1);
+        let hs = [
+            (space::HEAP, yavs_interp::PRIVATE_TAG),
+            (space::SHARED_HEAP, yavs_interp::SHARED_TAG),
+        ];
+        for (n, &(sp, tag)) in hs.iter().enumerate() {
+            let h = u64::from(tag) << 56 | 5 << 32 | 7;
+            m.put_obj(Obj {
+                h,
+                w: 1,
+                len: n as u64,
+                ..obj(sp, 5)
+            });
+            let e = deref_at(&m, h).expect("hit");
+            assert_eq!((e.len, e.a), (n as u64, (u64::from(sp) << 29 | 5) << 32));
+            let (at, _) = m.slot(u64::from(sp) << 29 | 5);
+            assert!(std::ptr::eq(e, &m.objs[at]));
+        }
+        assert!(deref_at(&m, 0).is_none());
+        let h = u64::from(yavs_interp::PRIVATE_TAG) << 56 | 5 << 32 | 7;
+        finish(&mut m, &mut r1);
+        let mut r2 = TierState::default();
+        activate(&mut m, rt(1, 2), 0, &mut r2);
+        assert!(deref_at(&m, h).is_none());
+        finish(&mut m, &mut r2);
+        activate(&mut m, rt(1, 1), 0, &mut r1);
+        assert!(deref_at(&m, h).is_some());
+        finish(&mut m, &mut r1);
+        activate(&mut m, rt(1, 1), 1, &mut r1);
+        assert!(deref_at(&m, h).is_none());
     }
 
     fn entered(m: &Mem, sp: u8, index: u64) -> bool {
@@ -6140,7 +6221,7 @@ mod tests {
         assert!(!entered(&m, space::CONST, 4));
         activate(&mut m, rt(1, 1), 0, &mut r);
         assert!(!entered(&m, space::HEAP, 3));
-        let mut t = m.tags.map(|t| t >> 32);
+        let mut t: [u64; KEY_HANDLE] = std::array::from_fn(|sp| m.keys[sp] >> 32);
         assert!(t.iter().all(|&t| t < 16));
         t.sort();
         assert_eq!(t.windows(2).filter(|w| w[0] != w[1]).count(), 3);

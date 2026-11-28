@@ -1608,6 +1608,8 @@ pub const TIER_STAMPS: u64 = 4;
 pub const TIER_ROOT_WAIT: u64 = 8;
 /// The tag in the top byte of a handle into the shared heap.
 pub const SHARED_TAG: u8 = heap::SHARED;
+/// The tag in the top byte of a handle into a process heap.
+pub const PRIVATE_TAG: u8 = heap::PRIVATE;
 
 /// An instance signal as compiled code reads it (one `TierFrame::sigtab` entry): the element
 /// codes of the kernel signal's current value, starting at the instance signal's own first

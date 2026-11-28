@@ -1963,6 +1963,10 @@ mod clift {
             ("cb_fast", Max(0))
         ]
     );
+    // A `Deref` of a protected object of the shared heap and of one of a process heap, of the
+    // same heap indices, finds each in the entry the runtime gave it (`Mem::keys` by the handle's
+    // tag byte, the flip of the shared heap's index): 1600 `Deref`s, two misses at the start.
+    clift_case!(deref_heaps, "deref_heaps", "s=", [("cb_fast", Max(16))]);
     // A deallocation on a native frame is one call of the host's free, not a step (nor is the
     // `new` before it).
     clift_case!(

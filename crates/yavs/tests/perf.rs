@@ -2193,6 +2193,8 @@ mod clift {
         "q=",
         [("cb_drive", Max(315))]
     );
+    // A typed file's `write` in compiled code runs as a direct native, not as a step.
+    clift_case!(file_write, "clift_file_write", "n=", [("cb_step", Max(4))]);
     // Element loops of native frames planned in the code (#757). The fills call out; the row
     // copies (one plane block each side) are inline: a copy that calls out again raises it.
     clift_case!(

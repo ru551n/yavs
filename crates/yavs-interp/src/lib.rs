@@ -723,6 +723,8 @@ pub fn direct_native(symbol: &str) -> bool {
         || symbol == "yavs.init.x"
         || symbol.starts_with("yavs.standard.now.")
         || symbol.starts_with("yavs.textio.writeline.")
+        // A file `write` does its checks before it writes (`binfile::write`, `text_write`).
+        || symbol.starts_with("yavs.implicit.write.")
         || symbol.starts_with("yavs.implicit.file_open.")
         || symbol.starts_with("yavs.implicit.file_close.")
 }

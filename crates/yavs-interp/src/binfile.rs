@@ -111,27 +111,36 @@ enum Elem {
 
 impl Machine {
     fn file_elem(&self, file_ty: Option<TyId>) -> R<Elem> {
+        // The types by reference: a file operation per clock cloned them (an enumeration's
+        // literals) for every call.
+        let ty = |t: TyId| {
+            self.rt
+                .prog
+                .types
+                .get(t)
+                .ok_or_else(|| ice(format!("no type {t}")))
+        };
         let ft = file_ty.ok_or_else(|| ice("file read/write native without a type"))?;
-        let Ty::File { elem } = self.ty(ft)? else {
+        let &Ty::File { elem } = ty(ft)? else {
             return Err(ice(format!("file read/write on non-file type {ft}")));
         };
-        let t = self.ty(elem)?;
-        if let Some(s) = Sc::of(&t) {
+        let t = ty(elem)?;
+        if let Some(s) = Sc::of(t) {
             return Ok(Elem::Scalar(s));
         }
-        if let Ty::Array { elem: e, dims, .. } = t
-            && let Some(mut s) = Sc::of(&self.ty(e)?)
+        if let &Ty::Array { elem: e, dims, .. } = t
+            && let Some(mut s) = Sc::of(ty(e)?)
         {
             // Elements may be narrower in memory than scalars (`Ty::elem_size`); the disk
             // format is the same.
-            if self.ty(e)?.elem_size() == Some(4) {
+            if ty(e)?.elem_size() == Some(4) {
                 s.mem = Width::B4;
             }
             let logic = Ty::logic_leaf(&self.rt.prog.types, elem)
                 .map(|k| k != yavs_ir::LogicKind::StdULogic);
             return Ok(Elem::Array(dims, s, logic));
         }
-        let dims = match t {
+        let dims = match *t {
             Ty::Array { dims, .. } => dims,
             _ => 0,
         };
@@ -160,7 +169,11 @@ pub(crate) fn write(
 ) -> R<Option<u64>> {
     let mut out = Vec::new();
     match m.file_elem(file_ty)? {
-        Elem::Scalar(s) => s.encode(arg(a, 1)?, &mut out),
+        // A scalar from the stack, with no buffer.
+        Elem::Scalar(s) => {
+            let b = arg(a, 1)?.to_le_bytes();
+            return text(m, arg(a, 0)?, |f| f.write_bytes(&b[..s.disk])).map(|()| None);
+        }
         Elem::Image(ty, _) => write_image(m, ty, arg(a, 1)?, &mut out)?,
         Elem::Array(dims, s, logic) => {
             let (data, lens) = m.fat(arg(a, 1)?, dims)?;

@@ -57,11 +57,29 @@ pub(crate) fn store_bytes() -> Result<u64, String> {
         .ok_or_else(|| format!("YAVS_CYCLE_CACHE_MIB takes a whole number of MiB of at least 1, such as `4096`, not `{v}`"))
 }
 
-/// The cycle store of library directory `lib`, kept to [`store_bytes`] (the default on a bad
-/// value: `plan` reports it).
+/// The cycle store of library directory `lib`, kept to [`store_bytes`] and
+/// [`yavs_cache::CYCLE_ENTRIES_PER_MIB`] entries per MiB of it (the default on a bad value:
+/// `plan` reports it).
 pub(crate) fn cycle_store(lib: &Path) -> Store {
-    Store::cycle_of_library(lib)
-        .with_max_bytes(store_bytes().unwrap_or(yavs_cache::CYCLE_MAX_BYTES))
+    let bytes = store_bytes().unwrap_or(yavs_cache::CYCLE_MAX_BYTES);
+    let entries = (bytes >> 20) as usize * yavs_cache::CYCLE_ENTRIES_PER_MIB;
+    Store::cycle_of_library(lib).with_limits(entries, bytes)
+}
+
+/// A warning, once per run, when this run's puts found the cycle store `s` too small
+/// ([`Store::pressed`]).
+pub(crate) fn warn_pressed(s: &Store) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    if s.pressed() {
+        ONCE.call_once(|| {
+            let mib = store_bytes().unwrap_or(yavs_cache::CYCLE_MAX_BYTES) >> 20;
+            eprintln!(
+                "warning: the cycle cache {} is full at {mib} MiB, so designs run today compile again; \
+                 raise YAVS_CYCLE_CACHE_MIB (now {mib})",
+                s.dir().display()
+            );
+        });
+    }
 }
 
 /// Environment variables that change nothing the analysis gives (the test runner's token server
@@ -230,6 +248,22 @@ pub(crate) fn code_get() -> (Option<Blob>, bool) {
 /// not cached, or when the code took the cached machine code). `YAVS_CYCLE_CACHE_CHECK`: what is
 /// in the cache must be what was built and compiled now.
 pub(crate) fn keep_built(b: &crate::Built, made: Option<Blob>) -> Result<(), String> {
+    let r = keep_built_in(b, made);
+    if let Some(c) = CODE.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+        warn_pressed(&c.0);
+    }
+    if let Some(s) = SETUP
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+    {
+        warn_pressed(&s.store);
+    }
+    crate::codegen::warn_pressed();
+    r
+}
+
+fn keep_built_in(b: &crate::Built, made: Option<Blob>) -> Result<(), String> {
     let c = CODE.lock().unwrap_or_else(PoisonError::into_inner);
     let Some((s, k)) = c.as_ref().map(|c| (&c.0, &c.1)) else {
         return Ok(());

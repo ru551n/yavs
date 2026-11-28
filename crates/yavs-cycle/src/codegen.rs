@@ -584,6 +584,17 @@ pub fn set_cache(lib: Option<&Path>) {
     *STORE.lock().unwrap_or_else(PoisonError::into_inner) = lib.map(crate::store::cycle_store);
 }
 
+/// [`crate::store::warn_pressed`] for the store of the functions' code.
+pub(crate) fn warn_pressed() {
+    if let Some(s) = STORE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+    {
+        crate::store::warn_pressed(s);
+    }
+}
+
 /// The key of a function's machine code in the store: the yavs build ([`KeyBuilder`]), Cranelift's
 /// version, the target with its flags (`isa`), `head` (the signature, checks, error and log words,
 /// the register cap, a shared body's blocks) and every part's operations and live-out words. The

@@ -35,9 +35,9 @@ Read by yavs
      - ``analyze``, ``elab``, ``run``, ``cache clean``
      - 0.9.0
    * - ``YAVS_CYCLE_CACHE_MIB``
-     - The most the cycle part of a library's compilation cache (``yavs-cache/cycle``, ``--cycle``) keeps, in MiB. At the limit nothing new is stored, so the designs past it compile again on every run, without a message (:ref:`cycle-cache`). Not a whole number of at least 1 is error ``E4104``.
+     - The most the cycle part of a library's compilation cache (``yavs-cache/cycle``, ``--cycle``) keeps, in MiB, and with it 8 entries per MiB. At the limit older entries go; a run that had to remove an entry used in the last day, or could not store one, warns once and names this variable (:ref:`cycle-cache`). Not a whole number of at least 1 is error ``E4104``.
      - a whole number of at least 1
-     - ``2048``
+     - ``4096``
      - ``run``
      - 0.21.0
    * - ``YAVS_SURFER_WAIT``

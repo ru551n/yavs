@@ -9231,6 +9231,28 @@ fn the_cycle_store_size_takes_mib() {
     }
 }
 
+/// A cycle cache too small for what runs says so once, naming `YAVS_CYCLE_CACHE_MIB`; one that
+/// fits says nothing (1 MiB keeps 8 entries: two designs' analyses and code do not fit).
+#[test]
+fn a_full_cycle_cache_warns_once() {
+    let dir = tempdir("cycle-storefull");
+    analyze(&dir, "rail.vhd", include_str!("cycle/rail.vhd"));
+    analyze(&dir, "inreset.vhd", include_str!("cycle/inreset.vhd"));
+    let run = |top: &str, mib: &str| {
+        let args = ["run", "--work=work:lib", "--cycle", "--two-state", top];
+        let o = yavs_env(&dir, &args, &[("YAVS_CYCLE_CACHE_MIB", mib)]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stderr)
+            .matches("warning: the cycle cache")
+            .count()
+    };
+    assert_eq!(run("cycle_rail", ""), 0);
+    assert_eq!(run("cycle_inreset", ""), 0);
+    let _ = std::fs::remove_dir_all(dir.join("lib/yavs-cache/cycle"));
+    assert_eq!(run("cycle_rail", "1"), 0);
+    assert_eq!(run("cycle_inreset", "1"), 1);
+}
+
 /// A scalar `out` variable parameter starts at its subtype's `'left` in cycle mode as in the
 /// normal mode (#1184). A scalar `out` or `inout` actual that the body names (a procedure
 /// declared in the process) or that an array `in` actual also names keeps the process in the

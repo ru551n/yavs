@@ -18120,6 +18120,12 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
   so a guard needs 256 operations without `--two-state` (`lib.rs` `NINE_GUARD_MIN`, 64 with it; accepted by the user
   2026-11-25), about the members guarded with it; and functions hold 8000 operations (`codegen.rs` `NINE_CHUNK`,
   4000 with it). On those 26 tests: 1937 entries and 25 s of compiling (30 s before); 60 such tests stay warm.
+- **Revised (A86, user, 2026-11-28): the entry limit follows the byte limit.** The region grew again, and a warm
+  replay of that suite of 730 tests found about one run in five compiling all its functions: the cycle cache sat at
+  its 16384 entries, and the sweep, which first removes entries unused for an hour, removed the first test benches'
+  code before the warm pass reached it. The cycle store now keeps 8 entries per MiB of `YAVS_CYCLE_CACHE_MIB` (the
+  old ratio), the default is 4096 MiB (32768 entries), and a run whose put was refused or whose sweep removed an
+  entry used in the last day warns once, naming the variable (`yavs-cache` `Store::pressed`, `PRESSED_WITHIN`).
 
 ## `--two-state` decoupled from `--cycle` (yavs, yavs-cycle, vunit-yavs; user decisions A53 (2), A57, 2026-11-21)
 

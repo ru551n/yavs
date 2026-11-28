@@ -67,10 +67,15 @@ pub const OBJ_MAX_BYTES: u64 = 256 << 20;
 /// 3 MB of it, and a suite with many of them would push the compiled tier's code out of [`OBJ_DIR`].
 pub const CYCLE_DIR: &str = "cycle";
 
-/// Entries and bytes kept in [`CYCLE_DIR`] (the bytes by default: `yavs-cycle` sets them from
-/// `YAVS_CYCLE_CACHE_MIB`). A large accelerator's suite fills about 760 MB.
-pub const CYCLE_MAX_ENTRIES: usize = 16384;
-pub const CYCLE_MAX_BYTES: u64 = 2 << 30;
+/// Entries and bytes kept in [`CYCLE_DIR`] by default (`yavs-cycle` sets both from
+/// `YAVS_CYCLE_CACHE_MIB`, [`CYCLE_ENTRIES_PER_MIB`] entries per MiB).
+pub const CYCLE_MAX_BYTES: u64 = 4 << 30;
+pub const CYCLE_ENTRIES_PER_MIB: usize = 8;
+pub const CYCLE_MAX_ENTRIES: usize = (CYCLE_MAX_BYTES >> 20) as usize * CYCLE_ENTRIES_PER_MIB;
+
+/// A sweep that removes an entry used less than this long ago, or a refused put, marks the store
+/// as too small ([`Store::pressed`]): the suites of a day no longer fit.
+pub const PRESSED_WITHIN: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
 /// The subdirectory of [`DIR`] that holds the analysed-unit cache ([`Store::units_of_library`]):
 /// one entry per design unit of the library (`yavs_sem::units`), under limits of their own.
@@ -298,6 +303,8 @@ pub struct Store {
     /// put (a batch of puts must not list the directory every time); [`UNKNOWN`] until the first
     /// put and after a sweep. Entries other processes add meanwhile are seen by the next sweep.
     count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Set when this process's puts found the store too small ([`Store::pressed`]).
+    pressed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// [`Store::count`] before the directory was listed.
@@ -329,6 +336,7 @@ impl Store {
             touch: true,
             direct: false,
             count: unknown(),
+            pressed: Default::default(),
         }
     }
 
@@ -341,6 +349,7 @@ impl Store {
             touch: true,
             direct: true,
             count: unknown(),
+            pressed: Default::default(),
         }
     }
 
@@ -353,13 +362,20 @@ impl Store {
             touch: true,
             direct: true,
             count: unknown(),
+            pressed: Default::default(),
         }
     }
 
-    /// The store kept to `max_bytes` bytes instead of its default limit.
-    pub fn with_max_bytes(mut self, max_bytes: u64) -> Store {
-        self.limits.1 = max_bytes;
+    /// The store kept to `max_entries` entries and `max_bytes` bytes instead of its default limits.
+    pub fn with_limits(mut self, max_entries: usize, max_bytes: u64) -> Store {
+        self.limits = (max_entries, max_bytes);
         self
+    }
+
+    /// Whether a put of this process (or of a clone of this store) was refused, or made room by
+    /// removing an entry used within [`PRESSED_WITHIN`].
+    pub fn pressed(&self) -> bool {
+        self.pressed.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The store of the analysed units of library directory `lib` ([`UNIT_DIR`]);
@@ -371,6 +387,7 @@ impl Store {
             touch: false,
             direct: true,
             count: unknown(),
+            pressed: Default::default(),
         }
     }
 
@@ -442,6 +459,8 @@ impl Store {
     pub fn put(&self, kind: &str, key: &Key, payload: &[u8]) {
         if !self.room(payload.len() as u64) && !self.file(kind, key).exists() {
             debug(format!("{} is full", self.dir.display()));
+            self.pressed
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             return;
         }
         if let Err(e) = self.try_put(kind, key, payload) {
@@ -740,9 +759,13 @@ impl Store {
         let in_use = all.partition_point(|e| unused_for(e.1) >= IN_USE);
         let stale = &all[..recent];
         let finished = all[recent..in_use].iter().rev();
-        for (p, _, len) in stale.iter().chain(finished) {
+        for (p, t, len) in stale.iter().chain(finished) {
             if goal(n, bytes) {
                 break;
+            }
+            if unused_for(*t) < PRESSED_WITHIN {
+                self.pressed
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
             }
             // An entry that cannot go (Windows: mapped by a run) still takes its room.
             if fs::remove_file(p).is_ok() {
@@ -803,6 +826,7 @@ impl Store {
                     touch: true,
                     direct: false,
                     count: unknown(),
+                    pressed: Default::default(),
                 }
                 .clean()?;
                 c.entries += o.entries;
@@ -1106,17 +1130,44 @@ mod tests {
         assert!(!lib.dir().exists());
     }
 
-    /// The cycle store keeps 2 GiB by default; `with_max_bytes` sets its byte limit, and a put
-    /// past it is refused while the entries there are in use.
+    /// The cycle store keeps 4 GiB and 8 entries per MiB by default; `with_limits` sets both, and
+    /// a put past them is refused while the entries there are in use, which marks it pressed.
     #[test]
-    fn the_cycle_store_takes_a_byte_limit() {
+    fn the_cycle_store_takes_limits() {
         let d = tempfile::tempdir().unwrap();
-        assert_eq!(Store::cycle_of_library(d.path()).limits.1, 2 << 30);
-        let cyc = Store::cycle_of_library(d.path()).with_max_bytes(3000);
-        for i in 0..5 {
+        assert_eq!(Store::cycle_of_library(d.path()).limits, (32768, 4 << 30));
+        let cyc = Store::cycle_of_library(d.path()).with_limits(100, 3000);
+        for i in 0..2 {
+            cyc.put("cycle", &key(&i.to_string()), &[7; 1000]);
+        }
+        assert!(!cyc.pressed());
+        for i in 2..5 {
             cyc.put("cycle", &key(&i.to_string()), &[7; 1000]);
         }
         assert_eq!(cyc.entries().len(), 2);
+        assert!(cyc.pressed());
+    }
+
+    /// Making room by removing an entry unused for a day is housekeeping; one used today marks the
+    /// store pressed.
+    #[test]
+    fn removing_an_entry_used_today_marks_the_store_pressed() {
+        let d = tempfile::tempdir().unwrap();
+        let s = small(d.path(), (2, MAX_BYTES));
+        s.put("t", &key("old"), b"x");
+        age(
+            &s,
+            &key("old"),
+            PRESSED_WITHIN + std::time::Duration::from_secs(60),
+        );
+        s.put("t", &key("b"), b"x");
+        age(&s, &key("b"), STALE_AFTER * 2);
+        s.put("t", &key("c"), b"x");
+        assert!(!s.pressed(), "only the entry of yesterday went");
+        assert!(s.get("t", &key("old")).is_none());
+        s.put("t", &key("d"), b"x");
+        assert!(s.pressed(), "the entry used an hour ago went");
+        assert!(s.get("t", &key("b")).is_none());
     }
 
     /// A suite larger than the limit, run again and again in the same order, with a minute

@@ -338,7 +338,8 @@ identical to a run without it, at any `--threads`.
   cache clean` removes them. The directory keeps at most 16384 entries and 512 MiB, apart from the 4 GiB
   of entries, under the same rule at the limit (a read does not refresh a unit's time, so its age is the
   age of the entry). A library directory therefore holds at most about 4.75 GiB of cache, and under `--cycle` up to
-  2 GiB more of cycle mode's analyses and machine code (`YAVS_CYCLE_CACHE_MIB`).
+  4 GiB more of cycle mode's analyses and machine code (`YAVS_CYCLE_CACHE_MIB`, 8 entries per MiB; a run warns
+  once when it removed an entry used in the last day or could not store one).
 - **Shared std/ieee units** (#564, user decision 2026-10-26, `docs/decisions.md` "Shared std/ieee units"):
   the analysed units of the built-in `std` and `ieee` are kept once per user in
   `$YAVS_STD_CACHE/yavs-cache/units/`, default `yavs/std` in the user's cache directory (`$XDG_CACHE_HOME`

@@ -1,0 +1,1 @@
+Cycle mode's compilation cache keeps more per library by default, and `YAVS_CYCLE_CACHE_MIB` now sets its number of entries as well as its size, so a large suite stays warm. When the cache is too small for what runs, a run says so in one line that names `YAVS_CYCLE_CACHE_MIB`.

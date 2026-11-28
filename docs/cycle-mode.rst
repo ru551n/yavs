@@ -872,10 +872,15 @@ the compilation cache of the work library, in ``yavs-cache/cycle`` inside the li
 A warm run starts about as fast as a run without ``--cycle``. The test cases of one testbench share the cache,
 unless the design reads generics that differ between them when it is elaborated (a width, a depth).
 
-* The cycle part of the cache keeps at most 2 GiB per library directory. ``YAVS_CYCLE_CACHE_MIB`` changes the limit, in
-  MiB (a whole number of at least 1; anything else is E4104). It also keeps at most 16384 entries, one per compiled
-  function of a region, and ``YAVS_CYCLE_CACHE_MIB`` does not change that. At either limit nothing new is stored: the
-  designs past it compile again on every run. There is no message; it is only slower.
+* The cycle part of the cache keeps at most 4 GiB per library directory, and 8 entries per MiB of that (32768),
+  about one per compiled function of a region. ``YAVS_CYCLE_CACHE_MIB`` changes both, in MiB (a whole number of at
+  least 1; anything else is E4104). At the limit the cache first removes entries not used for an hour, then entries
+  of designs that just finished; with nothing it can remove, a new entry is not stored. When that removes an entry
+  used in the last day, or stores nothing, the run says so in one line that names the cache and its size::
+
+     warning: the cycle cache .../yavs-cache/cycle is full at 4096 MiB, so designs run today compile again; raise YAVS_CYCLE_CACHE_MIB (now 4096)
+
+  Raise the limit then; a suite takes only what it uses.
 * ``yavs cache clean --work=NAME:PATH`` empties the library's cache, cycle part included. It also empties the shared
   ``std`` and ``ieee`` store (``YAVS_STD_CACHE``) unless you add ``--std-cache=off``.
 * ``--no-cache`` neither reads nor writes it: such a run compiles every time.
@@ -941,7 +946,7 @@ Reference
 * ``--no-asserts`` is a flag of every run (:ref:`no-asserts`, :doc:`cli-reference`).
 * vunit-yavs: the sim options ``yavs.cycle`` (``"off"``, ``"on"``, ``"strict"``), ``yavs.cycle_scope`` and ``yavs.no_asserts``,
   :doc:`vunit-yavs`.
-* Environment: ``YAVS_CYCLE_CACHE_MIB``, the limit of the cycle cache in MiB (default 2048), :doc:`environment`.
+* Environment: ``YAVS_CYCLE_CACHE_MIB``, the limit of the cycle cache in MiB (default 4096), :doc:`environment`.
   The other ``YAVS_CYCLE_*`` variables are for developers of yavs.
 * Codes: E4101 to E4104 and E4110 to E4140 in :doc:`error-codes`, and ``yavs --explain CODE``.
 

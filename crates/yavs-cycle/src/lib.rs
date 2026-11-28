@@ -568,19 +568,11 @@ fn reason_error(db: &Db, e: &Elaborated, r: &check::Reason, procs: &[usize]) -> 
 /// neither in the top-level design unit nor behavioural is an error with the code of its
 /// reason, all of them listed. Under [`Mode::Report`] only the report is made, nothing is
 /// compiled.
-/// A81 (`YAVS_CYCLE_CLEAN`), for `YAVS_COUNTERS`: the members with a plane-0 body, and the runs
-/// of their nine-valued bodies.
-pub fn clean_counts() -> (u64, u64) {
-    let n = |x: &std::sync::atomic::AtomicU64| x.load(std::sync::atomic::Ordering::Relaxed);
-    (n(&rt::VARIANTS), n(&rt::NINE_RUNS))
-}
-
 pub fn plan(db: &Db, e: &Elaborated, mode: Mode) -> Result<Plan, Vec<Diagnostic>> {
     codegen::skip_check().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
     region::exact_clocks().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
     store::store_bytes().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
     rt::skip_knob().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
-    nine::clean_knob().map_err(|m| vec![Diagnostic::error(codes::ENV_VALUE, m)])?;
     let sel = match store::select(db, e)? {
         store::Got::Sel(sel) => *sel,
         // `--cycle` on a hit: the region as it was built, its code as it was compiled.
@@ -1083,12 +1075,10 @@ fn built(
     // Without `--two-state` a logic signal's words are four planes of `pw` words each.
     let nine = region::exact_meta();
     let pw = |k: u32| codegen::words(nets.signal_len(yavs_kernel::SignalId(k)));
-    let flags = nine::clean() != nine::Clean::Off;
     let klen = |k: u32| {
         let n = nets.signal_len(yavs_kernel::SignalId(k));
         match (logic(k), nine) {
-            // A81: the dirty plane after the four.
-            (true, true) => (if flags { 5 } else { 4 }) * 64 * pw(k),
+            (true, true) => 4 * 64 * pw(k),
             (true, false) => n,
             (false, _) => 64 * n,
         }
@@ -1220,10 +1210,6 @@ fn built(
     let mut uninit = 0u64;
     let mut unset: Vec<(u32, u32, u64)> = Vec::new();
     let mut rands: Vec<(u32, u32, u64)> = Vec::new();
-    let mut var_flags: Vec<(u32, u32, u32, u32)> = Vec::new();
-    // A81: the words counting the runs of the nine-valued bodies of members with a plane-0 one.
-    let mut nine_runs: Vec<(u32, u32)> = Vec::new();
-    let mut nine_w: Vec<u32> = Vec::new();
     // Each member's slots and resolution.
     let none = BTreeMap::new();
     let mut rs: Vec<Resolve> = Vec::new();
@@ -1277,14 +1263,6 @@ fn built(
         }));
         uninit += b.uninit;
         rands.extend(b.rands.iter().map(|&(w, c, s)| (base + w, c, s)));
-        var_flags.extend(
-            (b.flag_vars.iter()).map(|&(s, pw, len)| (base + s + 4 * pw, base + s, pw, len)),
-        );
-        if let Some(c) = b.nine_runs {
-            nine_runs.push((base + c, *pi as u32));
-            nine_w.push(b.ops.iter().map(codegen::weight_of).sum::<usize>() as u32);
-            state.push((base + c, 3));
-        }
         let clocked = b.kind == Kind::Clocked;
         if clocked {
             state.extend(b.vars.iter().map(|&(w, c)| (base + w, c)));
@@ -2122,7 +2100,6 @@ fn built(
             bytes: bytes(k),
             now: true,
             pw: if nine && logic(k) { pw(k) } else { 0 },
-            flag: if flags && logic(k) { s + 4 * pw(k) } else { 0 },
         })
         .collect();
     // Inputs leaf by leaf (a kernel signal may also hold leaves the region drives), a leaf of
@@ -2154,11 +2131,6 @@ fn built(
                 bytes: b,
                 now: now.contains(&l),
                 pw: if nine && b == 0 { pw(at.signal.0) } else { 0 },
-                flag: if flags && b == 0 {
-                    cur[&at.signal.0] + 4 * pw(at.signal.0)
-                } else {
-                    0
-                },
             };
             chunks.push((read, nets.kpart(l, part).1, (l, part.offset, part.len)));
         }
@@ -2314,15 +2286,6 @@ fn built(
     let member_words: Vec<Vec<(u32, u32)>> = (0..sel.members.len()).map(wrote).collect();
     let mut members: Vec<usize> = sel.members.iter().map(|m| m.0).collect();
     members.sort_unstable();
-    // A memory's too: its writes in the commit write its dirty bits as a fifth plane.
-    let mut sig_flags: Vec<(u32, u32, u32, u32)> = (cur.iter())
-        .filter(|&(&k, _)| flags && logic(k))
-        .map(|(&k, &s)| {
-            let n = nets.signal_len(yavs_kernel::SignalId(k));
-            (s + 4 * pw(k), s, pw(k), n)
-        })
-        .collect();
-    sig_flags.extend(var_flags);
     let built = Built {
         name: format!("{}.cycle_region", label),
         members,
@@ -2358,9 +2321,6 @@ fn built(
         unset,
         rands,
         nine,
-        sig_flags,
-        nine_runs,
-        nine_w,
         chunk_cone,
         chunk_at,
         class_names: (sel.clocks.iter())
@@ -2424,15 +2384,6 @@ pub(crate) struct Built {
     rands: Vec<(u32, u32, u64)>,
     /// Without `--two-state`: logic words are four planes (`nine.rs`).
     nine: bool,
-    /// A81: per logic signal its clean flag's word, first word, words of a plane, elements (0:
-    /// a memory, whose flag is always 1).
-    sig_flags: Vec<(u32, u32, u32, u32)>,
-    /// A81: the words counting nine-valued runs of members with a plane-0 body.
-    #[serde(default)]
-    nine_runs: Vec<(u32, u32)>,
-    /// Their operations (`YAVS_CYCLE_STATS`).
-    #[serde(default)]
-    nine_w: Vec<u32>,
     chunk_cone: Vec<u32>,
     /// Per input chunk: its leaf and elements (the names of `YAVS_CYCLE_STATS`).
     chunk_at: Vec<(LeafId, u32, u32)>,
@@ -2452,27 +2403,7 @@ fn finish(
     reporter: Reporter,
 ) -> Region {
     let stats = std::env::var_os("YAVS_CYCLE_STATS").is_some();
-    if stats {
-        eprintln!("cycle stats: image of {} words", b.words);
-    }
     let import_check = std::env::var_os("YAVS_CYCLE_IMPORT_CHECK").is_some_and(|v| v == "1");
-    // A counter is no state a rerun must leave as it was (`YAVS_CYCLE_SKIP_CHECK=full`).
-    let mut code = code;
-    if let Some(fc) = &mut code.full_check {
-        *fc = (fc.iter())
-            .flat_map(|&(w, c)| w..w + c)
-            .filter(|&w| {
-                let at = |w: u32| b.nine_runs.binary_search_by_key(&w, |x| x.0).is_ok();
-                !at(w) && !(w >= 2 && at(w - 2))
-            })
-            .fold(Vec::new(), |mut v: Vec<(u32, u32)>, w| {
-                match v.last_mut() {
-                    Some(x) if x.0 + x.1 == w => x.1 += 1,
-                    _ => v.push((w, 1)),
-                }
-                v
-            });
-    }
     let code = Arc::new(code);
     let class_cones = Arc::new(b.class_cones);
     let skip = Arc::new(b.skip);
@@ -2519,27 +2450,10 @@ fn finish(
         (b.words, b.init, b.clocks_only, b.err, b.log, b.uninit);
     let unset = Arc::new(b.unset);
     let (rands, nine) = (b.rands, b.nine);
-    let mut sig_flags = b.sig_flags;
-    sig_flags.sort_unstable();
-    let sig_flags = Arc::new(sig_flags);
-    let clean = nine::clean();
-    rt::VARIANTS.store(
-        b.nine_runs.len() as u64,
-        std::sync::atomic::Ordering::Relaxed,
-    );
-    let nine_runs = Arc::new(b.nine_runs);
     let checks = Arc::new(sites);
     let reports = Arc::new(b.reports);
     let cones = Arc::new(b.cones);
     let chunk_cone = Arc::new(b.chunk_cone);
-    let nine_names: Vec<String> = if stats {
-        (nine_runs.iter())
-            .zip(&b.nine_w)
-            .map(|(&(_, pi), w)| format!("{w}\t{}", e.proc_label(&e.procs[pi as usize])))
-            .collect()
-    } else {
-        Vec::new()
-    };
     let make: yavs_elab::RegionMake = Arc::new(move |ds: &[RegionDriver]| {
         // One export per kernel driver with an exported leaf: its range of the signal's words.
         let mut outs: BTreeMap<u32, rt::Out> = BTreeMap::new();
@@ -2589,10 +2503,6 @@ fn finish(
         let mut img = vec![0u64; words];
         for &(w, v) in &init {
             img[w as usize] = v;
-        }
-        // A81: every dirty plane all set until its value is read or made (a memory's stays).
-        for &(f, _, pw, _) in sig_flags.iter() {
-            img[f as usize..(f + pw) as usize].fill(!0);
         }
         // The seed is read here, at the start of each run, never compiled in (A68).
         if let Some(f) = yavs_logic::start::x() {
@@ -2649,16 +2559,6 @@ fn finish(
             ex: [0; rt::EX_N],
             unset: unset.clone(),
             nine,
-            flags: sig_flags.clone(),
-            clean,
-            // A word of dirty bits checked costs a few instructions: on a large image every
-            // run's check would cost more than the run.
-            flag_every: (sig_flags.iter().map(|x| u64::from(x.2)).sum::<u64>() / 16384)
-                .next_power_of_two(),
-            flag_runs: 0,
-            nine_runs: nine_runs.clone(),
-            counters: std::env::var_os("YAVS_COUNTERS").is_some(),
-            nine_names: nine_names.clone(),
         }) as Box<dyn yavs_kernel::Process>)
     });
     Region {

@@ -798,11 +798,6 @@ used. A value a variable does not take is error ``E4104``. Users need only ``YAV
      - a whole number of at least 1
      - ``4000`` with ``--two-state``, ``8000`` without
      - ``run``
-   * - ``YAVS_CYCLE_CLEAN``
-     - Developers: without ``--two-state``, ``on`` keeps a dirty bit for each element of the region's logic values (set where it is not ``'0'`` or ``'1'``) and runs a process on the bits alone, as two-state code, while what it reads and writes holds only ``'0'`` and ``'1'``; a memory's element is checked where it is read. ``check`` is ``on`` that also runs each process's nine-valued code after its two-state code and compares what they wrote, and checks every dirty bit after each run of the region (of a large image after every few runs; an internal error at a difference). ``off`` keeps the nine-valued code alone. Results are the same with every value. Another value is error E4104.
-     - ``off``, ``on``, ``check``
-     - ``off``
-     - ``run``
    * - ``YAVS_CYCLE_DISASM``
      - Prints the machine code of the region on standard error.
      - any value

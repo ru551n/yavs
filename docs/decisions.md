@@ -18126,6 +18126,13 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
   code before the warm pass reached it. The cycle store now keeps 8 entries per MiB of `YAVS_CYCLE_CACHE_MIB` (the
   old ratio), the default is 4096 MiB (32768 entries), and a run whose put was refused or whose sweep removed an
   entry used in the last day warns once, naming the variable (`yavs-cache` `Store::pressed`, `PRESSED_WITHIN`).
+- **A dirty plane: built, measured, removed (A82, A83, A88, user, 2026-11-27 and 2026-11-28).** A fifth plane per
+  logic value held a dirty bit per element (set where it is not `'0'` or `'1'`), and a member ran a two-state body
+  when the bits of the ranges it reads and writes were clear, behind the developer knob `YAVS_CYCLE_CLEAN` (off by
+  default). With it on, plain `--cycle` ran 27 % fewer instructions on NEORV32, 7 % fewer on Microwatt and 11 % fewer
+  on a board-level SoC test, but on a quiet host its cycles were the same on NEORV32, 5 % fewer on Microwatt and 16 %
+  more on the SoC test (28.4 s to 32.9 s), and the region's image was 42 % larger. It was taken out again; the code is
+  in the history (c44545c42), and the cycle store's `FORMAT` moved on to 17.
 
 ## `--two-state` decoupled from `--cycle` (yavs, yavs-cycle, vunit-yavs; user decisions A53 (2), A57, 2026-11-21)
 

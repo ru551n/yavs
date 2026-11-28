@@ -382,6 +382,9 @@ pub(crate) struct Fx<'a, 'b> {
     /// The bounds `(left, right, dir)` a one-dimensional descriptor was made from in a block
     /// (`Inst::MakeDope`; only valid in that block), so a native `ieee` call takes them as values (#697).
     pub made_dopes: Vec<(BlockId, Reg, (Reg, Reg, Reg))>,
+    /// The registers holding the address of a pool constant (`Inst::AddrOf`), so a folded value
+    /// is known by its constant (`Fx::two_lit_const`).
+    pub const_regs: rustc_hash::FxHashMap<Reg, yavs_ir::ConstId>,
     /// The descriptor of a slice target evaluated before its value: the value's uses of the
     /// target's subtype take it instead of evaluating the range again (#1156, #1157).
     pub target_dope: Option<(SubtypeId, Reg)>,
@@ -453,6 +456,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             local_files: Vec::new(),
             sigcopy: None,
             made_dopes: Vec::new(),
+            const_regs: Default::default(),
             target_dope: None,
         }
     }
@@ -474,8 +478,18 @@ impl<'a, 'b> Fx<'a, 'b> {
                     self.made_dopes.push((here, at, (l, r, d)));
                 }
             }
+            Inst::AddrOf {
+                dst,
+                space: AddrSpace::Const(c),
+                off: 0,
+            } => {
+                self.const_regs.insert(dst, c);
+            }
             // A register the bounds were read from may change.
-            Inst::Move { .. } => self.made_dopes.clear(),
+            Inst::Move { dst, .. } => {
+                self.made_dopes.clear();
+                self.const_regs.remove(&dst);
+            }
             _ => {}
         }
         self.fb.emit(i);

@@ -240,6 +240,8 @@ fn at(obj: usize, off: u64) -> u64 {
 fn expand(c: &ConstData) -> W<Vec<u8>> {
     Some(match c {
         ConstData::Bytes(b) => b.clone(),
+        // Its bits are the run's `--init-x`: not known here.
+        ConstData::TwoLit { .. } => return None,
         ConstData::Repeat { .. } | ConstData::Runs(_) => {
             let total = match c {
                 ConstData::Repeat { elem, n } => (elem.len() as u64).checked_mul(*n)?,

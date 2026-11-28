@@ -109,6 +109,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
     // Elements the `yavs.implicit` natives decoded one by one (every build).
     rows.push(("implicit_elems", yavs_interp::implicit_elems_total()));
     rows.push(("two_lit_rec_mapped", yavs_interp::lit_rec_mapped_total()));
+    rows.push(("two_lit_calls", yavs_interp::two_lit_calls_total()));
     // Only builds that count them (debug, or `op-census`).
     if let Some(n) = yavs_interp::ops_executed() {
         let before = OPS_BEFORE.load(std::sync::atomic::Ordering::Relaxed);

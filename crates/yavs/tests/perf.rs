@@ -192,13 +192,14 @@ case!(
     &["--two-state"],
     [("ops", Max(32000))]
 );
-// `--two-state`: a record constant with metavalues read at every edge maps each value once (a map
-// per read cost Microwatt three quarters more instructions).
+// `--two-state --init-x=1`: a record constant with metavalues read at every edge maps each value
+// once (a map per read cost Microwatt three quarters more instructions): the element of the table
+// read by a run-time index is the call left, its values taken from the cache.
 case!(
     two_state_reclit,
     "acc=",
-    &["--two-state"],
-    [("two_lit_rec_mapped", Max(8))]
+    &["--two-state", "--init-x=1"],
+    [("two_lit_rec_mapped", Max(8)), ("two_lit_calls", Max(310))]
 );
 // `--two-state`: the decoder's calls come from the memo of pure calls, which its two-state literal
 // maps no longer keep out.

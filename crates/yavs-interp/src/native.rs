@@ -1120,16 +1120,23 @@ fn init_x_code(
 /// with `mode` bit 1 (a value read from outside for a matching comparison) they are `0`; with
 /// bit 2 (a value driven onto a resolved signal, A71) `Z` stays `Z`.
 fn two_code(code: u64, salt: u64, i: u64, mode: u64) -> u64 {
+    two_code_in(code, salt, i, mode, run_fill())
+}
+
+/// The run's `--init-x`, `0` without it: the value two-state code gives a metavalue literal.
+fn run_fill() -> yavs_logic::start::Fill {
+    yavs_logic::start::x().unwrap_or(yavs_logic::start::Fill::Zero)
+}
+
+/// [`two_code`] under the fill `f`.
+fn two_code_in(code: u64, salt: u64, i: u64, mode: u64, f: yavs_logic::start::Fill) -> u64 {
     match code {
         6 => 2,
         7 => 3,
         8 if mode & 1 != 0 => 8,
         4 if mode & 4 != 0 => 4,
         0 | 1 | 4 | 5 | 8 if mode & 2 != 0 => 2,
-        0 | 1 | 4 | 5 | 8 => {
-            let f = yavs_logic::start::x().unwrap_or(yavs_logic::start::Fill::Zero);
-            u64::from(f.code(salt, i))
-        }
+        0 | 1 | 4 | 5 | 8 => u64::from(f.code(salt, i)),
         c => c,
     }
 }
@@ -1142,18 +1149,37 @@ fn two_lit(
     a: &[u64],
 ) -> R<Option<u64>> {
     let (data, n, salt, mode) = (targ(a, 0)?, targ(a, 1)?, targ(a, 2)?, targ(a, 3)?);
+    crate::census::two_lit_call();
     if n == 0 {
         return Ok(None);
     }
-    let v = m.wr(data, n.div_ceil(64) * 32)?;
+    two_planes(
+        m.wr(data, n.div_ceil(64) * 32)?,
+        n,
+        salt,
+        0,
+        mode,
+        run_fill(),
+    );
+    Ok(None)
+}
+
+/// [`two_code_in`] under `fill` on the `n` plane elements at `p`, numbered from `first`.
+fn two_planes(
+    p: &mut [u8],
+    n: u64,
+    salt: u64,
+    first: u64,
+    mode: u64,
+    fill: yavs_logic::start::Fill,
+) {
     for i in 0..n {
-        let c = plane_get(v, i);
-        let t = two_code(c, salt, i, mode);
+        let c = plane_get(p, i);
+        let t = two_code_in(c, salt, first + i, mode, fill);
         if t != c {
-            plane_set(v, i, t);
+            plane_set(p, i, t);
         }
     }
-    Ok(None)
 }
 
 /// `yavs.two.lit_code (code, salt, mode)`: [`two_code`] on a scalar literal.
@@ -1163,6 +1189,7 @@ fn two_lit_code(
     _: Option<TyId>,
     a: &[u64],
 ) -> R<Option<u64>> {
+    crate::census::two_lit_call();
     Ok(Some(two_code(targ(a, 0)?, targ(a, 1)?, 0, targ(a, 2)?)))
 }
 
@@ -1176,6 +1203,7 @@ fn two_lit_rec(
     a: &[u64],
 ) -> R<Option<u64>> {
     let ty = ty.ok_or_else(|| ice("yavs.two.lit_rec without a type"))?;
+    crate::census::two_lit_call();
     let (data, dp, salt, mode) = (targ(a, 0)?, targ(a, 1)?, targ(a, 2)?, targ(a, 3)?);
     let rt = m.rt.clone();
     let (types, consts) = (&rt.prog.types, &rt.prog.consts);
@@ -1217,11 +1245,39 @@ fn two_lit_rec(
         return Ok(None);
     }
     crate::census::lit_rec_mapped();
-    let desc = &key.3;
-    let mut leaves = Vec::new();
-    Ty::two_lit_leaves(types, consts, (ty, desc, 0), usize::MAX, &mut leaves)
-        .map_err(layout_err)?;
     let v = m.wr(data, size)?;
+    two_map_lit(&rt.prog, ty, &key.3, v, salt, mode)?;
+    let out = v.to_vec().into_boxed_slice();
+    LIT_REC.with_borrow_mut(|(_, c)| {
+        // ponytail: forgets everything past the cap; an LRU if many distinct values are hot.
+        if c.len() >= LIT_REC_MAX {
+            c.clear();
+        }
+        c.insert(key, out);
+    });
+    Ok(None)
+}
+
+/// [`two_code`] on every logic element of the literal value `v` of `ty` under `desc`, each
+/// numbered as cycle mode's region numbers the elements of that literal (`Ty::two_lit_leaves`):
+/// `yavs.two.lit_rec`, and a `ConstData::TwoLit` mapped once per run.
+pub(crate) fn two_map_lit(
+    prog: &yavs_ir::Program,
+    ty: TyId,
+    desc: &[u8],
+    v: &mut [u8],
+    salt: u64,
+    mode: u64,
+) -> R<()> {
+    let mut leaves = Vec::new();
+    Ty::two_lit_leaves(
+        &prog.types,
+        &prog.consts,
+        (ty, desc, 0),
+        usize::MAX,
+        &mut leaves,
+    )
+    .map_err(layout_err)?;
     for (leaf, first) in leaves {
         match leaf {
             yavs_ir::TwoLeaf::Byte(off) => {
@@ -1233,25 +1289,11 @@ fn two_lit_rec(
                 let (o, len) = (off as usize, n.div_ceil(64) as usize * 32);
                 let p = (v.get_mut(o..o + len))
                     .ok_or_else(|| ice("a two-state leaf outside its value"))?;
-                for i in 0..n {
-                    let c = plane_get(p, i);
-                    let t = two_code(c, salt, first + i, mode);
-                    if t != c {
-                        plane_set(p, i, t);
-                    }
-                }
+                two_planes(p, n, salt, first, mode, run_fill());
             }
         }
     }
-    let out = v.to_vec().into_boxed_slice();
-    LIT_REC.with_borrow_mut(|(_, c)| {
-        // ponytail: forgets everything past the cap; an LRU if many distinct values are hot.
-        if c.len() >= LIT_REC_MAX {
-            c.clear();
-        }
-        c.insert(key, out);
-    });
-    Ok(None)
+    Ok(())
 }
 
 /// [`two_lit_rec`]'s values mapped, at most this many.

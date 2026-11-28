@@ -1463,7 +1463,28 @@ fn const_bytes(rt: &Runtime, c: yavs_ir::ConstId) -> R<&[u8]> {
                 .get(c.0 as usize)
                 .ok_or_else(|| ice_f!("no constant {c}"))?;
             if cell.get().is_none() {
-                let _ = cell.set(expand_const(d)?);
+                let b = match d {
+                    ConstData::TwoLit {
+                        src,
+                        ty,
+                        desc,
+                        salt,
+                        mode,
+                    } => {
+                        let mut b = const_bytes(rt, *src)?.to_vec();
+                        crate::native::two_map_lit(
+                            &rt.prog,
+                            *ty,
+                            desc,
+                            &mut b,
+                            *salt,
+                            (*mode).into(),
+                        )?;
+                        b
+                    }
+                    _ => expand_const(d)?,
+                };
+                let _ = cell.set(b);
             }
             Ok(cell.get().map(Vec::as_slice).unwrap_or(&[]))
         }
@@ -14045,6 +14066,7 @@ fn expand_const(c: &ConstData) -> R<Vec<u8>> {
     let too_big = || runtime_s!("constant larger than 4 GiB");
     Ok(match c {
         ConstData::Bytes(b) => b.clone(),
+        ConstData::TwoLit { .. } => return Err(ice_f!("a two-state literal expanded alone")),
         ConstData::Repeat { .. } | ConstData::Runs(_) => {
             let mut out = vec![0; compact_len(c)? as usize];
             fill_compact(c, &mut out);

@@ -158,6 +158,22 @@ pub(crate) fn implicit_elems(n: u64) {
     }
 }
 
+static TWO_LIT_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A call of `yavs.two.lit`, `lit_code` or `lit_rec`, counted under `YAVS_COUNTERS`: the work
+/// counter `two_lit_calls`.
+#[inline]
+pub(crate) fn two_lit_call() {
+    if ieee_on() {
+        TWO_LIT_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The calls [`two_lit_call`] counted so far.
+pub fn two_lit_calls_total() -> u64 {
+    TWO_LIT_CALLS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 static LIT_REC_MAPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// A value `yavs.two.lit_rec` mapped (not taken from its cache), counted under `YAVS_COUNTERS`:

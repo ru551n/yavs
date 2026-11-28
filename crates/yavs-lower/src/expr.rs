@@ -495,13 +495,25 @@ impl<'a> Fx<'a, '_> {
         }
         // A literal, or a value read from outside for a matching comparison (a generic mask):
         // `yavs.two.lit` keeps its `'-'` (mode bit 0), a read maps metavalues to `0` (bit 1).
-        if folded.is_some() || splat || constant || (from_outside && dash) {
+        let mode = u8::from(dash) | if from_outside { 2 } else { 0 } | if zkeep { 4 } else { 0 };
+        let lit = folded.is_some() || splat || constant || (from_outside && dash);
+        if lit {
             // The literal's source site, as `x_value` and cycle mode's region draw from (A68).
             let (file, line, col) = db.sources.get(span.file).site(span.start);
+            let salt = yavs_logic::start::lit_salt(file, line, col);
+            // A folded composite maps once per run, a constant of its own (A87).
+            if folded.is_some()
+                && !splat
+                && let (V::A(data, desc), Some(tid)) = (v, tid)
+                && let Some(k) = self.two_lit_const(tid, data, desc, salt, mode)
+            {
+                return Ok(V::A(k, desc));
+            }
+        }
+        if lit {
+            let (file, line, col) = db.sources.get(span.file).site(span.start);
             let salt = self.int(yavs_logic::start::lit_salt(file, line, col) as i64);
-            let mode = self.int(
-                i64::from(dash) | if from_outside { 2 } else { 0 } | if zkeep { 4 } else { 0 },
-            );
+            let mode = self.int(i64::from(mode));
             return match (v, tid) {
                 (V::S(code), _) => match self.native(
                     "yavs.two.lit_code",
@@ -577,6 +589,36 @@ impl<'a> Fx<'a, '_> {
             }
             (V::A(..), None) => return Err(self.cx.ice(span, "a two-state array without a type")),
         })
+    }
+
+    /// `--two-state`: the folded composite at `data` (a constant of the pool, its descriptor
+    /// `desc` one too or none needed) as a constant mapped when the run starts, under its
+    /// `--init-x`: no map at the read (`ConstData::TwoLit`).
+    fn two_lit_const(
+        &mut self,
+        tid: TyId,
+        data: Reg,
+        desc: Reg,
+        salt: u64,
+        mode: u8,
+    ) -> Option<Reg> {
+        let src = *self.const_regs.get(&data)?;
+        let n = self.desc_size(tid) as usize;
+        let desc = match n {
+            0 => Vec::new(),
+            _ => match self.fb.program().consts().get(*self.const_regs.get(&desc)?) {
+                Some(ConstData::Bytes(b)) => b.get(..n)?.to_vec(),
+                _ => return None,
+            },
+        };
+        let k = self.fb.program().konst(ConstData::TwoLit {
+            src,
+            ty: tid,
+            desc,
+            salt,
+            mode,
+        });
+        Some(self.const_addr(k))
     }
 
     /// `--two-state`: `x` is an operand of a comparison (`matching`: `std_match`, `?=`, `?/=`):

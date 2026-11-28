@@ -519,3 +519,58 @@ fn record_constants_take_their_init_x_bits_in_both_modes() {
         }
     }
 }
+
+/// A87: a constant read whole maps once per run and a `(others => meta)` of a run-time length maps
+/// without a call per element, with the bits the read of the literal gave before (two reads of
+/// one constant differ under `random`, a `'-'` kept by `std_match`, a driven `'Z'` kept), with
+/// and without `--init-x`, in both modes on every tier.
+#[test]
+fn constants_and_splats_keep_their_bits_when_mapped_once() {
+    let dir = tempdir("twostate-litfold");
+    analyze(&dir, "litfold.vhd");
+    let four = [
+        "v=X1UWXX1UWXX1U0-ZWL0X-1HUUUU0X-11--000111111--LL0000XXX1000000000 z='Z'",
+        "v=X1UWXX1UWXX1U0-ZWL0X-1HUUUU0X-11--0001111--LL0000XXXXX1000000000 z='1'",
+    ];
+    let zero = [
+        "v=0100001000010000000001100000001100000111111000000000001000000000 z='Z'",
+        "v=0100001000010000000001100000001100000111100000000000001000000000 z='1'",
+    ];
+    let cases: [(&[&str], [&str; 2]); 5] = [
+        (&[], four),
+        (&["--two-state"], zero),
+        (&["--two-state", "--init-x=0"], zero),
+        (
+            &["--two-state", "--init-x=1"],
+            [
+                "v=1111111111111011100111111110111111000111111110000001111000000000 z='Z'",
+                "v=1111111111111011100111111110111111000111111000000111111000000000 z='1'",
+            ],
+        ),
+        (
+            &["--two-state", "--init-x=random:5"],
+            [
+                "v=0111101000011000000001110000001100000111111100000000111000000000 z='Z'",
+                "v=0111101000011000000001110000001100000111110000000000111000000000 z='1'",
+            ],
+        ),
+    ];
+    for t in tiers() {
+        for cycle in [None, Some("--cycle")] {
+            for (flags, want) in cases {
+                let mut args = vec!["run", "--work=work:lib"];
+                args.extend(flags);
+                args.extend(&t);
+                args.extend(cycle);
+                args.push("cycle_litfold");
+                let o = yavs(&dir, &args);
+                let out = String::from_utf8_lossy(&o.stdout);
+                let got: Vec<&str> = out
+                    .lines()
+                    .filter_map(|l| l.find("v=").map(|i| &l[i..]))
+                    .collect();
+                assert!(o.status.success() && got == want, "{args:?}: {out}");
+            }
+        }
+    }
+}

@@ -1,0 +1,1 @@
+Under `--two-state`, a constant with metavalues read whole no longer maps its values at every read, so designs with register defaults of such constants run faster. The values are those of earlier versions, for every `--init-x`.

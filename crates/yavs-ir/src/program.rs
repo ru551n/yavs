@@ -1308,6 +1308,17 @@ pub enum ConstData {
     /// A logic array as runs of `(count, std_ulogic code)`, element 0 first; expands to
     /// bit-planes.
     Logic(Vec<(u64, u8)>),
+    /// `--two-state`: constant `src`, a value of `ty` under the descriptor bytes `desc`, as two-state
+    /// code reads the literal at the site of `salt` in `mode` (`yavs.two.lit_rec`): mapped once
+    /// when the run starts, under its `--init-x`, which never enters compiled code (A68).
+    TwoLit {
+        src: ConstId,
+        ty: TyId,
+        #[serde(with = "bytes")]
+        desc: Vec<u8>,
+        salt: u64,
+        mode: u8,
+    },
 }
 
 impl ConstData {
@@ -1344,7 +1355,7 @@ impl ConstData {
                 }
                 i == out.len()
             }
-            ConstData::Logic(_) => false,
+            ConstData::Logic(_) | ConstData::TwoLit { .. } => false,
         }
     }
 }

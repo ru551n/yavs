@@ -61,7 +61,7 @@ use yavs_std::types::Revision;
 
 pub use census::{
     arm_entries, booked_returns, calls, dump as census_dump, ieee_general, implicit_elems_total,
-    lean_late_calls, lit_rec_mapped_total, ops_executed, tier_skips,
+    lean_late_calls, lit_rec_mapped_total, ops_executed, tier_skips, two_lit_calls_total,
 };
 pub use debug::{
     DebugSession, Debugger, FrameView, HitCond, Hits, LineBp, LocalView, ProcState, ProcStatus,

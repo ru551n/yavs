@@ -18181,6 +18181,13 @@ neighbouring blocks had different address values and Cranelift's alias analysis 
   stay orthogonal; without `--cycle` the option separates differences caused by values from those caused by
   scheduling, and its speed goal is parity with the default, not a gain. No one-plane code path in the tiers (an
   earlier start gave 0 to 3 percent and was removed for simplicity); `--cycle --two-state` is the fast combination.
+- **No `--init-x=fast`; literals are mapped once instead** (user decision A87, 2026-11-28, closes A73): an option
+  that let the optimiser pick the cheapest value per metavalue literal was measured at 0 to 3 percent and would break
+  A68 (values per mode and tier), so it is not built. What it would have saved is taken without changing a value: a
+  folded composite literal or constant read under `--two-state` becomes a constant of its own that the run maps once
+  when it starts, under its `--init-x` (`ConstData::TwoLit`; the fill never enters compiled code), per read site as
+  before. A part of a constant read by a run-time index with `--init-x` given keeps its call (its cache
+  of 82cefca25 the fallback).
 - **The comparison tools** (`tools/difftest` cycle tools) call their contracts `exact` (plain `--cycle`) and
   `two-state` (`--cycle --two-state`); the reviewed entries of the second start with `two-state contract:`.
 
